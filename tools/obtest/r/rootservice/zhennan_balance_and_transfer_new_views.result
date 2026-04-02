@@ -1,0 +1,318 @@
+ob1=OBI(cluster=2:2:2,init_unit_cpu=0,proxy_num=0);
+ob1.z1.obs0.set extra_config=$extra_conf;
+ob1.z1.obs1.set extra_config=$extra_conf;
+ob1.z2.obs0.set extra_config=$extra_conf;
+ob1.z2.obs1.set extra_config=$extra_conf;
+ob1.z3.obs0.set extra_config=$extra_conf;
+ob1.z3.obs1.set extra_config=$extra_conf;
+ob1.reboot;
+ob1.mysql alter system set enable_rebalance='false';
+ob1.mysql alter system set _transfer_start_trans_timeout = '60s';
+ob1.mysql alter system set debug_sync_timeout = '1000s';
+set @@session.ob_query_timeout = 1000000000;
+# create mysql tenant
+CREATE RESOURCE UNIT if not exists unit_1 MAX_CPU 2, MEMORY_SIZE='3G';
+CREATE RESOURCE POOL if not exists pool_1 UNIT = 'unit_1', UNIT_NUM = 1;
+CREATE TENANT mysql RESOURCE_POOL_LIST = ('pool_1'), primary_zone='z1', locality="F@z1, F@z2, F@z3" set ob_tcp_invited_nodes='%';
+# create oracle tenant
+CREATE RESOURCE POOL if not exists pool_2 UNIT = 'unit_1', UNIT_NUM = 1;
+CREATE TENANT oracle RESOURCE_POOL_LIST = ('pool_2'), primary_zone='z1', locality="F@z1, F@z2, F@z3" set ob_tcp_invited_nodes='%', ob_compatibility_mode='oracle';
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_server_schema_info as a join oceanbase.__all_virtual_server_schema_info as b on a.tenant_id = b.tenant_id  where a.refreshed_schema_version != b.refreshed_schema_version, 0, 60;
+# create not used pool
+CREATE RESOURCE POOL if not exists pool_3 UNIT = 'unit_1', UNIT_NUM = 1;
+# create table
+create table t1(c1 int primary key) partition by hash(c1) partitions 10;
+create table t1(c1 int primary key) partition by hash(c1) partitions 10;
+# uint_num 1->2
+# verify unit_num of meta tenant in DBA_OB_TENANTS
+select tenant_id, unit_num from DBA_OB_TENANTS;
+tenant_id	unit_num
+1	1
+1001	1
+1002	1
+1003	1
+1004	1
+alter resource tenant mysql unit_num = 2;
+select tenant_id, unit_num from DBA_OB_TENANTS;
+tenant_id	unit_num
+1	1
+1001	2
+1002	2
+1003	1
+1004	1
+alter resource tenant oracle unit_num = 2;
+ob1.check_until_timeout select count(*) = 4 from DBA_OB_TENANTS where unit_num = 2 and tenant_id != 1, 1, 1;
+ob1.mysql set ob_global_debug_sync = "AFTER_TRANSFER_PROCESS_INIT_TASK_AND_BEFORE_NOTIFY_STORAGE wait_for signal_lock_finish";
+ob1.check_until_timeout select count(*) != 0 from oceanbase.__all_virtual_transfer_task where tenant_id = $mysql_tenant_id and status = 'START', 1, 120;
+ob1.check_until_timeout select count(*) != 0 from oceanbase.__all_virtual_transfer_task where tenant_id = $oracle_tenant_id and status = 'START', 1, 120;
+##########################
+# 1.verify new views in sys
+select balance_strategy, job_type, target_unit_num, target_primary_zone_num, status, comment from DBA_OB_BALANCE_JOBS;
+balance_strategy	job_type	target_unit_num	target_primary_zone_num	status	comment
+select tenant_id, balance_strategy, job_type, target_unit_num, target_primary_zone_num, status, comment from CDB_OB_BALANCE_JOBS order by tenant_id;
+tenant_id	balance_strategy	job_type	target_unit_num	target_primary_zone_num	status	comment
+1002	LS balance by expand	LS_BALANCE	2	1	DOING	NULL
+1004	LS balance by expand	LS_BALANCE	2	1	DOING	NULL
+select task_type, src_ls, dest_ls, part_list, finished_part_list, part_count, finished_part_count, ls_group_id, status, comment from DBA_OB_BALANCE_TASKS;
+task_type	src_ls	dest_ls	part_list	finished_part_list	part_count	finished_part_count	ls_group_id	status	comment
+select tenant_id, task_type, src_ls, dest_ls, part_list, finished_part_list, part_count, finished_part_count, ls_group_id, status, comment from CDB_OB_BALANCE_TASKS order by tenant_id;
+tenant_id	task_type	src_ls	dest_ls	part_list	finished_part_list	part_count	finished_part_count	ls_group_id	status	comment
+1002	LS_SPLIT	1001	1002	500002:500012,500002:500011,500002:500010,500002:500009,500002:500008	NULL	5	0	1001	TRANSFER	
+1002	LS_ALTER	1002	-1	NULL	NULL	0	0	1002	INIT	NULL
+1004	LS_SPLIT	1001	1002	500002:500013,500002:500012,500002:500011,500002:500010,500002:500009	NULL	5	0	1001	TRANSFER	
+1004	LS_ALTER	1002	-1	NULL	NULL	0	0	1002	INIT	NULL
+select src_ls, dest_ls, part_list, part_count, not_exist_part_list, lock_conflict_part_list, table_lock_tablet_list, tablet_list, tablet_count, status, comment from DBA_OB_TRANSFER_TASKS;
+src_ls	dest_ls	part_list	part_count	not_exist_part_list	lock_conflict_part_list	table_lock_tablet_list	tablet_list	tablet_count	status	comment
+select tenant_id, src_ls, dest_ls, part_list, part_count, not_exist_part_list, lock_conflict_part_list, table_lock_tablet_list, tablet_list, tablet_count, status, comment from CDB_OB_TRANSFER_TASKS order by tenant_id;
+tenant_id	src_ls	dest_ls	part_list	part_count	not_exist_part_list	lock_conflict_part_list	table_lock_tablet_list	tablet_list	tablet_count	status	comment
+1002	1001	1002	500002:500008,500002:500009,500002:500010,500002:500011,500002:500012	5	NULL	NULL	200006,200007,200008,200009,200010	200006:0,200007:0,200008:0,200009:0,200010:0	5	START	
+1004	1001	1002	500002:500009,500002:500010,500002:500011,500002:500012,500002:500013	5	NULL	NULL	200006,200007,200008,200009,200010	200006:0,200007:0,200008:0,200009:0,200010:0	5	START	
+# verify new views in mysql
+select balance_strategy, job_type, target_unit_num, target_primary_zone_num, status, comment from oceanbase.DBA_OB_BALANCE_JOBS;
+balance_strategy	job_type	target_unit_num	target_primary_zone_num	status	comment
+LS balance by expand	LS_BALANCE	2	1	DOING	NULL
+select task_type, src_ls, dest_ls, part_list, finished_part_list, part_count, finished_part_count, ls_group_id, status, comment from oceanbase.DBA_OB_BALANCE_TASKS;
+task_type	src_ls	dest_ls	part_list	finished_part_list	part_count	finished_part_count	ls_group_id	status	comment
+LS_SPLIT	1001	1002	500002:500012,500002:500011,500002:500010,500002:500009,500002:500008	NULL	5	0	1001	TRANSFER	
+LS_ALTER	1002	-1	NULL	NULL	0	0	1002	INIT	NULL
+select src_ls, dest_ls, part_list, part_count, not_exist_part_list, lock_conflict_part_list, table_lock_tablet_list, tablet_list, tablet_count, status, comment from oceanbase.DBA_OB_TRANSFER_TASKS;
+src_ls	dest_ls	part_list	part_count	not_exist_part_list	lock_conflict_part_list	table_lock_tablet_list	tablet_list	tablet_count	status	comment
+1001	1002	500002:500008,500002:500009,500002:500010,500002:500011,500002:500012	5	NULL	NULL	200006,200007,200008,200009,200010	200006:0,200007:0,200008:0,200009:0,200010:0	5	START	
+# verify new views in oracle
+select balance_strategy, job_type, target_unit_num, target_primary_zone_num, status, "COMMENT" from DBA_OB_BALANCE_JOBS;
+BALANCE_STRATEGY	JOB_TYPE	TARGET_UNIT_NUM	TARGET_PRIMARY_ZONE_NUM	STATUS	COMMENT
+LS balance by expand	LS_BALANCE	2	1	DOING	NULL
+select task_type, src_ls, dest_ls, part_list, finished_part_list, part_count, finished_part_count, ls_group_id, status, "COMMENT" from DBA_OB_BALANCE_TASKS;
+TASK_TYPE	SRC_LS	DEST_LS	PART_LIST	FINISHED_PART_LIST	PART_COUNT	FINISHED_PART_COUNT	LS_GROUP_ID	STATUS	COMMENT
+LS_SPLIT	1001	1002	500002:500013,500002:500012,500002:500011,500002:500010,500002:500009	NULL	5	0	1001	TRANSFER	NULL
+LS_ALTER	1002	-1	NULL	NULL	0	0	1002	INIT	NULL
+select src_ls, dest_ls, part_list, part_count, not_exist_part_list, lock_conflict_part_list, table_lock_tablet_list, tablet_list, tablet_count, status, "COMMENT" from DBA_OB_TRANSFER_TASKS;
+SRC_LS	DEST_LS	PART_LIST	PART_COUNT	NOT_EXIST_PART_LIST	LOCK_CONFLICT_PART_LIST	TABLE_LOCK_TABLET_LIST	TABLET_LIST	TABLET_COUNT	STATUS	COMMENT
+1001	1002	500002:500009,500002:500010,500002:500011,500002:500012,500002:500013	5	NULL	NULL	200006,200007,200008,200009,200010	200006:0,200007:0,200008:0,200009:0,200010:0	5	START	NULL
+ob1.mysql set ob_global_debug_sync = "now signal signal_lock_finish";
+# wait balance finish
+ob1.check_until_timeout select count(*) = 0 from oceanbase.__all_virtual_balance_job, 1, 120;
+ob1.check_until_timeout select count(*) = 0 from oceanbase.__all_virtual_balance_task, 1, 120;
+ob1.check_until_timeout select count(*) = 0 from oceanbase.__all_virtual_transfer_task, 1, 120;
+ob1.check_until_timeout select count(*) = 0 from oceanbase.CDB_OB_LS where status != 'NORMAL', 1, 120;
+ob1.check_until_timeout select count(*) = 0 from (select * from __all_virtual_ls_meta_table group by tenant_id, ls_id, zone having count(*) != 1), 1, 120;
+
+# verify new history views in sys
+select balance_strategy, job_type, target_unit_num, target_primary_zone_num, status, comment from DBA_OB_BALANCE_JOB_HISTORY;
+balance_strategy	job_type	target_unit_num	target_primary_zone_num	status	comment
+select tenant_id, balance_strategy, job_type, target_unit_num, target_primary_zone_num, status, comment from CDB_OB_BALANCE_JOB_HISTORY;
+tenant_id	balance_strategy	job_type	target_unit_num	target_primary_zone_num	status	comment
+1002	LS balance by expand	LS_BALANCE	2	1	COMPLETED	NULL
+1004	LS balance by expand	LS_BALANCE	2	1	COMPLETED	NULL
+select task_type, src_ls, dest_ls, part_list, finished_part_list, part_count, finished_part_count, ls_group_id, status, comment from DBA_OB_BALANCE_TASK_HISTORY;
+task_type	src_ls	dest_ls	part_list	finished_part_list	part_count	finished_part_count	ls_group_id	status	comment
+select tenant_id, task_type, src_ls, dest_ls, part_list, finished_part_list, part_count, finished_part_count, ls_group_id, status, comment from CDB_OB_BALANCE_TASK_HISTORY;
+tenant_id	task_type	src_ls	dest_ls	part_list	finished_part_list	part_count	finished_part_count	ls_group_id	status	comment
+1002	LS_SPLIT	1001	1002	NULL	500002:500008,500002:500009,500002:500010,500002:500011,500002:500012	0	5	1001	COMPLETED	NULL
+1002	LS_ALTER	1002	-1	NULL	NULL	0	0	1002	COMPLETED	NULL
+1004	LS_SPLIT	1001	1002	NULL	500002:500009,500002:500010,500002:500011,500002:500012,500002:500013	0	5	1001	COMPLETED	NULL
+1004	LS_ALTER	1002	-1	NULL	NULL	0	0	1002	COMPLETED	NULL
+select src_ls, dest_ls, part_list, part_count, not_exist_part_list, lock_conflict_part_list, table_lock_tablet_list, tablet_list, tablet_count, status, comment from DBA_OB_TRANSFER_TASK_HISTORY;
+src_ls	dest_ls	part_list	part_count	not_exist_part_list	lock_conflict_part_list	table_lock_tablet_list	tablet_list	tablet_count	status	comment
+select src_ls, dest_ls, part_list, part_count, not_exist_part_list, lock_conflict_part_list, table_lock_tablet_list, tablet_list, tablet_count, status, comment from CDB_OB_TRANSFER_TASK_HISTORY;
+src_ls	dest_ls	part_list	part_count	not_exist_part_list	lock_conflict_part_list	table_lock_tablet_list	tablet_list	tablet_count	status	comment
+1001	1002	500002:500008,500002:500009,500002:500010,500002:500011,500002:500012	5	NULL	NULL	200006,200007,200008,200009,200010	200006:0,200007:0,200008:0,200009:0,200010:0	5	COMPLETED	
+1001	1002	500002:500009,500002:500010,500002:500011,500002:500012,500002:500013	5	NULL	NULL	200006,200007,200008,200009,200010	200006:0,200007:0,200008:0,200009:0,200010:0	5	COMPLETED	
+# verify new history views in mysql
+select balance_strategy, job_type, target_unit_num, target_primary_zone_num, status, comment from oceanbase.DBA_OB_BALANCE_JOB_HISTORY;
+balance_strategy	job_type	target_unit_num	target_primary_zone_num	status	comment
+LS balance by expand	LS_BALANCE	2	1	COMPLETED	NULL
+select task_type, src_ls, dest_ls, part_list, finished_part_list, part_count, finished_part_count, ls_group_id, status, comment from oceanbase.DBA_OB_BALANCE_TASK_HISTORY;
+task_type	src_ls	dest_ls	part_list	finished_part_list	part_count	finished_part_count	ls_group_id	status	comment
+LS_SPLIT	1001	1002	NULL	500002:500008,500002:500009,500002:500010,500002:500011,500002:500012	0	5	1001	COMPLETED	NULL
+LS_ALTER	1002	-1	NULL	NULL	0	0	1002	COMPLETED	NULL
+select src_ls, dest_ls, part_list, part_count, not_exist_part_list, lock_conflict_part_list, table_lock_tablet_list, tablet_list, tablet_count, status, comment from oceanbase.DBA_OB_TRANSFER_TASK_HISTORY;
+src_ls	dest_ls	part_list	part_count	not_exist_part_list	lock_conflict_part_list	table_lock_tablet_list	tablet_list	tablet_count	status	comment
+1001	1002	500002:500008,500002:500009,500002:500010,500002:500011,500002:500012	5	NULL	NULL	200006,200007,200008,200009,200010	200006:0,200007:0,200008:0,200009:0,200010:0	5	COMPLETED	
+# verify new history views in oracle
+select balance_strategy, job_type, target_unit_num, target_primary_zone_num, status, "COMMENT" from DBA_OB_BALANCE_JOB_HISTORY;
+BALANCE_STRATEGY	JOB_TYPE	TARGET_UNIT_NUM	TARGET_PRIMARY_ZONE_NUM	STATUS	COMMENT
+LS balance by expand	LS_BALANCE	2	1	COMPLETED	NULL
+select task_type, src_ls, dest_ls, part_list, finished_part_list, part_count, finished_part_count, ls_group_id, status, "COMMENT" from DBA_OB_BALANCE_TASK_HISTORY;
+TASK_TYPE	SRC_LS	DEST_LS	PART_LIST	FINISHED_PART_LIST	PART_COUNT	FINISHED_PART_COUNT	LS_GROUP_ID	STATUS	COMMENT
+LS_SPLIT	1001	1002	NULL	500002:500009,500002:500010,500002:500011,500002:500012,500002:500013	0	5	1001	COMPLETED	NULL
+LS_ALTER	1002	-1	NULL	NULL	0	0	1002	COMPLETED	NULL
+select src_ls, dest_ls, part_list, part_count, not_exist_part_list, lock_conflict_part_list, table_lock_tablet_list, tablet_list, tablet_count, status, "COMMENT" from DBA_OB_TRANSFER_TASK_HISTORY;
+SRC_LS	DEST_LS	PART_LIST	PART_COUNT	NOT_EXIST_PART_LIST	LOCK_CONFLICT_PART_LIST	TABLE_LOCK_TABLET_LIST	TABLET_LIST	TABLET_COUNT	STATUS	COMMENT
+1001	1002	500002:500009,500002:500010,500002:500011,500002:500012,500002:500013	5	NULL	NULL	200006,200007,200008,200009,200010	200006:0,200007:0,200008:0,200009:0,200010:0	5	COMPLETED	NULL
+##########################
+# 2.verify changed views
+# 2.1 DBA_OB_TENANTS (unit_num, compatible)
+# sys
+select tenant_id, resource_pool_id, unit_count as unit_num from __all_resource_pool;
+tenant_id	resource_pool_id	unit_num
+1	1	1
+1002	1001	2
+1004	1002	2
+-1	1003	1
+select tenant_id, unit_num from DBA_OB_TENANTS;
+tenant_id	unit_num
+1	1
+1001	2
+1002	2
+1003	2
+1004	2
+select count(*) from oceanbase.DBA_OB_TENANTS where COMPATIBLE != (SELECT MIN(VALUE) FROM oceanbase.GV$OB_PARAMETERS WHERE NAME = 'compatible');
+count(*)
+0
+# mysql
+select tenant_id, unit_num from oceanbase.DBA_OB_TENANTS;
+tenant_id	unit_num
+1002	2
+select count(*) from oceanbase.DBA_OB_TENANTS where COMPATIBLE != (SELECT MIN(VALUE) FROM oceanbase.GV$OB_PARAMETERS WHERE NAME = 'compatible');
+count(*)
+0
+# oracle
+select tenant_id, unit_num from DBA_OB_TENANTS;
+TENANT_ID	UNIT_NUM
+1004	2
+select count(*) from DBA_OB_TENANTS where COMPATIBLE != (SELECT MIN(VALUE) FROM GV$OB_PARAMETERS WHERE NAME = 'compatible');
+COUNT(*)
+0
+
+# 2.2 DBA/CDB_OB_LS_LOCATIONS
+# sys
+select count(*) from DBA_OB_LS_LOCATIONS;
+count(*)
+3
+select count(*) from CDB_OB_LS_LOCATIONS;
+count(*)
+27
+# mysql
+select count(*) from oceanbase.DBA_OB_LS_LOCATIONS;
+count(*)
+9
+# oracle
+select count(*) from DBA_OB_LS_LOCATIONS;
+COUNT(*)
+9
+
+# 2.3 DBA/CDB_OB_TABLE_LOCATIONS (object_id, tablegroup_name, tablegroup_id)
+# 2.3.1 prepare data
+
+# 2.3.2 verify DBA_OB_TABLE_LOCATIONS
+# sys
+select distinct tenant_id, table_name, table_type, partition_name, subpartition_name, object_id, tablegroup_name, tablegroup_id, sharding from CDB_OB_TABLE_LOCATIONS where table_name in ('t_nonpart_1', 't_nonpart_2', 't_part_h', 't_part_k', 't_part_l', 't_part_r', 't_subpart_h_r', 't_subpart_lc_h', 't_subpart_rc_lc') order by object_id;
+tenant_id	table_name	table_type	partition_name	subpartition_name	object_id	tablegroup_name	tablegroup_id	sharding
+1002	t_nonpart_1	USER TABLE	NULL	NULL	500016	tg_none	500013	NONE
+1002	t_nonpart_2	USER TABLE	NULL	NULL	500017	tg_none	500013	NONE
+1002	t_part_r	USER TABLE	M202003	NULL	500019	NULL	NULL	NULL
+1002	t_part_r	USER TABLE	M202004	NULL	500020	NULL	NULL	NULL
+1002	t_part_r	USER TABLE	M202011	NULL	500021	NULL	NULL	NULL
+1002	t_part_l	USER TABLE	p0	NULL	500023	NULL	NULL	NULL
+1002	t_part_l	USER TABLE	p1	NULL	500024	NULL	NULL	NULL
+1002	t_part_l	USER TABLE	p2	NULL	500025	NULL	NULL	NULL
+1002	t_part_h	USER TABLE	p0	NULL	500027	NULL	NULL	NULL
+1002	t_part_h	USER TABLE	p1	NULL	500028	NULL	NULL	NULL
+1002	t_part_h	USER TABLE	p2	NULL	500029	NULL	NULL	NULL
+1002	t_part_k	USER TABLE	p0	NULL	500031	tg_partition	500014	PARTITION
+1002	t_part_k	USER TABLE	p1	NULL	500032	tg_partition	500014	PARTITION
+1002	t_part_k	USER TABLE	p2	NULL	500033	tg_partition	500014	PARTITION
+1002	t_subpart_h_r	USER TABLE	p1	sp0	500037	NULL	NULL	NULL
+1002	t_subpart_h_r	USER TABLE	p1	sp1	500038	NULL	NULL	NULL
+1002	t_subpart_h_r	USER TABLE	p1	sp2	500039	NULL	NULL	NULL
+1002	t_subpart_h_r	USER TABLE	p2	sp4	500040	NULL	NULL	NULL
+1002	t_subpart_h_r	USER TABLE	p2	sp5	500041	NULL	NULL	NULL
+1002	t_subpart_h_r	USER TABLE	p2	sp6	500042	NULL	NULL	NULL
+1002	t_subpart_lc_h	USER TABLE	p0	p0sp0	500047	NULL	NULL	NULL
+1002	t_subpart_lc_h	USER TABLE	p0	p0sp1	500048	NULL	NULL	NULL
+1002	t_subpart_lc_h	USER TABLE	p1	p1sp0	500049	NULL	NULL	NULL
+1002	t_subpart_lc_h	USER TABLE	p1	p1sp1	500050	NULL	NULL	NULL
+1002	t_subpart_lc_h	USER TABLE	p2	p2sp0	500051	NULL	NULL	NULL
+1002	t_subpart_lc_h	USER TABLE	p2	p2sp1	500052	NULL	NULL	NULL
+1002	t_subpart_rc_lc	USER TABLE	p0	sp0	500056	tg_adaptive	500015	ADAPTIVE
+1002	t_subpart_rc_lc	USER TABLE	p0	sp1	500057	tg_adaptive	500015	ADAPTIVE
+1002	t_subpart_rc_lc	USER TABLE	p0	sp2	500058	tg_adaptive	500015	ADAPTIVE
+1002	t_subpart_rc_lc	USER TABLE	p1	sp3	500059	tg_adaptive	500015	ADAPTIVE
+1002	t_subpart_rc_lc	USER TABLE	p1	sp4	500060	tg_adaptive	500015	ADAPTIVE
+1002	t_subpart_rc_lc	USER TABLE	p1	sp5	500061	tg_adaptive	500015	ADAPTIVE
+# 36 = 3 * (1/*__all_core_table*/ + 1/*t_nonpart_1*/ + 1/*t_nonpart_2*/ + 3/*t_part_k*/ + 6/*t_subpart_rc_lc*/)
+select count(*) from CDB_OB_TABLE_LOCATIONS A join CDB_OBJECTS B on A.TENANT_ID = B.CON_ID and A.TABLEGROUP_NAME = B.OBJECT_NAME and B.OBJECT_TYPE = 'TABLEGROUP' and A.TABLEGROUP_ID = B.OBJECT_ID where A.TABLE_NAME in ('__all_core_table', 't_nonpart_1', 't_nonpart_2', 't_part_k', 't_subpart_rc_lc') and A.TENANT_ID = 1002;
+count(*)
+36
+# 6 = 3 * (1/*t_nonpart_1*/ + 1/*t_nonpart_2*/)
+select count(*) from CDB_OB_TABLE_LOCATIONS A join CDB_OBJECTS B on A.TENANT_ID = B.CON_ID and A.DATABASE_NAME = B.OWNER and A.TABLE_NAME = B.OBJECT_NAME and A.OBJECT_ID = B.OBJECT_ID where A.TABLE_NAME in ('t_nonpart_1', 't_nonpart_2') and A.TENANT_ID = 1002;
+count(*)
+6
+# 36 = 3 * (3/*t_part_h*/ + 3/*t_part_k*/ + 3/*t_part_l*/ + 3/*t_part_r*/)
+select count(*) from CDB_OB_TABLE_LOCATIONS A join CDB_OBJECTS B on A.TENANT_ID = B.CON_ID and A.DATABASE_NAME = B.OWNER and A.TABLE_NAME = B.OBJECT_NAME and A.PARTITION_NAME = B.SUBOBJECT_NAME and A.OBJECT_ID = B.OBJECT_ID where A.TABLE_NAME in ('t_part_h', 't_part_k', 't_part_l', 't_part_r') and A.TENANT_ID = 1002;
+count(*)
+36
+# 54 = 3 * (6/*t_subpart_h_r*/ + 6/*t_subpart_lc_h*/ + 6/*t_subpart_rc_lc*/)
+select count(*) from CDB_OB_TABLE_LOCATIONS A join CDB_OBJECTS B on A.TENANT_ID = B.CON_ID and A.DATABASE_NAME = B.OWNER and A.TABLE_NAME = B.OBJECT_NAME and A.SUBPARTITION_NAME = B.SUBOBJECT_NAME and A.OBJECT_ID = B.OBJECT_ID where A.TABLE_NAME in ('t_subpart_h_r', 't_subpart_lc_h', 't_subpart_rc_lc') and A.TENANT_ID = 1002;
+count(*)
+54
+# mysql
+select /*+query_timeout(100000000)*/distinct table_name, table_type, partition_name, subpartition_name, object_id, tablegroup_name, tablegroup_id, sharding from oceanbase.DBA_OB_TABLE_LOCATIONS where table_name in ('t_nonpart_1', 't_nonpart_2', 't_part_h', 't_part_k', 't_part_l', 't_part_r', 't_subpart_h_r', 't_subpart_lc_h', 't_subpart_rc_lc') order by object_id;
+table_name	table_type	partition_name	subpartition_name	object_id	tablegroup_name	tablegroup_id	sharding
+t_nonpart_1	USER TABLE	NULL	NULL	500016	tg_none	500013	NONE
+t_nonpart_2	USER TABLE	NULL	NULL	500017	tg_none	500013	NONE
+t_part_r	USER TABLE	M202003	NULL	500019	NULL	NULL	NULL
+t_part_r	USER TABLE	M202004	NULL	500020	NULL	NULL	NULL
+t_part_r	USER TABLE	M202011	NULL	500021	NULL	NULL	NULL
+t_part_l	USER TABLE	p0	NULL	500023	NULL	NULL	NULL
+t_part_l	USER TABLE	p1	NULL	500024	NULL	NULL	NULL
+t_part_l	USER TABLE	p2	NULL	500025	NULL	NULL	NULL
+t_part_h	USER TABLE	p0	NULL	500027	NULL	NULL	NULL
+t_part_h	USER TABLE	p1	NULL	500028	NULL	NULL	NULL
+t_part_h	USER TABLE	p2	NULL	500029	NULL	NULL	NULL
+t_part_k	USER TABLE	p0	NULL	500031	tg_partition	500014	PARTITION
+t_part_k	USER TABLE	p1	NULL	500032	tg_partition	500014	PARTITION
+t_part_k	USER TABLE	p2	NULL	500033	tg_partition	500014	PARTITION
+t_subpart_h_r	USER TABLE	p1	sp0	500037	NULL	NULL	NULL
+t_subpart_h_r	USER TABLE	p1	sp1	500038	NULL	NULL	NULL
+t_subpart_h_r	USER TABLE	p1	sp2	500039	NULL	NULL	NULL
+t_subpart_h_r	USER TABLE	p2	sp4	500040	NULL	NULL	NULL
+t_subpart_h_r	USER TABLE	p2	sp5	500041	NULL	NULL	NULL
+t_subpart_h_r	USER TABLE	p2	sp6	500042	NULL	NULL	NULL
+t_subpart_lc_h	USER TABLE	p0	p0sp0	500047	NULL	NULL	NULL
+t_subpart_lc_h	USER TABLE	p0	p0sp1	500048	NULL	NULL	NULL
+t_subpart_lc_h	USER TABLE	p1	p1sp0	500049	NULL	NULL	NULL
+t_subpart_lc_h	USER TABLE	p1	p1sp1	500050	NULL	NULL	NULL
+t_subpart_lc_h	USER TABLE	p2	p2sp0	500051	NULL	NULL	NULL
+t_subpart_lc_h	USER TABLE	p2	p2sp1	500052	NULL	NULL	NULL
+t_subpart_rc_lc	USER TABLE	p0	sp0	500056	tg_adaptive	500015	ADAPTIVE
+t_subpart_rc_lc	USER TABLE	p0	sp1	500057	tg_adaptive	500015	ADAPTIVE
+t_subpart_rc_lc	USER TABLE	p0	sp2	500058	tg_adaptive	500015	ADAPTIVE
+t_subpart_rc_lc	USER TABLE	p1	sp3	500059	tg_adaptive	500015	ADAPTIVE
+t_subpart_rc_lc	USER TABLE	p1	sp4	500060	tg_adaptive	500015	ADAPTIVE
+t_subpart_rc_lc	USER TABLE	p1	sp5	500061	tg_adaptive	500015	ADAPTIVE
+# oracle
+select distinct table_name, table_type, partition_name, subpartition_name, object_id, tablegroup_name, tablegroup_id, sharding from DBA_OB_TABLE_LOCATIONS where table_name = 'T_NONPART_ORACLE';
+TABLE_NAME	TABLE_TYPE	PARTITION_NAME	SUBPARTITION_NAME	OBJECT_ID	TABLEGROUP_NAME	TABLEGROUP_ID	SHARDING
+T_NONPART_ORACLE	USER TABLE	NULL	NULL	500015	TG_NONE_ORACLE	500014	NONE
+##########################
+# 3.verify changed config
+# verify changed config in sys
+alter system set partition_balance_schedule_interval = '0';
+alter system set partition_balance_schedule_interval = '0s';
+alter system set partition_balance_schedule_interval = '1h';
+alter system set partition_balance_schedule_interval = '1h' tenant sys;
+alter system set partition_balance_schedule_interval = '1h' tenant all_user;
+alter system set partition_balance_schedule_interval = '1h' tenant all_meta;
+alter system set partition_balance_schedule_interval = '1h' tenant = 'mysql';
+alter system set partition_balance_schedule_interval = '1s';
+ERROR HY000: Incorrect arguments to partition_balance_schedule_interval of tenant 1, it should not be less than balancer_idle_time
+alter system set partition_balance_schedule_interval = '1s' tenant = 'mysql';
+ERROR HY000: Incorrect arguments to partition_balance_schedule_interval of tenant 1002, it should not be less than balancer_idle_time
+# verify changed config in mysql
+alter system set partition_balance_schedule_interval = '0';
+alter system set partition_balance_schedule_interval = '0s';
+alter system set partition_balance_schedule_interval = '1h';
+alter system set partition_balance_schedule_interval = '1s';
+ERROR HY000: Incorrect arguments to partition_balance_schedule_interval of tenant 1002, it should not be less than balancer_idle_time
+alter system set partition_balance_schedule_interval = '1h' tenant = 'mysql';
+ERROR 42501: Access denied
+# verify changed config in oracle
+alter system set partition_balance_schedule_interval = '0';
+alter system set partition_balance_schedule_interval = '0s';
+alter system set partition_balance_schedule_interval = '1h';
+alter system set partition_balance_schedule_interval = '1s';
+ERROR HY000: OBE-00600: internal error code, arguments: -4002, Incorrect arguments to partition_balance_schedule_interval of tenant 1004, it should not be less than balancer_idle_time
+alter system set partition_balance_schedule_interval = '1h' tenant = 'oracle';
+ERROR 42000: OBE-00600: internal error code, arguments: -5099, System config unknown

@@ -1,0 +1,156 @@
+#owner: zhaoziqian.zzq
+#owner group: RS
+#tags: rs
+#description:
+# test parallel drop table different table type in mysql mode
+
+###################### init #####################
+
+connect (sys,$OBMYSQL_MS0,root@sys,,oceanbase,$OBMYSQL_PORT);
+connect (mysql,$OBMYSQL_MS0,root,,oceanbase,$OBMYSQL_PORT);
+set @@session.recyclebin = off;
+--disable_warnings
+drop database if exists ziqian_parallel_drop_table;
+--enable_warnings
+create database ziqian_parallel_drop_table;
+use ziqian_parallel_drop_table;
+let $database_id = query_get_value(select database_id from oceanbase.__all_database where database_name = 'ziqian_parallel_drop_table', database_id, 1);
+
+
+connection sys;
+alter system set enable_sys_table_ddl = true;
+alter system set _parallel_ddl_control = 'DROP_TABLE:ON';
+sleep 3;
+
+--echo ### case 1: drop sys table
+--error 4179
+drop table oceanbase.__all_table;
+--error 4179
+drop table if exists oceanbase.__all_table;
+
+--echo ### case 2: drop sys view
+--error 1051
+drop table oceanbase.DBA_OB_LS;
+drop table if exists oceanbase.DBA_OB_LS;
+
+--echo ### case 3: drop virtual table
+--error 4179
+drop table oceanbase.__all_virtual_thread;
+--error 4179
+drop table if exists oceanbase.__all_virtual_thread;
+
+alter system set _parallel_ddl_control = '';
+
+connection mysql;
+--echo ### case 4: drop user table
+create table t4 (c1 int);
+drop table t4;
+drop table if exists t4;
+
+--echo ### case 5: drop user view
+create table t5 (c1 int);
+create view v5 as select * from t5;
+--error 1051
+drop table v5;
+drop table if exists v5;
+
+--echo ### case 6: drop user index
+create table t6 (c1 int);
+create index i6 on t6(c1);
+let $idx_name = query_get_value(select table_name from oceanbase.__all_table where data_table_id = (select table_id from oceanbase.__all_table where database_id = $database_id and table_name = 't6'), table_name, 1);
+--disable_query_log
+--disable_warnings
+--disable_result_log
+--error 1051
+eval drop table $idx_name;
+eval drop table if exists $idx_name;
+--enable_warnings
+--enable_query_log
+--enable_result_log
+
+--echo ### case 7: drop tmp table
+# TODO(zhaoziqian.zzq): add mysql tmp table test
+
+--echo ### case 8: drop materialized view
+create table t8 (c1 int);
+create materialized view mv8 as select * from t8;
+--error 1051
+drop table mv8;
+drop table if exists mv8;
+
+--echo ### case 9: drop aux lob piece and lob meta
+create table t9 (c1 text);
+let $aux_lob_piece_name = query_get_value(select table_name from oceanbase.__all_table where data_table_id = (select table_id from oceanbase.__all_table where database_id = $database_id and table_name = 't9') and table_name like '%piece%', table_name, 1);
+let $aux_lob_meta_name = query_get_value(select table_name from oceanbase.__all_table where data_table_id = (select table_id from oceanbase.__all_table where database_id = $database_id and table_name = 't9') and table_name like '%meta%', table_name, 1);
+--disable_query_log
+--disable_warnings
+--disable_result_log
+--error 1051
+eval drop table $aux_lob_piece_name;
+--error 1051
+eval drop table $aux_lob_meta_name;
+eval drop table if exists $aux_lob_piece_name;
+eval drop table if exists $aux_lob_meta_name;
+--enable_warnings
+--enable_query_log
+--enable_result_log
+
+--echo ### case 10: drop external table
+create external table t10 (c1 int) location='../include' format (type = 'csv', LINE_DELIMITER = '\n') PATTERN = 'ex_nt.csv';
+drop table t10;
+drop table if exists t10;
+
+--echo ### case 11: drop materialized view log
+create table t11 (c1 int);
+create materialized view log on t11;
+let $mlog_name = query_get_value(select table_name from oceanbase.__all_table where data_table_id = (select table_id from oceanbase.__all_table where database_id = $database_id and table_name = 't11'), table_name, 1);
+--disable_query_log
+--error 1051
+eval drop table $mlog_name;
+eval drop table if exists $mlog_name;
+--enable_query_log
+
+--echo ### case 12: drop mv container table
+create table t12 (c1 int);
+create materialized view mv12 as select * from t12;
+let $mv_container_name = query_get_value("select concat('__mv_container_', table_id) as table_name from oceanbase.__all_table where database_id = $database_id and table_name = 'mv12'", table_name, 1);
+--disable_query_log
+--disable_warnings
+--disable_result_log
+--error 1051
+eval drop table $mv_container_name;
+eval drop table if exists $mv_container_name;
+--enable_query_log
+--enable_warnings
+--enable_result_log
+
+--echo ### case 13: drop table which has mlog table
+create table t13 (c1 int);
+create materialized view log on t13;
+--error 1235
+drop table t13;
+--error 1235
+drop table if exists t13;
+
+--echo ### case 14: drop table referenced by normal mv
+create table t14 (c1 int);
+create materialized view mv14 as select * from t14;
+drop table t14;
+drop table if exists t14;
+
+--echo ### case 15: drop table referenced by fast lsm mv
+create table t15_1(user_id int, item_id int, primary key(user_id, item_id)) partition by hash(user_id) partitions 4;
+create table t15_2(item_id int, price int, primary key(item_id)) duplicate_scope = 'cluster' duplicate_read_consistency = 'weak';
+create materialized view mv15 (primary key(user_id, item_id)) partition by hash(user_id) partitions 4 refresh fast enable query rewrite enable on query computation as select t15_1.user_id, t15_1.item_id, t15_2.item_id dup_item_id, t15_2.price from t15_1 inner join t15_2 on t15_1.item_id = t15_2.item_id;
+--error 1235
+drop table t15_1;
+--error 1235
+drop table if exists t15_1;
+
+
+
+###################### clear ######################
+
+purge recyclebin;
+set @@session.recyclebin = off;
+drop database ziqian_parallel_drop_table;

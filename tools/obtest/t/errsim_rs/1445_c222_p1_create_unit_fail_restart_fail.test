@@ -1,0 +1,95 @@
+# owner: rongxuan.lc
+# description:
+# 本case是为了处理resource/unit在创建或者修改的过程中事务提交超时以后，可能操作内存和表不一致；
+
+ob1=OBI(cluster=2:2:2,  proxy_num=0, ct_num = 0);
+ob1.reboot;
+#ob1.mysql create table oceanbase.test(c1 int, c2 int);
+ob1.mysql alter system set resource_hard_limit=900;
+ob1.mysql alter system set resource_soft_limit=800;
+ob1.mysql alter system set enable_rebalance = 'false';
+ob1.mysql alter system set enable_rereplication = 'false';
+ob1.mysql alter system set balancer_idle_time = '10s';
+ob1.mysql alter system set server_data_copy_in_concurrency =30;
+ob1.mysql alter system set server_data_copy_out_concurrency = 30;
+ob1.mysql alter system set data_copy_concurrency = 100;
+ob1.mysql alter tenant sys set primary_zone='z1;z2;z3';
+let $cpu = 1;
+let $memory = 1073741824;
+let $min_memory = 1073741824;
+let $disk = 536870912;
+let $iops = 100000;
+let $session = 64;
+#let $case_index = 1;
+#
+#
+#ob1.mysql CREATE RESOURCE UNIT unit_$case_index MAX_CPU $cpu, MAX_MEMORY $memory, MAX_IOPS $iops, MAX_DISK_SIZE $disk, MAX_SESSION_NUM $session, MIN_CPU=1, MIN_MEMORY=$min_memory, MIN_IOPS=128;
+#ob1.mysql CREATE RESOURCE POOL pool_$case_index UNIT = 'unit_$case_index', UNIT_NUM = 2, ZONE_LIST = ('z1', 'z2','z3');
+#ob1.mysql CREATE TENANT tenant_$case_index RESOURCE_POOL_LIST = ('pool_$case_index'), locality='F@z1,F@z2,F@z3', primary_zone='z1;z2;z3' set ob_tcp_invited_nodes='%';
+#
+#ob1.create_client tenant=tenant_1,user=root,passwd=,database=test;
+#create table tt(c1 int primary key, c2 int) partition by hash(c1) partitions 50;
+#
+#
+###假装create unit config 失败；
+#
+#ob1.mysql INSERT INTO oceanbase.__all_unit_config (unit_config_id, name, max_cpu, min_cpu, max_memory, min_memory, max_disk_size, max_iops, min_iops, max_session_num, gmt_modified) VALUES (1003, 'unit_2', 1.000000, 1.000000, 1073741824, 1073741824, 536870912, 128, 128, 64, now(6)) ON DUPLICATE KEY UPDATE name = X'756E69745F31', max_cpu = 1.000000, min_cpu = 1.000000, max_memory = 1073741824, min_memory = 1073741824, max_disk_size = 536870912, max_iops = 128, min_iops = 128, max_session_num = 64;
+#ob1.mysql alter system reload unit;
+#
+#ob1.create_client tenant=sys,user=root,passwd=,database=oceanbase;
+#--error 4649 
+#eval CREATE RESOURCE UNIT unit_2 MAX_CPU $cpu, MAX_MEMORY $memory, MAX_IOPS $iops, MAX_DISK_SIZE $disk, MAX_SESSION_NUM $session, MIN_CPU=1, MIN_MEMORY=$min_memory, MIN_IOPS=128;
+#eval CREATE RESOURCE UNIT unit_3 MAX_CPU $cpu, MAX_MEMORY $memory, MAX_IOPS $iops, MAX_DISK_SIZE $disk, MAX_SESSION_NUM $session, MIN_CPU=1, MIN_MEMORY=$min_memory, MIN_IOPS=128;
+###默认rs在第一台机器，重启；
+#ob1.z1.obs0.force_stop;
+#sleep 10;
+#ob1.z2.obs0.mysql select count(*) from oceanbase.__all_virtual_core_meta_table;
+#ob1.z1.obs0.start;
+###等待主切到z1;
+#ob1.check_until_timeout select count(*) from __all_server where with_rootserver=1 and zone = 'z1', 1, 60;
+#ob1.check_until_timeout select count(*)>0 from oceanbase.__all_virtual_core_meta_table,1, 60;
+#
+#ob1.mysql INSERT INTO oceanbase.__all_resource_pool (resource_pool_id, name, unit_count, unit_config_id, zone_list, tenant_id, gmt_modified) VALUES (1, 'pool_2', 1, 1, 'z1;z2;z3', -1, now(6)) ON DUPLICATE KEY UPDATE name = 'pool_2', unit_count = 1, unit_config_id = 1, zone_list = 'z1;z2;z3';
+#ob1.mysql alter system reload unit;
+#--error 4651
+#eval CREATE RESOURCE POOL pool_2 UNIT = 'unit_1', UNIT_NUM = 2, ZONE_LIST = ('z1', 'z2','z3');
+#eval CREATE RESOURCE POOL pool_3 UNIT = 'unit_1', UNIT_NUM = 2, ZONE_LIST = ('z1', 'z2','z3');
+#ob1.check_until_timeout select count(*) from __all_server where with_rootserver=1 and zone = 'z1', 1, 60;
+#ob1.mysql CREATE TENANT tenant_3 RESOURCE_POOL_LIST = ('pool_3'), locality='F@z1,F@z2,F@z3', primary_zone='z1;z2;z3' set ob_tcp_invited_nodes='%';
+###默认rs在第一台机器，重启；
+#ob1.z1.obs0.force_stop;
+#sleep 10;
+#ob1.z2.obs0.mysql select count(*) from oceanbase.__all_virtual_core_meta_table;
+#ob1.z1.obs0.start;
+#ob1.check_until_timeout select count(*) from __all_server where with_rootserver=1 and zone = 'z1', 1, 60;
+#ob1.check_until_timeout select count(*)>0 from oceanbase.__all_virtual_core_meta_table,1, 60;
+
+###设置错误注入点；并且等待超时；
+ob1.z1.obs0.mysql set @@global.ob_query_timeout = 10000000;
+ob1.z1.obs0.mysql alter system set_tp tp_no=39, error_code=4012,frequency =1;
+ob1.mysql alter system set debug_sync_timeout = '10s';
+ob1.z1.obs0.mysql set ob_global_debug_sync = 'UNIT_MANAGER_WAIT_FOR_TIMEOUT wait_for begin timeout 10000000';  
+
+let $case_index = 5;
+ob1.create_client tenant=sys,user=root,passwd=,database=oceanbase;
+ob1.mysql CREATE RESOURCE UNIT unit_$case_index MAX_CPU $cpu, MAX_MEMORY $memory, MAX_IOPS $iops, MAX_DISK_SIZE $disk, MAX_SESSION_NUM $session, MIN_CPU=1, MIN_MEMORY=$min_memory, MIN_IOPS=128;
+--error 4012
+eval CREATE RESOURCE POOL pool_$case_index UNIT = 'unit_$case_index', UNIT_NUM = 2, ZONE_LIST = ('z1', 'z2','z3');
+#ob1.mysql CREATE TENANT tenant_$case_index RESOURCE_POOL_LIST = ('pool_$case_index'), locality='F@z1,F@z2,F@z3', primary_zone='z1;z2;z3' set ob_tcp_invited_nodes='%';
+sleep 2;
+--error 4651
+eval CREATE RESOURCE POOL pool_$case_index UNIT = 'unit_$case_index', UNIT_NUM = 2, ZONE_LIST = ('z1', 'z2','z3');
+ob1.mysql alter system set debug_sync_timeout = '0';
+ob1.z1.obs0.mysql alter system set_tp tp_no=39, error_code=4012,frequency =0;
+let $case_index = 6;
+eval CREATE RESOURCE POOL pool_$case_index UNIT = 'unit_5', UNIT_NUM = 2, ZONE_LIST = ('z1', 'z2','z3');
+ob1.z1.obs0.force_stop;
+sleep 10;
+ob1.z2.obs0.mysql select count(*) from oceanbase.__all_virtual_core_meta_table;
+ob1.z1.obs0.start;
+###等待主切到z1;
+ob1.check_until_timeout select count(*) from __all_server where with_rootserver=1 and zone = 'z1', 1, 60;
+ob1.check_until_timeout select count(*)>0 from oceanbase.__all_virtual_core_meta_table,1, 60;
+
+
+

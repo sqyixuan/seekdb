@@ -1,0 +1,57 @@
+--source mysql_test/test_suite/ps/t/enable_ps.sql
+# owner: xiaoyi.xy
+# owner group: SQL2
+# description: PS模式下，测试相同的语句在多个session之间可以命中同一个计划
+
+connect (conn_admin, $OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection conn_admin;
+alter system flush plan cache global;
+
+--disable_warnings
+drop table if exists t1, tbl_for_check;
+--enable_warnings
+
+create table t1 (c1 varchar(10));
+insert into t1 values('abcd');
+create table tbl_for_check(idx int auto_increment, hit_count int, plan_id int, ps_stmt_id int, primary key(idx));
+
+# set ob_log_level='debug';
+set ob_enable_trace_log=1;
+--echo // Case1: connection 1, normal sql
+set @x = 1;
+prepare stmt1 from select substr(c1, 1, ?) from t1;
+execute stmt1 using @x;
+insert into tbl_for_check (hit_count, plan_id, ps_stmt_id) select hit_count, plan_id, ps_stmt_id from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement = 'select substr(c1, 1, ?) from t1' order by ps_stmt_id desc limit 1;
+--echo // first executation, check if is succeed.
+select case a.hit_count = 0 when 1 then "succeed" else "Failed, hit_count should be 0" end from (select * from tbl_for_check where idx = 1) a;
+
+--echo
+--echo // stmt1 closed, prepare again
+deallocate prepare stmt1;
+
+--echo
+--echo
+prepare stmt1 from select substr(c1, 1, ?) from t1;
+execute stmt1 using @x;
+insert into tbl_for_check (hit_count, plan_id, ps_stmt_id) select hit_count, plan_id, ps_stmt_id from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement = 'select substr(c1, 1, ?) from t1' order by ps_stmt_id desc limit 1;
+--echo // count(*) should be 2
+select count(*) from tbl_for_check;
+select case a.plan_id = b.plan_id when 1 then "succeed" else "Failed, plan_id should be same" end from (select * from tbl_for_check where idx = 1) a, (select * from tbl_for_check where idx = 2) b;
+--echo // check if is succeed.
+select case a.ps_stmt_id != b.ps_stmt_id when 1 then "succeed" else "Failed, ps_stmt_id should be different" end from (select * from tbl_for_check where idx = 1) a, (select * from tbl_for_check where idx = 2) b;
+
+--echo
+--echo // stmt1 closed, prepare again
+deallocate prepare stmt1;
+
+--echo
+--echo // Case2: table dropped, schema changed
+drop table t1;
+create table t1 (c1 varchar(10));
+insert into t1 values('abcd');
+set @x = 1;
+prepare stmt1 from select substr(c1, 1, ?) from t1;
+execute stmt1 using @x;
+--echo // expected hit_cout is 1, 0. because schema version changed
+select hit_count from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement = 'select substr(c1, 1, ?) from t1';
+--source mysql_test/test_suite/ps/t/disable_ps.sql

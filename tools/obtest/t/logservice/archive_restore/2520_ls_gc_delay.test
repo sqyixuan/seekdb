@@ -1,0 +1,190 @@
+# CASE_OWNER:
+#    @qianxi
+# CASE_DESC:
+#    Net Standby: test ls gc delay
+
+ob1=OBI(cluster=1:1:1, proxy_num=0);
+ob2=OBI(cluster=1, proxy_num=0);
+
+let $restore_ip         = deploy_get_value(ob2.z1.obs0.ip);
+let $restore_port       = deploy_get_value(ob2.z1.obs0.mysql_port);
+
+ob1.z1.obs0.set extra_config = "cpu_count=14,memory_limit='38G',system_memory='7G',__min_full_resource_pool_memory='1073741824',cache_wash_threshold='1G',_ob_minor_merge_schedule_interval='3s'";
+ob1.z2.obs0.set extra_config = "cpu_count=14,memory_limit='38G',system_memory='7G',__min_full_resource_pool_memory='1073741824',cache_wash_threshold='1G',_ob_minor_merge_schedule_interval='3s'";
+ob1.z3.obs0.set extra_config = "cpu_count=14,memory_limit='38G',system_memory='7G',__min_full_resource_pool_memory='1073741824',cache_wash_threshold='1G',_ob_minor_merge_schedule_interval='3s'";
+ob1.reboot;
+
+# 固定sys租户规格
+ob1.mysql alter resource unit sys_unit_config memory_size='2G';
+
+ob_connect(sys_conn, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+CREATE RESOURCE UNIT large_unit MAX_CPU=2, MEMORY_SIZE='4G';
+CREATE RESOURCE POOL large_pool UNIT large_unit, UNIT_NUM 1, ZONE_LIST ('z1','z2','z3');
+CREATE RESOURCE POOL large_pool_1 UNIT large_unit, UNIT_NUM 1, ZONE_LIST ('z1','z2','z3');
+CREATE RESOURCE POOL large_pool_2 UNIT large_unit, UNIT_NUM 1, ZONE_LIST ('z1','z2','z3');
+CREATE RESOURCE POOL large_pool_3 UNIT large_unit, UNIT_NUM 1, ZONE_LIST ('z1','z2','z3');
+CREATE RESOURCE POOL large_pool_4 UNIT large_unit, UNIT_NUM 1, ZONE_LIST ('z3');
+
+#系统租户创建删除表，变更locality，验证是否能够成功
+create table sys_t1(a int, b int, c int);
+insert into sys_t1(a, b) values(1, 1);
+create table sys_t2(a int, b int, c int);
+insert into sys_t2(a, b) values(1, 1);
+drop table sys_t1;
+drop table sys_t2;
+create table sys_t3(a int, b int, c int);
+insert into sys_t3(a, b) values(1, 1);
+
+ob1.check_until_timeout select count(*) c from oceanbase.__all_tenant where tenant_id = 1 and previous_locality = '' and LOCALITY = 'FULL{1}@z1, FULL{1}@z2, FULL{1}@z3', 1, 10;
+ALTER TENANT sys locality = "F@z1,F@z2";
+ob1.check_until_timeout select count(*) c from oceanbase.__all_tenant where tenant_id = 1 and previous_locality = '', 0, 300;
+
+ALTER TENANT sys locality = "F@z1,F@z2,F@z3";
+ob1.check_until_timeout select count(*) c from oceanbase.__all_tenant where tenant_id = 1 and previous_locality = '', 0, 300;
+ob1.check_until_timeout select count(*) c from oceanbase.__all_virtual_tablet_pointer_status where tenant_id = 1 and tablet_id=200002, 0, 100;
+
+ob1.mysql alter system set _backup_idle_time = '10s';
+ob1.mysql alter system set merger_check_interval = '10s';
+ob1.mysql alter system set enable_async_syslog=false;
+
+## create MySQL tenant, test create tenant before major freeze
+ob1.mysql CREATE TENANT backup_mysql_tenant RESOURCE_POOL_LIST = ('large_pool'), primary_zone = "z1" set ob_tcp_invited_nodes='%', ob_compatibility_mode='mysql';
+let $backup_mysql_tenant_id = query_get_value(select tenant_id from oceanbase.__all_tenant where tenant_name='backup_mysql_tenant', tenant_id, 1);
+
+ob1.mysql alter system major freeze tenant = 'backup_mysql_tenant';
+ob1.check_until_timeout select (frozen_scn - last_scn) as result from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$backup_mysql_tenant_id, 0, 600;
+
+# 扩容：增加日志流
+ob1.mysql alter tenant backup_mysql_tenant set primary_zone = 'z1,z2';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_job, 1, 100;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_job_history, 1, 100;
+ob1.mysql_p select task_type, src_ls,dest_ls, finished_part_list, ls_group_id from oceanbase.__all_virtual_balance_task_history order by create_time;
+
+# get primary tenant access point
+let $server_ip_port_1=deploy_get_value(ob1.select select concat(svr_ip,':',sql_port) as host from CDB_OB_LS_LOCATIONS where tenant_id = $backup_mysql_tenant_id and ls_id = 1 and role = 'LEADER' order by svr_ip, sql_port limit 1;, host, 1);
+let $server_ip_port_2=deploy_get_value(ob1.select select concat(svr_ip,':',sql_port) as host from CDB_OB_LS_LOCATIONS where tenant_id = $backup_mysql_tenant_id and ls_id = 1 and role = 'FOLLOWER' order by svr_ip, sql_port limit 1, host, 1);
+let $server_ip_port_3=deploy_get_value(ob1.select select concat(svr_ip,':',sql_port) as host from CDB_OB_LS_LOCATIONS where tenant_id = $backup_mysql_tenant_id and ls_id = 1 and role = 'FOLLOWER' and concat(svr_ip,':',sql_port) not like "%$server_ip_port_2%" limit 1, host, 1);
+
+# create log restore source user
+ob_connect(primary_tenant_conn, ob1.z1.obs0,root@backup_mysql_tenant,,test,,USE_MYSQL_CONNECTOR);
+connection primary_tenant_conn;
+create user mytest identified by "test";
+GRANT SELECT on OCEANBASE.DBA_OB_ACCESS_POINT to mytest;
+GRANT SELECT on OCEANBASE.GV$OB_UNITS to mytest;
+GRANT SELECT on OCEANBASE.DBA_OB_TENANTS to mytest;
+GRANT SELECT on OCEANBASE.GV$OB_PARAMETERS to mytest;
+GRANT SELECT on OCEANBASE.GV$OB_LOG_STAT to mytest;
+GRANT SELECT on OCEANBASE.DBA_OB_LS to mytest;
+
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+sleep 10;
+ob1.mysql set ob_global_debug_sync = 'BEFORE_RECOVER_USER_LS wait_for continue_signal_1 execute 10000';
+
+ob_connect(primary_tenant_conn, ob1.z1.obs0,root@backup_mysql_tenant,,test,,USE_MYSQL_CONNECTOR);
+connection primary_tenant_conn;
+
+create table t1(a int, b int, c int);
+insert into t1(a, b) values(1, 1);
+
+let $check_scn=deploy_get_value(ob1.select select end_scn from __all_virtual_log_stat where tenant_id = $backup_mysql_tenant_id and ls_id = 1001 and role = 'LEADER', end_scn, 1);
+let $schema_version = deploy_get_value(ob1.select select max(schema_version) as s from oceanbase.__all_virtual_ddl_operation where tenant_id = $backup_mysql_tenant_id, s, 1);
+
+sleep 3;
+
+insert into t1(a, b) values(3, 3);
+insert into t1(a, b) values(2, 2);
+insert into t1(a, b) values(4, 4);
+insert into t1(a, b) values(5, 5);
+
+### 设置延迟时间
+alter system set ls_gc_delay_time='1800s';
+
+# 缩容, 删除日志流
+sleep 10;
+ob1.mysql alter tenant backup_mysql_tenant set primary_zone = 'z1';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_job, 1, 100;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_job_history, 1, 100;
+sleep 3;
+
+## create Oracle tenant1
+ob1.mysql CREATE TENANT backup_oracle_tenant RESOURCE_POOL_LIST = ('large_pool_2'), primary_zone = "z1" set ob_tcp_invited_nodes='%', ob_compatibility_mode='oracle';
+ob1.mysql CREATE TENANT backup_oracle_tenant2 RESOURCE_POOL_LIST = ('large_pool_3'), primary_zone = "z1" set ob_tcp_invited_nodes='%', ob_compatibility_mode='oracle';
+ob_connect(sys_conn, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+let $backup_oracle_tenant_id = query_get_value(select tenant_id from oceanbase.__all_tenant where tenant_name='backup_oracle_tenant', tenant_id, 1);
+
+ob1.mysql alter system major freeze tenant = 'backup_oracle_tenant';
+ob1.check_until_timeout select (frozen_scn - last_scn) as result from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$backup_oracle_tenant_id, 0, 600;
+
+# get primary tenant access point
+let $server_ip_port_1=deploy_get_value(ob1.select select concat(svr_ip,':',sql_port) as host from CDB_OB_LS_LOCATIONS where tenant_id = $backup_oracle_tenant_id and ls_id = 1 and role = 'LEADER' order by svr_ip, sql_port limit 1;, host, 1);
+let $server_ip_port_2=deploy_get_value(ob1.select select concat(svr_ip,':',sql_port) as host from CDB_OB_LS_LOCATIONS where tenant_id = $backup_oracle_tenant_id and ls_id = 1 and role = 'FOLLOWER' order by svr_ip, sql_port limit 1, host, 1);
+let $server_ip_port_3=deploy_get_value(ob1.select select concat(svr_ip,':',sql_port) as host from CDB_OB_LS_LOCATIONS where tenant_id = $backup_oracle_tenant_id and ls_id = 1 and role = 'FOLLOWER' and concat(svr_ip,':',sql_port) not like "%$server_ip_port_2%" limit 1, host, 1);
+
+# create log restore source user
+ob_connect(primary_oracle_tenant_conn, ob1.z1.obs0, SYS@backup_oracle_tenant, ,SYS, , USE_OB_CONNECTOR);
+create user mytest identified by "test";
+
+ob_connect(primary_oracle_tenant_conn, ob1.z1.obs0, SYS@backup_oracle_tenant, ,SYS, , USE_OB_CONNECTOR);
+GRANT CONNECT TO mytest;
+
+ob_connect(primary_oracle_tenant_conn, ob1.z1.obs0, SYS@backup_oracle_tenant, ,SYS, , USE_OB_CONNECTOR);
+GRANT SELECT on SYS.DBA_OB_ACCESS_POINT to mytest;
+GRANT SELECT on SYS.GV$OB_UNITS to mytest;
+GRANT SELECT on SYS.DBA_OB_TENANTS to mytest;
+GRANT SELECT on SYS.GV$OB_PARAMETERS to mytest;
+GRANT SELECT on SYS.GV$OB_LOG_STAT to mytest;
+GRANT SELECT on SYS.DBA_OB_LS to mytest;
+
+connection primary_oracle_tenant_conn;
+create table t1(a int, b int, c int);
+insert into t1(a, b) values(1, 1);
+
+let $check_scn=deploy_get_value(ob1.select select end_scn from __all_virtual_log_stat where tenant_id = $backup_oracle_tenant_id and ls_id = 1001 and role = 'LEADER';, end_scn, 1);
+sleep 3;
+
+ob_connect(primary_oracle_tenant_conn, ob1.z1.obs0, SYS@backup_oracle_tenant, ,SYS, , USE_OB_CONNECTOR);
+connection primary_oracle_tenant_conn;
+insert into t1(a, b) values(2, 2);
+insert into t1(a, b) values(3, 3);
+
+ob2.reboot;
+ob2.mysql alter resource unit sys_unit_config memory_size='2G';
+connect(restore_sys_conn, $restore_ip, root@sys,,oceanbase, $restore_port);
+connection restore_sys_conn;
+use oceanbase;
+alter system set resource_hard_limit = 1000;
+alter system set _restore_idle_time = '10s';
+ob2.mysql alter system set _backup_idle_time = '10s';
+ob2.mysql alter system set merger_check_interval = '10s';
+ob2.mysql alter system set enable_async_syslog=false;
+
+CREATE RESOURCE UNIT large_unit MAX_CPU=5, MEMORY_SIZE='10G';
+CREATE RESOURCE POOL large_pool_1 UNIT large_unit, UNIT_NUM 1, ZONE_LIST ('z1');
+
+--disable_all_result_log
+eval CREATE STANDBY TENANT IF NOT EXISTS standby_mysql_tenant LOG_RESTORE_SOURCE = 'service=127.0.0.1:111111;$server_ip_port_2;$server_ip_port_3 USER=mytest@backup_mysql_tenant PASSWORD=test' PRIMARY_ZONE='z1', RESOURCE_POOL_LIST=('large_pool_1'),locality='F@z1', comment='mysql';
+--enable_all_result_log
+
+ob2.check_until_timeout SELECT status FROM dba_ob_tenants WHERE TENANT_NAME = 'standby_mysql_tenant', NORMAL, 200;
+
+connection restore_sys_conn;
+let $standby_tenant_id= query_get_value(select tenant_id from oceanbase.__all_tenant where tenant_name='standby_mysql_tenant', tenant_id, 1);
+#echo $standby_tenant_id;
+let $current = `select ceil(UNIX_TIMESTAMP(current_timestamp(6)) * 1000000)`;
+ob2.check_until_timeout select floor(readable_scn / 1000) > '$current' from __all_virtual_tenant_info where tenant_id = $standby_tenant_id, 1, 600;
+ob2.check_until_timeout select count(*) from oceanbase.__all_virtual_server_schema_info where tenant_id = $standby_tenant_id and refreshed_schema_version < $schema_version, 0, 30;
+ob_connect(standby_tenant_conn, ob2.z1.obs0,root@standby_mysql_tenant,,test,,USE_MYSQL_CONNECTOR);
+connection standby_tenant_conn;
+select * from test.t1;
+
+connection primary_tenant_conn;
+#show parameters like "%ls_gc_delay_time%";
+alter system set ls_gc_delay_time='20s';
+# wait the ls is removed
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_log_stat where tenant_id = 1002 and ls_id=1002, 0, 100;
+#connection restore_sys_conn;
+#drop tenant standby_mysql_tenant force;
+
+ob_connect(sys_conn, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+drop tenant backup_oracle_tenant;
+drop tenant backup_oracle_tenant2 force;

@@ -1,0 +1,86 @@
+ob1=OBI(cluster=1:1, proxy_num=0);
+ob2=OBI(cluster=1, proxy_num=0);
+
+ob1.reboot;
+ob2.reboot;
+
+ob_connect(ob1_sys_conn, ob1.z1.obs0, root@sys,, oceanbase,, USE_MYSQL_CONNECTOR);
+create resource unit primary_unit max_cpu=4, memory_size='8G';
+create resource pool primary_pool unit primary_unit, unit_num 1, zone_list ('z1','z2');
+create tenant primary_tenant resource_pool_list=('primary_pool'), primary_zone='z1' set ob_tcp_invited_nodes='%';
+
+ob_connect(primary_conn, ob1.z1.obs0, root@primary_tenant,, oceanbase,, USE_MYSQL_CONNECTOR);
+create user standby_user identified by 'standby';
+
+GRANT SELECT on OCEANBASE.DBA_OB_ACCESS_POINT to standby_user;
+GRANT SELECT on OCEANBASE.GV$OB_UNITS to standby_user;
+GRANT SELECT on OCEANBASE.DBA_OB_TENANTS to standby_user;
+GRANT SELECT on OCEANBASE.GV$OB_PARAMETERS to standby_user;
+GRANT SELECT on OCEANBASE.GV$OB_LOG_STAT to standby_user;
+GRANT SELECT on OCEANBASE.DBA_OB_LS to standby_user;
+
+let $ip_port_1 = query_get_value(select concat(svr_ip,':',sql_port) as ip_port from DBA_OB_ACCESS_POINT order by svr_ip,sql_port limit 1 offset 0, ip_port, 1);
+let $ip_port_2 = query_get_value(select concat(svr_ip,':',sql_port) as ip_port from DBA_OB_ACCESS_POINT order by svr_ip,sql_port limit 1 offset 1, ip_port, 1);
+
+ob_connect(ob2_sys_conn, ob2.z1.obs0, root@sys,, oceanbase,, USE_MYSQL_CONNECTOR);
+
+create resource unit standby_unit max_cpu=4, memory_size='8G';
+create resource pool standby_pool unit standby_unit, unit_num 1, zone_list ('z1');
+eval create standby tenant standby_tenant log_restore_source='service=$ip_port_1;$ip_port_2 user=standby_user@primary_tenant password=standby' primary_zone='z1', resource_pool_list=('standby_pool');
+
+sleep 5;
+
+alter system set_tp tp_name = FAILED_TO_SCHEDULE_FETCH_STREAM, error_code = 4016, frequency = 1;
+
+sleep 10;
+
+let $standby_tenant_id = deploy_get_value(ob2.select select tenant_id from __all_tenant where tenant_name='standby_tenant', tenant_id, 1);
+
+ob2.check_until_timeout select time_to_usec(now(6)) - floor(sync_scn/1000) > 10 * 1000 * 1000 as not_sync from dba_ob_tenants where tenant_id=$standby_tenant_id, 1, 200;
+
+alter system set_tp tp_name = FAILED_TO_SCHEDULE_FETCH_STREAM, error_code = 4016, frequency = 0;
+
+ob2.check_until_timeout select time_to_usec(now(6)) - floor(sync_scn/1000) < 3 * 1000 * 1000 as sync from dba_ob_tenants where tenant_id=$standby_tenant_id, 1, 200;
+
+let $primary_tenant_id = deploy_get_value(ob1.select select tenant_id from __all_tenant where tenant_name='primary_tenant', tenant_id, 1);
+
+alter system set_tp tp_name = LOG_FETCHER_ALLOC_LS_CTX_ADD_INFO_FAIL, error_code = 4013, frequency = 1;
+sleep 5;
+
+ob1.mysql alter tenant primary_tenant primary_zone='RANDOM';
+ob1.check_until_timeout select count(distinct ls_id) >= 3 as ls_num_lt_3 from __all_virtual_ls_meta_table where tenant_id=$primary_tenant_id, 1, 300;
+
+ob2.check_until_timeout select time_to_usec(now(6)) - floor(sync_scn/1000) > 10 * 1000 * 1000 as not_sync from dba_ob_tenants where tenant_id=$standby_tenant_id, 1, 200;
+
+alter system set_tp tp_name = LOG_FETCHER_ALLOC_LS_CTX_ADD_INFO_FAIL, error_code = 4013, frequency = 0;
+ob2.check_until_timeout select time_to_usec(now(6)) - floor(sync_scn/1000) < 3 * 1000 * 1000 as not_sync from dba_ob_tenants where tenant_id=$standby_tenant_id, 1, 200;
+ob1.mysql alter tenant primary_tenant primary_zone='z1';
+ob1.check_until_timeout select count(distinct ls_id) < 3 as ls_num_lt_3 from __all_virtual_ls_meta_table where tenant_id=$primary_tenant_id, 1, 300;
+
+
+alter system set_tp tp_name = LOG_FETCHER_ALLOC_LS_CTX_FAIL, error_code = 4013, frequency = 1;
+sleep 5;
+
+ob1.mysql alter tenant primary_tenant primary_zone='RANDOM';
+ob1.check_until_timeout select count(distinct ls_id) >= 3 as ls_num_lt_3 from __all_virtual_ls_meta_table where tenant_id=$primary_tenant_id, 1, 300;
+
+ob2.check_until_timeout select time_to_usec(now(6)) - floor(sync_scn/1000) > 10 * 1000 * 1000 as not_sync from dba_ob_tenants where tenant_id=$standby_tenant_id, 1, 200;
+
+alter system set_tp tp_name = LOG_FETCHER_ALLOC_LS_CTX_FAIL, error_code = 4013, frequency = 0;
+ob2.check_until_timeout select time_to_usec(now(6)) - floor(sync_scn/1000) < 3 * 1000 * 1000 as not_sync from dba_ob_tenants where tenant_id=$standby_tenant_id, 1, 200;
+ob1.mysql alter tenant primary_tenant primary_zone='z1';
+ob1.check_until_timeout select count(distinct ls_id) < 3 as ls_num_lt_3 from __all_virtual_ls_meta_table where tenant_id=$primary_tenant_id, 1, 300;
+
+
+alter system set_tp tp_name = LOGFETCHER_ALLOC_FSC_FAILED, error_code = 4013, frequency = 1;
+sleep 5;
+
+ob1.mysql alter tenant primary_tenant primary_zone='RANDOM';
+ob1.check_until_timeout select count(distinct ls_id) >= 3 as ls_num_lt_3 from __all_virtual_ls_meta_table where tenant_id=$primary_tenant_id, 1, 300;
+
+ob2.check_until_timeout select time_to_usec(now(6)) - floor(sync_scn/1000) > 10 * 1000 * 1000 as not_sync from dba_ob_tenants where tenant_id=$standby_tenant_id, 1, 200;
+
+alter system set_tp tp_name = LOGFETCHER_ALLOC_FSC_FAILED, error_code = 4013, frequency = 0;
+ob2.check_until_timeout select time_to_usec(now(6)) - floor(sync_scn/1000) < 3 * 1000 * 1000 as not_sync from dba_ob_tenants where tenant_id=$standby_tenant_id, 1, 200;
+ob1.mysql alter tenant primary_tenant primary_zone='z1';
+ob1.check_until_timeout select count(distinct ls_id) < 3 as ls_num_lt_3 from __all_virtual_ls_meta_table where tenant_id=$primary_tenant_id, 1, 300;

@@ -121,8 +121,7 @@ int ObTimeUtility2::usec_format_to_str(int64_t usec, const ObString &format, cha
   }
   memset(&t, 0, sizeof(struct tm));
   t.tm_isdst = -1;
-  time_t second_time_t = static_cast<time_t>(second);
-  if (NULL == localtime_r(&second_time_t, &t)) {
+  if (NULL == localtime_r(&second, &t)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_ERROR("convert second to struct tm failed", K(second));
   } else if (OB_FAIL(timestamp_format_to_str(t, incre_usec, format, buf, buf_len, pos))) {
@@ -599,14 +598,10 @@ int ObTimeUtility2::str_to_usec(const ObString &date, int64_t &usec)
   t.tm_isdst = -1;
   if (OB_FAIL(str_to_timestamp(date, t, tmp_usec))) {
     LOG_WARN("parse string to date failed", K(ret));
+  } else if (OB_FAIL(make_second(t, sec))) {
+    LOG_WARN("parse time to usec failed", K(ret));
   } else {
-    time_t sec_time_t = 0;
-    if (OB_FAIL(make_second(t, sec_time_t))) {
-      LOG_WARN("parse time to usec failed", K(ret));
-    } else {
-      sec = static_cast<int64_t>(sec_time_t);
-      usec = sec * 1000L * 1000L + tmp_usec;
-    }
+    usec = sec * 1000L * 1000L + tmp_usec;
   }
   return ret;
 }

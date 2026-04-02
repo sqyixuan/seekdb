@@ -1,0 +1,301 @@
+result_format: 4
+drop materialized view log on t1;
+drop table if exists t1;
+drop view if exists t1_v1;
+drop view if exists t1_v2;
+drop view if exists t1_v3;
+drop materialized view t1_rt_mv1;
+drop materialized view t1_rt_mv2;
+drop materialized view t1_rt_mv3;
+create table t1(c1 int primary key, c2 int, c3 int, c4 int);
+insert into t1 values(1,1,1,1);
+create materialized view log on t1 with primary key, rowid, sequence (c2, c3) including new values;
+
+create materialized view t1_mv1 refresh fast on demand as
+select a.*, (c1 + c3) / c2 val from t1 a where a.c2 > 0;
+ERROR HY000: cannot fast refresh materialized view t1_mv1: column c4 of table t1 used in mv is required in the corresponding mlog table
+
+create materialized view t1_rt_mv1 never refresh
+enable on query computation
+disable query rewrite
+as
+select c1, c2, c3, (c1 + c3) / c2 val from t1 a where a.c2 > 0;
+
+create or replace view t1_v1 as
+select c1, c2, c3, (c1 + c3) / c2 val from t1 a where a.c2 > 0;
+
+create materialized view t1_rt_mv2 never refresh
+disable query rewrite
+enable on query computation
+as
+select c1, c2, c3, (c1 * c3) / c2 val from t1 a where a.c2 + a.c3 > 0;
+
+create or replace view t1_v2 as
+select c1, c2, c3, (c1 * c3) / c2 val from t1 a where a.c2 + a.c3 > 0;
+
+create materialized view t1_rt_mv3 never refresh enable on query computation as
+select c1, c2, c3, (c2 + c1 * c3) / (c2 - c1) val from t1 a where a.c2 > 4 or a.c3 < 5;
+
+create or replace view t1_v3 as
+select c1, c2, c3, (c2 + c1 * c3) / (c2 - c1) val from t1 a where a.c2 > 4 or a.c3 < 5;
+
+create or replace view res_com1
+as
+select res, count(*) from 
+(   select group_concat(view_type order by view_type) res
+    from (
+        select t1_v1.*, '1.normal view' view_type from t1_v1
+        union all
+        select t1_rt_mv1.*, '2.mview' from t1_rt_mv1)
+    group by c1
+)
+group by res
+;
+
+create or replace view res_com2
+as
+select res, count(*) from 
+(   select group_concat(view_type order by view_type) res
+    from (
+        select t1_v2.*, '1.normal view' view_type from t1_v2
+        union all
+        select t1_rt_mv2.*, '2.mview' from t1_rt_mv2)
+    group by c1
+)
+group by res
+;
+
+create or replace view res_com3
+as
+select res, count(*) from 
+(   select group_concat(view_type order by view_type) res
+    from (
+        select t1_v3.*, '1.normal view' view_type from t1_v3
+        union all
+        select t1_rt_mv3.*, '2.mview' from t1_rt_mv3)
+    group by c1
+)
+group by res
+;
+
+explain basic select * from t1_rt_mv1;
+Query Plan
+========================================
+|ID|OPERATOR                 |NAME     |
+----------------------------------------
+|0 |UNION ALL                |         |
+|1 |├─HASH RIGHT ANTI JOIN   |         |
+|2 |│ ├─SUBPLAN SCAN         |VIEW2    |
+|3 |│ │ └─TABLE FULL SCAN    |mlog$_t1 |
+|4 |│ └─TABLE FULL SCAN      |t1_rt_mv1|
+|5 |└─MERGE JOIN             |         |
+|6 |  ├─SUBPLAN SCAN         |VIEW4    |
+|7 |  │ └─MERGE DISTINCT     |         |
+|8 |  │   └─SUBPLAN SCAN     |VIEW3    |
+|9 |  │     └─TABLE FULL SCAN|mlog$_t1 |
+|10|  └─TABLE FULL SCAN      |a        |
+========================================
+Outputs & filters:
+-------------------------------------
+  0 - output([UNION([1])], [UNION([2])], [UNION([3])], [UNION([4])]), filter(nil), rowset=16
+  1 - output([t1_rt_mv1.c1], [t1_rt_mv1.c2], [t1_rt_mv1.c3], [t1_rt_mv1.val]), filter(nil), rowset=16
+      equal_conds([VIEW2.mlog$_t1.c1 = t1_rt_mv1.c1]), other_conds(nil)
+  2 - output([VIEW2.mlog$_t1.c1]), filter(nil), rowset=16
+      access([VIEW2.mlog$_t1.c1])
+  3 - output([mlog$_t1.c1]), filter([ORA_ROWSCN > last_refresh_scn(xxxxxx)]), rowset=16
+      access([mlog$_t1.c1], [ORA_ROWSCN]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([mlog$_t1.c1], [mlog$_t1.SEQUENCE$$]), range(MIN,MIN ; MAX,MAX)always true
+  4 - output([t1_rt_mv1.c1], [t1_rt_mv1.c2], [t1_rt_mv1.c3], [t1_rt_mv1.val]), filter(nil), rowset=16
+      access([t1_rt_mv1.c1], [t1_rt_mv1.c2], [t1_rt_mv1.c3], [t1_rt_mv1.val]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t1_rt_mv1.__pk_increment]), range(MIN ; MAX)always true
+  5 - output([a.c1], [a.c2], [a.c3], [cast(a.c1 + a.c3, DECIMAL_INT(35, 23)) / cast(a.c2, DECIMAL_INT(11, 0))]), filter(nil), rowset=16
+      equal_conds([VIEW4.VIEW3.mlog$_t1.c1 = a.c1]), other_conds(nil)
+      merge_directions([ASC])
+  6 - output([VIEW4.VIEW3.mlog$_t1.c1]), filter(nil), rowset=16
+      access([VIEW4.VIEW3.mlog$_t1.c1])
+  7 - output([VIEW3.mlog$_t1.c1]), filter(nil), rowset=16
+      distinct([VIEW3.mlog$_t1.c1])
+  8 - output([VIEW3.mlog$_t1.c1]), filter(nil), rowset=16
+      access([VIEW3.mlog$_t1.c1])
+  9 - output([mlog$_t1.c1]), filter([ORA_ROWSCN > last_refresh_scn(xxxxxx)]), rowset=16
+      access([mlog$_t1.c1], [ORA_ROWSCN]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([mlog$_t1.c1], [mlog$_t1.SEQUENCE$$]), range(MIN,MIN ; MAX,MAX)always true
+ 10 - output([a.c1], [a.c2], [a.c3]), filter([a.c2 > 0]), rowset=16
+      access([a.c1], [a.c2], [a.c3]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([a.c1]), range(MIN ; MAX)always true
+explain basic select * from t1_rt_mv2;
+Query Plan
+========================================
+|ID|OPERATOR                 |NAME     |
+----------------------------------------
+|0 |UNION ALL                |         |
+|1 |├─HASH RIGHT ANTI JOIN   |         |
+|2 |│ ├─SUBPLAN SCAN         |VIEW2    |
+|3 |│ │ └─TABLE FULL SCAN    |mlog$_t1 |
+|4 |│ └─TABLE FULL SCAN      |t1_rt_mv2|
+|5 |└─MERGE JOIN             |         |
+|6 |  ├─SUBPLAN SCAN         |VIEW4    |
+|7 |  │ └─MERGE DISTINCT     |         |
+|8 |  │   └─SUBPLAN SCAN     |VIEW3    |
+|9 |  │     └─TABLE FULL SCAN|mlog$_t1 |
+|10|  └─TABLE FULL SCAN      |a        |
+========================================
+Outputs & filters:
+-------------------------------------
+  0 - output([UNION([1])], [UNION([2])], [UNION([3])], [UNION([4])]), filter(nil), rowset=16
+  1 - output([t1_rt_mv2.c1], [t1_rt_mv2.c2], [t1_rt_mv2.c3], [t1_rt_mv2.val]), filter(nil), rowset=16
+      equal_conds([VIEW2.mlog$_t1.c1 = t1_rt_mv2.c1]), other_conds(nil)
+  2 - output([VIEW2.mlog$_t1.c1]), filter(nil), rowset=16
+      access([VIEW2.mlog$_t1.c1])
+  3 - output([mlog$_t1.c1]), filter([ORA_ROWSCN > last_refresh_scn(xxxxxx)]), rowset=16
+      access([mlog$_t1.c1], [ORA_ROWSCN]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([mlog$_t1.c1], [mlog$_t1.SEQUENCE$$]), range(MIN,MIN ; MAX,MAX)always true
+  4 - output([t1_rt_mv2.c1], [t1_rt_mv2.c2], [t1_rt_mv2.c3], [t1_rt_mv2.val]), filter(nil), rowset=16
+      access([t1_rt_mv2.c1], [t1_rt_mv2.c2], [t1_rt_mv2.c3], [t1_rt_mv2.val]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t1_rt_mv2.__pk_increment]), range(MIN ; MAX)always true
+  5 - output([a.c1], [a.c2], [a.c3], [cast(a.c1 * a.c3, DECIMAL_INT(45, 23)) / cast(a.c2, DECIMAL_INT(11, 0))]), filter(nil), rowset=16
+      equal_conds([VIEW4.VIEW3.mlog$_t1.c1 = a.c1]), other_conds(nil)
+      merge_directions([ASC])
+  6 - output([VIEW4.VIEW3.mlog$_t1.c1]), filter(nil), rowset=16
+      access([VIEW4.VIEW3.mlog$_t1.c1])
+  7 - output([VIEW3.mlog$_t1.c1]), filter(nil), rowset=16
+      distinct([VIEW3.mlog$_t1.c1])
+  8 - output([VIEW3.mlog$_t1.c1]), filter(nil), rowset=16
+      access([VIEW3.mlog$_t1.c1])
+  9 - output([mlog$_t1.c1]), filter([ORA_ROWSCN > last_refresh_scn(xxxxxx)]), rowset=16
+      access([mlog$_t1.c1], [ORA_ROWSCN]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([mlog$_t1.c1], [mlog$_t1.SEQUENCE$$]), range(MIN,MIN ; MAX,MAX)always true
+ 10 - output([a.c1], [a.c2], [a.c3]), filter([a.c2 + a.c3 > 0]), rowset=16
+      access([a.c1], [a.c2], [a.c3]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([a.c1]), range(MIN ; MAX)always true
+explain basic select * from t1_rt_mv3;
+Query Plan
+========================================
+|ID|OPERATOR                 |NAME     |
+----------------------------------------
+|0 |UNION ALL                |         |
+|1 |├─HASH RIGHT ANTI JOIN   |         |
+|2 |│ ├─SUBPLAN SCAN         |VIEW2    |
+|3 |│ │ └─TABLE FULL SCAN    |mlog$_t1 |
+|4 |│ └─TABLE FULL SCAN      |t1_rt_mv3|
+|5 |└─MERGE JOIN             |         |
+|6 |  ├─SUBPLAN SCAN         |VIEW4    |
+|7 |  │ └─MERGE DISTINCT     |         |
+|8 |  │   └─SUBPLAN SCAN     |VIEW3    |
+|9 |  │     └─TABLE FULL SCAN|mlog$_t1 |
+|10|  └─TABLE FULL SCAN      |a        |
+========================================
+Outputs & filters:
+-------------------------------------
+  0 - output([UNION([1])], [UNION([2])], [UNION([3])], [UNION([4])]), filter(nil), rowset=16
+  1 - output([t1_rt_mv3.c1], [t1_rt_mv3.c2], [t1_rt_mv3.c3], [t1_rt_mv3.val]), filter(nil), rowset=16
+      equal_conds([VIEW2.mlog$_t1.c1 = t1_rt_mv3.c1]), other_conds(nil)
+  2 - output([VIEW2.mlog$_t1.c1]), filter(nil), rowset=16
+      access([VIEW2.mlog$_t1.c1])
+  3 - output([mlog$_t1.c1]), filter([ORA_ROWSCN > last_refresh_scn(xxxxxx)]), rowset=16
+      access([mlog$_t1.c1], [ORA_ROWSCN]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([mlog$_t1.c1], [mlog$_t1.SEQUENCE$$]), range(MIN,MIN ; MAX,MAX)always true
+  4 - output([t1_rt_mv3.c1], [t1_rt_mv3.c2], [t1_rt_mv3.c3], [t1_rt_mv3.val]), filter(nil), rowset=16
+      access([t1_rt_mv3.c1], [t1_rt_mv3.c2], [t1_rt_mv3.c3], [t1_rt_mv3.val]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t1_rt_mv3.__pk_increment]), range(MIN ; MAX)always true
+  5 - output([a.c1], [a.c2], [a.c3], [cast(a.c2 + a.c1 * a.c3, DECIMAL_INT(47, 24)) / cast(a.c2 - a.c1, DECIMAL_INT(12, 0))]), filter(nil), rowset=16
+      equal_conds([VIEW4.VIEW3.mlog$_t1.c1 = a.c1]), other_conds(nil)
+      merge_directions([ASC])
+  6 - output([VIEW4.VIEW3.mlog$_t1.c1]), filter(nil), rowset=16
+      access([VIEW4.VIEW3.mlog$_t1.c1])
+  7 - output([VIEW3.mlog$_t1.c1]), filter(nil), rowset=16
+      distinct([VIEW3.mlog$_t1.c1])
+  8 - output([VIEW3.mlog$_t1.c1]), filter(nil), rowset=16
+      access([VIEW3.mlog$_t1.c1])
+  9 - output([mlog$_t1.c1]), filter([ORA_ROWSCN > last_refresh_scn(xxxxxx)]), rowset=16
+      access([mlog$_t1.c1], [ORA_ROWSCN]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([mlog$_t1.c1], [mlog$_t1.SEQUENCE$$]), range(MIN,MIN ; MAX,MAX)always true
+ 10 - output([a.c1], [a.c2], [a.c3]), filter([a.c2 > 4 OR a.c3 < 5]), rowset=16
+      access([a.c1], [a.c2], [a.c3]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([a.c1]), range(MIN ; MAX)always true
+
+select * from res_com1;
++-----------------------+----------+
+| res                   | count(*) |
++-----------------------+----------+
+| 1.normal view,2.mview |        1 |
++-----------------------+----------+
+select * from res_com2;
++-----------------------+----------+
+| res                   | count(*) |
++-----------------------+----------+
+| 1.normal view,2.mview |        1 |
++-----------------------+----------+
+select * from res_com3;
++-----------------------+----------+
+| res                   | count(*) |
++-----------------------+----------+
+| 1.normal view,2.mview |        1 |
++-----------------------+----------+
+
+insert into t1 values(2,1,2,1);
+insert into t1 values(3,1,3,1);
+
+select * from res_com1;
++-----------------------+----------+
+| res                   | count(*) |
++-----------------------+----------+
+| 1.normal view,2.mview |        3 |
++-----------------------+----------+
+select * from res_com2;
++-----------------------+----------+
+| res                   | count(*) |
++-----------------------+----------+
+| 1.normal view,2.mview |        3 |
++-----------------------+----------+
+select * from res_com3;
++-----------------------+----------+
+| res                   | count(*) |
++-----------------------+----------+
+| 1.normal view,2.mview |        3 |
++-----------------------+----------+
+
+insert into t1 values(4,1,4,1);
+insert into t1 values(5,2,5,1);
+update t1 set c2 = c3/2 where c3 > 3;
+delete from t1 where c1 = 1;
+
+select * from res_com1;
++-----------------------+----------+
+| res                   | count(*) |
++-----------------------+----------+
+| 1.normal view,2.mview |        4 |
++-----------------------+----------+
+select * from res_com2;
++-----------------------+----------+
+| res                   | count(*) |
++-----------------------+----------+
+| 1.normal view,2.mview |        4 |
++-----------------------+----------+
+select * from res_com3;
++-----------------------+----------+
+| res                   | count(*) |
++-----------------------+----------+
+| 1.normal view,2.mview |        3 |
++-----------------------+----------+
+
+drop materialized view log on t1;
+drop table if exists t1;
+drop view if exists t1_v1;
+drop view if exists t1_v2;
+drop view if exists t1_v3;
+drop materialized view t1_rt_mv1;
+drop materialized view t1_rt_mv2;
+drop materialized view t1_rt_mv3;

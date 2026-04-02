@@ -1,0 +1,208 @@
+# owner:xiekaige.xkg
+# owner group:storage
+# test history minor merge
+
+ob1=OBI(cluster=1, proxy_num=0, init_unit_cpu=0);
+ob1.reboot;
+
+let $svr_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $svr_port = deploy_get_value(ob1.z1.obs0.mysql_port);
+
+connect (obsys, $svr_ip, root@sys, , oceanbase, $svr_port);
+connection obsys;
+
+CREATE RESOURCE UNIT 2c8g MAX_CPU=2, memory_size='8G';
+CREATE RESOURCE POOL test_pool1 UNIT = '2c8g', UNIT_NUM = 1, ZONE_LIST = ('z1');
+CREATE TENANT test01 RESOURCE_POOL_LIST=('test_pool1'), primary_zone='z1', locality='F@z1' SET VARIABLES ob_compatibility_mode='mysql', secure_file_priv = '/',ob_tcp_invited_nodes='%';
+
+alter system set major_freeze_duty_time = 'Disable' tenant sys;
+alter system set ob_compaction_schedule_interval = '10s' tenant sys;
+alter system set _enable_adaptive_compaction = 'False' tenant sys;
+let $test_tenant_id = query_get_value(select tenant_id from __all_tenant where tenant_name = 'test01', tenant_id, 1);
+####################################################################
+### check if history minor exists when minor_compact_trigger = 0 ###
+####################################################################
+connection obsys;
+alter system set undo_retention = 7200 tenant test01;
+connect (obtest, $svr_ip, root@test01, , test, $svr_port);
+connection obtest;
+drop table if exists t1;
+create table t1 (c1 bigint, c2 varchar(10));
+connection obsys;
+let $t1_table_id = query_get_value(select table_id from __all_virtual_table where table_name like "%t1%", table_id, 1);
+let $t1_tablet_id = query_get_value(select tablet_id from __all_virtual_tablet_to_ls where table_id = $t1_table_id, tablet_id, 1);
+let $t1_ls_id = query_get_value(select ls_id from __all_virtual_tablet_to_ls where table_id = $t1_table_id, ls_id, 1);
+alter system set minor_compact_trigger = 0 tenant test01;
+let $last_broadcast_scn = query_get_value(select GLOBAL_BROADCAST_SCN from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $test_tenant_id, GLOBAL_BROADCAST_SCN, 1);
+alter system major freeze tenant test01;
+ob1.check_until_timeout select GLOBAL_BROADCAST_SCN > $last_broadcast_scn from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $test_tenant_id , 1, 30;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $test_tenant_id and LAST_SCN = GLOBAL_BROADCAST_SCN and LAST_SCN != 1, 1, 1200;
+
+#ob1.check_until_timeout select count(1) from __all_virtual_tablet_compaction_history where tenant_id = $test_tenant_id and tablet_id = $t1_tablet_id and Type = 'MAJOR_MERGE', 1, 1200;
+connection obtest;
+ob1.mysql alter system set_tp tp_name = "ERRSIM_DISABLE_MINOR_MERGE", error_code = 4016, frequency = 1;
+
+let $mini_sstable_cnt = 3;
+while ($mini_sstable_cnt > 0)
+{
+  connection obtest;
+  --disable_all_result_log
+  insert into t1 select random(), randstr(10, random()) from table(generator(200));
+  --enable_all_result_log
+  connection obsys;
+  let $pre_mini_sst_cnt = query_get_value(select freeze_clock from __all_virtual_minor_freeze_info where tenant_id = $test_tenant_id and tablet_id = $t1_tablet_id and ls_id = $t1_ls_id, freeze_clock, 1);
+  let $cur_mini_sst_cnt = query_get_value(select freeze_clock from __all_virtual_minor_freeze_info where tenant_id = $test_tenant_id and tablet_id = $t1_tablet_id and ls_id = $t1_ls_id, freeze_clock, 1);
+  let $retry_cnt = 20;
+  ## chech if minor freeze success
+  --disable_all_result_log
+  while ($retry_cnt > 0)
+  {
+    if ($pre_mini_sst_cnt == $cur_mini_sst_cnt)
+    {
+      ob1.mysql alter system minor freeze tenant test01;
+      sleep 2;
+      ob1.check_until_timeout select count(1) from __all_virtual_minor_freeze_info where tenant_id = $test_tenant_id and tablet_id = $t1_tablet_id and ls_id = $t1_ls_id and state= "FINISH", 0, 10;  
+      let $cur_mini_sst_cnt = query_get_value(select freeze_clock from __all_virtual_minor_freeze_info where tenant_id = $test_tenant_id and tablet_id = $t1_tablet_id and ls_id = $t1_ls_id, freeze_clock, 1);
+    }
+    dec $retry_cnt;
+  }
+  --enable_all_result_log
+  ## check if mini merge success
+  ob1.check_until_timeout select count(1) from __all_virtual_table_mgr where tenant_id = $test_tenant_id and tablet_id = $t1_tablet_id and table_type = 0 and is_active = "YES", 0, 100;
+  dec $mini_sstable_cnt;
+}
+
+connection obsys;
+let $last_broadcast_scn = query_get_value(select GLOBAL_BROADCAST_SCN from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $test_tenant_id, GLOBAL_BROADCAST_SCN, 1);
+alter system major freeze tenant test01;
+ob1.check_until_timeout select GLOBAL_BROADCAST_SCN > $last_broadcast_scn from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $test_tenant_id , 1, 30;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $test_tenant_id and LAST_SCN = GLOBAL_BROADCAST_SCN and LAST_SCN != 1, 1, 1200;
+connection obtest;
+ob1.mysql alter system set_tp tp_name = "ERRSIM_DISABLE_MINOR_MERGE", error_code = 4016, frequency = 0;
+sleep 5;
+connection obsys;
+ob1.check_until_timeout select count(1) from __all_virtual_tablet_compaction_history where tenant_id = $test_tenant_id and tablet_id = $t1_tablet_id and Type = 'HISTORY_MINOR_MERGE', 1, 120;
+alter system set undo_retention = 0 tenant test01;
+####################################################################
+### check if history minor exists when minor_compact_trigger = 1 ###
+####################################################################
+connection obsys;
+alter system set undo_retention = 7200 tenant test01;
+connection obtest;
+drop table if exists t2;
+create table t2 (c1 bigint, c2 varchar(10));
+connection obsys;
+let $t2_table_id = query_get_value(select table_id from __all_virtual_table where table_name like "%t2%", table_id, 1);
+let $t2_tablet_id = query_get_value(select tablet_id from __all_virtual_tablet_to_ls where table_id = $t2_table_id, tablet_id, 1);
+let $t2_ls_id = query_get_value(select ls_id from __all_virtual_tablet_to_ls where table_id = $t2_table_id, ls_id, 1);
+alter system set minor_compact_trigger = 1 tenant test01;
+let $last_broadcast_scn = query_get_value(select GLOBAL_BROADCAST_SCN from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $test_tenant_id, GLOBAL_BROADCAST_SCN, 1);
+alter system major freeze tenant test01;
+ob1.check_until_timeout select GLOBAL_BROADCAST_SCN > $last_broadcast_scn from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $test_tenant_id , 1, 30;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $test_tenant_id and LAST_SCN = GLOBAL_BROADCAST_SCN and LAST_SCN != 1, 1, 1200;
+connection obtest;
+ob1.mysql alter system set_tp tp_name = "ERRSIM_DISABLE_MINOR_MERGE", error_code = 4016, frequency = 1;
+
+let $mini_sstable_cnt = 6 ;
+while ($mini_sstable_cnt > 0)
+{
+  connection obtest;  
+  --disable_all_result_log
+  insert into t2 select random(), randstr(10, random()) from table(generator(200));
+  --enable_all_result_log
+  connection obsys;
+  let $pre_mini_sst_cnt = query_get_value(select freeze_clock from __all_virtual_minor_freeze_info where tenant_id = $test_tenant_id and tablet_id = $t2_tablet_id and ls_id = $t2_ls_id, freeze_clock, 1);
+  let $cur_mini_sst_cnt = query_get_value(select freeze_clock from __all_virtual_minor_freeze_info where tenant_id = $test_tenant_id and tablet_id = $t2_tablet_id and ls_id = $t2_ls_id, freeze_clock, 1);
+  let $retry_cnt =20;
+  ## chech if minor freeze success
+  --disable_all_result_log
+  while ($retry_cnt > 0)
+  {
+    if ($pre_mini_sst_cnt == $cur_mini_sst_cnt)
+    {
+      ob1.mysql alter system minor freeze tenant test01;
+      sleep 2;
+      ob1.check_until_timeout select count(1) from __all_virtual_minor_freeze_info where tenant_id = $test_tenant_id and tablet_id = $t2_tablet_id and ls_id = $t2_ls_id and state= "FINISH", 0, 10;  
+      let $cur_mini_sst_cnt = query_get_value(select freeze_clock from __all_virtual_minor_freeze_info where tenant_id = $test_tenant_id and tablet_id = $t2_tablet_id and ls_id = $t2_ls_id, freeze_clock, 1);
+    }
+    dec $retry_cnt;
+  }
+  --enable_all_result_log
+  ## check if mini merge success
+  ob1.check_until_timeout select count(1) from __all_virtual_table_mgr where tenant_id = $test_tenant_id and tablet_id = $t2_tablet_id and table_type = 0 and is_active = "YES", 0, 100;
+  dec $mini_sstable_cnt;
+}
+connection obsys;
+let $last_broadcast_scn = query_get_value(select GLOBAL_BROADCAST_SCN from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $test_tenant_id, GLOBAL_BROADCAST_SCN, 1);
+alter system major freeze tenant test01;
+ob1.check_until_timeout select GLOBAL_BROADCAST_SCN > $last_broadcast_scn from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $test_tenant_id , 1, 30;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $test_tenant_id and LAST_SCN = GLOBAL_BROADCAST_SCN and LAST_SCN != 1, 1, 1200;
+connection obtest;
+ob1.mysql alter system set_tp tp_name = "ERRSIM_DISABLE_MINOR_MERGE", error_code = 4016, frequency = 0;
+connection obsys;
+sleep 5;
+ob1.check_until_timeout select count(1) from __all_virtual_tablet_compaction_history where tenant_id = $test_tenant_id and tablet_id = $t2_tablet_id and Type = 'HISTORY_MINOR_MERGE', 1, 120;
+alter system set undo_retention = 0 tenant test01;
+
+#####################################################################
+### check if history minor exists when minor_compact_trigger = 13 ###
+#####################################################################
+connection obsys;
+alter system set undo_retention = 7200 tenant test01;
+connection obtest;
+drop table if exists t3;
+create table t3 (c1 bigint, c2 varchar(10));
+connection obsys;
+let $t3_table_id = query_get_value(select table_id from __all_virtual_table where table_name like "%t3%", table_id, 1);
+let $t3_tablet_id = query_get_value(select tablet_id from __all_virtual_tablet_to_ls where table_id = $t3_table_id, tablet_id, 1);
+let $t3_ls_id = query_get_value(select ls_id from __all_virtual_tablet_to_ls where table_id = $t3_table_id, ls_id, 1);
+alter system set minor_compact_trigger = 13 tenant test01;
+let $last_broadcast_scn = query_get_value(select GLOBAL_BROADCAST_SCN from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $test_tenant_id, GLOBAL_BROADCAST_SCN, 1);
+alter system major freeze tenant test01;
+ob1.check_until_timeout select GLOBAL_BROADCAST_SCN > $last_broadcast_scn from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $test_tenant_id , 1, 30;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $test_tenant_id and LAST_SCN = GLOBAL_BROADCAST_SCN and LAST_SCN != 1, 1, 1200;
+connection obtest;
+ob1.mysql alter system set_tp tp_name = "ERRSIM_DISABLE_MINOR_MERGE", error_code = 4016, frequency = 1;
+
+let $mini_sstable_cnt = 40;
+while ($mini_sstable_cnt > 0)
+{
+  connection obtest;
+  --disable_all_result_log
+  insert into t3 select random(), randstr(10, random()) from table(generator(200));
+  --enable_all_result_log
+  connection obsys;
+  let $pre_mini_sst_cnt = query_get_value(select freeze_clock from __all_virtual_minor_freeze_info where tenant_id = $test_tenant_id and tablet_id = $t3_tablet_id and ls_id = $t3_ls_id, freeze_clock, 1);
+  let $cur_mini_sst_cnt = query_get_value(select freeze_clock from __all_virtual_minor_freeze_info where tenant_id = $test_tenant_id and tablet_id = $t3_tablet_id and ls_id = $t3_ls_id, freeze_clock, 1);
+  let $retry_cnt = 20;
+  ## chech if minor freeze success
+  --disable_all_result_log
+  while ($retry_cnt > 0)
+  {
+    if ($pre_mini_sst_cnt == $cur_mini_sst_cnt)
+    {
+      ob1.mysql alter system minor freeze tenant test01;
+      sleep 2;
+      ob1.check_until_timeout select count(1) from __all_virtual_minor_freeze_info where tenant_id = $test_tenant_id and tablet_id = $t3_tablet_id and ls_id = $t3_ls_id and state= "FINISH", 0, 10;  
+      let $cur_mini_sst_cnt = query_get_value(select freeze_clock from __all_virtual_minor_freeze_info where tenant_id = $test_tenant_id and tablet_id = $t3_tablet_id and ls_id = $t3_ls_id, freeze_clock, 1);
+    }
+    dec $retry_cnt;
+  }
+  --enable_all_result_log
+  ## check if mini merge success
+  ob1.check_until_timeout select count(1) from __all_virtual_table_mgr where tenant_id = $test_tenant_id and tablet_id = $t3_tablet_id and table_type = 0 and is_active = "YES", 0, 100;
+  dec $mini_sstable_cnt;
+}
+
+connection obsys; 
+let $last_broadcast_scn = query_get_value(select GLOBAL_BROADCAST_SCN from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $test_tenant_id, GLOBAL_BROADCAST_SCN, 1);
+alter system major freeze tenant test01;
+ob1.check_until_timeout select GLOBAL_BROADCAST_SCN > $last_broadcast_scn from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $test_tenant_id , 1, 30;
+ob1.check_until_timeout select count(1)>1 from __all_virtual_tablet_compaction_history where tenant_id = $test_tenant_id and tablet_id = $t3_tablet_id and Type = 'MAJOR_MERGE', 1, 1200;
+
+connection obtest;
+ob1.mysql alter system set_tp tp_name = "ERRSIM_DISABLE_MINOR_MERGE", error_code = 4016, frequency = 0;
+
+connection obsys;
+ob1.check_until_timeout select count(1) from __all_virtual_tablet_compaction_history where tenant_id = $test_tenant_id and tablet_id = $t3_tablet_id and Type = 'HISTORY_MINOR_MERGE', 1, 240;
+alter system set undo_retention = 0 tenant test01;

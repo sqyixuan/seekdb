@@ -1,0 +1,111 @@
+# owner: yangyifei.yyf
+# group: transaction
+# description: this case is used to test whether foreign key constraint check can handle
+# deadlock correctly when it triggers remote execution
+
+ob1=OBI(cluster=1:1:1,proxy_num=0,init_unit_cpu=0,locality=HZ:HZ:HZ);
+ob1.reboot;
+ob1.mysql alter system set syslog_io_bandwidth_limit='3000M';
+ob1.mysql alter system set _lcl_op_interval='100ms';
+sleep 10;
+
+ob_connect(sys_conn, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+
+# create oracle tenant
+connection sys_conn;
+ob1.mysql create resource unit box1 max_cpu 20, min_cpu 10, memory_size '20G', log_disk_size '20G';
+ob1.mysql create resource pool pool1 unit = 'box1', unit_num = 1;
+# primary_zone='z1,z2;z3'会有两个primary zone，每个副本会创建出两个日志流，之后该租户创建表的时候，第一张表会在1001日志流上，第二张表会在1002日志流上
+ob1.mysql create tenant tt1 replica_num = 3, resource_pool_list=('pool1'), primary_zone='z1,z2;z3' set ob_tcp_invited_nodes='%', ob_compatibility_mode='oracle';
+ob1.mysql alter tenant tt1 set variables nls_date_format='YYYY-MM-DD HH24:MI:SS';
+ob1.mysql alter tenant tt1 set variables nls_timestamp_format='YYYY-MM-DD HH24:MI:SS.FF';
+ob1.mysql alter tenant tt1 set variables nls_timestamp_tz_format='YYYY-MM-DD HH24:MI:SS.FF TZR TZD';
+sleep 2;
+
+ob1.check_until_timeout select count(*) c from oceanbase.__all_server where start_service_time <= 0 or status = "inactive", 0, 120;
+ob_connect(cli1_conn, ob1.z1.obs0, SYS@tt1, , SYS, , USE_OB_CONNECTOR);
+ob_connect(cli2_conn, ob1.z1.obs0, SYS@tt1, , SYS, , USE_OB_CONNECTOR);
+
+### create parent table and child table with foreign key constraint
+connection cli1_conn;
+create table parent(c1 int, c2 int, constraint parent_pk primary key (c1));
+create table child(c1 int, c2 int, constraint child_fk foreign key (c1) references parent (c1));
+insert into parent values (1, 1);
+insert into child values (1, 1);
+
+# split the leader of each table
+connection sys_conn;
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from __all_tenant where tenant_name='tt1', tenant_id, 1);
+let $table_id1 = deploy_get_value(ob1.select select table_id from __all_virtual_table where table_name='parent', table_id, 1);
+let $table_id2 = deploy_get_value(ob1.select select table_id from __all_virtual_table where table_name='child', table_id, 1);
+let $ls_id1 = deploy_get_value(ob1.select select ls_id from __all_virtual_tablet_to_ls where table_id='$table_id1', ls_id, 1);
+let $ls_id2 = deploy_get_value(ob1.select select ls_id from __all_virtual_tablet_to_ls where table_id='$table_id2', ls_id, 1);
+let $z1_obs0_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $z1_obs0_port = deploy_get_value(ob1.z1.obs0.port);
+let $z2_obs0_ip = deploy_get_value(ob1.z2.obs0.ip);
+let $z2_obs0_port = deploy_get_value(ob1.z2.obs0.port);
+ob1.mysql alter system switch replica leader ls = $ls_id1 server = '$z1_obs0_ip:$z1_obs0_port' tenant='tt1';
+ob1.mysql alter system switch replica leader ls = $ls_id2 server = '$z2_obs0_ip:$z2_obs0_port' tenant='tt1';
+sleep 5;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_log_stat where ls_id = $ls_id1 and tenant_id = $tenant_id and role = 'LEADER' and concat(svr_ip, ':', svr_port) like '%$z1_obs0_ip:$z1_obs0_port%', 1, 30;
+echo $ls_id1, $tenant_id, $z1_obs0_ip, $z1_obs0_port;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_log_stat where ls_id = $ls_id2 and tenant_id = $tenant_id and role = 'LEADER' and concat(svr_ip, ':', svr_port) like '%$z2_obs0_ip:$z2_obs0_port%', 1, 30;
+echo $ls_id2, $tenant_id, $z2_obs0_ip, $z2_obs0_port;
+
+# 1. delete the row in parent table,
+# then insert the row, which references this row, in child table
+connection cli1_conn;
+begin;
+select * from parent for update;
+
+connection cli2_conn;
+begin;
+select * from child for update;
+
+connection cli1_conn;
+send delete from parent where c1 = 1;
+
+connection cli2_conn;
+--error 60
+insert into child values(1, 2);
+rollback;
+
+connection cli1_conn;
+--error 2292
+reap;
+rollback;
+
+# check result
+select * from parent;
+select * from child;
+
+# 2. insert the row in child table,
+# then delete the row, which is referenced by this row, in parent table
+begin;
+select * from parent for update;
+
+connection cli2_conn;
+begin;
+select * from child for update;
+send insert into child values(1, 2);
+
+connection cli1_conn;
+send delete from parent where c1 = 1;
+
+connection cli2_conn;
+--error 60
+reap;
+rollback;
+
+connection cli1_conn;
+--error 2292
+reap;
+rollback;
+
+# check result
+select * from parent;
+select * from child;
+
+# test done, clean the tables
+drop table child;
+drop table parent;

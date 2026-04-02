@@ -1,0 +1,70 @@
+##############################
+# owner: wenduo
+# owner group: rs
+# 功能点：用于force rollback locality的测试
+
+# 部署：
+# 5台observer，每台server一个zone：z1~z5
+# 部署在5个机房：全部部署在一个region里面。
+
+ob1=OBI(cluster=1:1:1:1:1,proxy_num=0,init_unit_cpu=0);
+ob1.reboot;
+
+sleep 30;
+ob1.mysql alter system set balancer_idle_time = '10s';
+ob1.mysql alter system set server_data_copy_in_concurrency = 100;
+ob1.mysql alter system set server_data_copy_out_concurrency = 100;
+ob1.mysql alter system set  data_copy_concurrency = 200;
+
+ob1.mysql create resource pool tt_pool unit = 'sys_unit_config', unit_num = 1, zone_list = ('z1', 'z2', 'z3', 'z4', 'z5');
+ob1.mysql create tenant tt resource_pool_list = ('tt_pool'), locality = "F@z1,F@z2,F@z3,F@z4,F@z5" set ob_tcp_invited_nodes='%';
+sleep 5;
+let $ip=deploy_get_value(ob1.z1.obs0.ip);
+let $port=deploy_get_value(ob1.z1.obs0.mysql_port);
+connect (tt_conn,$ip,root@tt,,oceanbase,$port);
+
+connection tt_conn;
+use test;
+eval create table table_test(pk bigint primary key) locality = "F,R{ALL_SERVER}@z1,F@z2,F@z3,F@z4,F@z5";
+eval create tablegroup tablegroup_test1 locality = "F,R{ALL_SERVER}@z1,F@z2,F@z3,F@z4,F@z5", binding = true;
+eval create tablegroup tablegroup_test2 locality = "F,R{ALL_SERVER}@z1,F@z2,F@z3,F@z4,F@z5", binding = false;
+
+# 调整系统租户的locality，直接降级系统租户的locality到3F
+ob1.mysql alter tenant sys locality = "F@z1,F@z2,F@z3";
+# 检查系统租户的locality变更是否完成
+ob1.check_until_timeout select count(*) c from oceanbase.__all_tenant where tenant_id = 1 and previous_locality != '', 0, 600;
+
+# 调整tt租户的locality，实际上是无法做完的。
+ob1.mysql alter tenant tt locality = "F@z1,F@z2,F@z3,F@z4,R@z5";
+connection tt_conn;
+use test;
+eval alter table table_test locality = "F,R{ALL_SERVER}@z1,F@z2,F@z3,F@z4,R@z5"; 
+eval alter tablegroup tablegroup_test1 locality = "F,R{ALL_SERVER}@z1,F@z2,F@z3,F@z4,R@z5"; 
+eval alter tablegroup tablegroup_test2 locality = "F,R{ALL_SERVER}@z1,F@z2,F@z3,F@z4,R@z5"; 
+ob1.z4.obs0.force_stop;
+ob1.z5.obs0.force_stop;
+sleep 30;
+
+# 强行回滚上面的操作
+ob1.mysql alter tenant tt locality = "F@z1,F@z2,F@z3,F@z4,F@z5" force;
+connection tt_conn;
+use test;
+eval alter table table_test locality = "F,R{ALL_SERVER}@z1,F@z2,F@z3,F@z4,F@z5" force; 
+eval alter tablegroup tablegroup_test1 locality = "F,R{ALL_SERVER}@z1,F@z2,F@z3,F@z4,F@z5" force; 
+eval alter tablegroup tablegroup_test2 locality = "F,R{ALL_SERVER}@z1,F@z2,F@z3,F@z4,F@z5" force; 
+sleep 30;
+
+# 降级同时下掉两副本
+ob1.mysql alter tenant tt locality = "F@z1,F@z2,F@z3";
+connection tt_conn;
+use test;
+eval alter table table_test locality = "F,R{ALL_SERVER}@z1,F@z2,F@z3"; 
+eval alter tablegroup tablegroup_test1 locality = "F,R{ALL_SERVER}@z1,F@z2,F@z3"; 
+eval alter tablegroup tablegroup_test2 locality = "F,R{ALL_SERVER}@z1,F@z2,F@z3"; 
+
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = "tt", tenant_id, 1);
+# 检查locality变更是否完成
+ob1.check_until_timeout select count(*) c from oceanbase.__all_tenant where tenant_id = $tenant_id and previous_locality != '', 0, 600;
+ob1.check_until_timeout select count(*) c from oceanbase.__all_virtual_table where tenant_id = $tenant_id and previous_locality != '', 0, 600;
+ob1.check_until_timeout select count(*) c from oceanbase.__all_virtual_tablegroup where tenant_id = $tenant_id and previous_locality != '', 0, 600;
+

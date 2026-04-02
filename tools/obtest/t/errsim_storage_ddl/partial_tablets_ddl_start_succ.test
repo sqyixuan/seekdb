@@ -1,0 +1,46 @@
+# owner: liujixiong.ljx
+# owner group: ddl
+# description: to check the scenario when partial tablets ddl start successfully.
+
+--disable_query_log
+ob1=OBI(cluster=1, proxy_num=0, init_unit_cpu=2, init_unit_num=1);
+ob1.force_stop;
+ob1.reboot;
+
+ob_connect(conn_sys, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+set @@global.ob_query_timeout = 100000000000;
+ob1.mysql alter system set resource_hard_limit = 800;
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+
+ob_connect(conn_obtest, ob1.z1.obs0, root@obtest, , test, , USE_MYSQL_CONNECTOR);
+sleep 2;
+set ob_query_timeout = 1000000000000000;
+
+create table source_data(c1 int primary key, c2 int, c3 longtext);
+insert into source_data values(1, 1, 'test-oracle');
+insert into source_data values(2, 2, 'test-mysql');
+insert into source_data values(3, 3, 'test-oceanbase');
+
+create table test_ddl(c1 int primary key, c2 int, c3 longtext) partition by hash(c1) partitions 256;
+create table test_full_load_data(c1 int primary key, c2 int, c3 longtext) partition by hash(c1) partitions 256;
+create table test_inc_load_data(c1 int primary key, c2 int, c3 longtext) partition by hash(c1) partitions 256;
+
+# EN_DDL_START_FAIL, set only 200 partitions execute successfully.
+ob1.mysql alter system set_tp tp_no = 512, error_code = 4002, frequency = 1;
+--error 1210
+alter table test_ddl drop primary key;
+--error 1210
+insert /*+ append parallel(2) enable_parallel_dml */ into test_full_load_data select * from source_data;
+--error 1210
+insert /*+ enable_parallel_dml parallel(2) direct(true, 0, 'inc') */ into test_inc_load_data select * from source_data;
+ob1.mysql alter system set_tp tp_no = 512, error_code = 0, frequency = 0;
+
+# check memory free all.
+ob_connect(conn_sys, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+ob1.check_until_timeout select count > 2 as not_free from oceanbase.__all_virtual_memory_info where tenant_id=1002 and label = 'TenantDLMgr', 0, 600;
+
+connection conn_obtest;
+drop table source_data;
+drop table test_ddl;
+drop table test_full_load_data;
+drop table test_inc_load_data;

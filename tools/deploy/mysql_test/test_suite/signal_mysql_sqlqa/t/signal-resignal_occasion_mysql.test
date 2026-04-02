@@ -1,0 +1,722 @@
+# owner: hr351303
+# owner group: sql4
+# description: Mysql SIGNAL/RESIGNAL 语句 - 使用场景，测试点，异常场景
+# tags: pl,dml,auto_increment
+# author: whh01047778
+
+
+purge recyclebin;
+--result_format 4
+--error 0,1396
+drop user whh@'%';
+--enable_warnings
+create user whh identified by 'whh';
+grant all on *.* to whh WITH GRANT OPTION;
+--source mysql_test/include/check_schema_sync.inc
+connect (conn,$OBMYSQL_MS0,whh,whh,test,$OBMYSQL_PORT);
+
+delimiter //;
+
+--echo #### 测试前表准备
+--error 0,1051
+DROP TABLE signal_table1;//
+CREATE TABLE signal_table1( 
+  c1 int, 
+  c2 VARCHAR(200),
+  c3 VARCHAR(200)
+);//
+
+INSERT INTO signal_table1 VALUES(1,'mysql','5.6');//
+INSERT INTO signal_table1 VALUES(2,'oracle','--');//
+INSERT INTO signal_table1 VALUES(3,'ob','master');//
+
+--error 0,1051
+DROP TABLE signal_table2;//
+CREATE TABLE signal_table2( 
+  id int primary key auto_increment,
+  message varchar(200),
+  errno varchar(200)
+);//
+
+
+--echo -----------------------------------------------------------------------------------------------------------------
+--echo ------------------------- SIGNAL/RESIGNAL 语句 ------------------------------------------------------------------
+--echo ###### 标签：signal-2 使用场景
+--echo -----------------------------------------------------------------------------------------------------------------
+
+--echo ######################### 标签:signal-2-1 使用场景 - 函数  #########################
+--echo #### 无参数 （SIGNAL 语句）
+DROP FUNCTION IF EXISTS fun1;//
+CREATE FUNCTION fun1 () RETURNS varchar(200) DETERMINISTIC 
+BEGIN 
+  SIGNAL SQLSTATE '03000' SET MESSAGE_TEXT = '【SIGNAL】An 03xxx occurred', MYSQL_ERRNO = 1111;
+  RETURN '场景：函数 - SIGNAL 语句使用';
+END;
+//
+--error 1111
+SELECT fun1()//
+
+--echo #### 无参数 （RESIGNAL 语句）
+DROP FUNCTION IF EXISTS fun1;//
+CREATE FUNCTION fun1 () RETURNS varchar(200) DETERMINISTIC 
+BEGIN 
+ DECLARE EXIT HANDLER FOR SQLEXCEPTION
+  BEGIN  
+    RESIGNAL SQLSTATE '04000' SET MESSAGE_TEXT = '【RESIGNAL】An 04xxx occurred', MYSQL_ERRNO = 2222;
+  END;
+  SELECT a INTO @p FROM notable;
+  RETURN '场景：函数 - RESIGNAL 语句使用';
+END;
+//
+--error 2222
+SELECT fun1()//
+
+
+--echo #### 有参数 （SIGNAL 语句）
+DROP FUNCTION IF EXISTS fun1;//
+CREATE FUNCTION fun1 (pval INT) RETURNS varchar(200) DETERMINISTIC 
+BEGIN 
+  DECLARE specialty CONDITION FOR SQLSTATE '45000';
+  IF pval = 0 THEN
+    SIGNAL SQLSTATE '02000';
+  ELSEIF pval = 1 THEN
+    SIGNAL SQLSTATE '03000' SET MESSAGE_TEXT = '【SIGNAL】An 03xxx occurred';
+  ELSE    
+    SIGNAL specialty SET MESSAGE_TEXT = '【SIGNAL】An error occurred', MYSQL_ERRNO = 3333;
+  END IF;
+  RETURN '场景：函数 - SIGNAL 语句使用';
+END;
+//
+--error 1643
+SELECT fun1(0)//
+--error 1644
+SELECT fun1(1)//
+--error 3333
+SELECT fun1(2)//
+
+
+--echo #### 有参数 （RESIGNAL 语句）
+DROP FUNCTION IF EXISTS fun1;//
+CREATE FUNCTION fun1 (pval INT) RETURNS varchar(200) DETERMINISTIC 
+BEGIN 
+  DECLARE EXIT HANDLER FOR SQLEXCEPTION
+  BEGIN
+    DECLARE specialty CONDITION FOR SQLSTATE '45000';
+    IF pval = 0 THEN
+      RESIGNAL;
+    ELSEIF pval = 1 THEN
+      RESIGNAL SET MESSAGE_TEXT = '【RESIGNAL】An error occurred';
+	ELSEIF pval = 2 THEN
+      RESIGNAL specialty SET MESSAGE_TEXT = '【RESIGNAL】An error occurred', MYSQL_ERRNO = 5555;
+    ELSE    
+      RESIGNAL SQLSTATE '55000' SET MESSAGE_TEXT = '【RESIGNAL】An error occurred', MYSQL_ERRNO = 6666;
+    END IF;
+  END;
+  SELECT a INTO @p FROM notable;
+  RETURN '场景：函数 - RESIGNAL 语句使用';
+END;
+//
+--error 1146
+SELECT fun1(0)//
+--error 1146
+SELECT fun1(1)//
+--error 5555
+SELECT fun1(2)//
+--error 6666
+SELECT fun1(3)//
+
+
+--echo ######################### 标签:signal-2-2 使用场景 - 事件  #########################
+--echo #### SIGNAL 语句
+SET @p1=NULL, @p2=NULL;//
+--error 0,1064
+DROP EVENT IF EXISTS e_totals;//
+--error 1064
+CREATE EVENT e_totals ON SCHEDULE AT CURRENT_TIMESTAMP + INTERVAL 1 MINUTE 
+DO 
+BEGIN
+  SIGNAL SQLSTATE '07000' SET MESSAGE_TEXT = '【SIGNAL】An 07xxx occurred', MYSQL_ERRNO = 7777;
+  GET DIAGNOSTICS CONDITION 1 @p1 = MESSAGE_TEXT, @p2 = MYSQL_ERRNO;
+  INSERT INTO signal_table2 VALUES(1,@p1,@p2);
+END;
+//
+
+SELECT * FROM signal_table2 ORDER BY id;//
+
+--echo #### RESIGNAL 语句
+SET @p1=NULL, @p2=NULL;//
+--error 0,1064
+DROP EVENT IF EXISTS e_totals;//
+--error 1064
+CREATE EVENT e_totals ON SCHEDULE AT CURRENT_TIMESTAMP + INTERVAL 1 MINUTE 
+DO 
+BEGIN
+  DECLARE EXIT HANDLER FOR SQLEXCEPTION
+  BEGIN  
+    RESIGNAL SQLSTATE '08000' SET MESSAGE_TEXT = '【RESIGNAL】An error occurred', MYSQL_ERRNO = 8888;
+    GET DIAGNOSTICS CONDITION 1 @p1 = MESSAGE_TEXT, @p2 = MYSQL_ERRNO;
+    INSERT INTO signal_table2 VALUES(2,@p1,@p2);
+  END;
+  SELECT a INTO @p FROM notable;
+END;
+//
+
+SELECT * FROM signal_table2 ORDER BY id;//
+
+
+--echo ######################### 标签:signal-2-3 使用场景 - 触发器  #########################
+--echo #### SIGNAL 语句
+SET @p1=NULL, @p2=NULL;//
+DROP TRIGGER IF EXISTS tri1;//
+CREATE TRIGGER tri1 BEFORE INSERT 
+ON signal_table1 FOR EACH ROW
+BEGIN
+  DECLARE CONTINUE HANDLER FOR SQLEXCEPTION
+  BEGIN
+    SIGNAL SQLSTATE '09000' SET MESSAGE_TEXT = '【SIGNAL】An 09xxx occurred', MYSQL_ERRNO = 9999;
+  END;  
+  SELECT id into @p FROM no_such_table2;
+END;
+//
+
+--error 9999
+INSERT INTO signal_table1 VALUES(4,'oceanbase','4.0.0');//
+
+--echo #### RESIGNAL 语句
+SET @p1=NULL, @p2=NULL;//
+DROP TRIGGER IF EXISTS tri1;//
+CREATE TRIGGER tri1 BEFORE INSERT 
+ON signal_table1 FOR EACH ROW
+BEGIN
+  DECLARE CONTINUE HANDLER FOR SQLEXCEPTION
+  BEGIN
+    RESIGNAL SQLSTATE '02000' SET MESSAGE_TEXT = '【RESIGNAL】An 02xxx occurred', MYSQL_ERRNO = 1111;
+  END;  
+  SELECT id into @p FROM no_such_table2;
+END;
+//
+
+--error 1111
+INSERT INTO signal_table1 VALUES(5,'test','RESIGNAL');//
+
+
+--echo ######################### 标签:signal-2-4 使用场景 - mysql客户端程序  #########################
+--echo #### SIGNAL 语句
+--error 1643
+SIGNAL SQLSTATE '02000'//
+
+--error 2222
+SIGNAL SQLSTATE '02000' SET MESSAGE_TEXT = '【SIGNAL】An 02xxx occurred', MYSQL_ERRNO = 2222//
+
+--echo #### RESIGNAL 语句
+--error 1645
+RESIGNAL//
+
+--error 1645
+RESIGNAL SET MESSAGE_TEXT = '【RESIGNAL】An error occurred', MYSQL_ERRNO = 1111//
+
+--error 1645
+RESIGNAL SQLSTATE '02000' SET MESSAGE_TEXT = '【RESIGNAL】An 02xxx occurred', MYSQL_ERRNO = 1111//
+
+
+--echo ######################### 标签:signal-2-5 使用场景 - 存储过程  #########################
+--echo #### 无参数 （SIGNAL 语句）
+DROP PROCEDURE IF EXISTS pro1;//
+CREATE PROCEDURE pro1 ()
+BEGIN
+  SIGNAL SQLSTATE '03000' SET MESSAGE_TEXT = '【SIGNAL】An 03xxx occurred', MYSQL_ERRNO = 3333;
+END;
+//
+--error 3333
+CALL pro1()//
+
+--echo #### 无参数 （RESIGNAL 语句）
+DROP PROCEDURE IF EXISTS pro1;//
+CREATE PROCEDURE pro1 ()
+BEGIN
+  DECLARE CONTINUE HANDLER FOR SQLEXCEPTION
+  BEGIN
+    RESIGNAL SQLSTATE '04000' SET MESSAGE_TEXT = '【RESIGNAL】An 04xxx occurred', MYSQL_ERRNO = 4444;
+  END;  
+  SELECT id into @p FROM no_such_table2;
+END;
+//
+--error 4444
+CALL pro1()//
+
+--echo #### 有参数(in/inout/out) （SIGNAL 语句）
+DROP PROCEDURE IF EXISTS pro1;//
+CREATE PROCEDURE pro1 (IN pval INT,INOUT mess varchar(200),out errno INT)
+BEGIN
+  DECLARE specialty CONDITION FOR SQLSTATE '45000';
+  IF pval = 0 THEN
+    SIGNAL SQLSTATE '02000';
+  ELSEIF pval = 1 THEN
+    SIGNAL SQLSTATE '03000' SET MESSAGE_TEXT = '【SIGNAL】An 03xxx occurred';
+  ELSE
+    SET mess = '【SIGNAL】An 45000 occurred';
+	SET errno = 5555;
+    SIGNAL specialty SET MESSAGE_TEXT = mess, MYSQL_ERRNO = errno;
+  END IF;
+END;
+//
+
+SET @mess = null;//
+SET @errno = null;//
+--error 1643
+CALL pro1(0,@mess,@errno)//
+--error 1644
+CALL pro1(1,@mess,@errno)//
+--error 5555
+CALL pro1(2,@mess,@errno)//
+SELECT @mess,@errno;//
+
+
+--echo #### 有参数(in/inout/out) （RESIGNAL 语句）
+DROP PROCEDURE IF EXISTS pro1;//
+CREATE PROCEDURE pro1 (IN pval INT,INOUT mess varchar(200),out errno INT)
+BEGIN
+  DECLARE CONTINUE HANDLER FOR SQLEXCEPTION
+  BEGIN
+    DECLARE specialty CONDITION FOR SQLSTATE '45000';
+    IF pval = 0 THEN
+      RESIGNAL;
+    ELSEIF pval = 1 THEN
+      RESIGNAL SET MESSAGE_TEXT = '【RESIGNAL】An 03xxx occurred';
+    ELSE
+      SET mess = '【RESIGNAL】An 45000 occurred';
+      SET errno = 5555;
+      RESIGNAL specialty SET MESSAGE_TEXT = mess, MYSQL_ERRNO = errno;
+    END IF;
+  END;  
+  SELECT id into @p FROM no_such_table2;
+END;
+//
+
+SET @mess = null;//
+SET @errno = null;//
+--error 1146
+CALL pro1(0,@mess,@errno)//
+--error 1146
+CALL pro1(1,@mess,@errno)//
+--error 5555
+CALL pro1(2,@mess,@errno)//
+SELECT @mess,@errno;//
+
+
+--echo -----------------------------------------------------------------------------------------------------------------
+--echo ------------------------- SIGNAL/RESIGNAL 语句 ------------------------------------------------------------------
+--echo ###### 标签：signal-3 测试点
+--echo -----------------------------------------------------------------------------------------------------------------
+
+--echo ######################### 标签:signal-3-1 SIGNAL 语句 - 场景  #########################
+--echo #### 无命名错误条件
+DROP FUNCTION IF EXISTS fun1;//
+CREATE FUNCTION fun1 (pval INT) RETURNS varchar(200) DETERMINISTIC 
+BEGIN 
+  IF pval = 0 THEN
+    SIGNAL SQLSTATE '02000';
+  ELSEIF pval = 1 THEN
+    SIGNAL SQLSTATE '03000' SET MESSAGE_TEXT = '【SIGNAL】An 03xxx occurred';
+  END IF;
+  RETURN '场景：无命名错误条件';
+END;
+//
+--error 1643
+SELECT fun1(0)//
+--error 1644
+SELECT fun1(1)//
+
+
+--echo #### 声明一个命名错误条件
+DROP PROCEDURE IF EXISTS pro1;//
+CREATE PROCEDURE pro1 ()
+BEGIN
+  DECLARE specialty CONDITION FOR SQLSTATE '45000';
+  SIGNAL specialty SET MESSAGE_TEXT = '【SIGNAL】An error occurred', MYSQL_ERRNO = 3333;
+END;
+//
+--error 3333
+CALL pro1()//
+
+
+--echo #### 不同范围内声明多个命名错误条件
+DROP PROCEDURE IF EXISTS pro1;//
+CREATE PROCEDURE pro1 (divisor INT)
+BEGIN
+  DECLARE my_error CONDITION FOR SQLSTATE '45000';
+  IF divisor = 0 THEN
+    BEGIN
+      DECLARE my_error CONDITION FOR SQLSTATE '22012';
+	  BEGIN
+	    DECLARE my_error CONDITION FOR SQLSTATE '11111';
+	    SIGNAL my_error;
+	  END;
+      SIGNAL my_error;
+    END;
+  END IF;
+  SIGNAL my_error;
+END;
+//
+--error 1644
+CALL pro1(0)//
+--error 1644
+CALL pro1(1)//
+
+
+--echo #### 条件处理程序中
+DROP PROCEDURE IF EXISTS pro1;//
+CREATE PROCEDURE pro1 (IN pval INT)
+BEGIN
+  DECLARE CONTINUE HANDLER FOR SQLEXCEPTION
+  BEGIN
+    DECLARE specialty CONDITION FOR SQLSTATE '45000';
+    IF pval = 0 THEN
+      SIGNAL SQLSTATE '02000';
+    ELSEIF pval = 1 THEN
+      SIGNAL SQLSTATE '03000' SET MESSAGE_TEXT = '【SIGNAL】An 03xxx occurred';
+    ELSE
+      SIGNAL specialty SET MESSAGE_TEXT = '【SIGNAL】An error occurred', MYSQL_ERRNO = 3333;
+    END IF;
+  END;
+  SELECT id into @p FROM no_such_table2;
+END;
+//
+--error 1643
+CALL pro1(0)//
+--error 1644
+CALL pro1(1)//
+--error 3333
+CALL pro1(2)//
+
+
+--echo #### 条件处理程序上下文之外
+DROP FUNCTION IF EXISTS fun1;//
+CREATE FUNCTION fun1 (pval INT) RETURNS varchar(200) DETERMINISTIC 
+BEGIN 
+  DECLARE specialty CONDITION FOR SQLSTATE '45000';
+  IF pval = 0 THEN
+    SIGNAL SQLSTATE '02000';
+  ELSEIF pval = 1 THEN
+    SIGNAL SQLSTATE '03000' SET MESSAGE_TEXT = '【SIGNAL】An 03xxx occurred';
+  ELSE    
+    SIGNAL specialty SET MESSAGE_TEXT = '【SIGNAL】An error occurred', MYSQL_ERRNO = 3333;
+  END IF;
+  RETURN '场景：条件处理程序上下文之外';
+END;
+//
+--error 1643
+SELECT fun1(0)//
+--error 1644
+SELECT fun1(1)//
+--error 3333
+SELECT fun1(2)//
+
+
+--echo ######################### 标签:signal-3-2 RESIGNAL 语句 - 场景  #########################
+--echo #### 无命名错误条件
+DROP FUNCTION IF EXISTS fun1;//
+CREATE FUNCTION fun1 (pval INT) RETURNS varchar(200) DETERMINISTIC 
+BEGIN 
+  DECLARE EXIT HANDLER FOR SQLEXCEPTION
+  BEGIN
+    IF pval = 0 THEN
+      RESIGNAL;
+    ELSEIF pval = 1 THEN
+      RESIGNAL SET MESSAGE_TEXT = '【RESIGNAL】An error occurred';
+    ELSE    
+      RESIGNAL SQLSTATE '55000' SET MESSAGE_TEXT = '【RESIGNAL】An error occurred', MYSQL_ERRNO = 6666;
+    END IF;
+  END;
+  SELECT a INTO @p FROM notable;
+  RETURN '场景：无命名错误条件';
+END;
+//
+--error 1146
+SELECT fun1(0)//
+--error 1146
+SELECT fun1(1)//
+--error 6666
+SELECT fun1(2)//
+
+
+--echo #### 声明一个命名错误条件
+DROP FUNCTION IF EXISTS fun1;//
+CREATE FUNCTION fun1 () RETURNS varchar(200) DETERMINISTIC 
+BEGIN 
+  DECLARE EXIT HANDLER FOR SQLEXCEPTION
+  BEGIN
+    DECLARE specialty CONDITION FOR SQLSTATE '45000';
+    RESIGNAL specialty SET MESSAGE_TEXT = '【RESIGNAL】An error occurred', MYSQL_ERRNO = 6666;
+  END;
+  SELECT a INTO @p FROM notable;
+  RETURN '场景：声明一个命名错误条件';
+END;
+//
+--error 6666
+SELECT fun1()//
+
+
+--echo #### 不同范围内声明多个命名错误条件,条件处理程序中
+DROP PROCEDURE IF EXISTS pro1;//
+CREATE PROCEDURE pro1 (divisor INT)
+BEGIN
+  DECLARE EXIT HANDLER FOR SQLEXCEPTION
+  BEGIN
+    DECLARE my_error CONDITION FOR SQLSTATE '33333';
+    IF divisor = 0 THEN
+      BEGIN
+        DECLARE my_error CONDITION FOR SQLSTATE '22222';
+	    BEGIN
+	      DECLARE my_error CONDITION FOR SQLSTATE '11111';
+	      RESIGNAL my_error SET MESSAGE_TEXT = '【RESIGNAL】An error occurred', MYSQL_ERRNO = 7777;
+	    END;
+        SIGNAL my_error;
+      END;
+    END IF;
+    SIGNAL my_error;
+  END;
+  SELECT a INTO @p FROM notable;
+END;
+//
+--error 7777
+CALL pro1(0)//
+--error 1644
+CALL pro1(1)//
+
+--echo #### 条件处理程序中-在条件处理程序中
+DROP PROCEDURE IF EXISTS pro1;//
+CREATE PROCEDURE pro1 ()
+BEGIN
+  DECLARE EXIT HANDLER FOR SQLEXCEPTION
+  BEGIN
+    RESIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = '【RESIGNAL】An error occurred', MYSQL_ERRNO = 7777;
+  END;
+  SELECT a INTO @p FROM notable;
+END;
+//
+--error 7777
+CALL pro1()//
+
+
+--echo #### 条件处理程序中-嵌套在条件处理程序中
+DROP FUNCTION IF EXISTS fun1;//
+CREATE FUNCTION fun1 () RETURNS INT
+BEGIN
+  RESIGNAL;
+  RETURN 5;
+END;
+//
+
+DROP PROCEDURE IF EXISTS pro1;//
+CREATE PROCEDURE pro1 ()
+BEGIN
+  DECLARE EXIT HANDLER FOR SQLEXCEPTION SET @a=fun1();
+  SIGNAL SQLSTATE '55555';
+END;
+//
+
+--error 1645
+CALL pro1();//
+
+
+--echo -----------------------------------------------------------------------------------------------------------------
+--echo ------------------------- SIGNAL/RESIGNAL 语句 ------------------------------------------------------------------
+--echo ###### 标签：signal-4 异常场景
+--echo -----------------------------------------------------------------------------------------------------------------
+
+--echo ######################### 标签:signal-4-1 SIGNAL 语句  #########################
+--echo #### 单独执行SIGNAL；（忽略所有属性或SQLSTATE值）
+DROP FUNCTION IF EXISTS fun1;//
+--error 1064
+CREATE FUNCTION fun1 () RETURNS varchar(200) DETERMINISTIC 
+BEGIN 
+  SIGNAL;
+  RETURN '单独执行SIGNAL';
+END;
+//
+
+
+--echo #### 条件信息项(condition_information_item_name)在SET子句中指定多次
+DROP FUNCTION IF EXISTS fun1;//
+--error 1641
+CREATE FUNCTION fun1 () RETURNS varchar(200) DETERMINISTIC 
+BEGIN 
+  SIGNAL SQLSTATE '03000' SET MESSAGE_TEXT = '【SIGNAL】An error occurred',MESSAGE_TEXT = '【SIGNAL】An 03xxx occurred', MYSQL_ERRNO = 1111;
+  RETURN '在SET子句中指定多次';
+END;
+//
+
+--echo #### 条件信息项(signal_information_item)在赋值列表中，用逗号以外符号分隔
+DROP FUNCTION IF EXISTS fun1;//
+--error 1064
+CREATE FUNCTION fun1 () RETURNS varchar(200) DETERMINISTIC 
+BEGIN 
+  SIGNAL SQLSTATE '03000' SET MESSAGE_TEXT = '【SIGNAL】An 03xxx occurred'、 MYSQL_ERRNO = 1111;
+  RETURN '在SET子句中用逗号以外符号分隔';
+END;
+//
+
+
+--echo #### SIGNAL语句使用命名错误条件，命名条件不在同一作用域范围内
+DROP PROCEDURE IF EXISTS pro1;//
+--error 1319
+CREATE PROCEDURE pro1 (divisor INT)
+BEGIN
+  BEGIN
+    DECLARE my_error CONDITION FOR SQLSTATE '45000';
+	SIGNAL my_error SET MESSAGE_TEXT = '【SIGNAL】An error occurred',MYSQL_ERRNO = 1111;
+  END;
+  IF divisor = 0 THEN
+    BEGIN
+      SIGNAL my_error;
+    END;
+  END IF;
+END;
+//
+
+--echo #### SIGNAL语句使用命名错误条件名称，命名条件使用 MySQL 错误号（不是SQLSTATE值）进行定义
+DROP PROCEDURE IF EXISTS pro1;//
+--error 1646
+CREATE PROCEDURE pro1 ()
+BEGIN
+  DECLARE my_error CONDITION FOR 1051;
+  SIGNAL my_error SET MESSAGE_TEXT = '【SIGNAL】An error occurred', MYSQL_ERRNO = 1111;
+END;
+//
+
+
+--echo #### SIGNAL语句错误值(condition_value)使用 MySQL 错误号
+DROP PROCEDURE IF EXISTS pro1;//
+--error 1064
+CREATE PROCEDURE pro1 ()
+BEGIN
+  SIGNAL 1051 SET MESSAGE_TEXT = '【SIGNAL】An error occurred', MYSQL_ERRNO = 1111;
+END;
+//
+
+--echo #### SIGNAL语句错误值(condition_value)使用无效的SQLSTATE值
+DROP PROCEDURE IF EXISTS pro1;//
+--error 1407
+CREATE PROCEDURE pro1 ()
+BEGIN
+  SIGNAL SQLSTATE '00000' SET MESSAGE_TEXT = '【SIGNAL】An error occurred', MYSQL_ERRNO = 1111;
+END;
+//
+
+
+--echo ######################### 标签:signal-4-2 RESIGNAL 语句  #########################
+--echo #### 条件信息项(condition_information_item_name)在SET子句中指定多次
+DROP FUNCTION IF EXISTS fun1;//
+--error 1641
+CREATE FUNCTION fun1 () RETURNS varchar(200) DETERMINISTIC 
+BEGIN 
+  DECLARE EXIT HANDLER FOR SQLEXCEPTION
+  BEGIN
+    RESIGNAL  SQLSTATE '45000'  SET MESSAGE_TEXT = '【RESIGNAL】',MESSAGE_TEXT = '【RESIGNAL】An error occurred', MYSQL_ERRNO = 6666;
+  END;
+  SELECT a INTO @p FROM notable;
+  RETURN '在SET子句中指定多次';
+END;
+//
+
+
+--echo #### 条件信息项(signal_information_item)在赋值列表中，用逗号以外符号分隔
+DROP FUNCTION IF EXISTS fun1;//
+--error 1064
+CREATE FUNCTION fun1 () RETURNS varchar(200) DETERMINISTIC 
+BEGIN 
+  DECLARE EXIT HANDLER FOR SQLEXCEPTION
+  BEGIN
+    RESIGNAL  SQLSTATE '45000'  SET MESSAGE_TEXT = '【RESIGNAL】An error occurred': MYSQL_ERRNO = 6666;
+  END;
+  SELECT a INTO @p FROM notable;
+  RETURN '在SET子句中指定多次';
+END;
+//
+
+
+--echo #### RESIGNAL语句在条件处理程序上下文之外执行
+DROP PROCEDURE IF EXISTS pro1;//
+CREATE PROCEDURE pro1 ()
+BEGIN
+  RESIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = '【RESIGNAL】An error occurred', MYSQL_ERRNO = 1111;
+END;
+//
+
+--error 1645
+CALL pro1();//
+
+
+--echo #### RESIGNAL语句使用命名错误条件名称，命名条件不在同一作用域范围内
+DROP PROCEDURE IF EXISTS pro1;//
+--error 1319
+CREATE PROCEDURE pro1 (divisor INT)
+BEGIN
+  DECLARE EXIT HANDLER FOR SQLEXCEPTION
+  BEGIN
+    BEGIN
+      DECLARE my_error CONDITION FOR SQLSTATE '45000';
+    END;
+    RESIGNAL my_error SET MESSAGE_TEXT = '【RESIGNAL】An error occurred', MYSQL_ERRNO = 6666;
+  END;
+  SELECT a INTO @p FROM notable;
+END;
+//
+
+
+--echo #### RESIGNAL语句使用命名错误条件名称，命名条件使用 MySQL 错误号（不是SQLSTATE值）进行定义
+DROP FUNCTION IF EXISTS fun1;//
+--error 1646
+CREATE FUNCTION fun1 () RETURNS varchar(200) DETERMINISTIC 
+BEGIN 
+  DECLARE my_error CONDITION FOR 1051;
+  DECLARE EXIT HANDLER FOR SQLEXCEPTION
+  BEGIN
+    RESIGNAL my_error SET MESSAGE_TEXT = '【RESIGNAL】An error occurred', MYSQL_ERRNO = 6666;
+  END;
+  SELECT a INTO @p FROM notable;
+  RETURN '命名条件使用 MySQL 错误号';
+END;
+//
+
+
+--echo #### RESIGNAL语句错误值(condition_value)使用MySQL 错误号
+DROP FUNCTION IF EXISTS fun1;//
+--error 1064
+CREATE FUNCTION fun1 () RETURNS varchar(200) DETERMINISTIC 
+BEGIN 
+  DECLARE EXIT HANDLER FOR SQLEXCEPTION
+  BEGIN
+    RESIGNAL 1501 SET MESSAGE_TEXT = '【RESIGNAL】An error occurred', MYSQL_ERRNO = 6666;
+  END;
+  SELECT a INTO @p FROM notable;
+  RETURN '错误值(condition_value)使用MySQL 错误号';
+END;
+//
+
+
+--echo #### RESIGNAL语句错误值(condition_value)使用无效的SQLSTATE值
+DROP FUNCTION IF EXISTS fun1;//
+--error 1407
+CREATE FUNCTION fun1 () RETURNS varchar(200) DETERMINISTIC 
+BEGIN 
+  DECLARE EXIT HANDLER FOR SQLEXCEPTION
+  BEGIN
+    RESIGNAL SQLSTATE '00000'  SET MESSAGE_TEXT = '【RESIGNAL】An error occurred', MYSQL_ERRNO = 6666;
+  END;
+  SELECT a INTO @p FROM notable;
+  RETURN '无效的SQLSTATE值';
+END;
+//
+
+
+delimiter ;//
+
+
+--echo # Clean up users
+connection default;
+--disable_warnings
+--error 0,1396
+drop user whh@'%';
+--enable_warnings

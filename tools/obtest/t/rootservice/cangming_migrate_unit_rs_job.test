@@ -1,0 +1,131 @@
+# CASE_OWNER:
+#    @cangming.zl
+# CASE_DESC:
+#     测试没有grant的unit，立刻完成，不会在rs_job中残留任务的inprocess的状态
+#     case1: 创建resource pool，迁移这个unit，立刻完成
+#     case3: 取消迁移
+
+ob1=OBI(cluster=3, proxy_num =1);
+ob1.reboot;
+
+ob_connect(sys_conn, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection sys_conn;
+
+alter system set enable_rebalance= false;
+alter system set enable_rereplication= false;
+alter system set balancer_idle_time = '10s';
+alter system set debug_sync_timeout = '1000s';
+create resource unit test_unit max_cpu = 1, memory_size = '2G';
+create resource pool pl unit 'test_unit', unit_num = 1;
+let $resource_pool_id = deploy_get_value(ob1.select select resource_pool_id from oceanbase.__all_resource_pool where name = 'pl', resource_pool_id, 1);
+let $unit_id=deploy_get_value(ob1.select select unit_id from __all_unit where resource_pool_id = $resource_pool_id order by unit_id, unit_id, 1);
+
+#case 1
+let $src_server=deploy_get_value(ob1.select select concat(svr_ip, ':', svr_port) as ipport from __all_unit where unit_id = $unit_id, ipport, 1);
+let $dest_server1=deploy_get_value(ob1.select select concat(svr_ip, ':', svr_port) as ipport from __all_server where zone='z1' and concat(svr_ip, ':', svr_port) != '$src_server' limit 1, ipport, 1);
+
+select count(*) from __all_unit where migrate_from_svr_ip != '';
+--disable_query_log
+eval alter system migrate unit $unit_id destination '$dest_server1';
+--enable_query_log
+select count(*) from __all_unit where migrate_from_svr_ip != '';
+ob1.mysql_p select job_status from oceanbase.__all_rootservice_job where job_type="MIGRATE_UNIT";
+
+create tenant tt1 resource_pool_list=('pl') set ob_tcp_invited_nodes='%';
+
+# create a table
+ob_connect(tt1_conn, ob1.proxy0, root@tt1,,test,,USE_OB_CONNECTOR);
+connection tt1_conn;
+use test;
+create table t1 (c1 int primary key, c2 int);
+insert into t1 values (1, 2), (3, 4);
+select * from t1;
+
+############################
+#case 1
+
+connection sys_conn;
+--disable_query_log
+--error 4016
+eval alter system cancel migrate unit $unit_id;
+--enable_query_log
+
+#############################
+#case 2
+# migrate unit src
+#connection sys_conn;
+let $tenant_id=deploy_get_value(ob1.select select tenant_id from __all_tenant where tenant_name = 'tt1', tenant_id, 1);
+let $src_server=deploy_get_value(ob1.select select concat(svr_ip, ':', svr_port) as ipport from __all_unit inner join __all_resource_pool using (resource_pool_id) where zone='z1' and tenant_id=$tenant_id, ipport, 1);
+let $dest_server1=deploy_get_value(ob1.select select concat(svr_ip, ':', svr_port) as ipport from __all_server where zone='z1' and concat(svr_ip, ':', svr_port) != '$src_server' limit 1, ipport, 1);
+let $dest_server2=deploy_get_value(ob1.select select concat(svr_ip, ':', svr_port) as ipport from __all_server where zone='z1' and concat(svr_ip, ':', svr_port) != '$src_server' and concat(svr_ip, ':', svr_port) != '$dest_server1', ipport,1);
+
+select count(*) from __all_unit where migrate_from_svr_ip != '';
+--disable_query_log
+eval alter system migrate unit $unit_id destination '$dest_server1';
+--enable_query_log
+select count(*) from __all_unit where migrate_from_svr_ip != '';
+let $job_id = deploy_get_value(ob1.select select max(job_id) as jd from __all_rootservice_job ,jd ,1 );
+# migrate back
+--disable_query_log
+eval alter system cancel migrate unit $unit_id ;
+--enable_query_log
+ob1.check_until_timeout select count(*) from __all_rootservice_job where job_id =$job_id  and job_status="FAILED",1,30;
+
+# verify
+--disable_query_log
+eval select count(*) from __all_virtual_ls_meta_table where tenant_id=$tenant_id and concat(svr_ip, ':', svr_port) != '$src_server';
+--enable_query_log
+ob1.check_until_timeout select count(*) from oceanbase.__all_unit where migrate_from_svr_ip != '', 0, 120;
+
+#############################
+#case 3
+
+--disable_query_log
+eval alter system migrate unit $unit_id destination '$dest_server2';
+--enable_query_log
+let $job_id = deploy_get_value(ob1.select select max(job_id) as jd from __all_rootservice_job ,jd ,1 );
+--disable_query_log
+eval alter system cancel migrate unit $unit_id ;
+eval select count(*) from __all_virtual_ls_meta_table where tenant_id=$tenant_id and concat(svr_ip, ':', svr_port) != '$src_server';
+eval select manual_migrate from __all_unit where unit_id=$unit_id and concat(svr_ip, ':', svr_port) = '$src_server' and concat(migrate_from_svr_ip, ':', migrate_from_svr_port) = '$dest_server1';
+--enable_query_log
+ob1.check_until_timeout select count(*) from __all_rootservice_job where job_id =$job_id  and job_status="FAILED",1,30;
+ob1.check_until_timeout select count(*) from oceanbase.__all_unit where migrate_from_svr_ip != '', 0, 120;
+
+#case4迁移出错不写job表
+ob1.mysql_p select count(*) from oceanbase.__all_unit where migrate_from_svr_ip != '';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_unit where concat(svr_ip, ':', svr_port) = '$dest_server1' and unit_id=$unit_id,0,200;
+sleep 3;
+ob1.mysql alter system migrate unit $unit_id destination '$dest_server1';
+select count(*) from oceanbase.__all_unit where migrate_from_svr_ip != '';
+let $job_id = deploy_get_value(ob1.select select max(job_id) as jd from oceanbase.__all_rootservice_job ,jd ,1 );
+--disable_query_log
+eval alter system migrate unit $unit_id destination '$dest_server1';
+ob1.mysql_p select count(*) from oceanbase.__all_rootservice_job where job_id > $job_id ;
+--error 1235
+eval alter system migrate unit $unit_id destination '$dest_server2'; 
+ob1.mysql_p select count(*) from oceanbase.__all_rootservice_job where job_id > $job_id ;
+--error 1235
+eval alter system migrate unit $unit_id destination '$dest_server2'; 
+ob1.mysql_p select count(*) from oceanbase.__all_rootservice_job where job_id > $job_id ;
+--error 1235
+eval alter system migrate unit $unit_id destination '$dest_server2'; 
+ob1.mysql_p select count(*) from oceanbase.__all_rootservice_job where job_id > $job_id ;
+eval alter system cancel migrate unit $unit_id ;
+--enable_query_log
+ob1.check_until_timeout select count(*) from oceanbase.__all_unit where migrate_from_svr_ip != '', 0, 30;
+#case 5迁移过程中删除租户和unit
+let $job_id = deploy_get_value(ob1.select select max(job_id) as jd from __all_rootservice_job ,jd ,1 );
+ob1.mysql set ob_global_debug_sync ='BEFORE_TRY_LOCALITY_ALIGNMENT wait_for signal';
+sleep 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_unit where concat(svr_ip, ':', svr_port) = '$dest_server2' and unit_id=$unit_id,0,200;
+sleep 3;
+--disable_query_log
+eval alter system migrate unit $unit_id destination '$dest_server2';
+--enable_query_log
+ob1.mysql_p select job_type, job_status from oceanbase.__all_rootservice_job where job_id > $job_id;
+drop tenant tt1 force;
+drop resource pool pl;
+ob1.mysql_p select job_type, job_status from oceanbase.__all_rootservice_job where job_id > $job_id;
+ob1.mysql set ob_global_debug_sync = 'now signal signal';
+

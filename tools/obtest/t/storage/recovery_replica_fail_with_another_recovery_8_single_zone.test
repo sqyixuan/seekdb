@@ -1,0 +1,95 @@
+# owner: jiahua.cjh
+# owner group: storage
+# description: test add replica and recovery coexist in single zone
+#
+
+--disable_query_log
+ob1=OBI(cluster=4,proxy_num=1);
+source include/mini_ob_config.inc;
+ob1.z1.obs0.set extra_config=$mini_ob_config;
+ob1.z1.obs1.set extra_config=$mini_ob_config;
+ob1.z1.obs2.set extra_config=$mini_ob_config;
+ob1.z1.obs3.set extra_config=$mini_ob_config;
+ob1.reboot;
+
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_server_stat where start_service_time = 0, 0, 240;
+
+#设置灰度切主的时间为0, 关闭自动切主，关闭自动balance
+ob1.mysql alter system set resource_hard_limit = 3200;
+ob1.mysql alter system set merger_switch_leader_duration_time=0;
+ob1.mysql alter system set enable_auto_leader_switch = false;
+ob1.mysql alter system set enable_rereplication = true;
+ob1.mysql alter system set enable_rebalance = false;
+ob1.mysql alter system set merge_thread_count = 64;
+ob1.mysql alter system set minor_merge_concurrency = 64;
+ob1.mysql alter system set server_permanent_offline_time = '20s';
+ob1.mysql alter system set debug_sync_timeout = '300s';
+ob1.mysql alter system set balancer_idle_time = '10s';
+let $ip = deploy_get_value(ob1.z1.obs0.ip);
+let $port = deploy_get_value(ob1.z1.obs0.mysql_port);
+
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_server_stat where start_service_time = 0, 0, 240;
+ob1.mysql create resource unit box1 max_cpu 2, max_memory = '2G' , max_iops 100000, max_disk_size '5G', max_session_num 64, MIN_CPU=1, MIN_MEMORY='768M', MIN_IOPS=128;
+ob1.mysql create resource pool pool1 unit = 'box1', unit_num = 2;
+ob1.mysql create tenant oracle replica_num = 1, resource_pool_list=('pool1'), primary_zone="z1" set ob_tcp_invited_nodes='%', ob_compatibility_mode='oracle', autocommit='on';
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_server_schema_info as a join oceanbase.__all_virtual_server_schema_info as b on a.tenant_id = b.tenant_id  where a.refreshed_schema_version != b.refreshed_schema_version, 0, 10;
+ob_connect(conn_oracle, ob1.proxy0, SYS@oracle, ,SYS, , USE_OB_CONNECTOR);
+connection conn_oracle;
+create user obtest IDENTIFIED BY obtest;
+grant all on *.* to obtest WITH GRANT OPTION;
+grant dba to obtest;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_server_schema_info as a join oceanbase.__all_virtual_server_schema_info as b on a.tenant_id = b.tenant_id  where a.refreshed_schema_version != b.refreshed_schema_version, 0, 10;
+ob_connect(conn_oracle_obtest,ob1.proxy0,OBTEST@oracle,obtest,OBTEST,,USE_OB_CONNECTOR);
+connect (conn2,$ip,root@sys,,oceanbase,$port);
+connection conn_oracle_obtest;
+set @@session.ob_query_timeout = 20000000;
+
+create table test01 (pk1 int, pk2 int, pk3 int, f1 varchar(1024), f2 varchar(4096), primary key(pk1,pk2,pk3)) primary_zone='z1';
+sleep 10;
+
+let $cnt=1;
+while($cnt < 10)
+{
+  eval insert into test01 values($cnt, $cnt, $cnt, 'ocean', 'base');
+  inc $cnt;
+}
+
+while ($cnt < 20)
+{
+  eval insert into test01 values($cnt, $cnt, $cnt, 'ocean', 'base');
+  inc $cnt;
+}
+
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name='oracle', tenant_id, 1);
+let $table_id = deploy_get_value(ob1.select select table_id from oceanbase.__all_virtual_table where table_name='test01', table_id, 1);
+let $src_host = deploy_get_value(ob1.select select concat(svr_ip, ':', svr_port) host from oceanbase.__all_virtual_meta_table where zone='z1' and table_id=$table_id, host, 1);
+let $src = deploy_get_value(ob1.get_obs_by_addr $src_host);
+let $src_ip = deploy_get_value($src.ip);
+let $src_port = deploy_get_value($src.port);
+let $src_host_1 = deploy_get_value(ob1.select select concat(svr_ip, ':', svr_port) host from oceanbase.__all_virtual_meta_table where zone='z1' and table_id=$table_id, host, 1);
+let $dst_host = deploy_get_value(ob1.select select concat(svr_ip, ':', svr_port) host from oceanbase.__all_unit where zone='z1' and (svr_ip != '$src_ip' or svr_port != '$src_port') and resource_pool_id = 1002, host, 1);
+let $dst = deploy_get_value(ob1.get_obs_by_addr $dst_host);
+let $dst_ip = deploy_get_value($dst.ip);
+let $dst_port = deploy_get_value($dst.port);
+
+connect(conn2,$ip,root@sys,,,$port);
+set @@session.ob_query_timeout = 200000000;
+sleep 2;
+ob1.mysql set ob_global_debug_sync = 'FAST_RECOVER_AFTER_PROCESS wait_for signal_1';
+sleep 10;
+let $stop_obs0 = deploy_get_value(ob1.get_obs_by_addr $src_host);
+$stop_obs0.force_stop;
+use oceanbase;
+ob1.check_until_timeout select count(*) from __all_rootservice_event_history where module like '%recovery%' and value1 like '%$src_host%' and name3='rescue_server' limit 1, 1, 480;
+ob1.check_until_timeout select count(*) from __all_rootservice_event_history where module like '%recovery%' and value1 like '%$src_host%' and value3='0'  limit 1, 1, 480;
+let $first_recovery_host=deploy_get_value(ob1.select select substr(value3, 2, length(value3) - 2) as svr_ip from __all_rootservice_event_history where module like '%recovery%' and value1 like '%$src_host%' and name3='rescue_server' limit 1, svr_ip, 1);
+let $first_recovery_stop_obs = deploy_get_value(ob1.get_obs_by_addr $first_recovery_host);
+$first_recovery_stop_obs.force_stop;
+ob1.check_until_timeout select count(*) from __all_rootservice_event_history where module = 'server_fast_recovery' and event = 'finish_recovery', 2, 480;
+let $final_host = deploy_get_value(ob1.select select concat(svr_ip, ':', svr_port) host from oceanbase.__all_virtual_meta_table where zone='z1' and table_id=$table_id, host, 1);
+sleep 50;
+let $final_obs = deploy_get_value(ob1.get_obs_by_addr $final_host);
+$final_obs.check_leader oracle:obtest:test01;
+ob_connect(conn_oracle,ob1.proxy0,OBTEST@oracle,obtest,OBTEST,,USE_OB_CONNECTOR);
+connection conn_oracle;
+select pk1, pk2, pk3, f1, f2 from test01;

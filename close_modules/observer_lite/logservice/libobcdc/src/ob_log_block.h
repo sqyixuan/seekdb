@@ -1,0 +1,88 @@
+/*
+ * Copyright (c) 2025 OceanBase.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#ifndef OCEANBASE_LIBOBCDC_LOG_BLOCK_H_
+#define OCEANBASE_LIBOBCDC_LOG_BLOCK_H_
+
+#include "ob_log_batch_buffer_task.h"
+#include "ob_log_buf.h"
+
+namespace oceanbase
+{
+namespace libobcdc
+{
+// Extent
+// class DataBlock
+// DataBuf
+class Block : public IObLogBatchBufTask
+{
+public:
+  Block(int64_t seq, char *buf, int64_t block_count);
+  virtual ~Block() {}
+  int init();
+  virtual void after_consume();
+  virtual void reuse();
+  virtual int64_t get_seq() const { return seq_; }
+  virtual bool is_valid() const { return NULL != buf_; }
+
+public:
+  int64_t ref(const int64_t delta);
+  int64_t wait(const int64_t seq);
+  void fill(const offset_t offset, IObLogBufTask *task);
+  void freeze(const offset_t offset);
+  void set_submitted();
+  void wait_submitted(const int64_t seq);
+
+  TO_STRING_KV(K_(seq),
+      K_(status_seq),
+      K_(ref),
+      "buf", ((uint64_t)(buf_)),
+      K_(block_count));
+
+private:
+  int64_t seq_;
+  int64_t status_seq_;
+  int64_t ref_;
+  char *buf_;
+  int64_t block_count_;
+};
+
+// For big row
+class BigBlock : public IObLogBatchBufTask
+{
+public:
+  BigBlock();
+  virtual ~BigBlock() { destroy(); }
+  int init(const int64_t buf_size);
+  void destroy();
+
+  virtual void after_consume();
+  virtual void reuse();
+  virtual int64_t get_seq() const { return 0; }
+  virtual bool is_valid() const { return true; }
+
+public:
+  void fill(const offset_t offset, IObLogBufTask *task);
+
+  TO_STRING_KV("buf", ((uint64_t)(buf_)));
+
+private:
+  char *buf_;
+};
+
+}; // end namespace libobcdc
+}; // end namespace oceanbase
+#endif

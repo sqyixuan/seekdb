@@ -1,0 +1,54 @@
+#####################
+# owner : wangzhennan.wzn
+# owner group : RS
+# description : test transfer conflicts with major compaction
+#####################
+ob1=OBI(cluster=1:1, proxy_num=0, init_unit_cpu=0);
+ob1.reboot;
+
+ob1.mysql alter system set _transfer_start_trans_timeout = '10s';
+ob_connect(conn_sys, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection conn_sys;
+
+--echo # create mysql tenant
+ob1.check_until_timeout select count(*) from GV\$OB_UNITS where tenant_id != 1, 0, 120;
+CREATE RESOURCE UNIT if not exists unit_x MAX_CPU 2, MEMORY_SIZE='4G';
+CREATE RESOURCE POOL if not exists pool_x UNIT = 'unit_x', UNIT_NUM = 1;
+CREATE TENANT mysql RESOURCE_POOL_LIST = ('pool_x'), primary_zone=RANDOM, locality="F@z1,F@z2" set ob_tcp_invited_nodes='%';
+
+let $mysql_tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = 'mysql', tenant_id, 1);
+let $mysql_leader_ip_port=deploy_get_value(ob1.select select concat(svr_ip,':',svr_port) as host from __all_virtual_ls_meta_table where tenant_id = $mysql_tenant_id and ls_id =  1 and role = 1 limit 1, host, 1);
+let $mysql_leader_obs =deploy_get_value(ob1.get_obs_by_addr $mysql_leader_ip_port);
+ob_connect(conn_mysql, $mysql_leader_obs, root@mysql, , test, , USE_MYSQL_CONNECTOR);
+
+--echo # create table
+connection conn_mysql;
+create table t_part_1(c1 int, c2 int, c3 longtext, index(c1) local, index(c2) global) partition by hash(c1) partitions 4;
+create table t_subpart_1(c1 int, c2 int, c3 longtext, index(c1) local, index(c2) global) partition by range(c1) subpartition by hash(c1) subpartitions 4 (partition p1 values less than (100), partition p3 values less than MAXVALUE);
+
+--echo #################
+--echo # 1. suspend tenant major compaction
+ob1.mysql alter system major freeze tenant mysql;
+ob1.mysql alter system suspend merge tenant mysql;
+ob1.check_until_timeout select count(*) from CDB_OB_MAJOR_COMPACTION where tenant_id = $mysql_tenant_id and (frozen_scn != global_broadcast_scn or frozen_scn != last_scn), 1, 10;
+
+--echo #################
+--echo # 2. transfer task need wait
+ob1.mysql alter tenant mysql primary_zone = 'z1';
+ob1.check_until_timeout select count(*) from CDB_OB_BALANCE_JOBS where tenant_id = $mysql_tenant_id and job_type = 'LS_BALANCE', 1, 60;
+ob1.check_until_timeout select count(*) from CDB_OB_TRANSFER_TASKS where tenant_id = $mysql_tenant_id and status = 'INIT' and comment = 'Wait for tenant major compaction to end', 1, 60;
+
+--echo #################
+--echo # 3. resume tenant major compaction and transfer will be completed
+ob1.mysql alter system set ob_compaction_schedule_interval = '3s' tenant mysql;
+ob1.mysql alter system resume merge tenant mysql;
+# wait for major compaction to complete
+ob1.check_until_timeout select count(*) from CDB_OB_MAJOR_COMPACTION where tenant_id = $mysql_tenant_id and (frozen_scn != global_broadcast_scn or frozen_scn != last_scn), 0, 240;
+ob1.check_until_timeout select count(*) from CDB_OB_BALANCE_TASKS where tenant_id = $mysql_tenant_id, 0, 60;
+ob1.check_until_timeout select count(*) from CDB_OB_BALANCE_JOBS where tenant_id = $mysql_tenant_id, 0, 30;
+ob1.check_until_timeout select count(*) from CDB_OB_BALANCE_TASK_HISTORY where tenant_id = $mysql_tenant_id and status != 'COMPLETED', 0, 1;
+
+--echo drop tenants
+connection conn_sys;
+set recyclebin = off;
+drop tenant mysql force;

@@ -54,7 +54,6 @@ void ObDDLIndexBlockRowIterator::reset()
 
 void ObDDLIndexBlockRowIterator::reuse()
 {
-  ObIndexBlockRowIterator::reuse();
   is_iter_finish_ = true;
   is_iter_start_ = false;
   is_co_sstable_ = false;
@@ -526,7 +525,6 @@ void ObDDLSStableAllRangeIterator::reset()
 
 void ObDDLSStableAllRangeIterator::reuse()
 {
-  ObIndexBlockRowIterator::reuse();
   is_iter_finish_ = true;
   is_iter_start_ = false;
   rowkey_read_info_ = nullptr;
@@ -758,7 +756,6 @@ ObDDLMergeEmptyIterator::~ObDDLMergeEmptyIterator()
 
 void ObDDLMergeEmptyIterator::reuse()
 {
-  ObIndexBlockRowIterator::reuse();
 }
 
 int ObDDLMergeEmptyIterator::init(const ObMicroBlockData &idx_block_data,
@@ -955,7 +952,6 @@ void ObDDLMergeBlockRowIterator::reset()
 
 void ObDDLMergeBlockRowIterator::reuse()
 {
-  ObIndexBlockRowIterator::reuse();
   is_iter_start_ = false;
   is_iter_finish_ = true;
   is_single_sstable_ = true;
@@ -2221,7 +2217,6 @@ void ObUnitedSliceRowIterator::reset()
 
 void ObUnitedSliceRowIterator::reuse()
 {
-  ObIndexBlockRowIterator::reuse();
   if (OB_NOT_NULL(merge_iter_)) {
     merge_iter_->reuse();
   }

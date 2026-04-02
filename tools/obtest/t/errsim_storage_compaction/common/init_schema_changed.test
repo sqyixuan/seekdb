@@ -1,0 +1,65 @@
+# owner:lixia.yq
+# owner group:storage
+# mock don't init schema changed in medium info, will find schema changed when execute
+
+ob1=OBI(cluster=1:1, proxy_num=0, init_unit_cpu=2);
+ob1.reboot;
+sleep 5;
+
+--source include/compaction/set_common_parameters.inc
+
+let $ip = deploy_get_value(ob1.z1.obs0.ip);
+let $port = deploy_get_value(ob1.z1.obs0.mysql_port);
+
+connect (conn1,$ip,root@obtest,,test,$port);
+connection conn1;
+
+--disable_warnings
+drop table if exists test01;
+--enable_warnings
+create table test01(c1 int, c2 int, c3 varchar(4096));
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name='obtest', tenant_id, 1);
+let $table_id = deploy_get_value(ob1.select select table_id from oceanbase.__all_virtual_table where tenant_id = $tenant_id and table_name='test01', table_id, 1);
+let $tablet_id = deploy_get_value(ob1.select select tablet_id from oceanbase.__all_virtual_table where tenant_id = $tenant_id and table_name='test01', tablet_id, 1);
+
+--disable_query_log
+let $cnt=1;
+while($cnt < 5)
+{
+  eval insert into test01 values($cnt, $cnt, 'oceanbase');
+  inc $cnt;
+}
+--enable_query_log
+--source include/compaction/alter_tenant_obtest_major_freeze_and_sleep.inc
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $tenant_id and LAST_SCN != GLOBAL_BROADCAST_SCN , 0, 1200;
+
+ob1.mysql alter system set_tp tp_name = "EN_COMPACTION_SKIP_INIT_SCHEMA_CHANGED", error_code = 4023, frequency = 1;
+
+let $expect_progressive_merge_round = deploy_get_value(ob1.select select progressive_merge_round + 1 as result from oceanbase.__all_virtual_table where tenant_id = $tenant_id and table_id=$table_id, result, 1);
+
+## add column, progressive merge round should be increased
+connection conn1;
+alter table test01 add column c4 int;
+sleep 5;
+connection conn1;
+let $new_progressive_merge_round = deploy_get_value(ob1.select select progressive_merge_round from oceanbase.__all_virtual_table where tenant_id = $tenant_id and table_id=$table_id, progressive_merge_round, 1);
+if ($expect_progressive_merge_round != $new_progressive_merge_round)
+{
+  --echo "should inc progressive_merge_round when add column for row_store table", $expect_progressive_merge_round, $new_progressive_merge_round
+}
+
+connection conn1;
+--disable_query_log
+let $cnt=1;
+while($cnt < 5)
+{
+  eval insert into test01 values($cnt, $cnt, 'oceanbase', $cnt);
+  inc $cnt;
+}
+--enable_query_log
+--source include/compaction/alter_tenant_obtest_major_freeze_and_sleep.inc
+let $major_scn = deploy_get_value(ob1.select select GLOBAL_BROADCAST_SCN as scn from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $tenant_id, scn, 1);
+
+ob1.check_until_timeout select count(*) > 0 from oceanbase.__all_virtual_dag_warning_history where tenant_id=1002 and type like "%MAJOR%" and ret = "OB_ERR_UNEXPECTED" and warning_info like '%$tablet_id%', 1, 300;
+
+ob1.check_until_timeout select count(*) > 0 from oceanbase.__all_server_event_history where module='merge_errsim' and event='found_schema_changed', 1, 600;

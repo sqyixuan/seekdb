@@ -1,0 +1,132 @@
+ob1=OBI(cluster=1:1:1,proxy_num=0);
+ob1.force_stop;
+ob1.clean_backup_dest;
+ob1.reboot;
+ob1.mysql alter resource unit sys_unit_config memory_size='2G';
+ob1.mysql CREATE RESOURCE UNIT unit_1 MAX_CPU 2, MEMORY_SIZE '2G';
+ob1.mysql CREATE RESOURCE POOL pool_1 UNIT = 'unit_1', UNIT_NUM = 1, ZONE_LIST=('z1');
+ob1.mysql CREATE RESOURCE POOL pool_2 UNIT = 'unit_1', UNIT_NUM = 1, ZONE_LIST=('z2');
+ob1.mysql CREATE TENANT $backup_mysql_tenant RESOURCE_POOL_LIST = ('pool_1'), primary_zone = "z1" set ob_tcp_invited_nodes='%', ob_compatibility_mode='mysql';
+create table t1(a int primary key, b int, c int) partition by hash (a) partitions 100;
+insert into t1(a, b) values(1, 1);
+create table t2(a int primary key, b int, c int) partition by hash (a) partitions 100;
+insert into t2(a, b) values(1, 1);
+create user mytest identified by "test";
+grant SELECT on OCEANBASE.* to mytest;
+ob1.mysql CREATE STANDBY TENANT IF NOT EXISTS standby_mysql_tenant LOG_RESTORE_SOURCE = 'service=$backup_ip:$backup_port USER=mytest@backup_mysql_tenant PASSWORD=test' PRIMARY_ZONE='z2', RESOURCE_POOL_LIST=('pool_2');
+ob1.check_until_timeout select count(*) from DBA_OB_TENANTS where TENANT_ID = $standby_mysql_tenant_id and TENANT_ROLE = 'STANDBY' and SWITCHOVER_STATUS = 'NORMAL',1,30;
+#mysql 模式，主租户被lock
+ALTER TENANT backup_mysql_tenant LOCK;
+ALTER SYSTEM SWITCHOVER TO PRIMARY TENANT standby_mysql_tenant VERIFY;
+ERROR HY000: primary tenant is locked, switchover to primary is not allowed
+ALTER TENANT backup_mysql_tenant UNLOCK;
+ALTER SYSTEM SWITCHOVER TO PRIMARY TENANT standby_mysql_tenant VERIFY;
+ERROR HY000: log restore source is primary, switchover to primary is not allowed
+#mysql 模式，用户被lock
+ALTER USER mytest ACCOUNT LOCK;
+ALTER SYSTEM SWITCHOVER TO PRIMARY TENANT standby_mysql_tenant VERIFY;
+ERROR HY000: primary tenant's user account is locked, switchover to primary is not allowed
+ALTER USER mytest ACCOUNT UNLOCK;
+ALTER SYSTEM SWITCHOVER TO PRIMARY TENANT standby_mysql_tenant VERIFY;
+ERROR HY000: log restore source is primary, switchover to primary is not allowed
+#mysql 模式，用户完全查询没有权限
+REVOKE SELECT ON `oceanbase`.* FROM 'mytest';
+SHOW GRANTS FOR mytest;
+Grants for mytest@%
+GRANT USAGE ON *.* TO 'mytest'
+ALTER SYSTEM SWITCHOVER TO PRIMARY TENANT standby_mysql_tenant VERIFY;
+ERROR HY000: query primary failed(original error code: -1044), switchover to primary is not allowed
+#mysql 模式，用户查询权限不够
+GRANT SELECT on OCEANBASE.DBA_OB_ACCESS_POINT to mytest;
+ALTER SYSTEM SWITCHOVER TO PRIMARY TENANT standby_mysql_tenant VERIFY;
+ERROR HY000: query primary failed(original error code: -1142), switchover to primary is not allowed
+REVOKE SELECT ON `oceanbase`.`DBA_OB_ACCESS_POINT` FROM 'mytest';
+grant SELECT on OCEANBASE.* to mytest;
+ALTER SYSTEM SWITCHOVER TO PRIMARY TENANT standby_mysql_tenant VERIFY;
+ERROR HY000: log restore source is primary, switchover to primary is not allowed
+#mysql 模式，用户名错误
+RENAME USER 'mytest' TO 'mytest1';
+ALTER SYSTEM SWITCHOVER TO PRIMARY TENANT standby_mysql_tenant VERIFY;
+ERROR HY000: query primary failed(original error code: -1045), switchover to primary is not allowed
+RENAME USER 'mytest1' TO 'mytest';
+ALTER SYSTEM SWITCHOVER TO PRIMARY TENANT standby_mysql_tenant VERIFY;
+ERROR HY000: log restore source is primary, switchover to primary is not allowed
+#mysql 模式，用户密码错误
+ALTER USER 'mytest' IDENTIFIED BY 'tttt';
+ALTER SYSTEM SWITCHOVER TO PRIMARY TENANT standby_mysql_tenant VERIFY;
+ERROR HY000: query primary failed(original error code: -1045), switchover to primary is not allowed
+ALTER USER 'mytest' IDENTIFIED BY 'test';
+ALTER SYSTEM SWITCHOVER TO PRIMARY TENANT standby_mysql_tenant VERIFY;
+ERROR HY000: log restore source is primary, switchover to primary is not allowed
+#LS STATE NOT MATCH
+ALTER SYSTEM SWITCHOVER TO STANDBY TENANT backup_mysql_tenant;
+alter system set_tp tp_name = ERRSIM_LS_STATE_NOT_MATCH, error_code = 9089, frequency = 1;
+ALTER SYSTEM SWITCHOVER TO PRIMARY TENANT standby_mysql_tenant VERIFY;
+ERROR HY000: log restore source LS state not match, switchover to primary is not allowed
+alter system set_tp tp_name = ERRSIM_LS_STATE_NOT_MATCH, error_code = 9089, frequency = 0;
+#mysql 模式，主租户宕机
+ob1.z1.obs0.force_stop;
+ALTER SYSTEM SWITCHOVER TO PRIMARY TENANT standby_mysql_tenant VERIFY;
+ERROR HY000: query primary failed(original error code: -2002), switchover to primary is not allowed
+ob1.z1.obs0.start;
+ob1.check_until_timeout select count(*) from __all_server where svr_ip='$backup_ip' and svr_port=$backup_svr_port and status='ACTIVE' and start_service_time > 0,1,120;
+drop tenant backup_mysql_tenant force;
+drop tenant standby_mysql_tenant force;
+ob1.check_until_timeout select count(*) from __all_virtual_unit,3,180;
+ob1.mysql CREATE TENANT $backup_oracle_tenant RESOURCE_POOL_LIST = ('pool_1'), primary_zone = "z1" set ob_tcp_invited_nodes='%', ob_compatibility_mode='oracle';
+create table t1(a int primary key, b int, c int) partition by hash (a) partitions 100;
+insert into t1(a, b) values(1, 1);
+create table t2(a int primary key, b int, c int) partition by hash (a) partitions 100;
+insert into t2(a, b) values(1, 1);
+create user mytest identified by test;
+GRANT CONNECT to mytest;
+GRANT SELECT on SYS.DBA_OB_ACCESS_POINT to mytest;
+GRANT SELECT on SYS.GV$OB_UNITS to mytest;
+GRANT SELECT on SYS.DBA_OB_TENANTS to mytest;
+GRANT SELECT on SYS.GV$OB_PARAMETERS to mytest;
+GRANT SELECT on SYS.GV$OB_LOG_STAT to mytest;
+GRANT SELECT on SYS.DBA_OB_LS to mytest;
+GRANT SELECT on SYS.DBA_OB_LS_HISTORY to mytest;
+ob1.mysql CREATE STANDBY TENANT IF NOT EXISTS standby_oracle_tenant LOG_RESTORE_SOURCE = 'service=$backup_ip:$backup_port USER=mytest@backup_oracle_tenant PASSWORD=test' PRIMARY_ZONE='z2', RESOURCE_POOL_LIST=('pool_2');
+ob1.check_until_timeout select count(*) from DBA_OB_TENANTS where TENANT_ID = $standby_oracle_tenant_id and TENANT_ROLE = 'STANDBY' and SWITCHOVER_STATUS = 'NORMAL',1,30;
+#oracle 模式，主租户被lock
+ALTER TENANT backup_oracle_tenant LOCK;
+ALTER SYSTEM SWITCHOVER TO PRIMARY TENANT standby_oracle_tenant VERIFY;
+ERROR HY000: primary tenant is locked, switchover to primary is not allowed
+ALTER TENANT backup_oracle_tenant UNLOCK;
+ALTER SYSTEM SWITCHOVER TO PRIMARY TENANT standby_oracle_tenant VERIFY;
+ERROR HY000: log restore source is primary, switchover to primary is not allowed
+#oracle 模式，用户被lock
+ALTER USER mytest ACCOUNT LOCK;
+ALTER SYSTEM SWITCHOVER TO PRIMARY TENANT standby_oracle_tenant VERIFY;
+ERROR HY000: primary tenant's user account is locked, switchover to primary is not allowed
+ALTER USER mytest ACCOUNT UNLOCK;
+ALTER SYSTEM SWITCHOVER TO PRIMARY TENANT standby_oracle_tenant VERIFY;
+ERROR HY000: log restore source is primary, switchover to primary is not allowed
+#oracle 模式，用户完全查询没有权限
+REVOKE SELECT on SYS.DBA_OB_TENANTS FROM mytest;
+SHOW GRANTS FOR mytest;
+Grants for MYTEST@%
+GRANT USAGE ON *.* TO 'MYTEST'
+GRANT SELECT ON "SYS"."DBA_OB_ACCESS_POINT" TO 'MYTEST'
+GRANT SELECT ON "SYS"."DBA_OB_LS" TO 'MYTEST'
+GRANT SELECT ON "SYS"."DBA_OB_LS_HISTORY" TO 'MYTEST'
+GRANT SELECT ON "SYS"."GV$OB_LOG_STAT" TO 'MYTEST'
+GRANT SELECT ON "SYS"."GV$OB_PARAMETERS" TO 'MYTEST'
+GRANT SELECT ON "SYS"."GV$OB_UNITS" TO 'MYTEST'
+ALTER SYSTEM SWITCHOVER TO PRIMARY TENANT standby_oracle_tenant VERIFY;
+ERROR HY000: query primary failed(original error code: -942), switchover to primary is not allowed
+GRANT SELECT on SYS.DBA_OB_TENANTS to mytest;
+ALTER SYSTEM SWITCHOVER TO PRIMARY TENANT standby_oracle_tenant VERIFY;
+ERROR HY000: log restore source is primary, switchover to primary is not allowed
+#oracle 模式，用户密码错误
+ALTER USER mytest IDENTIFIED BY tttt;
+ALTER SYSTEM SWITCHOVER TO PRIMARY TENANT standby_oracle_tenant VERIFY;
+ERROR HY000: query primary failed(original error code: -1045), switchover to primary is not allowed
+ALTER USER mytest IDENTIFIED BY test;
+ALTER SYSTEM SWITCHOVER TO PRIMARY TENANT standby_oracle_tenant VERIFY;
+ERROR HY000: log restore source is primary, switchover to primary is not allowed
+#oracle 模式，主租户宕机
+ob1.z1.obs0.force_stop;
+ALTER SYSTEM SWITCHOVER TO PRIMARY TENANT standby_oracle_tenant VERIFY;
+ERROR HY000: query primary failed(original error code: -2002), switchover to primary is not allowed

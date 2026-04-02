@@ -1,0 +1,342 @@
+#owner: zhaoziqian.zzq
+#owner group: RS
+#tags: rs
+#description:
+# test parallel drop table basic in mysql mode
+
+###################### init #####################
+
+connect (mysql,$OBMYSQL_MS0,root,,oceanbase,$OBMYSQL_PORT);
+set @@session.recyclebin = off;
+--disable_warnings
+drop database if exists ziqian_parallel_drop_table;
+--enable_warnings
+create database ziqian_parallel_drop_table;
+use ziqian_parallel_drop_table;
+let $database_id = query_get_value(select database_id from oceanbase.__all_database where database_name = 'ziqian_parallel_drop_table', database_id, 1);
+
+###################### recyclebin off ######################
+
+set @@session.recyclebin = off;
+
+# case 1: drop table
+create table t1 (c1 int, c2 int);
+insert into t1 values (1, 10), (2, 20), (3, 30);
+drop table t1;
+--error 1051
+drop table t1;
+--error 1051
+drop table a_non_existing_database.t1;
+ 
+# case 2: drop table if exists
+create table t1 (c1 int, c2 int);
+insert into t1 values (1, 10), (2, 20), (3, 30);
+drop table if exists t1;
+drop table if exists t1;
+drop table if exists a_non_existing_database.t1;
+
+# case 3: drop partitioned table
+create table t1(c1 int primary key, c2 int) partition by hash(c1) partitions 2;
+insert into t1 values (1, 10), (2, 20), (3, 30);
+drop table t1;
+
+# case 4: drop table with fk
+# case 4.1: drop child table
+create table t1 (c1 int primary key, c2 int);
+create table t2 (c1 int primary key, c2 int, constraint fk1 foreign key (c2) references t1(c1));
+drop table t2;
+drop table t1;
+
+# case 4.2: drop child table with mock parent table, and all columns of mock parent tables are unreferenced after drop
+set foreign_key_checks = off;
+create table t1 (c1 int primary key, c2 int, constraint fk1 foreign key (c2) references t2(c1));
+drop table t1;
+set foreign_key_checks = on;
+
+# case 4.3: drop child table with mock parent table, and some columns of mock parent tables are still referenced after drop
+set foreign_key_checks = off;
+create table t1 (c1 int primary key, c2 int, constraint fk1 foreign key (c2) references t3(c1));
+create table t2 (c1 int primary key, c2 int, constraint fk2 foreign key (c2) references t3(c2));
+drop table t1;
+drop table t2;
+set foreign_key_checks = on;
+
+# case 4.4: drop child table with mock parent table, and all columns of mock parent tables are still referenced after drop
+set foreign_key_checks = off;
+create table t1 (c1 int primary key, c2 int, constraint fk1 foreign key (c2) references t3(c1));
+create table t2 (c1 int primary key, c2 int, constraint fk2 foreign key (c2) references t3(c1));
+drop table t1;
+drop table t2;
+set foreign_key_checks = on;
+
+# case 4.5: drop parent table while foreign_key_checks = on;
+create table t1 (c1 int primary key, c2 int);
+create table t2 (c1 int primary key, c2 int, constraint fk1 foreign key (c2) references t1(c1));
+-- error 3730
+drop table t1;
+drop table t2;
+drop table t1;
+
+# case 4.6: drop parent table while foreign_key_checks = off;
+set foreign_key_checks = off;
+create table t1 (c1 int primary key, c2 int);
+create table t2 (c1 int primary key, c2 int, constraint fk1 foreign key (c2) references t1(c1));
+drop table t1;
+drop table t2;
+set foreign_key_checks = on;
+
+# case 4.7: drop self ref fk table
+create table t1 (c1 int primary key, c2 int, constraint fk1 foreign key (c2) references t1(c1));
+drop table t1;
+
+# case 5: drop table with constraint
+create table t1 (c1 int primary key, c2 int unique, c3 int not null, c4 int, constraint cst1 check (c4 > 0));
+drop table t1;
+
+# case 6: drop table with index
+create table t1 (c1 int primary key, c2 int, c3 int, index i1 (c2), index i2 (c3));
+drop table t1;
+
+# case 7: drop table with aux lob table
+create table t1 (c1 int primary key, c2 text);
+drop table t1;
+
+# case 8: drop table with trigger
+create table t1 (c1 int primary key, c2 int);
+create trigger trigger1 before insert on t1 for each row set @sum = @sum + NEW.c2;
+drop table t1;
+
+# case 9: drop table with dep views
+create table t1 (c1 int primary key, c2 int);
+create view v1 as select c2 from t1;
+drop table t1;
+--error 1356
+select * from v1;
+drop view v1;
+
+# case 10: drop a complex table with many schemas:
+# - partitioned
+# - real fk parent table
+# - mock fk parent table
+# - fk child table
+# - check constraint
+# - index table
+# - aux lob table
+# - trigger
+# - dep view
+set foreign_key_checks = off;
+create table t1(c1 int primary key, c2 int);
+create table complex_table(c1 int primary key, c2 int, c3 int, c4 int, c5 int, c6 text, c7 int, c8 int, index i1 (c2), constraint fk1 foreign key (c3) references t1(c1), constraint fk2 foreign key (c4) references t2(c1), constraint cst1 check (c5 > 0)) partition by hash(c1) partitions 2;
+create table t3(c1 int primary key, c2 int, constraint fk3 foreign key (c2) references complex_table(c1));
+create trigger trigger1 before insert on complex_table for each row set @sum = @sum + NEW.c7;
+create view v1 as select c8 from complex_table;
+create materialized view mv1 as select * from complex_table;
+drop table complex_table;
+drop table t1;
+drop table t3;
+drop view v1;
+drop materialized view mv1;
+set foreign_key_checks = on;
+
+# case 11: drop table which name has special characters
+create table cafe (c1 int primary key, c2 int);
+drop table café;
+
+# case 12: drop table, which is actually a view
+create table t1 (c1 int primary key, c2 int);
+create view v1 as select * from t1;
+--error 1051
+drop table v1;
+drop view v1;
+create view v1 as select * from t1;
+drop table if exists v1;
+drop view v1;
+drop table t1;
+
+# case 13: drop table with dep mv
+create table t1 (c1 int primary key, c2 int);
+create materialized view mv1 as select c2 from t1;
+drop table t1;
+--error 1146
+call dbms_mview.refresh('mv1');
+drop materialized view mv1;
+
+# case 14: drop table with vec index
+alter system set ob_vector_memory_limit_percentage = 30;
+create table t1(c1 int, c2 int, c3 int, c4 int, c5 vector(3), primary key(c1));
+create vector index i1 on t1(c5) with (distance=l2, type=hnsw);
+let $idx_id = query_get_value(select table_id from oceanbase.__all_table where data_table_id = (select table_id from oceanbase.__all_table where table_name = 't1' and database_id = $database_id) and table_name like '%_i1', table_id, 1);
+--disable_query_log
+eval select count(*) from oceanbase.dba_scheduler_jobs where job_name like '%$idx_id%';
+--enable_query_log
+drop table t1;
+--disable_query_log
+eval select count(*) from oceanbase.dba_scheduler_jobs where job_name like '%$idx_id%';
+--enable_query_log
+alter system set ob_vector_memory_limit_percentage = 0;
+
+###################### recyclebin on ######################
+
+set @@session.recyclebin = on;
+
+# case 1: drop table
+create table t1 (c1 int, c2 int);
+insert into t1 values (1, 10), (2, 20), (3, 30);
+drop table t1;
+--error 1051
+drop table t1;
+--error 1051
+drop table a_non_existing_database.t1;
+ 
+# case 2: drop table if exists
+create table t1 (c1 int, c2 int);
+insert into t1 values (1, 10), (2, 20), (3, 30);
+drop table if exists t1;
+drop table if exists t1;
+drop table if exists a_non_existing_database.t1;
+
+# case 3: drop partitioned table
+create table t1(c1 int primary key, c2 int) partition by hash(c1) partitions 2;
+insert into t1 values (1, 10), (2, 20), (3, 30);
+drop table t1;
+
+# case 4: drop table with fk
+# case 4.1: drop child table
+create table t1 (c1 int primary key, c2 int);
+create table t2 (c1 int primary key, c2 int, constraint fk1 foreign key (c2) references t1(c1));
+drop table t2;
+drop table t1;
+
+# case 4.2: drop child table with mock parent table, and all columns of mock parent tables are unreferenced after drop
+set foreign_key_checks = off;
+create table t1 (c1 int primary key, c2 int, constraint fk1 foreign key (c2) references t2(c1));
+drop table t1;
+set foreign_key_checks = on;
+
+# case 4.3: drop child table with mock parent table, and some columns of mock parent tables are still referenced after drop
+set foreign_key_checks = off;
+create table t1 (c1 int primary key, c2 int, constraint fk1 foreign key (c2) references t3(c1));
+create table t2 (c1 int primary key, c2 int, constraint fk2 foreign key (c2) references t3(c2));
+drop table t1;
+drop table t2;
+set foreign_key_checks = on;
+
+# case 4.4: drop child table with mock parent table, and all columns of mock parent tables are still referenced after drop
+set foreign_key_checks = off;
+create table t1 (c1 int primary key, c2 int, constraint fk1 foreign key (c2) references t3(c1));
+create table t2 (c1 int primary key, c2 int, constraint fk2 foreign key (c2) references t3(c1));
+drop table t1;
+drop table t2;
+set foreign_key_checks = on;
+
+# case 4.5: drop parent table while foreign_key_checks = on;
+create table t1 (c1 int primary key, c2 int);
+create table t2 (c1 int primary key, c2 int, constraint fk1 foreign key (c2) references t1(c1));
+-- error 3730
+drop table t1;
+drop table t2;
+drop table t1;
+
+# case 4.6: drop parent table while foreign_key_checks = off;
+set foreign_key_checks = off;
+create table t1 (c1 int primary key, c2 int);
+create table t2 (c1 int primary key, c2 int, constraint fk1 foreign key (c2) references t1(c1));
+drop table t1;
+drop table t2;
+set foreign_key_checks = on;
+
+# case 4.7: drop self ref fk table
+create table t1 (c1 int primary key, c2 int, constraint fk1 foreign key (c2) references t1(c1));
+drop table t1;
+
+# case 5: drop table with constraint
+create table t1 (c1 int primary key, c2 int unique, c3 int not null, c4 int, constraint cst1 check (c4 > 0));
+drop table t1;
+
+# case 6: drop table with index
+create table t1 (c1 int primary key, c2 int, c3 int, index i1 (c2), index i2 (c3));
+drop table t1;
+
+# case 7: drop table with aux lob table
+create table t1 (c1 int primary key, c2 text);
+drop table t1;
+
+# case 8: drop table with trigger
+create table t1 (c1 int primary key, c2 int);
+create trigger trigger1 before insert on t1 for each row set @sum = @sum + NEW.c2;
+drop table t1;
+
+# case 9: drop table with dep views
+create table t1 (c1 int primary key, c2 int);
+create view v1 as select c2 from t1;
+drop table t1;
+--error 1356
+select * from v1;
+drop view v1;
+
+# case 10: drop a complex table with many schemas:
+# - partitioned
+# - real fk parent table
+# - mock fk parent table
+# - fk child table
+# - check constraint
+# - index table
+# - aux lob table
+# - trigger
+# - dep view
+set foreign_key_checks = off;
+create table t1(c1 int primary key, c2 int);
+create table complex_table(c1 int primary key, c2 int, c3 int, c4 int, c5 int, c6 text, c7 int, c8 int, index i1 (c2), constraint fk1 foreign key (c3) references t1(c1), constraint fk2 foreign key (c4) references t2(c1), constraint cst1 check (c5 > 0)) partition by hash(c1) partitions 2;
+create table t3(c1 int primary key, c2 int, constraint fk3 foreign key (c2) references complex_table(c1));
+create trigger trigger1 before insert on complex_table for each row set @sum = @sum + NEW.c7;
+create view v1 as select c8 from complex_table;
+create materialized view mv1 as select * from complex_table;
+drop table complex_table;
+drop table t1;
+drop table t3;
+drop view v1;
+drop materialized view mv1;
+set foreign_key_checks = on;
+
+# case 11: drop table which name has special characters
+create table cafe (c1 int primary key, c2 int);
+drop table café;
+
+# case 12: drop table, which is actually a view
+create table t1 (c1 int primary key, c2 int);
+create view v1 as select * from t1;
+--error 1051
+drop table v1;
+drop view v1;
+create view v1 as select * from t1;
+drop table if exists v1;
+drop view v1;
+drop table t1;
+
+# case 13: drop table with dep mv
+create table t1 (c1 int primary key, c2 int);
+create materialized view mv1 as select c2 from t1;
+drop table t1;
+--error 1146
+call dbms_mview.refresh('mv1');
+drop materialized view mv1;
+
+# case 14: drop table with vec index
+alter system set ob_vector_memory_limit_percentage = 30;
+create table t1(c1 int, c2 int, c3 int, c4 int, c5 vector(3), primary key(c1));
+create vector index i1 on t1(c5) with (distance=l2, type=hnsw);
+let $idx_id = query_get_value(select table_id from oceanbase.__all_table where data_table_id = (select table_id from oceanbase.__all_table where table_name = 't1' and database_id = $database_id) and table_name like '%_i1', table_id, 1);
+--disable_query_log
+eval select count(*) from oceanbase.dba_scheduler_jobs where job_name like '%$idx_id%';
+--enable_query_log
+drop table t1;
+--disable_query_log
+eval select count(*) from oceanbase.dba_scheduler_jobs where job_name like '%$idx_id%';
+--enable_query_log
+alter system set ob_vector_memory_limit_percentage = 0;
+
+###################### clear & recovery ######################
+
+purge recyclebin;
+set @@session.recyclebin = off;
+drop database ziqian_parallel_drop_table;

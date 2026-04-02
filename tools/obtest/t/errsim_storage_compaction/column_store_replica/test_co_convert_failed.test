@@ -1,0 +1,149 @@
+# owner: ouyanghongrong.oyh
+# owner group: storage
+# description: 测试迁移列存副本时行列转换全都失败, 然后做合并
+
+ob1=OBI(cluster=1:1:1,proxy_num=0,init_unit_cpu=4);
+let $extra_conf = "tablet_meta_table_check_interval='1m'";
+ob1.z1.obs0.set extra_config=_enable_defensive_check=0,$extra_conf;
+ob1.z2.obs0.set extra_config=_enable_defensive_check=0,$extra_conf;
+ob1.z3.obs0.set extra_config=_enable_defensive_check=0,$extra_conf;
+ob1.reboot;
+sleep 10;
+
+let $tenant_name = tenant1;
+
+--echo ===============================================================
+--echo =================  Step 0: prepare env   ======================
+--echo ===============================================================
+
+ob1.mysql alter resource unit sys_unit_config memory_size='2G';
+ob1.mysql alter system set enable_rebalance = 'false';
+ob1.mysql alter system set default_compress_func = 'none';
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+
+let $proxy_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $proxy_port = deploy_get_value(ob1.z1.obs0.mysql_port);
+
+connect(sys_conn, $proxy_ip, root@sys,,oceanbase, $proxy_port);
+
+ob1.mysql alter system set ob_compaction_schedule_interval = '10s' tenant obtest;
+ob1.mysql alter system set merger_check_interval = '10s' tenant obtest;
+
+--echo ===============================================================
+--echo =================  Step 1: create tenant   ====================
+--echo ===============================================================
+
+connection sys_conn;
+source include/get_user_config.inc;
+ob1.mysql create resource pool cs_replica_pool unit = "user_unit_config", unit_num = 1, zone_list = ('z1', 'z2', 'z3');
+ob1.mysql create TENANT $tenant_name resource_pool_list=('cs_replica_pool'), locality = "F@z1, F@z2", primary_zone = "z1" set ob_tcp_invited_nodes='%';
+ob1.mysql alter system set ob_compaction_schedule_interval = '10s' tenant tenant1;
+ob1.mysql alter system set merger_check_interval = '10s' tenant tenant1;
+
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = "$tenant_name", tenant_id, 1);
+let $resource_pool_id = deploy_get_value(ob1.select select resource_pool_id from oceanbase.__all_resource_pool where tenant_id = $tenant_id, resource_pool_id, 1);
+
+--echo ===============================================================
+--echo =================  Step 2: create table   =====================
+--echo ===============================================================
+
+ob_connect(z1_obs0, ob1.z1.obs0, root@$tenant_name, , test, , USE_MYSQL_CONNECTOR);
+ob_connect(z3_obs0, ob1.z3.obs0, root@$tenant_name, , test, , USE_MYSQL_CONNECTOR);
+connection z1_obs0;
+
+create table t1 (k int primary key, v1 int, v2 int);
+insert into t1 values (1, 1, 1);
+insert into t1 values (2, 2, 2);
+insert into t1 values (3, 3, 3);
+select * from t1 order by k;
+
+--echo ===============================================================
+--echo =================  Step 3: wait major freeze   ================
+--echo ===============================================================
+connection sys_conn;
+let $tablet_id = deploy_get_value(ob1.select select tablet_id from oceanbase.__all_virtual_table where table_name='t1', tablet_id, 1);
+let $last_scn  = deploy_get_value(ob1.select select last_scn from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $tenant_id, last_scn, 1);
+let $z3_ip0 = deploy_get_value(ob1.z3.obs0.ip);
+let $z3_port0 = deploy_get_value(ob1.z3.obs0.port);
+ob1.mysql alter system major freeze tenant $tenant_name;
+sleep 20;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tablet_meta_table where compaction_scn != $last_scn and tenant_id = $tenant_id and tablet_id = $tablet_id, 2, 600;
+
+--echo ===============================================================
+--echo ==========  Step 4: test co merge dag net all the time ========
+--echo ===============================================================
+# EN_COMPACTION_CO_MERGE_PREPARE_FAILED = 4016
+ob1.mysql alter tenant $tenant_name set locality = "F{1}@z1,F{1}@z2,C{1}@z3";
+ob1.check_until_timeout select count(*) from (select * from oceanbase.DBA_OB_TENANT_JOBS where tenant_id = $tenant_id order by START_TIME desc limit 1) where job_status = "INPROGRESS", 1, 100;
+ob1.mysql alter system set_tp tp_no = 720, error_code = 4016, frequency = 1;
+ob1.check_until_timeout select count(*) from (select * from oceanbase.DBA_OB_TENANT_JOBS where tenant_id = $tenant_id order by START_TIME desc limit 1) where job_status = "SUCCESS", 1, 100;
+ob1.mysql alter system set_tp tp_no = 720, error_code = 4016, frequency = 0;
+connection sys_conn;
+select count(*) from GV$OB_SSTABLES where (tenant_id, tablet_id) = (select tenant_id, tablet_id from __all_virtual_table where table_name = 't1') and table_type in ('CO_MAJOR');
+select count(*) from GV$OB_SSTABLES where (tenant_id, tablet_id) = (select tenant_id, tablet_id from __all_virtual_table where table_name = 't1') and table_type in ('MAJOR');
+
+connection z3_obs0;
+set ob_route_policy=READONLY_ZONE_FIRST;
+select * from t1 order by k;
+select k, v1 from t1 order by k;
+select avg(k), avg(v1), avg(v2) from t1;
+
+set ob_route_policy=COLUMN_STORE_ONLY;
+select /*+READ_CONSISTENCY(WEAK)+*/ * from t1 order by k;
+select /*+READ_CONSISTENCY(WEAK)+*/ k, v1 from t1 order by k;
+select /*+READ_CONSISTENCY(WEAK)+*/ avg(k), avg(v1), avg(v2) from t1;
+
+--echo ===============================================================
+--echo ==========  Step 5: major freeze and query  ===================
+--echo ===============================================================
+connection z1_obs0;
+insert into t1 values (4, 5, 6);
+insert into t1 values (5, 6, 7);
+insert into t1 values (6, 7, 8);
+
+select * from t1 order by k;
+
+connection sys_conn;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $tenant_id and status = 'IDLE', 1, 300;
+ob1.mysql alter system major freeze tenant $tenant_name;
+sleep 20;
+let $compaction_scn  = deploy_get_value(ob1.select select GLOBAL_BROADCAST_SCN from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $tenant_id, GLOBAL_BROADCAST_SCN, 1);
+let $tablet_id = deploy_get_value(ob1.select select tablet_id from oceanbase.__all_virtual_table where table_name='t1', tablet_id, 1);
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tablet_meta_table where compaction_scn = $compaction_scn and tenant_id = $tenant_id and tablet_id = $tablet_id, 3, 600;
+--disable_query_log
+eval select distinct(table_type) from oceanbase.GV\$OB_SSTABLES where tablet_id = (select tablet_id from __all_virtual_table where table_name = 't1') and table_type in ('MAJOR', 'CO_MAJOR', 'NORMAL_CG') and svr_ip = '$z3_ip0' and svr_port = $z3_port0 order by table_type;
+--enable_query_log
+
+connection z1_obs0;
+select * from t1 order by k;
+select k, v1 from t1 order by k;
+select avg(k), avg(v1), avg(v2) from t1;
+sleep 3;
+
+connection z3_obs0;
+set ob_route_policy=READONLY_ZONE_FIRST;
+select /*+READ_CONSISTENCY(WEAK)+*/ * from t1 order by k;
+select /*+READ_CONSISTENCY(WEAK)+*/ k, v1 from t1 order by k;
+select /*+READ_CONSISTENCY(WEAK)+*/ avg(k), avg(v1), avg(v2) from t1;
+
+set ob_route_policy=COLUMN_STORE_ONLY;
+select /*+READ_CONSISTENCY(WEAK)+*/ * from t1 order by k;
+select /*+READ_CONSISTENCY(WEAK)+*/ k, v1 from t1 order by k;
+select /*+READ_CONSISTENCY(WEAK)+*/ avg(k), avg(v1), avg(v2) from t1;
+
+--echo ===============================================================
+--echo ======  Step 6: test convert co column checksum error  ========
+--echo ===============================================================
+ob1.mysql alter tenant $tenant_name set locality = "F{1}@z1,F{1}@z2";
+ob1.check_until_timeout select count(*) from (select * from oceanbase.DBA_OB_TENANT_JOBS where tenant_id = $tenant_id order by START_TIME desc limit 1) where job_status = "INPROGRESS", 1, 100;
+ob1.check_until_timeout select count(*) from (select * from oceanbase.DBA_OB_TENANT_JOBS where tenant_id = $tenant_id order by START_TIME desc limit 1) where job_status = "SUCCESS", 1, 100;
+
+ob1.mysql alter system set_tp tp_name = "EN_CO_SSTABLE_COLUMN_CHECKSUM_ERROR", error_code = 4016, frequency = 1;
+ob1.mysql alter tenant $tenant_name set locality = "F{1}@z1,F{1}@z2,C{1}@z3";
+ob1.check_until_timeout select count(*) from (select * from oceanbase.DBA_OB_TENANT_JOBS where tenant_id = $tenant_id order by START_TIME desc limit 1) where job_status = "INPROGRESS", 1, 100;
+ob1.z3.obs0.check_log_until_success -c "EN_CO_SSTABLE_COLUMN_CHECKSUM_ERROR.*4016";
+ob1.z3.obs0.check_log_until_success -c "column checksum error match.*4103";
+ob1.mysql alter system set_tp tp_name = "EN_CO_SSTABLE_COLUMN_CHECKSUM_ERROR", error_code = 4016, frequency = 0;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tablet_replica_checksum where tenant_id = $tenant_id and tablet_id = $tablet_id, 3, 300;
+ob1.check_until_timeout select count(distinct(column_checksums))from oceanbase.__all_virtual_tablet_replica_checksum where tenant_id = $tenant_id and tablet_id = $tablet_id, 1, 30;
+ob1.mysql alter system set tablet_meta_table_check_interval = '30m';

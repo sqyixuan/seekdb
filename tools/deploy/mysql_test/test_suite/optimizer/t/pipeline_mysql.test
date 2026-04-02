@@ -1,0 +1,114 @@
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+#owner: zhenling.zzg
+#owner group: sql1
+# tags: optimizer
+--disable_warnings
+drop table if exists t1,t2,t3,t4,t5;
+drop sequence if exists seq1;
+drop sequence if exists seq2;
+drop sequence if exists seq3;
+drop sequence if exists seq4;
+drop sequence if exists seq5;
+--enable_warnings
+
+create table t1(c1 int, c2 int, c3 int, c4 int);
+create table t2(c1 int, c2 int, c3 int, c4 int)partition by hash(c1) partitions 16;
+create table t3(c1 int, c2 int, c3 int, c4 int)partition by hash(c1) partitions 16 subpartition by hash(C2) subpartitions 16;
+create table t4(c1 int primary key, c2 int, c3 int, c4 int)partition by hash(c1) partitions 128;
+create table t5(c1 int, c2 int, c3 int, c4 int);
+
+create index t1_i1 on t1(c4);
+create index t1_i2 on t1(c3);
+create index t2_i1 on t2(c4);
+create index t2_i2 on t2(c1);
+create index t3_i1 on t3(c4);
+create index t4_i1 on t4(c4) partition by hash(c4) partitions 16;
+create index t5_i1 on t5(c4);
+create index t5_i2 on t5(c3);
+
+create sequence seq1;
+create sequence seq2;
+create sequence seq3;
+create sequence seq4;
+create sequence seq5;
+
+insert into t1 select seq1.nextval, seq1.currval, seq1.currval, seq1.currval from table(generator(10000));
+insert into t2 select seq2.nextval, seq2.currval, seq2.currval, seq2.currval from table(generator(10000));
+insert into t3 select seq3.nextval, seq3.currval, seq3.currval, seq3.currval from table(generator(10000));
+insert into t4 select seq4.nextval, seq4.currval, seq4.currval, case when seq4.currval > 9900 then 9900 else seq4.currval end from table(generator(10000));
+insert into t5 select seq5.nextval, seq5.currval, seq5.currval, case when seq5.currval > 9900 then 9900 else seq5.currval end from table(generator(10000));
+
+--source mysql_test/include/minorfreeze.inc
+--source mysql_test/include/wait_minor_merge.inc
+
+call dbms_stats.gather_table_stats(NULL, 't4');
+call dbms_stats.gather_table_stats(NULL, 't5', method_opt=>'for all columns size 1');
+--explain_protocol 2
+--result_format 3
+
+##test range order
+select /*+parallel(4)*/ * from t1 order by c4 limit 10;
+select /*+index(t2 t2_i1) parallel(4)*/ * from t2 where c1 = 1 order by c4 limit 10;
+select /*+index(t3 t3_i1) parallel(4)*/ * from t3 where c1 = 1 and c2 = 1 order by c4 limit 10;
+select /*+index(t2 t2_i1) parallel(4)*/ * from t2 where c1 != 1 order by c4 limit 10;
+select /*+index(t3 t3_i1) parallel(4)*/ * from t3 where c1 = 1 order by c4 limit 10;
+
+##test force partition gi for topN
+select /*+index(t2 t2_i1) parallel(1)*/ * from t2 order by c4 limit 10;
+select /*+index(t2 t2_i1) parallel(2)*/ * from t2 order by c4 limit 10;
+select /*+index(t2 t2_i1) parallel(32)*/ * from t2 order by c4 limit 10;
+select  /*+index(t2 t2_i1) parallel(32)*/sql_calc_found_rows * from t2 order by c4 limit 10;
+
+##test limit re estimate for parallel plan
+select /*+leading(t1 t2) use_nl(t2) no_use_das(t2)*/ t1.c1 from t2,t1 where t1.c1 = t2.c1 limit 10;
+select /*+leading(t1 t2) use_hash(t2) no_use_das(t2)*/ t1.c1 from t2,t1 where t1.c1 = t2.c1 limit 10;
+
+select * from t2 limit 10;
+select * from t3 limit 10;
+
+explain basic select /*+parallel(4)*/ * from t2 limit 10;
+explain basic select /*+parallel(4)*/ * from t3 limit 10;
+
+select /*+index(t2 t2_i1) parallel(1)*/ * from t2 order by c4 limit 10;
+select /*+index(t2 t2_i1) parallel(2)*/ * from t2 order by c4 limit 10;
+select /*+index(t2 t2_i1) parallel(4)*/ * from t2 order by c4 limit 10;
+
+select /*+index(t3 t3_i1) parallel(1)*/ * from t3 order by c4 limit 10;
+select /*+index(t3 t3_i1) parallel(2)*/ * from t3 order by c4 limit 10;
+select /*+index(t3 t3_i1) parallel(4)*/ * from t3 order by c4 limit 10;
+
+select * from t4 where c4 = 9900  order by c1 desc limit 10;
+
+select /*+parallel(auto)*/ * from t1 A where
+not exists(select 1 from t1 B where A.c4 = B.c3 and B.c3 is not null and B.c4 > 5000)
+and exists (select /*+no_unnest*/ 1 from t1 C where A.c3 = C.c3)
+order by A.c4 limit 10;
+
+select /*+parallel(2)*/ * from t1 A where
+not exists(select 1 from t1 B where A.c4 = B.c3 and B.c3 is not null and B.c4 > 5000)
+and exists (select /*+no_unnest*/ 1 from t1 C where A.c3 = C.c3)
+order by A.c4 limit 10;
+
+select * from t5 where c4 = 9000 order by c3 limit 1;
+select * from t5 where c4 = 9900 order by c3 limit 1;
+select /*+no_rewrite*/ * from (select /*+no_rewrite*/ * from t5 where c4 = 9900 order by c3) limit 1;
+select * from t5 where c4 = (select /*+no_unnest*/ min(c1) from t4) order by c3 limit 1;
+select * from t1 where c1 > 1 limit 10;
+select /*+no_rewrite*/ * from (select /*+no_rewrite*/ * from t1 where c1 > 1)v limit 10;
+select /*+no_rewrite*/ * from (select /*+no_rewrite*/ * from t1)v limit 10;
+select /*+no_rewrite*/ * from (select /*+no_rewrite*/ * from t1 where c4 > 1)v limit 10;
+select /*+no_rewrite*/ * from (select /*+no_rewrite dynamic_sampling(1)*/ * from t1 where c4 > 1 and c2 > 3)v limit 10;
+select /*+no_rewrite*/ * from (select /*+no_rewrite */ * from t1 where c4 > 1 and c2 > 3)v limit 10;
+##TODO with estimator interface
+select /*+no_rewrite*/ * from (select /*+no_rewrite */ * from t5 where c3 > 1 and c2 + c3 > 3 + c4)v limit 10;
+select /*+no_rewrite*/ * from (select /*+no_rewrite*/ * from t1)v where v.c1 = 1 limit 10;
+
+select * from t5 A where
+not exists(select 1 from t5 B where A.c4 = B.c3 and B.c3 is not null and B.c4 > 5000)
+order by A.c4 limit 10;
+
+select * from t5 A where
+not exists(select 1 from t5 B where A.c4 = B.c2 and A.c2 > B.c1 and B.c3 is not null and B.c4 > 5000)
+order by A.c4 limit 10;

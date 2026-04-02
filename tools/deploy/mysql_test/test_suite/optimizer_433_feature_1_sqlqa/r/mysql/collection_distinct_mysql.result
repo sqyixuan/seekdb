@@ -1,0 +1,2056 @@
+result_format: 4
+purge recyclebin;
+drop table if exists lyqtest1;
+CREATE TABLE lyqtest1 (
+    c1 INT,
+    c2 VARCHAR(255),
+    c3 DATETIME,
+    c4 FLOAT,
+    c5 VARCHAR(255),
+    c6 DATE,
+    INDEX idx_c1_c2_c3 (c1, c2, c3),
+    INDEX idx_t1_c1 (c1)
+);
+INSERT INTO lyqtest1 (c1, c2, c3, c4, c5, c6) VALUES
+(1, 'example1', '2023-10-01 12:00:00', 10.5, 'data1', '2023-10-01');
+INSERT INTO lyqtest1 (c1, c2, c3, c4, c5, c6) VALUES
+(2, null, '2023-11-01 13:00:00', 20.5, 'data2', '2023-11-01');
+INSERT INTO lyqtest1 (c1, c2, c3, c4, c5, c6) VALUES
+(3, 'example3', '2023-12-01 14:00:00', 30.5, 'data3', '2023-12-01');
+drop table lyqtest2;
+CREATE TABLE lyqtest2 (
+    c1 INT,
+    c2 VARCHAR(255),
+    c3 DATETIME,
+    c4 FLOAT,
+    c5 VARCHAR(255),
+    c6 DATE,
+    INDEX idx_c1 (c1),
+    INDEX idx_c2 (c2),
+    INDEX idx_c5 (c5)
+) 
+PARTITION BY RANGE (YEAR(c6)) (
+    PARTITION p2020 VALUES LESS THAN (2021),
+    PARTITION p2021 VALUES LESS THAN (2022),
+    PARTITION p2022 VALUES LESS THAN (2023),
+    PARTITION p2023 VALUES LESS THAN MAXVALUE
+);
+INSERT INTO lyqtest2 (c1, c2, c3, c4, c5, c6) VALUES
+(1, 'example1', '2023-09-01 15:00:00', 40.5, 'data4', '2023-09-01');
+INSERT INTO lyqtest2 (c1, c2, c3, c4, c5, c6) VALUES
+(2, 'example2', '2023-08-01 16:00:00', 50.5, 'data5', '2023-08-01');
+INSERT INTO lyqtest2 (c1, c2, c3, c4, c5, c6) VALUES
+(null, 'example6', '2023-07-01 17:00:00', 60.5, 'data6', '2023-07-01');
+drop table lyqtest3;
+CREATE TABLE lyqtest3 AS SELECT * FROM lyqtest2;
+union
+UNION DISTINCT 算子下面直接接着 PX COORDINATOR 或者 EXCHANGE 的情况，会在 EXCHANGE 下面分配一个 DISTINCT
+会下推
+select c1 from lyqtest1 union select c1 from lyqtest2;
++------+
+| c1   |
++------+
+|    1 |
+|    2 |
+|    3 |
+| NULL |
++------+
+explain basic select c1 from lyqtest1 union select c1 from lyqtest2;
+Query Plan
+=========================================================
+|ID|OPERATOR                     |NAME                  |
+---------------------------------------------------------
+|0 |HASH UNION DISTINCT          |                      |
+|1 |├─TABLE FULL SCAN            |lyqtest1(idx_c1_c2_c3)|
+|2 |└─PX COORDINATOR             |                      |
+|3 |  └─EXCHANGE OUT DISTR       |:EX10000              |
+|4 |    └─HASH DISTINCT          |                      |
+|5 |      └─PX PARTITION ITERATOR|                      |
+|6 |        └─TABLE FULL SCAN    |lyqtest2(idx_c1)      |
+=========================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([UNION([1])]), filter(nil), rowset=16
+  1 - output([lyqtest1.c1]), filter(nil), rowset=16
+      access([lyqtest1.c1]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([lyqtest1.c1], [lyqtest1.c2], [lyqtest1.c3], [lyqtest1.__pk_increment]), range(MIN,MIN,MIN,MIN ; MAX,MAX,MAX,MAX)always true
+  2 - output([lyqtest2.c1]), filter(nil), rowset=16
+  3 - output([lyqtest2.c1]), filter(nil), rowset=16
+      dop=1
+  4 - output([lyqtest2.c1]), filter(nil), rowset=16
+      distinct([lyqtest2.c1])
+  5 - output([lyqtest2.c1]), filter(nil), rowset=16
+      force partition granule
+  6 - output([lyqtest2.c1]), filter(nil), rowset=16
+      access([lyqtest2.c1]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([lyqtest2.c1], [lyqtest2.__pk_increment]), range(MIN,MIN ; MAX,MAX)always true
+SELECT c5, LENGTH(c2) AS len_c2 FROM lyqtest2 WHERE c4 > 100.0 AND c2 IS NOT NULL
+UNION
+SELECT c5, LENGTH(c2) FROM lyqtest3 WHERE c1 < 10;
++-------+--------+
+| c5    | len_c2 |
++-------+--------+
+| data4 |      8 |
+| data5 |      8 |
++-------+--------+
+explain basic SELECT c5, LENGTH(c2) AS len_c2 FROM lyqtest2 WHERE c4 > 100.0 AND c2 IS NOT NULL
+UNION
+SELECT c5, LENGTH(c2) FROM lyqtest3 WHERE c1 < 10;
+Query Plan
+===========================================
+|ID|OPERATOR                     |NAME    |
+-------------------------------------------
+|0 |HASH UNION DISTINCT          |        |
+|1 |├─PX COORDINATOR             |        |
+|2 |│ └─EXCHANGE OUT DISTR       |:EX10000|
+|3 |│   └─HASH DISTINCT          |        |
+|4 |│     └─PX PARTITION ITERATOR|        |
+|5 |│       └─TABLE FULL SCAN    |lyqtest2|
+|6 |└─TABLE FULL SCAN            |lyqtest3|
+===========================================
+Outputs & filters:
+-------------------------------------
+  0 - output([UNION([1])], [UNION([2])]), filter(nil), rowset=16
+  1 - output([lyqtest2.c5], [LENGTH(lyqtest2.c2)]), filter(nil), rowset=16
+  2 - output([lyqtest2.c5], [LENGTH(lyqtest2.c2)]), filter(nil), rowset=16
+      dop=1
+  3 - output([lyqtest2.c5], [LENGTH(lyqtest2.c2)]), filter(nil), rowset=16
+      distinct([lyqtest2.c5], [LENGTH(lyqtest2.c2)])
+  4 - output([lyqtest2.c5], [LENGTH(lyqtest2.c2)]), filter(nil), rowset=16
+      force partition granule
+  5 - output([lyqtest2.c5], [LENGTH(lyqtest2.c2)]), filter([cast(lyqtest2.c4, DOUBLE(-1, -1)) > cast(100.0, DOUBLE(-1, -1))], [lyqtest2.c2 IS NOT NULL]), rowset=16
+      access([lyqtest2.c4], [lyqtest2.c2], [lyqtest2.c5]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, filter_before_indexback[false,false], 
+      range_key([lyqtest2.__pk_increment]), range(MIN ; MAX)always true
+  6 - output([lyqtest3.c5], [LENGTH(lyqtest3.c2)]), filter([lyqtest3.c1 < 10]), rowset=16
+      access([lyqtest3.c1], [lyqtest3.c5], [lyqtest3.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([lyqtest3.__pk_increment]), range(MIN ; MAX)always true
+SELECT c1, c2, CASE  WHEN c1 > 100 THEN 'High' ELSE 'Low' END AS c1_category FROM lyqtest1 WHERE c2 IS NOT NULL
+UNION
+SELECT c1, c2, CASE WHEN c1 > 100 THEN 'High' ELSE 'Low' END AS c1_category FROM lyqtest2 WHERE c2 IS NOT NULL;
++------+----------+-------------+
+| c1   | c2       | c1_category |
++------+----------+-------------+
+|    1 | example1 | Low         |
+|    3 | example3 | Low         |
+|    2 | example2 | Low         |
+| NULL | example6 | Low         |
++------+----------+-------------+
+explain basic SELECT c1, c2, CASE  WHEN c1 > 100 THEN 'High' ELSE 'Low' END AS c1_category FROM lyqtest1 WHERE c2 IS NOT NULL
+UNION
+SELECT c1, c2, CASE WHEN c1 > 100 THEN 'High' ELSE 'Low' END AS c1_category FROM lyqtest2 WHERE c2 IS NOT NULL;
+Query Plan
+=========================================================
+|ID|OPERATOR                     |NAME                  |
+---------------------------------------------------------
+|0 |HASH UNION DISTINCT          |                      |
+|1 |├─TABLE FULL SCAN            |lyqtest1(idx_c1_c2_c3)|
+|2 |└─PX COORDINATOR             |                      |
+|3 |  └─EXCHANGE OUT DISTR       |:EX10000              |
+|4 |    └─HASH DISTINCT          |                      |
+|5 |      └─PX PARTITION ITERATOR|                      |
+|6 |        └─TABLE FULL SCAN    |lyqtest2              |
+=========================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([UNION([1])], [UNION([2])], [UNION([3])]), filter(nil), rowset=16
+  1 - output([lyqtest1.c1], [lyqtest1.c2], [CASE WHEN lyqtest1.c1 > 100 THEN 'High' ELSE 'Low' END]), filter([lyqtest1.c2 IS NOT NULL]), rowset=16
+      access([lyqtest1.c2], [lyqtest1.c1]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([lyqtest1.c1], [lyqtest1.c2], [lyqtest1.c3], [lyqtest1.__pk_increment]), range(MIN,MIN,MIN,MIN ; MAX,MAX,MAX,MAX)always true
+  2 - output([lyqtest2.c1], [lyqtest2.c2], [CASE WHEN lyqtest2.c1 > 100 THEN 'High' ELSE 'Low' END]), filter(nil), rowset=16
+  3 - output([lyqtest2.c1], [lyqtest2.c2], [CASE WHEN lyqtest2.c1 > 100 THEN 'High' ELSE 'Low' END]), filter(nil), rowset=16
+      dop=1
+  4 - output([lyqtest2.c1], [lyqtest2.c2], [CASE WHEN lyqtest2.c1 > 100 THEN 'High' ELSE 'Low' END]), filter(nil), rowset=16
+      distinct([lyqtest2.c1], [lyqtest2.c2], [CASE WHEN lyqtest2.c1 > 100 THEN 'High' ELSE 'Low' END])
+  5 - output([lyqtest2.c2], [lyqtest2.c1], [CASE WHEN lyqtest2.c1 > 100 THEN 'High' ELSE 'Low' END]), filter(nil), rowset=16
+      force partition granule
+  6 - output([lyqtest2.c2], [lyqtest2.c1], [CASE WHEN lyqtest2.c1 > 100 THEN 'High' ELSE 'Low' END]), filter([lyqtest2.c2 IS NOT NULL]), rowset=16
+      access([lyqtest2.c2], [lyqtest2.c1]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([lyqtest2.__pk_increment]), range(MIN ; MAX)always true
+SELECT c1, c2 FROM (SELECT c1, c2 FROM lyqtest2 WHERE c1 < 50) AS sub1
+UNION
+SELECT c1, c2 FROM (SELECT c1, c2 FROM lyqtest3 WHERE c1 < 50) AS sub2;
++------+----------+
+| c1   | c2       |
++------+----------+
+|    1 | example1 |
+|    2 | example2 |
++------+----------+
+explain basic SELECT c1, c2 FROM (SELECT c1, c2 FROM lyqtest2 WHERE c1 < 50) AS sub1
+UNION
+SELECT c1, c2 FROM (SELECT c1, c2 FROM lyqtest3 WHERE c1 < 50) AS sub2;
+Query Plan
+===================================================
+|ID|OPERATOR                     |NAME            |
+---------------------------------------------------
+|0 |HASH UNION DISTINCT          |                |
+|1 |├─PX COORDINATOR             |                |
+|2 |│ └─EXCHANGE OUT DISTR       |:EX10000        |
+|3 |│   └─HASH DISTINCT          |                |
+|4 |│     └─PX PARTITION ITERATOR|                |
+|5 |│       └─TABLE RANGE SCAN   |lyqtest2(idx_c1)|
+|6 |└─TABLE FULL SCAN            |lyqtest3        |
+===================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([UNION([1])], [UNION([2])]), filter(nil), rowset=16
+  1 - output([lyqtest2.c1], [lyqtest2.c2]), filter(nil), rowset=16
+  2 - output([lyqtest2.c1], [lyqtest2.c2]), filter(nil), rowset=16
+      dop=1
+  3 - output([lyqtest2.c1], [lyqtest2.c2]), filter(nil), rowset=16
+      distinct([lyqtest2.c1], [lyqtest2.c2])
+  4 - output([lyqtest2.c1], [lyqtest2.c2]), filter(nil), rowset=16
+      force partition granule
+  5 - output([lyqtest2.c1], [lyqtest2.c2]), filter(nil), rowset=16
+      access([lyqtest2.__pk_increment], [lyqtest2.c1], [lyqtest2.c2]), partitions(p[0-3])
+      is_index_back=true, is_global_index=false, 
+      range_key([lyqtest2.c1], [lyqtest2.__pk_increment]), range(NULL,MAX ; 50,MIN), 
+      range_cond([lyqtest2.c1 < 50])
+  6 - output([lyqtest3.c1], [lyqtest3.c2]), filter([lyqtest3.c1 < 50]), rowset=16
+      access([lyqtest3.c1], [lyqtest3.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([lyqtest3.__pk_increment]), range(MIN ; MAX)always true
+SELECT DISTINCT c1, CASE WHEN c4 % 2 = 0 THEN 'Even' ELSE 'Odd' END AS parity FROM lyqtest1 WHERE c4 IS NOT NULL
+UNION
+SELECT DISTINCT c1, CASE WHEN c4 % 2 = 0 THEN 'Even' ELSE 'Odd' END FROM lyqtest2 WHERE c4 IS NOT NULL;
++------+--------+
+| c1   | parity |
++------+--------+
+|    1 | Odd    |
+|    2 | Odd    |
+|    3 | Odd    |
+| NULL | Odd    |
++------+--------+
+explain basic SELECT DISTINCT c1, CASE WHEN c4 % 2 = 0 THEN 'Even' ELSE 'Odd' END AS parity FROM lyqtest1 WHERE c4 IS NOT NULL
+UNION
+SELECT DISTINCT c1, CASE WHEN c4 % 2 = 0 THEN 'Even' ELSE 'Odd' END FROM lyqtest2 WHERE c4 IS NOT NULL;
+Query Plan
+===========================================
+|ID|OPERATOR                     |NAME    |
+-------------------------------------------
+|0 |HASH UNION DISTINCT          |        |
+|1 |├─TABLE FULL SCAN            |lyqtest1|
+|2 |└─PX COORDINATOR             |        |
+|3 |  └─EXCHANGE OUT DISTR       |:EX10000|
+|4 |    └─HASH DISTINCT          |        |
+|5 |      └─PX PARTITION ITERATOR|        |
+|6 |        └─TABLE FULL SCAN    |lyqtest2|
+===========================================
+Outputs & filters:
+-------------------------------------
+  0 - output([UNION([1])], [UNION([2])]), filter(nil), rowset=16
+  1 - output([lyqtest1.c1], [CASE WHEN cast(lyqtest1.c4, DOUBLE(-1, -1)) % cast(2, DOUBLE(-1, -1)) = cast(0, DOUBLE(-1, -1)) THEN 'Even' ELSE 'Odd' END]), filter([lyqtest1.c4 
+      IS NOT NULL]), rowset=16
+      access([lyqtest1.c4], [lyqtest1.c1]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([lyqtest1.__pk_increment]), range(MIN ; MAX)always true
+  2 - output([lyqtest2.c1], [CASE WHEN cast(lyqtest2.c4, DOUBLE(-1, -1)) % cast(2, DOUBLE(-1, -1)) = cast(0, DOUBLE(-1, -1)) THEN 'Even' ELSE 'Odd' END]), filter(nil), rowset=16
+  3 - output([lyqtest2.c1], [CASE WHEN cast(lyqtest2.c4, DOUBLE(-1, -1)) % cast(2, DOUBLE(-1, -1)) = cast(0, DOUBLE(-1, -1)) THEN 'Even' ELSE 'Odd' END]), filter(nil), rowset=16
+      dop=1
+  4 - output([lyqtest2.c1], [CASE WHEN cast(lyqtest2.c4, DOUBLE(-1, -1)) % cast(2, DOUBLE(-1, -1)) = cast(0, DOUBLE(-1, -1)) THEN 'Even' ELSE 'Odd' END]), filter(nil), rowset=16
+      distinct([lyqtest2.c1], [CASE WHEN cast(lyqtest2.c4, DOUBLE(-1, -1)) % cast(2, DOUBLE(-1, -1)) = cast(0, DOUBLE(-1, -1)) THEN 'Even' ELSE 'Odd' END])
+  5 - output([lyqtest2.c1], [CASE WHEN cast(lyqtest2.c4, DOUBLE(-1, -1)) % cast(2, DOUBLE(-1, -1)) = cast(0, DOUBLE(-1, -1)) THEN 'Even' ELSE 'Odd' END]), filter(nil), rowset=16
+      force partition granule
+  6 - output([lyqtest2.c1], [CASE WHEN cast(lyqtest2.c4, DOUBLE(-1, -1)) % cast(2, DOUBLE(-1, -1)) = cast(0, DOUBLE(-1, -1)) THEN 'Even' ELSE 'Odd' END]), filter([lyqtest2.c4 
+      IS NOT NULL]), rowset=16
+      access([lyqtest2.c4], [lyqtest2.c1]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([lyqtest2.__pk_increment]), range(MIN ; MAX)always true
+能判断出来唯一，就不会分配 distinct
+SELECT c1, COUNT(DISTINCT c5) AS unique_c5_count FROM lyqtest1 WHERE YEAR(c3) > 2020 GROUP BY c1 
+UNION
+SELECT c1, COUNT(DISTINCT c5) FROM lyqtest2 WHERE c4 > 100.0 GROUP BY c1;
++------+-----------------+
+| c1   | unique_c5_count |
++------+-----------------+
+|    1 |               1 |
+|    2 |               1 |
+|    3 |               1 |
++------+-----------------+
+explain basic SELECT c1, COUNT(DISTINCT c5) AS unique_c5_count FROM lyqtest1 WHERE YEAR(c3) > 2020 GROUP BY c1 
+UNION
+SELECT c1, COUNT(DISTINCT c5) FROM lyqtest2 WHERE c4 > 100.0 GROUP BY c1;
+Query Plan
+=============================================================
+|ID|OPERATOR                                       |NAME    |
+-------------------------------------------------------------
+|0 |HASH UNION DISTINCT                            |        |
+|1 |├─PX COORDINATOR                               |        |
+|2 |│ └─EXCHANGE OUT DISTR                         |:EX10002|
+|3 |│   └─MERGE GROUP BY                           |        |
+|4 |│     └─EXCHANGE IN MERGE SORT DISTR           |        |
+|5 |│       └─EXCHANGE OUT DISTR (HASH)            |:EX10001|
+|6 |│         └─MERGE GROUP BY                     |        |
+|7 |│           └─SORT                             |        |
+|8 |│             └─SUBPLAN SCAN                   |VIEW2   |
+|9 |│               └─HASH DISTINCT                |        |
+|10|│                 └─EXCHANGE IN DISTR          |        |
+|11|│                   └─EXCHANGE OUT DISTR (HASH)|:EX10000|
+|12|│                     └─HASH DISTINCT          |        |
+|13|│                       └─PX PARTITION ITERATOR|        |
+|14|│                         └─TABLE FULL SCAN    |lyqtest2|
+|15|└─MERGE GROUP BY                               |        |
+|16|  └─SORT                                       |        |
+|17|    └─SUBPLAN SCAN                             |VIEW1   |
+|18|      └─HASH DISTINCT                          |        |
+|19|        └─TABLE FULL SCAN                      |lyqtest1|
+=============================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([UNION([1])], [UNION([2])]), filter(nil), rowset=16
+  1 - output([VIEW2.lyqtest2.c1], [T_FUN_COUNT_SUM(T_FUN_COUNT(VIEW2.lyqtest2.c5))]), filter(nil), rowset=16
+  2 - output([VIEW2.lyqtest2.c1], [T_FUN_COUNT_SUM(T_FUN_COUNT(VIEW2.lyqtest2.c5))]), filter(nil), rowset=16
+      dop=1
+  3 - output([VIEW2.lyqtest2.c1], [T_FUN_COUNT_SUM(T_FUN_COUNT(VIEW2.lyqtest2.c5))]), filter(nil), rowset=16
+      group([VIEW2.lyqtest2.c1]), agg_func([T_FUN_COUNT_SUM(T_FUN_COUNT(VIEW2.lyqtest2.c5))])
+  4 - output([VIEW2.lyqtest2.c1], [T_FUN_COUNT(VIEW2.lyqtest2.c5)]), filter(nil), rowset=16
+      sort_keys([VIEW2.lyqtest2.c1, ASC])
+  5 - output([VIEW2.lyqtest2.c1], [T_FUN_COUNT(VIEW2.lyqtest2.c5)]), filter(nil), rowset=16
+      (#keys=1, [VIEW2.lyqtest2.c1]), dop=1
+  6 - output([VIEW2.lyqtest2.c1], [T_FUN_COUNT(VIEW2.lyqtest2.c5)]), filter(nil), rowset=16
+      group([VIEW2.lyqtest2.c1]), agg_func([T_FUN_COUNT(VIEW2.lyqtest2.c5)])
+  7 - output([VIEW2.lyqtest2.c1], [VIEW2.lyqtest2.c5]), filter(nil), rowset=16
+      sort_keys([VIEW2.lyqtest2.c1, ASC])
+  8 - output([VIEW2.lyqtest2.c1], [VIEW2.lyqtest2.c5]), filter(nil), rowset=16
+      access([VIEW2.lyqtest2.c1], [VIEW2.lyqtest2.c5])
+  9 - output([lyqtest2.c1], [lyqtest2.c5]), filter(nil), rowset=16
+      distinct([lyqtest2.c1], [lyqtest2.c5])
+ 10 - output([lyqtest2.c1], [lyqtest2.c5]), filter(nil), rowset=16
+ 11 - output([lyqtest2.c1], [lyqtest2.c5]), filter(nil), rowset=16
+      (#keys=2, [lyqtest2.c1], [lyqtest2.c5]), dop=1
+ 12 - output([lyqtest2.c1], [lyqtest2.c5]), filter(nil), rowset=16
+      distinct([lyqtest2.c1], [lyqtest2.c5])
+ 13 - output([lyqtest2.c1], [lyqtest2.c5]), filter(nil), rowset=16
+      force partition granule
+ 14 - output([lyqtest2.c1], [lyqtest2.c5]), filter([cast(lyqtest2.c4, DOUBLE(-1, -1)) > cast(100.0, DOUBLE(-1, -1))]), rowset=16
+      access([lyqtest2.c4], [lyqtest2.c1], [lyqtest2.c5]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([lyqtest2.__pk_increment]), range(MIN ; MAX)always true
+ 15 - output([VIEW1.lyqtest1.c1], [T_FUN_COUNT(VIEW1.lyqtest1.c5)]), filter(nil), rowset=16
+      group([VIEW1.lyqtest1.c1]), agg_func([T_FUN_COUNT(VIEW1.lyqtest1.c5)])
+ 16 - output([VIEW1.lyqtest1.c1], [VIEW1.lyqtest1.c5]), filter(nil), rowset=16
+      sort_keys([VIEW1.lyqtest1.c1, ASC])
+ 17 - output([VIEW1.lyqtest1.c1], [VIEW1.lyqtest1.c5]), filter(nil), rowset=16
+      access([VIEW1.lyqtest1.c1], [VIEW1.lyqtest1.c5])
+ 18 - output([lyqtest1.c1], [lyqtest1.c5]), filter(nil), rowset=16
+      distinct([lyqtest1.c1], [lyqtest1.c5])
+ 19 - output([lyqtest1.c1], [lyqtest1.c5]), filter([year(lyqtest1.c3) > 2020]), rowset=16
+      access([lyqtest1.c3], [lyqtest1.c1], [lyqtest1.c5]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([lyqtest1.__pk_increment]), range(MIN ; MAX)always true
+SELECT UPPER(c2) AS upper_c2, AVG(c4) FROM lyqtest2 WHERE c1 BETWEEN 1 AND 50 GROUP BY UPPER(c2)
+UNION
+SELECT UPPER(c2), AVG(c4) FROM lyqtest3 WHERE c6 < '2022-01-01' GROUP BY UPPER(c2);
++----------+---------+
+| upper_c2 | AVG(c4) |
++----------+---------+
+| EXAMPLE1 |    40.5 |
+| EXAMPLE2 |    50.5 |
++----------+---------+
+explain basic SELECT UPPER(c2) AS upper_c2, AVG(c4) FROM lyqtest2 WHERE c1 BETWEEN 1 AND 50 GROUP BY UPPER(c2)
+UNION
+SELECT UPPER(c2), AVG(c4) FROM lyqtest3 WHERE c6 < '2022-01-01' GROUP BY UPPER(c2);
+Query Plan
+===========================================================
+|ID|OPERATOR                             |NAME            |
+-----------------------------------------------------------
+|0 |HASH UNION DISTINCT                  |                |
+|1 |├─PX COORDINATOR                     |                |
+|2 |│ └─EXCHANGE OUT DISTR               |:EX10001        |
+|3 |│   └─MERGE GROUP BY                 |                |
+|4 |│     └─EXCHANGE IN MERGE SORT DISTR |                |
+|5 |│       └─EXCHANGE OUT DISTR (HASH)  |:EX10000        |
+|6 |│         └─MERGE GROUP BY           |                |
+|7 |│           └─SORT                   |                |
+|8 |│             └─PX PARTITION ITERATOR|                |
+|9 |│               └─TABLE RANGE SCAN   |lyqtest2(idx_c1)|
+|10|└─MERGE GROUP BY                     |                |
+|11|  └─SORT                             |                |
+|12|    └─TABLE FULL SCAN                |lyqtest3        |
+===========================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([UNION([1])], [UNION([2])]), filter(nil), rowset=16
+  1 - output([UPPER(lyqtest2.c2)], [cast(T_FUN_SUM(T_FUN_SUM(cast(lyqtest2.c4, DOUBLE(-1, -1)))) / cast(T_FUN_COUNT_SUM(T_FUN_COUNT(cast(lyqtest2.c4, DOUBLE(-1,
+       -1)))), DOUBLE(-1, -1)), DOUBLE(-1, -1))]), filter(nil), rowset=16
+  2 - output([UPPER(lyqtest2.c2)], [T_FUN_SUM(T_FUN_SUM(cast(lyqtest2.c4, DOUBLE(-1, -1))))], [T_FUN_COUNT_SUM(T_FUN_COUNT(cast(lyqtest2.c4, DOUBLE(-1, 
+      -1))))]), filter(nil), rowset=16
+      dop=1
+  3 - output([UPPER(lyqtest2.c2)], [T_FUN_SUM(T_FUN_SUM(cast(lyqtest2.c4, DOUBLE(-1, -1))))], [T_FUN_COUNT_SUM(T_FUN_COUNT(cast(lyqtest2.c4, DOUBLE(-1, 
+      -1))))]), filter(nil), rowset=16
+      group([UPPER(lyqtest2.c2)]), agg_func([T_FUN_SUM(T_FUN_SUM(cast(lyqtest2.c4, DOUBLE(-1, -1))))], [T_FUN_COUNT_SUM(T_FUN_COUNT(cast(lyqtest2.c4, DOUBLE(-1,
+       -1))))])
+  4 - output([UPPER(lyqtest2.c2)], [T_FUN_SUM(cast(lyqtest2.c4, DOUBLE(-1, -1)))], [T_FUN_COUNT(cast(lyqtest2.c4, DOUBLE(-1, -1)))]), filter(nil), rowset=16
+      sort_keys([UPPER(lyqtest2.c2), ASC])
+  5 - output([UPPER(lyqtest2.c2)], [T_FUN_SUM(cast(lyqtest2.c4, DOUBLE(-1, -1)))], [T_FUN_COUNT(cast(lyqtest2.c4, DOUBLE(-1, -1)))]), filter(nil), rowset=16
+      (#keys=1, [UPPER(lyqtest2.c2)]), dop=1
+  6 - output([UPPER(lyqtest2.c2)], [T_FUN_SUM(cast(lyqtest2.c4, DOUBLE(-1, -1)))], [T_FUN_COUNT(cast(lyqtest2.c4, DOUBLE(-1, -1)))]), filter(nil), rowset=16
+      group([UPPER(lyqtest2.c2)]), agg_func([T_FUN_SUM(cast(lyqtest2.c4, DOUBLE(-1, -1)))], [T_FUN_COUNT(cast(lyqtest2.c4, DOUBLE(-1, -1)))])
+  7 - output([UPPER(lyqtest2.c2)], [cast(lyqtest2.c4, DOUBLE(-1, -1))]), filter(nil), rowset=16
+      sort_keys([UPPER(lyqtest2.c2), ASC])
+  8 - output([lyqtest2.c4], [UPPER(lyqtest2.c2)]), filter(nil), rowset=16
+      force partition granule
+  9 - output([lyqtest2.c4], [UPPER(lyqtest2.c2)]), filter(nil), rowset=16
+      access([lyqtest2.__pk_increment], [lyqtest2.c2], [lyqtest2.c4]), partitions(p[0-3])
+      is_index_back=true, is_global_index=false, 
+      range_key([lyqtest2.c1], [lyqtest2.__pk_increment]), range(1,MIN ; 50,MAX), 
+      range_cond([lyqtest2.c1 >= 1], [lyqtest2.c1 <= 50])
+ 10 - output([UPPER(lyqtest3.c2)], [cast(T_FUN_SUM(cast(lyqtest3.c4, DOUBLE(-1, -1))) / cast(T_FUN_COUNT(cast(lyqtest3.c4, DOUBLE(-1, -1))), DOUBLE(-1, 
+      -1)), DOUBLE(-1, -1))]), filter(nil), rowset=16
+      group([UPPER(lyqtest3.c2)]), agg_func([T_FUN_SUM(cast(lyqtest3.c4, DOUBLE(-1, -1)))], [T_FUN_COUNT(cast(lyqtest3.c4, DOUBLE(-1, -1)))])
+ 11 - output([UPPER(lyqtest3.c2)], [cast(lyqtest3.c4, DOUBLE(-1, -1))]), filter(nil), rowset=16
+      sort_keys([UPPER(lyqtest3.c2), ASC])
+ 12 - output([lyqtest3.c4], [UPPER(lyqtest3.c2)]), filter([lyqtest3.c6 < demote_cast('2022-01-01', MYSQL_DATE(10, 0))]), rowset=16
+      access([lyqtest3.c6], [lyqtest3.c2], [lyqtest3.c4]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([lyqtest3.__pk_increment]), range(MIN ; MAX)always true
+不会下推  因为 UNION DISTINCT 算子下面 不是PX COORDINATOR 或者 EXCHANGE 的
+SELECT c1, CONCAT(c2, ' - ', c5) AS combined FROM lyqtest1 WHERE c4 < 50.0
+UNION
+SELECT c1, CONCAT(c2, ' - ', c5) FROM lyqtest3 WHERE c4 > 50.0;
++------+------------------+
+| c1   | combined         |
++------+------------------+
+|    1 | example1 - data1 |
+|    2 | NULL             |
+|    3 | example3 - data3 |
+|    2 | example2 - data5 |
+| NULL | example6 - data6 |
++------+------------------+
+explain basic SELECT c1, CONCAT(c2, ' - ', c5) AS combined FROM lyqtest1 WHERE c4 < 50.0
+UNION
+SELECT c1, CONCAT(c2, ' - ', c5) FROM lyqtest3 WHERE c4 > 50.0;
+Query Plan
+=================================
+|ID|OPERATOR           |NAME    |
+---------------------------------
+|0 |HASH UNION DISTINCT|        |
+|1 |├─TABLE FULL SCAN  |lyqtest1|
+|2 |└─TABLE FULL SCAN  |lyqtest3|
+=================================
+Outputs & filters:
+-------------------------------------
+  0 - output([UNION([1])], [UNION([2])]), filter(nil), rowset=16
+  1 - output([lyqtest1.c1], [CONCAT(lyqtest1.c2, ' - ', lyqtest1.c5)]), filter([cast(lyqtest1.c4, DOUBLE(-1, -1)) < cast(50.0, DOUBLE(-1, -1))]), rowset=16
+      access([lyqtest1.c4], [lyqtest1.c1], [lyqtest1.c2], [lyqtest1.c5]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([lyqtest1.__pk_increment]), range(MIN ; MAX)always true
+  2 - output([lyqtest3.c1], [CONCAT(lyqtest3.c2, ' - ', lyqtest3.c5)]), filter([cast(lyqtest3.c4, DOUBLE(-1, -1)) > cast(50.0, DOUBLE(-1, -1))]), rowset=16
+      access([lyqtest3.c4], [lyqtest3.c1], [lyqtest3.c2], [lyqtest3.c5]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([lyqtest3.__pk_increment]), range(MIN ; MAX)always true
+SELECT DATE_FORMAT(a.c6, '%Y-%m') AS month_year, COUNT(*) AS record_count FROM lyqtest1 a JOIN lyqtest2 b ON a.c1 = b.c1 WHERE a.c4 IS NOT NULL GROUP BY DATE_FORMAT(a.c6, '%Y-%m')
+UNION 
+SELECT DATE_FORMAT(c.c6, '%Y-%m'), COUNT(*) FROM lyqtest3 c JOIN lyqtest1 d ON c.c1 = d.c1 WHERE c.c2 LIKE 'B%' GROUP BY DATE_FORMAT(c.c6, '%Y-%m');
++------------+--------------+
+| month_year | record_count |
++------------+--------------+
+| 2023-10    |            1 |
+| 2023-11    |            1 |
++------------+--------------+
+explain basic SELECT DATE_FORMAT(a.c6, '%Y-%m') AS month_year, COUNT(*) AS record_count FROM lyqtest1 a JOIN lyqtest2 b ON a.c1 = b.c1 WHERE a.c4 IS NOT NULL GROUP BY DATE_FORMAT(a.c6, '%Y-%m')
+UNION 
+SELECT DATE_FORMAT(c.c6, '%Y-%m'), COUNT(*) FROM lyqtest3 c JOIN lyqtest1 d ON c.c1 = d.c1 WHERE c.c2 LIKE 'B%' GROUP BY DATE_FORMAT(c.c6, '%Y-%m');
+Query Plan
+======================================================
+|ID|OPERATOR                         |NAME           |
+------------------------------------------------------
+|0 |MERGE UNION DISTINCT             |               |
+|1 |├─MERGE GROUP BY                 |               |
+|2 |│ └─SORT                         |               |
+|3 |│   └─HASH JOIN                  |               |
+|4 |│     ├─PX COORDINATOR           |               |
+|5 |│     │ └─EXCHANGE OUT DISTR     |:EX10000       |
+|6 |│     │   └─PX PARTITION ITERATOR|               |
+|7 |│     │     └─TABLE FULL SCAN    |b(idx_c1)      |
+|8 |│     └─TABLE FULL SCAN          |a              |
+|9 |└─MERGE GROUP BY                 |               |
+|10|  └─SORT                         |               |
+|11|    └─MERGE JOIN                 |               |
+|12|      ├─TABLE FULL SCAN          |d(idx_c1_c2_c3)|
+|13|      └─SORT                     |               |
+|14|        └─TABLE FULL SCAN        |c              |
+======================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([UNION([1])], [UNION([2])]), filter(nil), rowset=16
+  1 - output([DATE_FORMAT(a.c6, '%Y-%m')], [T_FUN_COUNT(*)]), filter(nil), rowset=16
+      group([DATE_FORMAT(a.c6, '%Y-%m')]), agg_func([T_FUN_COUNT(*)])
+  2 - output([DATE_FORMAT(a.c6, '%Y-%m')]), filter(nil), rowset=16
+      sort_keys([DATE_FORMAT(a.c6, '%Y-%m'), ASC])
+  3 - output([DATE_FORMAT(a.c6, '%Y-%m')]), filter(nil), rowset=16
+      equal_conds([a.c1 = b.c1]), other_conds(nil)
+  4 - output([b.c1]), filter(nil), rowset=16
+  5 - output([b.c1]), filter(nil), rowset=16
+      dop=1
+  6 - output([b.c1]), filter(nil), rowset=16
+      force partition granule
+  7 - output([b.c1]), filter(nil), rowset=16
+      access([b.c1]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([b.c1], [b.__pk_increment]), range(MIN,MIN ; MAX,MAX)always true
+  8 - output([a.c1], [a.c6]), filter([a.c4 IS NOT NULL]), rowset=16
+      access([a.c1], [a.c4], [a.c6]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([a.__pk_increment]), range(MIN ; MAX)always true
+  9 - output([DATE_FORMAT(c.c6, '%Y-%m')], [T_FUN_COUNT(*)]), filter(nil), rowset=16
+      group([DATE_FORMAT(c.c6, '%Y-%m')]), agg_func([T_FUN_COUNT(*)])
+ 10 - output([DATE_FORMAT(c.c6, '%Y-%m')]), filter(nil), rowset=16
+      sort_keys([DATE_FORMAT(c.c6, '%Y-%m'), ASC])
+ 11 - output([DATE_FORMAT(c.c6, '%Y-%m')]), filter(nil), rowset=16
+      equal_conds([c.c1 = d.c1]), other_conds(nil)
+      merge_directions([ASC])
+ 12 - output([d.c1]), filter(nil), rowset=16
+      access([d.c1]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([d.c1], [d.c2], [d.c3], [d.__pk_increment]), range(MIN,MIN,MIN,MIN ; MAX,MAX,MAX,MAX)always true
+ 13 - output([c.c1], [c.c6]), filter(nil), rowset=16
+      sort_keys([c.c1, ASC])
+ 14 - output([c.c1], [c.c6]), filter([(T_OP_LIKE, c.c2, 'B%', '\\')]), rowset=16
+      access([c.c1], [c.c2], [c.c6]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([c.__pk_increment]), range(MIN ; MAX)always true
+SELECT a.c1 FROM lyqtest1 a JOIN lyqtest2 b ON a.c1 = b.c1 WHERE YEAR(a.c3) = 2021 AND b.c4 > 50.0
+UNION
+SELECT c.c1 FROM lyqtest3 c JOIN lyqtest1 d ON c.c1 = d.c1 WHERE MONTH(c.c3) = 12 AND d.c4 < 100.0;
++------+
+| c1   |
++------+
++------+
+explain basic SELECT a.c1 FROM lyqtest1 a JOIN lyqtest2 b ON a.c1 = b.c1 WHERE YEAR(a.c3) = 2021 AND b.c4 > 50.0
+UNION
+SELECT c.c1 FROM lyqtest3 c JOIN lyqtest1 d ON c.c1 = d.c1 WHERE MONTH(c.c3) = 12 AND d.c4 < 100.0;
+Query Plan
+==================================================
+|ID|OPERATOR                     |NAME           |
+--------------------------------------------------
+|0 |HASH UNION DISTINCT          |               |
+|1 |├─HASH JOIN                  |               |
+|2 |│ ├─TABLE FULL SCAN          |a(idx_c1_c2_c3)|
+|3 |│ └─PX COORDINATOR           |               |
+|4 |│   └─EXCHANGE OUT DISTR     |:EX10000       |
+|5 |│     └─PX PARTITION ITERATOR|               |
+|6 |│       └─TABLE FULL SCAN    |b              |
+|7 |└─HASH JOIN                  |               |
+|8 |  ├─TABLE FULL SCAN          |c              |
+|9 |  └─TABLE FULL SCAN          |d              |
+==================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([UNION([1])]), filter(nil), rowset=16
+  1 - output([a.c1]), filter(nil), rowset=16
+      equal_conds([a.c1 = b.c1]), other_conds(nil)
+  2 - output([a.c1]), filter([year(a.c3) = 2021]), rowset=16
+      access([a.c1], [a.c3]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([a.c1], [a.c2], [a.c3], [a.__pk_increment]), range(MIN,MIN,MIN,MIN ; MAX,MAX,MAX,MAX)always true
+  3 - output([b.c1]), filter(nil), rowset=16
+  4 - output([b.c1]), filter(nil), rowset=16
+      dop=1
+  5 - output([b.c1]), filter(nil), rowset=16
+      force partition granule
+  6 - output([b.c1]), filter([cast(b.c4, DOUBLE(-1, -1)) > cast(50.0, DOUBLE(-1, -1))]), rowset=16
+      access([b.c1], [b.c4]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([b.__pk_increment]), range(MIN ; MAX)always true
+  7 - output([c.c1]), filter(nil), rowset=16
+      equal_conds([c.c1 = d.c1]), other_conds(nil)
+  8 - output([c.c1]), filter([month(c.c3) = 12]), rowset=16
+      access([c.c1], [c.c3]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([c.__pk_increment]), range(MIN ; MAX)always true
+  9 - output([d.c1]), filter([cast(d.c4, DOUBLE(-1, -1)) < cast(100.0, DOUBLE(-1, -1))]), rowset=16
+      access([d.c1], [d.c4]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([d.__pk_increment]), range(MIN ; MAX)always true
+SELECT c1, c4 FROM lyqtest1 WHERE c4 > (SELECT AVG(c4) FROM lyqtest1)
+UNION
+SELECT c1, c4 FROM lyqtest2 WHERE c4 > (SELECT AVG(c4) FROM lyqtest2);
++------+------+
+| c1   | c4   |
++------+------+
+|    3 | 30.5 |
+| NULL | 60.5 |
++------+------+
+explain basic SELECT c1, c4 FROM lyqtest1 WHERE c4 > (SELECT AVG(c4) FROM lyqtest1)
+UNION
+SELECT c1, c4 FROM lyqtest2 WHERE c4 > (SELECT AVG(c4) FROM lyqtest2);
+Query Plan
+===============================================
+|ID|OPERATOR                         |NAME    |
+-----------------------------------------------
+|0 |HASH UNION DISTINCT              |        |
+|1 |├─NESTED-LOOP JOIN               |        |
+|2 |│ ├─SUBPLAN SCAN                 |VIEW1   |
+|3 |│ │ └─SCALAR GROUP BY            |        |
+|4 |│ │   └─TABLE FULL SCAN          |lyqtest1|
+|5 |│ └─TABLE FULL SCAN              |lyqtest1|
+|6 |└─PX COORDINATOR                 |        |
+|7 |  └─EXCHANGE OUT DISTR           |:EX10000|
+|8 |    └─HASH DISTINCT              |        |
+|9 |      └─SUBPLAN SCAN             |VIEW2   |
+|10|        └─WINDOW FUNCTION        |        |
+|11|          └─PX PARTITION ITERATOR|        |
+|12|            └─TABLE FULL SCAN    |lyqtest2|
+===============================================
+Outputs & filters:
+-------------------------------------
+  0 - output([UNION([1])], [UNION([2])]), filter(nil), rowset=16
+  1 - output([lyqtest1.c1], [lyqtest1.c4]), filter(nil), rowset=16
+      conds([cast(lyqtest1.c4, DOUBLE(-1, -1)) > VIEW1.AVG(c4)]), nl_params_(nil), use_batch=false
+  2 - output([VIEW1.AVG(c4)]), filter(nil), rowset=16
+      access([VIEW1.AVG(c4)])
+  3 - output([T_FUN_SUM(cast(lyqtest1.c4, DOUBLE(-1, -1))) / cast(T_FUN_COUNT(cast(lyqtest1.c4, DOUBLE(-1, -1))), DOUBLE(-1, -1))]), filter(nil), rowset=16
+      group(nil), agg_func([T_FUN_SUM(cast(lyqtest1.c4, DOUBLE(-1, -1)))], [T_FUN_COUNT(cast(lyqtest1.c4, DOUBLE(-1, -1)))])
+  4 - output([cast(lyqtest1.c4, DOUBLE(-1, -1))]), filter(nil), rowset=16
+      access([lyqtest1.c4]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([lyqtest1.__pk_increment]), range(MIN ; MAX)always true
+  5 - output([lyqtest1.c4], [lyqtest1.c1]), filter(nil), rowset=16
+      access([lyqtest1.c4], [lyqtest1.c1]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([lyqtest1.__pk_increment]), range(MIN ; MAX)always true
+  6 - output([VIEW2.lyqtest2.c1], [VIEW2.lyqtest2.c4]), filter(nil), rowset=16
+  7 - output([VIEW2.lyqtest2.c1], [VIEW2.lyqtest2.c4]), filter(nil), rowset=16
+      dop=1
+  8 - output([VIEW2.lyqtest2.c1], [VIEW2.lyqtest2.c4]), filter(nil), rowset=16
+      distinct([VIEW2.lyqtest2.c1], [VIEW2.lyqtest2.c4])
+  9 - output([VIEW2.lyqtest2.c4], [VIEW2.lyqtest2.c1]), filter([cast(VIEW2.lyqtest2.c4, DOUBLE(-1, -1)) > VIEW2.AVG(c4)]), rowset=16
+      access([VIEW2.AVG(c4)], [VIEW2.lyqtest2.c4], [VIEW2.lyqtest2.c1])
+ 10 - output([T_FUN_SUM(cast(lyqtest2.c4, DOUBLE(-1, -1))) / cast(T_FUN_COUNT(cast(lyqtest2.c4, DOUBLE(-1, -1))), DOUBLE(-1, -1))], [lyqtest2.c4], [lyqtest2.c1]), filter(nil), rowset=16
+      win_expr(T_FUN_SUM(cast(lyqtest2.c4, DOUBLE(-1, -1)))), partition_by(nil), order_by(nil), window_type(RANGE), upper(UNBOUNDED PRECEDING), lower(UNBOUNDED 
+      FOLLOWING)
+      win_expr(T_FUN_COUNT(cast(lyqtest2.c4, DOUBLE(-1, -1)))), partition_by(nil), order_by(nil), window_type(RANGE), upper(UNBOUNDED PRECEDING), lower(UNBOUNDED 
+      FOLLOWING)
+ 11 - output([lyqtest2.c4], [lyqtest2.c1], [cast(lyqtest2.c4, DOUBLE(-1, -1))]), filter(nil), rowset=16
+      force partition granule
+ 12 - output([lyqtest2.c4], [lyqtest2.c1], [cast(lyqtest2.c4, DOUBLE(-1, -1))]), filter(nil), rowset=16
+      access([lyqtest2.c4], [lyqtest2.c1]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([lyqtest2.__pk_increment]), range(MIN ; MAX)always true
+INTERSECT
+INTERSECT DISTINCT 算子下面直接接着 PX COORDINATOR 或者 EXCHANGE 的情况，会在 EXCHANGE 下面分配一个 DISTINCT
+会下推
+select c1 from lyqtest1 INTERSECT select c1 from lyqtest2;
++------+
+| c1   |
++------+
+|    1 |
+|    2 |
++------+
+explain basic select c1 from lyqtest1 INTERSECT select c1 from lyqtest2;
+Query Plan
+=========================================================
+|ID|OPERATOR                     |NAME                  |
+---------------------------------------------------------
+|0 |HASH INTERSECT DISTINCT      |                      |
+|1 |├─TABLE FULL SCAN            |lyqtest1(idx_c1_c2_c3)|
+|2 |└─PX COORDINATOR             |                      |
+|3 |  └─EXCHANGE OUT DISTR       |:EX10000              |
+|4 |    └─HASH DISTINCT          |                      |
+|5 |      └─PX PARTITION ITERATOR|                      |
+|6 |        └─TABLE FULL SCAN    |lyqtest2(idx_c1)      |
+=========================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERSECT([1])]), filter(nil), rowset=16
+  1 - output([lyqtest1.c1]), filter(nil), rowset=16
+      access([lyqtest1.c1]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([lyqtest1.c1], [lyqtest1.c2], [lyqtest1.c3], [lyqtest1.__pk_increment]), range(MIN,MIN,MIN,MIN ; MAX,MAX,MAX,MAX)always true
+  2 - output([lyqtest2.c1]), filter(nil), rowset=16
+  3 - output([lyqtest2.c1]), filter(nil), rowset=16
+      dop=1
+  4 - output([lyqtest2.c1]), filter(nil), rowset=16
+      distinct([lyqtest2.c1])
+  5 - output([lyqtest2.c1]), filter(nil), rowset=16
+      force partition granule
+  6 - output([lyqtest2.c1]), filter(nil), rowset=16
+      access([lyqtest2.c1]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([lyqtest2.c1], [lyqtest2.__pk_increment]), range(MIN,MIN ; MAX,MAX)always true
+SELECT c5, LENGTH(c2) AS len_c2 FROM lyqtest2 WHERE c4 < 100.0 AND c2 IS NOT NULL
+INTERSECT
+SELECT c5, LENGTH(c2) FROM lyqtest3 WHERE c1 < 10;
++-------+--------+
+| c5    | len_c2 |
++-------+--------+
+| data4 |      8 |
+| data5 |      8 |
++-------+--------+
+explain basic SELECT c5, LENGTH(c2) AS len_c2 FROM lyqtest2 WHERE c4 < 100.0 AND c2 IS NOT NULL
+INTERSECT
+SELECT c5, LENGTH(c2) FROM lyqtest3 WHERE c1 < 10;
+Query Plan
+===========================================
+|ID|OPERATOR                     |NAME    |
+-------------------------------------------
+|0 |HASH INTERSECT DISTINCT      |        |
+|1 |├─PX COORDINATOR             |        |
+|2 |│ └─EXCHANGE OUT DISTR       |:EX10000|
+|3 |│   └─HASH DISTINCT          |        |
+|4 |│     └─PX PARTITION ITERATOR|        |
+|5 |│       └─TABLE FULL SCAN    |lyqtest2|
+|6 |└─TABLE FULL SCAN            |lyqtest3|
+===========================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERSECT([1])], [INTERSECT([2])]), filter(nil), rowset=16
+  1 - output([lyqtest2.c5], [LENGTH(lyqtest2.c2)]), filter(nil), rowset=16
+  2 - output([lyqtest2.c5], [LENGTH(lyqtest2.c2)]), filter(nil), rowset=16
+      dop=1
+  3 - output([lyqtest2.c5], [LENGTH(lyqtest2.c2)]), filter(nil), rowset=16
+      distinct([lyqtest2.c5], [LENGTH(lyqtest2.c2)])
+  4 - output([lyqtest2.c5], [LENGTH(lyqtest2.c2)]), filter(nil), rowset=16
+      force partition granule
+  5 - output([lyqtest2.c5], [LENGTH(lyqtest2.c2)]), filter([cast(lyqtest2.c4, DOUBLE(-1, -1)) < cast(100.0, DOUBLE(-1, -1))], [lyqtest2.c2 IS NOT NULL]), rowset=16
+      access([lyqtest2.c4], [lyqtest2.c2], [lyqtest2.c5]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, filter_before_indexback[false,false], 
+      range_key([lyqtest2.__pk_increment]), range(MIN ; MAX)always true
+  6 - output([lyqtest3.c5], [LENGTH(lyqtest3.c2)]), filter([lyqtest3.c1 < 10]), rowset=16
+      access([lyqtest3.c1], [lyqtest3.c5], [lyqtest3.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([lyqtest3.__pk_increment]), range(MIN ; MAX)always true
+SELECT c1, c2, CASE  WHEN c1 > 100 THEN 'High' ELSE 'Low' END AS c1_category FROM lyqtest1 WHERE c2 IS NOT NULL
+INTERSECT
+SELECT c1, c2, CASE WHEN c1 > 100 THEN 'High' ELSE 'Low' END AS c1_category FROM lyqtest2 WHERE c2 IS NOT NULL;
++------+----------+-------------+
+| c1   | c2       | c1_category |
++------+----------+-------------+
+|    1 | example1 | Low         |
++------+----------+-------------+
+explain basic SELECT c1, c2, CASE  WHEN c1 > 100 THEN 'High' ELSE 'Low' END AS c1_category FROM lyqtest1 WHERE c2 IS NOT NULL
+INTERSECT
+SELECT c1, c2, CASE WHEN c1 > 100 THEN 'High' ELSE 'Low' END AS c1_category FROM lyqtest2 WHERE c2 IS NOT NULL;
+Query Plan
+=========================================================
+|ID|OPERATOR                     |NAME                  |
+---------------------------------------------------------
+|0 |HASH INTERSECT DISTINCT      |                      |
+|1 |├─TABLE FULL SCAN            |lyqtest1(idx_c1_c2_c3)|
+|2 |└─PX COORDINATOR             |                      |
+|3 |  └─EXCHANGE OUT DISTR       |:EX10000              |
+|4 |    └─HASH DISTINCT          |                      |
+|5 |      └─PX PARTITION ITERATOR|                      |
+|6 |        └─TABLE FULL SCAN    |lyqtest2              |
+=========================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERSECT([1])], [INTERSECT([2])], [INTERSECT([3])]), filter(nil), rowset=16
+  1 - output([lyqtest1.c1], [lyqtest1.c2], [CASE WHEN lyqtest1.c1 > 100 THEN 'High' ELSE 'Low' END]), filter([lyqtest1.c2 IS NOT NULL]), rowset=16
+      access([lyqtest1.c2], [lyqtest1.c1]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([lyqtest1.c1], [lyqtest1.c2], [lyqtest1.c3], [lyqtest1.__pk_increment]), range(MIN,MIN,MIN,MIN ; MAX,MAX,MAX,MAX)always true
+  2 - output([lyqtest2.c1], [lyqtest2.c2], [CASE WHEN lyqtest2.c1 > 100 THEN 'High' ELSE 'Low' END]), filter(nil), rowset=16
+  3 - output([lyqtest2.c1], [lyqtest2.c2], [CASE WHEN lyqtest2.c1 > 100 THEN 'High' ELSE 'Low' END]), filter(nil), rowset=16
+      dop=1
+  4 - output([lyqtest2.c1], [lyqtest2.c2], [CASE WHEN lyqtest2.c1 > 100 THEN 'High' ELSE 'Low' END]), filter(nil), rowset=16
+      distinct([lyqtest2.c1], [lyqtest2.c2], [CASE WHEN lyqtest2.c1 > 100 THEN 'High' ELSE 'Low' END])
+  5 - output([lyqtest2.c2], [lyqtest2.c1], [CASE WHEN lyqtest2.c1 > 100 THEN 'High' ELSE 'Low' END]), filter(nil), rowset=16
+      force partition granule
+  6 - output([lyqtest2.c2], [lyqtest2.c1], [CASE WHEN lyqtest2.c1 > 100 THEN 'High' ELSE 'Low' END]), filter([lyqtest2.c2 IS NOT NULL]), rowset=16
+      access([lyqtest2.c2], [lyqtest2.c1]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([lyqtest2.__pk_increment]), range(MIN ; MAX)always true
+SELECT c1, c2 FROM (SELECT c1, c2 FROM lyqtest2 WHERE c1 < 50) AS sub1
+INTERSECT
+SELECT c1, c2 FROM (SELECT c1, c2 FROM lyqtest3 WHERE c1 < 50) AS sub2;
++------+----------+
+| c1   | c2       |
++------+----------+
+|    1 | example1 |
+|    2 | example2 |
++------+----------+
+explain basic SELECT c1, c2 FROM (SELECT c1, c2 FROM lyqtest2 WHERE c1 < 50) AS sub1
+INTERSECT
+SELECT c1, c2 FROM (SELECT c1, c2 FROM lyqtest3 WHERE c1 < 50) AS sub2;
+Query Plan
+===================================================
+|ID|OPERATOR                     |NAME            |
+---------------------------------------------------
+|0 |HASH INTERSECT DISTINCT      |                |
+|1 |├─PX COORDINATOR             |                |
+|2 |│ └─EXCHANGE OUT DISTR       |:EX10000        |
+|3 |│   └─HASH DISTINCT          |                |
+|4 |│     └─PX PARTITION ITERATOR|                |
+|5 |│       └─TABLE RANGE SCAN   |lyqtest2(idx_c1)|
+|6 |└─TABLE FULL SCAN            |lyqtest3        |
+===================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERSECT([1])], [INTERSECT([2])]), filter(nil), rowset=16
+  1 - output([lyqtest2.c1], [lyqtest2.c2]), filter(nil), rowset=16
+  2 - output([lyqtest2.c1], [lyqtest2.c2]), filter(nil), rowset=16
+      dop=1
+  3 - output([lyqtest2.c1], [lyqtest2.c2]), filter(nil), rowset=16
+      distinct([lyqtest2.c1], [lyqtest2.c2])
+  4 - output([lyqtest2.c1], [lyqtest2.c2]), filter(nil), rowset=16
+      force partition granule
+  5 - output([lyqtest2.c1], [lyqtest2.c2]), filter(nil), rowset=16
+      access([lyqtest2.__pk_increment], [lyqtest2.c1], [lyqtest2.c2]), partitions(p[0-3])
+      is_index_back=true, is_global_index=false, 
+      range_key([lyqtest2.c1], [lyqtest2.__pk_increment]), range(NULL,MAX ; 50,MIN), 
+      range_cond([lyqtest2.c1 < 50])
+  6 - output([lyqtest3.c1], [lyqtest3.c2]), filter([lyqtest3.c1 < 50]), rowset=16
+      access([lyqtest3.c1], [lyqtest3.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([lyqtest3.__pk_increment]), range(MIN ; MAX)always true
+SELECT DISTINCT c1, CASE WHEN c4 % 2 = 0 THEN 'Even' ELSE 'Odd' END AS parity FROM lyqtest1 WHERE c4 IS NOT NULL
+INTERSECT
+SELECT DISTINCT c1, CASE WHEN c4 % 2 = 0 THEN 'Even' ELSE 'Odd' END FROM lyqtest2 WHERE c4 IS NOT NULL;
++------+--------+
+| c1   | parity |
++------+--------+
+|    1 | Odd    |
+|    2 | Odd    |
++------+--------+
+explain basic SELECT DISTINCT c1, CASE WHEN c4 % 2 = 0 THEN 'Even' ELSE 'Odd' END AS parity FROM lyqtest1 WHERE c4 IS NOT NULL
+INTERSECT
+SELECT DISTINCT c1, CASE WHEN c4 % 2 = 0 THEN 'Even' ELSE 'Odd' END FROM lyqtest2 WHERE c4 IS NOT NULL;
+Query Plan
+===========================================
+|ID|OPERATOR                     |NAME    |
+-------------------------------------------
+|0 |HASH INTERSECT DISTINCT      |        |
+|1 |├─TABLE FULL SCAN            |lyqtest1|
+|2 |└─PX COORDINATOR             |        |
+|3 |  └─EXCHANGE OUT DISTR       |:EX10000|
+|4 |    └─HASH DISTINCT          |        |
+|5 |      └─PX PARTITION ITERATOR|        |
+|6 |        └─TABLE FULL SCAN    |lyqtest2|
+===========================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERSECT([1])], [INTERSECT([2])]), filter(nil), rowset=16
+  1 - output([lyqtest1.c1], [CASE WHEN cast(lyqtest1.c4, DOUBLE(-1, -1)) % cast(2, DOUBLE(-1, -1)) = cast(0, DOUBLE(-1, -1)) THEN 'Even' ELSE 'Odd' END]), filter([lyqtest1.c4 
+      IS NOT NULL]), rowset=16
+      access([lyqtest1.c4], [lyqtest1.c1]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([lyqtest1.__pk_increment]), range(MIN ; MAX)always true
+  2 - output([lyqtest2.c1], [CASE WHEN cast(lyqtest2.c4, DOUBLE(-1, -1)) % cast(2, DOUBLE(-1, -1)) = cast(0, DOUBLE(-1, -1)) THEN 'Even' ELSE 'Odd' END]), filter(nil), rowset=16
+  3 - output([lyqtest2.c1], [CASE WHEN cast(lyqtest2.c4, DOUBLE(-1, -1)) % cast(2, DOUBLE(-1, -1)) = cast(0, DOUBLE(-1, -1)) THEN 'Even' ELSE 'Odd' END]), filter(nil), rowset=16
+      dop=1
+  4 - output([lyqtest2.c1], [CASE WHEN cast(lyqtest2.c4, DOUBLE(-1, -1)) % cast(2, DOUBLE(-1, -1)) = cast(0, DOUBLE(-1, -1)) THEN 'Even' ELSE 'Odd' END]), filter(nil), rowset=16
+      distinct([lyqtest2.c1], [CASE WHEN cast(lyqtest2.c4, DOUBLE(-1, -1)) % cast(2, DOUBLE(-1, -1)) = cast(0, DOUBLE(-1, -1)) THEN 'Even' ELSE 'Odd' END])
+  5 - output([lyqtest2.c1], [CASE WHEN cast(lyqtest2.c4, DOUBLE(-1, -1)) % cast(2, DOUBLE(-1, -1)) = cast(0, DOUBLE(-1, -1)) THEN 'Even' ELSE 'Odd' END]), filter(nil), rowset=16
+      force partition granule
+  6 - output([lyqtest2.c1], [CASE WHEN cast(lyqtest2.c4, DOUBLE(-1, -1)) % cast(2, DOUBLE(-1, -1)) = cast(0, DOUBLE(-1, -1)) THEN 'Even' ELSE 'Odd' END]), filter([lyqtest2.c4 
+      IS NOT NULL]), rowset=16
+      access([lyqtest2.c4], [lyqtest2.c1]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([lyqtest2.__pk_increment]), range(MIN ; MAX)always true
+能判断出来唯一，就不会分配 distinct
+SELECT UPPER(c2) AS upper_c2, AVG(c4) FROM lyqtest2 WHERE c1 BETWEEN 1 AND 50 GROUP BY UPPER(c2)
+INTERSECT
+SELECT UPPER(c2), AVG(c4) FROM lyqtest3 WHERE c6 > '2022-01-01' GROUP BY UPPER(c2);
++----------+---------+
+| upper_c2 | AVG(c4) |
++----------+---------+
+| EXAMPLE1 |    40.5 |
+| EXAMPLE2 |    50.5 |
++----------+---------+
+explain basic SELECT UPPER(c2) AS upper_c2, AVG(c4) FROM lyqtest2 WHERE c1 BETWEEN 1 AND 50 GROUP BY UPPER(c2)
+INTERSECT
+SELECT UPPER(c2), AVG(c4) FROM lyqtest3 WHERE c6 > '2022-01-01' GROUP BY UPPER(c2);
+Query Plan
+===========================================================
+|ID|OPERATOR                             |NAME            |
+-----------------------------------------------------------
+|0 |HASH INTERSECT DISTINCT              |                |
+|1 |├─PX COORDINATOR                     |                |
+|2 |│ └─EXCHANGE OUT DISTR               |:EX10001        |
+|3 |│   └─MERGE GROUP BY                 |                |
+|4 |│     └─EXCHANGE IN MERGE SORT DISTR |                |
+|5 |│       └─EXCHANGE OUT DISTR (HASH)  |:EX10000        |
+|6 |│         └─MERGE GROUP BY           |                |
+|7 |│           └─SORT                   |                |
+|8 |│             └─PX PARTITION ITERATOR|                |
+|9 |│               └─TABLE RANGE SCAN   |lyqtest2(idx_c1)|
+|10|└─MERGE GROUP BY                     |                |
+|11|  └─SORT                             |                |
+|12|    └─TABLE FULL SCAN                |lyqtest3        |
+===========================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERSECT([1])], [INTERSECT([2])]), filter(nil), rowset=16
+  1 - output([UPPER(lyqtest2.c2)], [cast(T_FUN_SUM(T_FUN_SUM(cast(lyqtest2.c4, DOUBLE(-1, -1)))) / cast(T_FUN_COUNT_SUM(T_FUN_COUNT(cast(lyqtest2.c4, DOUBLE(-1,
+       -1)))), DOUBLE(-1, -1)), DOUBLE(-1, -1))]), filter(nil), rowset=16
+  2 - output([UPPER(lyqtest2.c2)], [T_FUN_SUM(T_FUN_SUM(cast(lyqtest2.c4, DOUBLE(-1, -1))))], [T_FUN_COUNT_SUM(T_FUN_COUNT(cast(lyqtest2.c4, DOUBLE(-1, 
+      -1))))]), filter(nil), rowset=16
+      dop=1
+  3 - output([UPPER(lyqtest2.c2)], [T_FUN_SUM(T_FUN_SUM(cast(lyqtest2.c4, DOUBLE(-1, -1))))], [T_FUN_COUNT_SUM(T_FUN_COUNT(cast(lyqtest2.c4, DOUBLE(-1, 
+      -1))))]), filter(nil), rowset=16
+      group([UPPER(lyqtest2.c2)]), agg_func([T_FUN_SUM(T_FUN_SUM(cast(lyqtest2.c4, DOUBLE(-1, -1))))], [T_FUN_COUNT_SUM(T_FUN_COUNT(cast(lyqtest2.c4, DOUBLE(-1,
+       -1))))])
+  4 - output([UPPER(lyqtest2.c2)], [T_FUN_SUM(cast(lyqtest2.c4, DOUBLE(-1, -1)))], [T_FUN_COUNT(cast(lyqtest2.c4, DOUBLE(-1, -1)))]), filter(nil), rowset=16
+      sort_keys([UPPER(lyqtest2.c2), ASC])
+  5 - output([UPPER(lyqtest2.c2)], [T_FUN_SUM(cast(lyqtest2.c4, DOUBLE(-1, -1)))], [T_FUN_COUNT(cast(lyqtest2.c4, DOUBLE(-1, -1)))]), filter(nil), rowset=16
+      (#keys=1, [UPPER(lyqtest2.c2)]), dop=1
+  6 - output([UPPER(lyqtest2.c2)], [T_FUN_SUM(cast(lyqtest2.c4, DOUBLE(-1, -1)))], [T_FUN_COUNT(cast(lyqtest2.c4, DOUBLE(-1, -1)))]), filter(nil), rowset=16
+      group([UPPER(lyqtest2.c2)]), agg_func([T_FUN_SUM(cast(lyqtest2.c4, DOUBLE(-1, -1)))], [T_FUN_COUNT(cast(lyqtest2.c4, DOUBLE(-1, -1)))])
+  7 - output([UPPER(lyqtest2.c2)], [cast(lyqtest2.c4, DOUBLE(-1, -1))]), filter(nil), rowset=16
+      sort_keys([UPPER(lyqtest2.c2), ASC])
+  8 - output([lyqtest2.c4], [UPPER(lyqtest2.c2)]), filter(nil), rowset=16
+      force partition granule
+  9 - output([lyqtest2.c4], [UPPER(lyqtest2.c2)]), filter(nil), rowset=16
+      access([lyqtest2.__pk_increment], [lyqtest2.c2], [lyqtest2.c4]), partitions(p[0-3])
+      is_index_back=true, is_global_index=false, 
+      range_key([lyqtest2.c1], [lyqtest2.__pk_increment]), range(1,MIN ; 50,MAX), 
+      range_cond([lyqtest2.c1 >= 1], [lyqtest2.c1 <= 50])
+ 10 - output([UPPER(lyqtest3.c2)], [cast(T_FUN_SUM(cast(lyqtest3.c4, DOUBLE(-1, -1))) / cast(T_FUN_COUNT(cast(lyqtest3.c4, DOUBLE(-1, -1))), DOUBLE(-1, 
+      -1)), DOUBLE(-1, -1))]), filter(nil), rowset=16
+      group([UPPER(lyqtest3.c2)]), agg_func([T_FUN_SUM(cast(lyqtest3.c4, DOUBLE(-1, -1)))], [T_FUN_COUNT(cast(lyqtest3.c4, DOUBLE(-1, -1)))])
+ 11 - output([UPPER(lyqtest3.c2)], [cast(lyqtest3.c4, DOUBLE(-1, -1))]), filter(nil), rowset=16
+      sort_keys([UPPER(lyqtest3.c2), ASC])
+ 12 - output([lyqtest3.c4], [UPPER(lyqtest3.c2)]), filter([lyqtest3.c6 > demote_cast('2022-01-01', MYSQL_DATE(10, 0))]), rowset=16
+      access([lyqtest3.c6], [lyqtest3.c2], [lyqtest3.c4]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([lyqtest3.__pk_increment]), range(MIN ; MAX)always true
+不会下推  因为INTERSECT DISTINCT 算子下面 不是PX COORDINATOR 或者 EXCHANGE 的
+SELECT a.c1 FROM lyqtest1 a JOIN lyqtest2 b ON a.c1 = b.c1
+INTERSECT
+SELECT c.c1 FROM lyqtest3 c JOIN lyqtest1 d ON c.c1 = d.c1;
++------+
+| c1   |
++------+
+|    1 |
+|    2 |
++------+
+explain basic SELECT a.c1 FROM lyqtest1 a JOIN lyqtest2 b ON a.c1 = b.c1
+INTERSECT
+SELECT c.c1 FROM lyqtest3 c JOIN lyqtest1 d ON c.c1 = d.c1;
+Query Plan
+====================================================
+|ID|OPERATOR                       |NAME           |
+----------------------------------------------------
+|0 |MERGE INTERSECT DISTINCT       |               |
+|1 |├─MERGE JOIN                   |               |
+|2 |│ ├─TABLE FULL SCAN            |d(idx_c1_c2_c3)|
+|3 |│ └─SORT                       |               |
+|4 |│   └─TABLE FULL SCAN          |c              |
+|5 |└─SORT                         |               |
+|6 |  └─HASH JOIN                  |               |
+|7 |    ├─TABLE FULL SCAN          |a(idx_c1_c2_c3)|
+|8 |    └─PX COORDINATOR           |               |
+|9 |      └─EXCHANGE OUT DISTR     |:EX10000       |
+|10|        └─PX PARTITION ITERATOR|               |
+|11|          └─TABLE FULL SCAN    |b(idx_c1)      |
+====================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERSECT([1])]), filter(nil), rowset=16
+  1 - output([c.c1]), filter(nil), rowset=16
+      equal_conds([c.c1 = d.c1]), other_conds(nil)
+      merge_directions([ASC])
+  2 - output([d.c1]), filter(nil), rowset=16
+      access([d.c1]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([d.c1], [d.c2], [d.c3], [d.__pk_increment]), range(MIN,MIN,MIN,MIN ; MAX,MAX,MAX,MAX)always true
+  3 - output([c.c1]), filter(nil), rowset=16
+      sort_keys([c.c1, ASC])
+  4 - output([c.c1]), filter(nil), rowset=16
+      access([c.c1]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([c.__pk_increment]), range(MIN ; MAX)always true
+  5 - output([a.c1]), filter(nil), rowset=16
+      sort_keys([a.c1, ASC])
+  6 - output([a.c1]), filter(nil), rowset=16
+      equal_conds([a.c1 = b.c1]), other_conds(nil)
+  7 - output([a.c1]), filter(nil), rowset=16
+      access([a.c1]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([a.c1], [a.c2], [a.c3], [a.__pk_increment]), range(MIN,MIN,MIN,MIN ; MAX,MAX,MAX,MAX)always true
+  8 - output([b.c1]), filter(nil), rowset=16
+  9 - output([b.c1]), filter(nil), rowset=16
+      dop=1
+ 10 - output([b.c1]), filter(nil), rowset=16
+      force partition granule
+ 11 - output([b.c1]), filter(nil), rowset=16
+      access([b.c1]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([b.c1], [b.__pk_increment]), range(MIN,MIN ; MAX,MAX)always true
+EXCEPT/MINUS
+EXCEPT/MINUS DISTINCT 算子下面直接接着 PX COORDINATOR 或者 EXCHANGE 的情况，会在 EXCHANGE 下面分配一个 DISTINCT
+会下推
+select c1 from lyqtest1 EXCEPT select c1 from lyqtest2;
++------+
+| c1   |
++------+
+|    3 |
++------+
+explain basic select c1 from lyqtest1 EXCEPT select c1 from lyqtest2;
+Query Plan
+=========================================================
+|ID|OPERATOR                     |NAME                  |
+---------------------------------------------------------
+|0 |HASH EXCEPT DISTINCT         |                      |
+|1 |├─TABLE FULL SCAN            |lyqtest1(idx_c1_c2_c3)|
+|2 |└─PX COORDINATOR             |                      |
+|3 |  └─EXCHANGE OUT DISTR       |:EX10000              |
+|4 |    └─HASH DISTINCT          |                      |
+|5 |      └─PX PARTITION ITERATOR|                      |
+|6 |        └─TABLE FULL SCAN    |lyqtest2(idx_c1)      |
+=========================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([EXCEPT([1])]), filter(nil), rowset=16
+  1 - output([lyqtest1.c1]), filter(nil), rowset=16
+      access([lyqtest1.c1]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([lyqtest1.c1], [lyqtest1.c2], [lyqtest1.c3], [lyqtest1.__pk_increment]), range(MIN,MIN,MIN,MIN ; MAX,MAX,MAX,MAX)always true
+  2 - output([lyqtest2.c1]), filter(nil), rowset=16
+  3 - output([lyqtest2.c1]), filter(nil), rowset=16
+      dop=1
+  4 - output([lyqtest2.c1]), filter(nil), rowset=16
+      distinct([lyqtest2.c1])
+  5 - output([lyqtest2.c1]), filter(nil), rowset=16
+      force partition granule
+  6 - output([lyqtest2.c1]), filter(nil), rowset=16
+      access([lyqtest2.c1]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([lyqtest2.c1], [lyqtest2.__pk_increment]), range(MIN,MIN ; MAX,MAX)always true
+SELECT c5, LENGTH(c2) AS len_c2 FROM lyqtest2 WHERE c4 < 100.0 AND c2 IS NOT NULL
+EXCEPT
+SELECT c5, LENGTH(c2) FROM lyqtest3 WHERE c1 < 10;
++-------+--------+
+| c5    | len_c2 |
++-------+--------+
+| data6 |      8 |
++-------+--------+
+explain basic SELECT c5, LENGTH(c2) AS len_c2 FROM lyqtest2 WHERE c4 < 100.0 AND c2 IS NOT NULL
+EXCEPT
+SELECT c5, LENGTH(c2) FROM lyqtest3 WHERE c1 < 10;
+Query Plan
+===========================================
+|ID|OPERATOR                     |NAME    |
+-------------------------------------------
+|0 |HASH EXCEPT DISTINCT         |        |
+|1 |├─PX COORDINATOR             |        |
+|2 |│ └─EXCHANGE OUT DISTR       |:EX10000|
+|3 |│   └─HASH DISTINCT          |        |
+|4 |│     └─PX PARTITION ITERATOR|        |
+|5 |│       └─TABLE FULL SCAN    |lyqtest2|
+|6 |└─TABLE FULL SCAN            |lyqtest3|
+===========================================
+Outputs & filters:
+-------------------------------------
+  0 - output([EXCEPT([1])], [EXCEPT([2])]), filter(nil), rowset=16
+  1 - output([lyqtest2.c5], [LENGTH(lyqtest2.c2)]), filter(nil), rowset=16
+  2 - output([lyqtest2.c5], [LENGTH(lyqtest2.c2)]), filter(nil), rowset=16
+      dop=1
+  3 - output([lyqtest2.c5], [LENGTH(lyqtest2.c2)]), filter(nil), rowset=16
+      distinct([lyqtest2.c5], [LENGTH(lyqtest2.c2)])
+  4 - output([lyqtest2.c5], [LENGTH(lyqtest2.c2)]), filter(nil), rowset=16
+      force partition granule
+  5 - output([lyqtest2.c5], [LENGTH(lyqtest2.c2)]), filter([cast(lyqtest2.c4, DOUBLE(-1, -1)) < cast(100.0, DOUBLE(-1, -1))], [lyqtest2.c2 IS NOT NULL]), rowset=16
+      access([lyqtest2.c4], [lyqtest2.c2], [lyqtest2.c5]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, filter_before_indexback[false,false], 
+      range_key([lyqtest2.__pk_increment]), range(MIN ; MAX)always true
+  6 - output([lyqtest3.c5], [LENGTH(lyqtest3.c2)]), filter([lyqtest3.c1 < 10]), rowset=16
+      access([lyqtest3.c1], [lyqtest3.c5], [lyqtest3.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([lyqtest3.__pk_increment]), range(MIN ; MAX)always true
+SELECT c1, c2, CASE  WHEN c1 > 100 THEN 'High' ELSE 'Low' END AS c1_category FROM lyqtest1 WHERE c2 IS NOT NULL
+EXCEPT
+SELECT c1, c2, CASE WHEN c1 > 100 THEN 'High' ELSE 'Low' END AS c1_category FROM lyqtest2 WHERE c2 IS NOT NULL;
++------+----------+-------------+
+| c1   | c2       | c1_category |
++------+----------+-------------+
+|    3 | example3 | Low         |
++------+----------+-------------+
+explain basic SELECT c1, c2, CASE  WHEN c1 > 100 THEN 'High' ELSE 'Low' END AS c1_category FROM lyqtest1 WHERE c2 IS NOT NULL
+EXCEPT
+SELECT c1, c2, CASE WHEN c1 > 100 THEN 'High' ELSE 'Low' END AS c1_category FROM lyqtest2 WHERE c2 IS NOT NULL;
+Query Plan
+=========================================================
+|ID|OPERATOR                     |NAME                  |
+---------------------------------------------------------
+|0 |HASH EXCEPT DISTINCT         |                      |
+|1 |├─TABLE FULL SCAN            |lyqtest1(idx_c1_c2_c3)|
+|2 |└─PX COORDINATOR             |                      |
+|3 |  └─EXCHANGE OUT DISTR       |:EX10000              |
+|4 |    └─HASH DISTINCT          |                      |
+|5 |      └─PX PARTITION ITERATOR|                      |
+|6 |        └─TABLE FULL SCAN    |lyqtest2              |
+=========================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([EXCEPT([1])], [EXCEPT([2])], [EXCEPT([3])]), filter(nil), rowset=16
+  1 - output([lyqtest1.c1], [lyqtest1.c2], [CASE WHEN lyqtest1.c1 > 100 THEN 'High' ELSE 'Low' END]), filter([lyqtest1.c2 IS NOT NULL]), rowset=16
+      access([lyqtest1.c2], [lyqtest1.c1]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([lyqtest1.c1], [lyqtest1.c2], [lyqtest1.c3], [lyqtest1.__pk_increment]), range(MIN,MIN,MIN,MIN ; MAX,MAX,MAX,MAX)always true
+  2 - output([lyqtest2.c1], [lyqtest2.c2], [CASE WHEN lyqtest2.c1 > 100 THEN 'High' ELSE 'Low' END]), filter(nil), rowset=16
+  3 - output([lyqtest2.c1], [lyqtest2.c2], [CASE WHEN lyqtest2.c1 > 100 THEN 'High' ELSE 'Low' END]), filter(nil), rowset=16
+      dop=1
+  4 - output([lyqtest2.c1], [lyqtest2.c2], [CASE WHEN lyqtest2.c1 > 100 THEN 'High' ELSE 'Low' END]), filter(nil), rowset=16
+      distinct([lyqtest2.c1], [lyqtest2.c2], [CASE WHEN lyqtest2.c1 > 100 THEN 'High' ELSE 'Low' END])
+  5 - output([lyqtest2.c2], [lyqtest2.c1], [CASE WHEN lyqtest2.c1 > 100 THEN 'High' ELSE 'Low' END]), filter(nil), rowset=16
+      force partition granule
+  6 - output([lyqtest2.c2], [lyqtest2.c1], [CASE WHEN lyqtest2.c1 > 100 THEN 'High' ELSE 'Low' END]), filter([lyqtest2.c2 IS NOT NULL]), rowset=16
+      access([lyqtest2.c2], [lyqtest2.c1]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([lyqtest2.__pk_increment]), range(MIN ; MAX)always true
+SELECT c1, c2 FROM (SELECT c1, c2 FROM lyqtest2 WHERE c1 < 50) AS sub1
+MINUS
+SELECT c1, c2 FROM (SELECT c1, c2 FROM lyqtest3 WHERE c1 < 2) AS sub2;
++------+----------+
+| c1   | c2       |
++------+----------+
+|    2 | example2 |
++------+----------+
+explain basic SELECT c1, c2 FROM (SELECT c1, c2 FROM lyqtest2 WHERE c1 < 50) AS sub1
+MINUS
+SELECT c1, c2 FROM (SELECT c1, c2 FROM lyqtest3 WHERE c1 < 2) AS sub2;
+Query Plan
+===================================================
+|ID|OPERATOR                     |NAME            |
+---------------------------------------------------
+|0 |HASH EXCEPT DISTINCT         |                |
+|1 |├─PX COORDINATOR             |                |
+|2 |│ └─EXCHANGE OUT DISTR       |:EX10000        |
+|3 |│   └─HASH DISTINCT          |                |
+|4 |│     └─PX PARTITION ITERATOR|                |
+|5 |│       └─TABLE RANGE SCAN   |lyqtest2(idx_c1)|
+|6 |└─TABLE FULL SCAN            |lyqtest3        |
+===================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([EXCEPT([1])], [EXCEPT([2])]), filter(nil), rowset=16
+  1 - output([lyqtest2.c1], [lyqtest2.c2]), filter(nil), rowset=16
+  2 - output([lyqtest2.c1], [lyqtest2.c2]), filter(nil), rowset=16
+      dop=1
+  3 - output([lyqtest2.c1], [lyqtest2.c2]), filter(nil), rowset=16
+      distinct([lyqtest2.c1], [lyqtest2.c2])
+  4 - output([lyqtest2.c1], [lyqtest2.c2]), filter(nil), rowset=16
+      force partition granule
+  5 - output([lyqtest2.c1], [lyqtest2.c2]), filter(nil), rowset=16
+      access([lyqtest2.__pk_increment], [lyqtest2.c1], [lyqtest2.c2]), partitions(p[0-3])
+      is_index_back=true, is_global_index=false, 
+      range_key([lyqtest2.c1], [lyqtest2.__pk_increment]), range(NULL,MAX ; 50,MIN), 
+      range_cond([lyqtest2.c1 < 50])
+  6 - output([lyqtest3.c1], [lyqtest3.c2]), filter([lyqtest3.c1 < 2], [lyqtest3.c1 < 50]), rowset=16
+      access([lyqtest3.c1], [lyqtest3.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false,false], 
+      range_key([lyqtest3.__pk_increment]), range(MIN ; MAX)always true
+SELECT DISTINCT c1, CASE WHEN c4 % 2 = 0 THEN 'Even' ELSE 'Odd' END AS parity FROM lyqtest1 WHERE c4 IS NOT NULL
+MINUS
+SELECT DISTINCT c1, CASE WHEN c4 % 2 = 0 THEN 'Even' ELSE 'Odd' END FROM lyqtest2 WHERE c4 IS NOT NULL;
++------+--------+
+| c1   | parity |
++------+--------+
+|    3 | Odd    |
++------+--------+
+explain basic SELECT DISTINCT c1, CASE WHEN c4 % 2 = 0 THEN 'Even' ELSE 'Odd' END AS parity FROM lyqtest1 WHERE c4 IS NOT NULL
+MINUS
+SELECT DISTINCT c1, CASE WHEN c4 % 2 = 0 THEN 'Even' ELSE 'Odd' END FROM lyqtest2 WHERE c4 IS NOT NULL;
+Query Plan
+===========================================
+|ID|OPERATOR                     |NAME    |
+-------------------------------------------
+|0 |HASH EXCEPT DISTINCT         |        |
+|1 |├─TABLE FULL SCAN            |lyqtest1|
+|2 |└─PX COORDINATOR             |        |
+|3 |  └─EXCHANGE OUT DISTR       |:EX10000|
+|4 |    └─HASH DISTINCT          |        |
+|5 |      └─PX PARTITION ITERATOR|        |
+|6 |        └─TABLE FULL SCAN    |lyqtest2|
+===========================================
+Outputs & filters:
+-------------------------------------
+  0 - output([EXCEPT([1])], [EXCEPT([2])]), filter(nil), rowset=16
+  1 - output([lyqtest1.c1], [CASE WHEN cast(lyqtest1.c4, DOUBLE(-1, -1)) % cast(2, DOUBLE(-1, -1)) = cast(0, DOUBLE(-1, -1)) THEN 'Even' ELSE 'Odd' END]), filter([lyqtest1.c4 
+      IS NOT NULL]), rowset=16
+      access([lyqtest1.c4], [lyqtest1.c1]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([lyqtest1.__pk_increment]), range(MIN ; MAX)always true
+  2 - output([lyqtest2.c1], [CASE WHEN cast(lyqtest2.c4, DOUBLE(-1, -1)) % cast(2, DOUBLE(-1, -1)) = cast(0, DOUBLE(-1, -1)) THEN 'Even' ELSE 'Odd' END]), filter(nil), rowset=16
+  3 - output([lyqtest2.c1], [CASE WHEN cast(lyqtest2.c4, DOUBLE(-1, -1)) % cast(2, DOUBLE(-1, -1)) = cast(0, DOUBLE(-1, -1)) THEN 'Even' ELSE 'Odd' END]), filter(nil), rowset=16
+      dop=1
+  4 - output([lyqtest2.c1], [CASE WHEN cast(lyqtest2.c4, DOUBLE(-1, -1)) % cast(2, DOUBLE(-1, -1)) = cast(0, DOUBLE(-1, -1)) THEN 'Even' ELSE 'Odd' END]), filter(nil), rowset=16
+      distinct([lyqtest2.c1], [CASE WHEN cast(lyqtest2.c4, DOUBLE(-1, -1)) % cast(2, DOUBLE(-1, -1)) = cast(0, DOUBLE(-1, -1)) THEN 'Even' ELSE 'Odd' END])
+  5 - output([lyqtest2.c1], [CASE WHEN cast(lyqtest2.c4, DOUBLE(-1, -1)) % cast(2, DOUBLE(-1, -1)) = cast(0, DOUBLE(-1, -1)) THEN 'Even' ELSE 'Odd' END]), filter(nil), rowset=16
+      force partition granule
+  6 - output([lyqtest2.c1], [CASE WHEN cast(lyqtest2.c4, DOUBLE(-1, -1)) % cast(2, DOUBLE(-1, -1)) = cast(0, DOUBLE(-1, -1)) THEN 'Even' ELSE 'Odd' END]), filter([lyqtest2.c4 
+      IS NOT NULL]), rowset=16
+      access([lyqtest2.c4], [lyqtest2.c1]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([lyqtest2.__pk_increment]), range(MIN ; MAX)always true
+能判断出来唯一，就不会分配 distinct
+SELECT c1, COUNT(DISTINCT c5) AS unique_c5_count FROM lyqtest1 WHERE YEAR(c3) > 2020 GROUP BY c1 
+EXCEPT
+SELECT c1, COUNT(DISTINCT c5) FROM lyqtest2 WHERE c4 > 100.0 GROUP BY c1;
++------+-----------------+
+| c1   | unique_c5_count |
++------+-----------------+
+|    1 |               1 |
+|    2 |               1 |
+|    3 |               1 |
++------+-----------------+
+explain basic SELECT c1, COUNT(DISTINCT c5) AS unique_c5_count FROM lyqtest1 WHERE YEAR(c3) > 2020 GROUP BY c1 
+EXCEPT
+SELECT c1, COUNT(DISTINCT c5) FROM lyqtest2 WHERE c4 > 100.0 GROUP BY c1;
+Query Plan
+=============================================================
+|ID|OPERATOR                                       |NAME    |
+-------------------------------------------------------------
+|0 |PX COORDINATOR                                 |        |
+|1 |└─EXCHANGE OUT DISTR                           |:EX10003|
+|2 |  └─HASH EXCEPT DISTINCT                       |        |
+|3 |    ├─EXCHANGE IN DISTR                        |        |
+|4 |    │ └─EXCHANGE OUT DISTR (HASH)              |:EX10000|
+|5 |    │   └─MERGE GROUP BY                       |        |
+|6 |    │     └─SORT                               |        |
+|7 |    │       └─SUBPLAN SCAN                     |VIEW1   |
+|8 |    │         └─HASH DISTINCT                  |        |
+|9 |    │           └─TABLE FULL SCAN              |lyqtest1|
+|10|    └─MERGE GROUP BY                           |        |
+|11|      └─EXCHANGE IN MERGE SORT DISTR           |        |
+|12|        └─EXCHANGE OUT DISTR (HASH)            |:EX10002|
+|13|          └─MERGE GROUP BY                     |        |
+|14|            └─SORT                             |        |
+|15|              └─SUBPLAN SCAN                   |VIEW2   |
+|16|                └─HASH DISTINCT                |        |
+|17|                  └─EXCHANGE IN DISTR          |        |
+|18|                    └─EXCHANGE OUT DISTR (HASH)|:EX10001|
+|19|                      └─HASH DISTINCT          |        |
+|20|                        └─PX PARTITION ITERATOR|        |
+|21|                          └─TABLE FULL SCAN    |lyqtest2|
+=============================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(EXCEPT([1]), EXCEPT([2]))]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(EXCEPT([1]), EXCEPT([2]))]), filter(nil), rowset=16
+      dop=1
+  2 - output([EXCEPT([1])], [EXCEPT([2])]), filter(nil), rowset=16
+  3 - output([VIEW1.lyqtest1.c1], [T_FUN_COUNT(VIEW1.lyqtest1.c5)]), filter(nil), rowset=16
+  4 - output([VIEW1.lyqtest1.c1], [T_FUN_COUNT(VIEW1.lyqtest1.c5)]), filter(nil), rowset=16
+      (#keys=1, [VIEW1.lyqtest1.c1]), is_single, dop=1
+  5 - output([VIEW1.lyqtest1.c1], [T_FUN_COUNT(VIEW1.lyqtest1.c5)]), filter(nil), rowset=16
+      group([VIEW1.lyqtest1.c1]), agg_func([T_FUN_COUNT(VIEW1.lyqtest1.c5)])
+  6 - output([VIEW1.lyqtest1.c1], [VIEW1.lyqtest1.c5]), filter(nil), rowset=16
+      sort_keys([VIEW1.lyqtest1.c1, ASC])
+  7 - output([VIEW1.lyqtest1.c1], [VIEW1.lyqtest1.c5]), filter(nil), rowset=16
+      access([VIEW1.lyqtest1.c1], [VIEW1.lyqtest1.c5])
+  8 - output([lyqtest1.c1], [lyqtest1.c5]), filter(nil), rowset=16
+      distinct([lyqtest1.c1], [lyqtest1.c5])
+  9 - output([lyqtest1.c1], [lyqtest1.c5]), filter([year(lyqtest1.c3) > 2020]), rowset=16
+      access([lyqtest1.c3], [lyqtest1.c1], [lyqtest1.c5]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([lyqtest1.__pk_increment]), range(MIN ; MAX)always true
+ 10 - output([VIEW2.lyqtest2.c1], [T_FUN_COUNT_SUM(T_FUN_COUNT(VIEW2.lyqtest2.c5))]), filter(nil), rowset=16
+      group([VIEW2.lyqtest2.c1]), agg_func([T_FUN_COUNT_SUM(T_FUN_COUNT(VIEW2.lyqtest2.c5))])
+ 11 - output([VIEW2.lyqtest2.c1], [T_FUN_COUNT(VIEW2.lyqtest2.c5)]), filter(nil), rowset=16
+      sort_keys([VIEW2.lyqtest2.c1, ASC])
+ 12 - output([VIEW2.lyqtest2.c1], [T_FUN_COUNT(VIEW2.lyqtest2.c5)]), filter(nil), rowset=16
+      (#keys=1, [VIEW2.lyqtest2.c1]), dop=1
+ 13 - output([VIEW2.lyqtest2.c1], [T_FUN_COUNT(VIEW2.lyqtest2.c5)]), filter(nil), rowset=16
+      group([VIEW2.lyqtest2.c1]), agg_func([T_FUN_COUNT(VIEW2.lyqtest2.c5)])
+ 14 - output([VIEW2.lyqtest2.c1], [VIEW2.lyqtest2.c5]), filter(nil), rowset=16
+      sort_keys([VIEW2.lyqtest2.c1, ASC])
+ 15 - output([VIEW2.lyqtest2.c1], [VIEW2.lyqtest2.c5]), filter(nil), rowset=16
+      access([VIEW2.lyqtest2.c1], [VIEW2.lyqtest2.c5])
+ 16 - output([lyqtest2.c1], [lyqtest2.c5]), filter(nil), rowset=16
+      distinct([lyqtest2.c1], [lyqtest2.c5])
+ 17 - output([lyqtest2.c1], [lyqtest2.c5]), filter(nil), rowset=16
+ 18 - output([lyqtest2.c1], [lyqtest2.c5]), filter(nil), rowset=16
+      (#keys=2, [lyqtest2.c1], [lyqtest2.c5]), dop=1
+ 19 - output([lyqtest2.c1], [lyqtest2.c5]), filter(nil), rowset=16
+      distinct([lyqtest2.c1], [lyqtest2.c5])
+ 20 - output([lyqtest2.c1], [lyqtest2.c5]), filter(nil), rowset=16
+      force partition granule
+ 21 - output([lyqtest2.c1], [lyqtest2.c5]), filter([cast(lyqtest2.c4, DOUBLE(-1, -1)) > cast(100.0, DOUBLE(-1, -1))]), rowset=16
+      access([lyqtest2.c4], [lyqtest2.c1], [lyqtest2.c5]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([lyqtest2.__pk_increment]), range(MIN ; MAX)always true
+不会下推  因为EXCEPT DISTINCT 算子下面 不是PX COORDINATOR 或者 EXCHANGE 的情况，会在 EXCHANGE 下面分配一个 DISTINCT
+SELECT c1, CONCAT(c2, ' - ', c5) AS combined FROM lyqtest1 WHERE c4 < 50.0
+EXCEPT
+SELECT c1, CONCAT(c2, ' - ', c5) FROM lyqtest3 WHERE c4 > 50.0;
++------+------------------+
+| c1   | combined         |
++------+------------------+
+|    1 | example1 - data1 |
+|    2 | NULL             |
+|    3 | example3 - data3 |
++------+------------------+
+explain basic SELECT c1, CONCAT(c2, ' - ', c5) AS combined FROM lyqtest1 WHERE c4 < 50.0
+EXCEPT
+SELECT c1, CONCAT(c2, ' - ', c5) FROM lyqtest3 WHERE c4 > 50.0;
+Query Plan
+==================================
+|ID|OPERATOR            |NAME    |
+----------------------------------
+|0 |HASH EXCEPT DISTINCT|        |
+|1 |├─TABLE FULL SCAN   |lyqtest1|
+|2 |└─TABLE FULL SCAN   |lyqtest3|
+==================================
+Outputs & filters:
+-------------------------------------
+  0 - output([EXCEPT([1])], [EXCEPT([2])]), filter(nil), rowset=16
+  1 - output([lyqtest1.c1], [CONCAT(lyqtest1.c2, ' - ', lyqtest1.c5)]), filter([cast(lyqtest1.c4, DOUBLE(-1, -1)) < cast(50.0, DOUBLE(-1, -1))]), rowset=16
+      access([lyqtest1.c4], [lyqtest1.c1], [lyqtest1.c2], [lyqtest1.c5]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([lyqtest1.__pk_increment]), range(MIN ; MAX)always true
+  2 - output([lyqtest3.c1], [CONCAT(lyqtest3.c2, ' - ', lyqtest3.c5)]), filter([cast(lyqtest3.c4, DOUBLE(-1, -1)) > cast(50.0, DOUBLE(-1, -1))]), rowset=16
+      access([lyqtest3.c4], [lyqtest3.c1], [lyqtest3.c2], [lyqtest3.c5]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([lyqtest3.__pk_increment]), range(MIN ; MAX)always true
+SELECT DATE_FORMAT(a.c6, '%Y-%m') AS month_year, COUNT(*) AS record_count FROM lyqtest1 a JOIN lyqtest2 b ON a.c1 = b.c1 WHERE a.c4 IS NOT NULL GROUP BY DATE_FORMAT(a.c6, '%Y-%m')
+EXCEPT 
+SELECT DATE_FORMAT(c.c6, '%Y-%m'), COUNT(*) FROM lyqtest3 c JOIN lyqtest1 d ON c.c1 = d.c1 WHERE c.c2 LIKE 'B%' GROUP BY DATE_FORMAT(c.c6, '%Y-%m');
++------------+--------------+
+| month_year | record_count |
++------------+--------------+
+| 2023-10    |            1 |
+| 2023-11    |            1 |
++------------+--------------+
+explain basic SELECT DATE_FORMAT(a.c6, '%Y-%m') AS month_year, COUNT(*) AS record_count FROM lyqtest1 a JOIN lyqtest2 b ON a.c1 = b.c1 WHERE a.c4 IS NOT NULL GROUP BY DATE_FORMAT(a.c6, '%Y-%m')
+EXCEPT 
+SELECT DATE_FORMAT(c.c6, '%Y-%m'), COUNT(*) FROM lyqtest3 c JOIN lyqtest1 d ON c.c1 = d.c1 WHERE c.c2 LIKE 'B%' GROUP BY DATE_FORMAT(c.c6, '%Y-%m');
+Query Plan
+======================================================
+|ID|OPERATOR                         |NAME           |
+------------------------------------------------------
+|0 |MERGE EXCEPT DISTINCT            |               |
+|1 |├─MERGE GROUP BY                 |               |
+|2 |│ └─SORT                         |               |
+|3 |│   └─HASH JOIN                  |               |
+|4 |│     ├─PX COORDINATOR           |               |
+|5 |│     │ └─EXCHANGE OUT DISTR     |:EX10000       |
+|6 |│     │   └─PX PARTITION ITERATOR|               |
+|7 |│     │     └─TABLE FULL SCAN    |b(idx_c1)      |
+|8 |│     └─TABLE FULL SCAN          |a              |
+|9 |└─MERGE GROUP BY                 |               |
+|10|  └─SORT                         |               |
+|11|    └─MERGE JOIN                 |               |
+|12|      ├─TABLE FULL SCAN          |d(idx_c1_c2_c3)|
+|13|      └─SORT                     |               |
+|14|        └─TABLE FULL SCAN        |c              |
+======================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([EXCEPT([1])], [EXCEPT([2])]), filter(nil), rowset=16
+  1 - output([DATE_FORMAT(a.c6, '%Y-%m')], [T_FUN_COUNT(*)]), filter(nil), rowset=16
+      group([DATE_FORMAT(a.c6, '%Y-%m')]), agg_func([T_FUN_COUNT(*)])
+  2 - output([DATE_FORMAT(a.c6, '%Y-%m')]), filter(nil), rowset=16
+      sort_keys([DATE_FORMAT(a.c6, '%Y-%m'), ASC])
+  3 - output([DATE_FORMAT(a.c6, '%Y-%m')]), filter(nil), rowset=16
+      equal_conds([a.c1 = b.c1]), other_conds(nil)
+  4 - output([b.c1]), filter(nil), rowset=16
+  5 - output([b.c1]), filter(nil), rowset=16
+      dop=1
+  6 - output([b.c1]), filter(nil), rowset=16
+      force partition granule
+  7 - output([b.c1]), filter(nil), rowset=16
+      access([b.c1]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([b.c1], [b.__pk_increment]), range(MIN,MIN ; MAX,MAX)always true
+  8 - output([a.c1], [a.c6]), filter([a.c4 IS NOT NULL]), rowset=16
+      access([a.c1], [a.c4], [a.c6]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([a.__pk_increment]), range(MIN ; MAX)always true
+  9 - output([DATE_FORMAT(c.c6, '%Y-%m')], [T_FUN_COUNT(*)]), filter(nil), rowset=16
+      group([DATE_FORMAT(c.c6, '%Y-%m')]), agg_func([T_FUN_COUNT(*)])
+ 10 - output([DATE_FORMAT(c.c6, '%Y-%m')]), filter(nil), rowset=16
+      sort_keys([DATE_FORMAT(c.c6, '%Y-%m'), ASC])
+ 11 - output([DATE_FORMAT(c.c6, '%Y-%m')]), filter(nil), rowset=16
+      equal_conds([c.c1 = d.c1]), other_conds(nil)
+      merge_directions([ASC])
+ 12 - output([d.c1]), filter(nil), rowset=16
+      access([d.c1]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([d.c1], [d.c2], [d.c3], [d.__pk_increment]), range(MIN,MIN,MIN,MIN ; MAX,MAX,MAX,MAX)always true
+ 13 - output([c.c1], [c.c6]), filter(nil), rowset=16
+      sort_keys([c.c1, ASC])
+ 14 - output([c.c1], [c.c6]), filter([(T_OP_LIKE, c.c2, 'B%', '\\')]), rowset=16
+      access([c.c1], [c.c2], [c.c6]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([c.__pk_increment]), range(MIN ; MAX)always true
+SELECT c1, c4 FROM lyqtest1 WHERE c4 > (SELECT AVG(c4) FROM lyqtest1)
+EXCEPT
+SELECT c1, c4 FROM lyqtest2 WHERE c4 > (SELECT AVG(c4) FROM lyqtest2);
++------+------+
+| c1   | c4   |
++------+------+
+|    3 | 30.5 |
++------+------+
+explain basic SELECT c1, c4 FROM lyqtest1 WHERE c4 > (SELECT AVG(c4) FROM lyqtest1)
+EXCEPT
+SELECT c1, c4 FROM lyqtest2 WHERE c4 > (SELECT AVG(c4) FROM lyqtest2);
+Query Plan
+===============================================
+|ID|OPERATOR                         |NAME    |
+-----------------------------------------------
+|0 |HASH EXCEPT DISTINCT             |        |
+|1 |├─NESTED-LOOP JOIN               |        |
+|2 |│ ├─SUBPLAN SCAN                 |VIEW1   |
+|3 |│ │ └─SCALAR GROUP BY            |        |
+|4 |│ │   └─TABLE FULL SCAN          |lyqtest1|
+|5 |│ └─TABLE FULL SCAN              |lyqtest1|
+|6 |└─PX COORDINATOR                 |        |
+|7 |  └─EXCHANGE OUT DISTR           |:EX10000|
+|8 |    └─HASH DISTINCT              |        |
+|9 |      └─SUBPLAN SCAN             |VIEW2   |
+|10|        └─WINDOW FUNCTION        |        |
+|11|          └─PX PARTITION ITERATOR|        |
+|12|            └─TABLE FULL SCAN    |lyqtest2|
+===============================================
+Outputs & filters:
+-------------------------------------
+  0 - output([EXCEPT([1])], [EXCEPT([2])]), filter(nil), rowset=16
+  1 - output([lyqtest1.c1], [lyqtest1.c4]), filter(nil), rowset=16
+      conds([cast(lyqtest1.c4, DOUBLE(-1, -1)) > VIEW1.AVG(c4)]), nl_params_(nil), use_batch=false
+  2 - output([VIEW1.AVG(c4)]), filter(nil), rowset=16
+      access([VIEW1.AVG(c4)])
+  3 - output([T_FUN_SUM(cast(lyqtest1.c4, DOUBLE(-1, -1))) / cast(T_FUN_COUNT(cast(lyqtest1.c4, DOUBLE(-1, -1))), DOUBLE(-1, -1))]), filter(nil), rowset=16
+      group(nil), agg_func([T_FUN_SUM(cast(lyqtest1.c4, DOUBLE(-1, -1)))], [T_FUN_COUNT(cast(lyqtest1.c4, DOUBLE(-1, -1)))])
+  4 - output([cast(lyqtest1.c4, DOUBLE(-1, -1))]), filter(nil), rowset=16
+      access([lyqtest1.c4]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([lyqtest1.__pk_increment]), range(MIN ; MAX)always true
+  5 - output([lyqtest1.c4], [lyqtest1.c1]), filter(nil), rowset=16
+      access([lyqtest1.c4], [lyqtest1.c1]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([lyqtest1.__pk_increment]), range(MIN ; MAX)always true
+  6 - output([VIEW2.lyqtest2.c1], [VIEW2.lyqtest2.c4]), filter(nil), rowset=16
+  7 - output([VIEW2.lyqtest2.c1], [VIEW2.lyqtest2.c4]), filter(nil), rowset=16
+      dop=1
+  8 - output([VIEW2.lyqtest2.c1], [VIEW2.lyqtest2.c4]), filter(nil), rowset=16
+      distinct([VIEW2.lyqtest2.c1], [VIEW2.lyqtest2.c4])
+  9 - output([VIEW2.lyqtest2.c4], [VIEW2.lyqtest2.c1]), filter([cast(VIEW2.lyqtest2.c4, DOUBLE(-1, -1)) > VIEW2.AVG(c4)]), rowset=16
+      access([VIEW2.AVG(c4)], [VIEW2.lyqtest2.c4], [VIEW2.lyqtest2.c1])
+ 10 - output([T_FUN_SUM(cast(lyqtest2.c4, DOUBLE(-1, -1))) / cast(T_FUN_COUNT(cast(lyqtest2.c4, DOUBLE(-1, -1))), DOUBLE(-1, -1))], [lyqtest2.c4], [lyqtest2.c1]), filter(nil), rowset=16
+      win_expr(T_FUN_SUM(cast(lyqtest2.c4, DOUBLE(-1, -1)))), partition_by(nil), order_by(nil), window_type(RANGE), upper(UNBOUNDED PRECEDING), lower(UNBOUNDED 
+      FOLLOWING)
+      win_expr(T_FUN_COUNT(cast(lyqtest2.c4, DOUBLE(-1, -1)))), partition_by(nil), order_by(nil), window_type(RANGE), upper(UNBOUNDED PRECEDING), lower(UNBOUNDED 
+      FOLLOWING)
+ 11 - output([lyqtest2.c4], [lyqtest2.c1], [cast(lyqtest2.c4, DOUBLE(-1, -1))]), filter(nil), rowset=16
+      force partition granule
+ 12 - output([lyqtest2.c4], [lyqtest2.c1], [cast(lyqtest2.c4, DOUBLE(-1, -1))]), filter(nil), rowset=16
+      access([lyqtest2.c4], [lyqtest2.c1]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([lyqtest2.__pk_increment]), range(MIN ; MAX)always true
+UNION ALL 不去重的，就是不会分配新的 distinct
+select c1 from lyqtest1 UNION ALL select c1 from lyqtest2;
++------+
+| c1   |
++------+
+|    1 |
+|    2 |
+|    3 |
+| NULL |
+|    1 |
+|    2 |
++------+
+explain basic select c1 from lyqtest1 UNION ALL select c1 from lyqtest2;
+Query Plan
+====================================================
+|ID|OPERATOR                   |NAME               |
+----------------------------------------------------
+|0 |UNION ALL                  |                   |
+|1 |├─TABLE FULL SCAN          |lyqtest1(idx_t1_c1)|
+|2 |└─PX COORDINATOR           |                   |
+|3 |  └─EXCHANGE OUT DISTR     |:EX10000           |
+|4 |    └─PX PARTITION ITERATOR|                   |
+|5 |      └─TABLE FULL SCAN    |lyqtest2(idx_c1)   |
+====================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([UNION([1])]), filter(nil), rowset=16
+  1 - output([lyqtest1.c1]), filter(nil), rowset=16
+      access([lyqtest1.c1]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([lyqtest1.c1], [lyqtest1.__pk_increment]), range(MIN,MIN ; MAX,MAX)always true
+  2 - output([lyqtest2.c1]), filter(nil), rowset=16
+  3 - output([lyqtest2.c1]), filter(nil), rowset=16
+      dop=1
+  4 - output([lyqtest2.c1]), filter(nil), rowset=16
+      force partition granule
+  5 - output([lyqtest2.c1]), filter(nil), rowset=16
+      access([lyqtest2.c1]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([lyqtest2.c1], [lyqtest2.__pk_increment]), range(MIN,MIN ; MAX,MAX)always true
+SELECT c5, LENGTH(c2) AS len_c2 FROM lyqtest2 WHERE c4 > 100.0 AND c2 IS NOT NULL
+UNION ALL
+SELECT c5, LENGTH(c2) FROM lyqtest3 WHERE c1 < 10;
++-------+--------+
+| c5    | len_c2 |
++-------+--------+
+| data4 |      8 |
+| data5 |      8 |
++-------+--------+
+explain basic SELECT c5, LENGTH(c2) AS len_c2 FROM lyqtest2 WHERE c4 > 100.0 AND c2 IS NOT NULL
+UNION ALL
+SELECT c5, LENGTH(c2) FROM lyqtest3 WHERE c1 < 10;
+Query Plan
+=========================================
+|ID|OPERATOR                   |NAME    |
+-----------------------------------------
+|0 |UNION ALL                  |        |
+|1 |├─PX COORDINATOR           |        |
+|2 |│ └─EXCHANGE OUT DISTR     |:EX10000|
+|3 |│   └─PX PARTITION ITERATOR|        |
+|4 |│     └─TABLE FULL SCAN    |lyqtest2|
+|5 |└─TABLE FULL SCAN          |lyqtest3|
+=========================================
+Outputs & filters:
+-------------------------------------
+  0 - output([UNION([1])], [UNION([2])]), filter(nil), rowset=16
+  1 - output([lyqtest2.c5], [LENGTH(lyqtest2.c2)]), filter(nil), rowset=16
+  2 - output([lyqtest2.c5], [lyqtest2.c2]), filter(nil), rowset=16
+      dop=1
+  3 - output([lyqtest2.c2], [lyqtest2.c5]), filter(nil), rowset=16
+      force partition granule
+  4 - output([lyqtest2.c2], [lyqtest2.c5]), filter([cast(lyqtest2.c4, DOUBLE(-1, -1)) > cast(100.0, DOUBLE(-1, -1))], [lyqtest2.c2 IS NOT NULL]), rowset=16
+      access([lyqtest2.c4], [lyqtest2.c2], [lyqtest2.c5]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, filter_before_indexback[false,false], 
+      range_key([lyqtest2.__pk_increment]), range(MIN ; MAX)always true
+  5 - output([lyqtest3.c5], [LENGTH(lyqtest3.c2)]), filter([lyqtest3.c1 < 10]), rowset=16
+      access([lyqtest3.c1], [lyqtest3.c5], [lyqtest3.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([lyqtest3.__pk_increment]), range(MIN ; MAX)always true
+SELECT c1, c2, CASE  WHEN c1 > 100 THEN 'High' ELSE 'Low' END AS c1_category FROM lyqtest1 WHERE c2 IS NOT NULL
+UNION ALL
+SELECT c1, c2, CASE WHEN c1 > 100 THEN 'High' ELSE 'Low' END AS c1_category FROM lyqtest2 WHERE c2 IS NOT NULL;
++------+----------+-------------+
+| c1   | c2       | c1_category |
++------+----------+-------------+
+|    1 | example1 | Low         |
+|    3 | example3 | Low         |
+|    1 | example1 | Low         |
+|    2 | example2 | Low         |
+| NULL | example6 | Low         |
++------+----------+-------------+
+explain basic SELECT c1, c2, CASE  WHEN c1 > 100 THEN 'High' ELSE 'Low' END AS c1_category FROM lyqtest1 WHERE c2 IS NOT NULL
+UNION ALL
+SELECT c1, c2, CASE WHEN c1 > 100 THEN 'High' ELSE 'Low' END AS c1_category FROM lyqtest2 WHERE c2 IS NOT NULL;
+Query Plan
+=======================================================
+|ID|OPERATOR                   |NAME                  |
+-------------------------------------------------------
+|0 |UNION ALL                  |                      |
+|1 |├─TABLE FULL SCAN          |lyqtest1(idx_c1_c2_c3)|
+|2 |└─PX COORDINATOR           |                      |
+|3 |  └─EXCHANGE OUT DISTR     |:EX10000              |
+|4 |    └─PX PARTITION ITERATOR|                      |
+|5 |      └─TABLE FULL SCAN    |lyqtest2              |
+=======================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([UNION([1])], [UNION([2])], [UNION([3])]), filter(nil), rowset=16
+  1 - output([lyqtest1.c1], [lyqtest1.c2], [CASE WHEN lyqtest1.c1 > 100 THEN 'High' ELSE 'Low' END]), filter([lyqtest1.c2 IS NOT NULL]), rowset=16
+      access([lyqtest1.c2], [lyqtest1.c1]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([lyqtest1.c1], [lyqtest1.c2], [lyqtest1.c3], [lyqtest1.__pk_increment]), range(MIN,MIN,MIN,MIN ; MAX,MAX,MAX,MAX)always true
+  2 - output([lyqtest2.c1], [lyqtest2.c2], [CASE WHEN lyqtest2.c1 > 100 THEN 'High' ELSE 'Low' END]), filter(nil), rowset=16
+  3 - output([lyqtest2.c1], [lyqtest2.c2]), filter(nil), rowset=16
+      dop=1
+  4 - output([lyqtest2.c2], [lyqtest2.c1]), filter(nil), rowset=16
+      force partition granule
+  5 - output([lyqtest2.c2], [lyqtest2.c1]), filter([lyqtest2.c2 IS NOT NULL]), rowset=16
+      access([lyqtest2.c2], [lyqtest2.c1]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([lyqtest2.__pk_increment]), range(MIN ; MAX)always true
+SELECT DISTINCT c1, CASE WHEN c4 % 2 = 0 THEN 'Even' ELSE 'Odd' END AS parity FROM lyqtest1 WHERE c4 IS NOT NULL
+UNION ALL
+SELECT DISTINCT c1, CASE WHEN c4 % 2 = 0 THEN 'Even' ELSE 'Odd' END FROM lyqtest2 WHERE c4 IS NOT NULL;
++------+--------+
+| c1   | parity |
++------+--------+
+|    1 | Odd    |
+|    2 | Odd    |
+|    3 | Odd    |
+|    1 | Odd    |
+|    2 | Odd    |
+| NULL | Odd    |
++------+--------+
+explain basic SELECT DISTINCT c1, CASE WHEN c4 % 2 = 0 THEN 'Even' ELSE 'Odd' END AS parity FROM lyqtest1 WHERE c4 IS NOT NULL
+UNION ALL
+SELECT  DISTINCT c1, CASE WHEN c4 % 2 = 0 THEN 'Even' ELSE 'Odd' END FROM lyqtest2 WHERE c4 IS NOT NULL;
+Query Plan
+=================================================
+|ID|OPERATOR                           |NAME    |
+-------------------------------------------------
+|0 |UNION ALL                          |        |
+|1 |├─HASH DISTINCT                    |        |
+|2 |│ └─TABLE FULL SCAN                |lyqtest1|
+|3 |└─PX COORDINATOR                   |        |
+|4 |  └─EXCHANGE OUT DISTR             |:EX10001|
+|5 |    └─HASH DISTINCT                |        |
+|6 |      └─EXCHANGE IN DISTR          |        |
+|7 |        └─EXCHANGE OUT DISTR (HASH)|:EX10000|
+|8 |          └─HASH DISTINCT          |        |
+|9 |            └─PX PARTITION ITERATOR|        |
+|10|              └─TABLE FULL SCAN    |lyqtest2|
+=================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([UNION([1])], [UNION([2])]), filter(nil), rowset=16
+  1 - output([lyqtest1.c1], [CASE WHEN cast(lyqtest1.c4, DOUBLE(-1, -1)) % cast(2, DOUBLE(-1, -1)) = cast(0, DOUBLE(-1, -1)) THEN 'Even' ELSE 'Odd' END]), filter(nil), rowset=16
+      distinct([lyqtest1.c1], [CASE WHEN cast(lyqtest1.c4, DOUBLE(-1, -1)) % cast(2, DOUBLE(-1, -1)) = cast(0, DOUBLE(-1, -1)) THEN 'Even' ELSE 'Odd' END])
+  2 - output([lyqtest1.c4], [lyqtest1.c1]), filter([lyqtest1.c4 IS NOT NULL]), rowset=16
+      access([lyqtest1.c4], [lyqtest1.c1]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([lyqtest1.__pk_increment]), range(MIN ; MAX)always true
+  3 - output([lyqtest2.c1], [CASE WHEN cast(lyqtest2.c4, DOUBLE(-1, -1)) % cast(2, DOUBLE(-1, -1)) = cast(0, DOUBLE(-1, -1)) THEN 'Even' ELSE 'Odd' END]), filter(nil), rowset=16
+  4 - output([lyqtest2.c1], [CASE WHEN cast(lyqtest2.c4, DOUBLE(-1, -1)) % cast(2, DOUBLE(-1, -1)) = cast(0, DOUBLE(-1, -1)) THEN 'Even' ELSE 'Odd' END]), filter(nil), rowset=16
+      dop=1
+  5 - output([lyqtest2.c1], [CASE WHEN cast(lyqtest2.c4, DOUBLE(-1, -1)) % cast(2, DOUBLE(-1, -1)) = cast(0, DOUBLE(-1, -1)) THEN 'Even' ELSE 'Odd' END]), filter(nil), rowset=16
+      distinct([lyqtest2.c1], [CASE WHEN cast(lyqtest2.c4, DOUBLE(-1, -1)) % cast(2, DOUBLE(-1, -1)) = cast(0, DOUBLE(-1, -1)) THEN 'Even' ELSE 'Odd' END])
+  6 - output([lyqtest2.c1], [CASE WHEN cast(lyqtest2.c4, DOUBLE(-1, -1)) % cast(2, DOUBLE(-1, -1)) = cast(0, DOUBLE(-1, -1)) THEN 'Even' ELSE 'Odd' END]), filter(nil), rowset=16
+  7 - output([lyqtest2.c1], [CASE WHEN cast(lyqtest2.c4, DOUBLE(-1, -1)) % cast(2, DOUBLE(-1, -1)) = cast(0, DOUBLE(-1, -1)) THEN 'Even' ELSE 'Odd' END]), filter(nil), rowset=16
+      (#keys=2, [lyqtest2.c1], [CASE WHEN cast(lyqtest2.c4, DOUBLE(-1, -1)) % cast(2, DOUBLE(-1, -1)) = cast(0, DOUBLE(-1, -1)) THEN 'Even' ELSE 'Odd' END]),
+       dop=1
+  8 - output([lyqtest2.c1], [CASE WHEN cast(lyqtest2.c4, DOUBLE(-1, -1)) % cast(2, DOUBLE(-1, -1)) = cast(0, DOUBLE(-1, -1)) THEN 'Even' ELSE 'Odd' END]), filter(nil), rowset=16
+      distinct([lyqtest2.c1], [CASE WHEN cast(lyqtest2.c4, DOUBLE(-1, -1)) % cast(2, DOUBLE(-1, -1)) = cast(0, DOUBLE(-1, -1)) THEN 'Even' ELSE 'Odd' END])
+  9 - output([lyqtest2.c1], [CASE WHEN cast(lyqtest2.c4, DOUBLE(-1, -1)) % cast(2, DOUBLE(-1, -1)) = cast(0, DOUBLE(-1, -1)) THEN 'Even' ELSE 'Odd' END]), filter(nil), rowset=16
+      force partition granule
+ 10 - output([lyqtest2.c1], [CASE WHEN cast(lyqtest2.c4, DOUBLE(-1, -1)) % cast(2, DOUBLE(-1, -1)) = cast(0, DOUBLE(-1, -1)) THEN 'Even' ELSE 'Odd' END]), filter([lyqtest2.c4 
+      IS NOT NULL]), rowset=16
+      access([lyqtest2.c4], [lyqtest2.c1]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([lyqtest2.__pk_increment]), range(MIN ; MAX)always true
+SELECT c1, COUNT(DISTINCT c5) AS unique_c5_count FROM lyqtest1 WHERE YEAR(c3) > 2020 GROUP BY c1 
+UNION ALL
+SELECT c1, COUNT(DISTINCT c5) FROM lyqtest2 WHERE c4 > 100.0 GROUP BY c1;
++------+-----------------+
+| c1   | unique_c5_count |
++------+-----------------+
+|    1 |               1 |
+|    2 |               1 |
+|    3 |               1 |
++------+-----------------+
+explain basic SELECT c1, COUNT(DISTINCT c5) AS unique_c5_count FROM lyqtest1 WHERE YEAR(c3) > 2020 GROUP BY c1 
+UNION ALL
+SELECT c1, COUNT(DISTINCT c5) FROM lyqtest2 WHERE c4 > 100.0 GROUP BY c1;
+Query Plan
+===========================================================
+|ID|OPERATOR                                     |NAME    |
+-----------------------------------------------------------
+|0 |UNION ALL                                    |        |
+|1 |├─HASH GROUP BY                              |        |
+|2 |│ └─SUBPLAN SCAN                             |VIEW1   |
+|3 |│   └─HASH DISTINCT                          |        |
+|4 |│     └─TABLE FULL SCAN                      |lyqtest1|
+|5 |└─PX COORDINATOR                             |        |
+|6 |  └─EXCHANGE OUT DISTR                       |:EX10002|
+|7 |    └─HASH GROUP BY                          |        |
+|8 |      └─EXCHANGE IN DISTR                    |        |
+|9 |        └─EXCHANGE OUT DISTR (HASH)          |:EX10001|
+|10|          └─HASH GROUP BY                    |        |
+|11|            └─SUBPLAN SCAN                   |VIEW2   |
+|12|              └─HASH DISTINCT                |        |
+|13|                └─EXCHANGE IN DISTR          |        |
+|14|                  └─EXCHANGE OUT DISTR (HASH)|:EX10000|
+|15|                    └─HASH DISTINCT          |        |
+|16|                      └─PX PARTITION ITERATOR|        |
+|17|                        └─TABLE FULL SCAN    |lyqtest2|
+===========================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([UNION([1])], [UNION([2])]), filter(nil), rowset=16
+  1 - output([VIEW1.lyqtest1.c1], [T_FUN_COUNT(VIEW1.lyqtest1.c5)]), filter(nil), rowset=16
+      group([VIEW1.lyqtest1.c1]), agg_func([T_FUN_COUNT(VIEW1.lyqtest1.c5)])
+  2 - output([VIEW1.lyqtest1.c1], [VIEW1.lyqtest1.c5]), filter(nil), rowset=16
+      access([VIEW1.lyqtest1.c1], [VIEW1.lyqtest1.c5])
+  3 - output([lyqtest1.c1], [lyqtest1.c5]), filter(nil), rowset=16
+      distinct([lyqtest1.c1], [lyqtest1.c5])
+  4 - output([lyqtest1.c1], [lyqtest1.c5]), filter([year(lyqtest1.c3) > 2020]), rowset=16
+      access([lyqtest1.c3], [lyqtest1.c1], [lyqtest1.c5]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([lyqtest1.__pk_increment]), range(MIN ; MAX)always true
+  5 - output([VIEW2.lyqtest2.c1], [T_FUN_COUNT_SUM(T_FUN_COUNT(VIEW2.lyqtest2.c5))]), filter(nil), rowset=16
+  6 - output([VIEW2.lyqtest2.c1], [T_FUN_COUNT_SUM(T_FUN_COUNT(VIEW2.lyqtest2.c5))]), filter(nil), rowset=16
+      dop=1
+  7 - output([VIEW2.lyqtest2.c1], [T_FUN_COUNT_SUM(T_FUN_COUNT(VIEW2.lyqtest2.c5))]), filter(nil), rowset=16
+      group([VIEW2.lyqtest2.c1]), agg_func([T_FUN_COUNT_SUM(T_FUN_COUNT(VIEW2.lyqtest2.c5))])
+  8 - output([VIEW2.lyqtest2.c1], [T_FUN_COUNT(VIEW2.lyqtest2.c5)]), filter(nil), rowset=16
+  9 - output([VIEW2.lyqtest2.c1], [T_FUN_COUNT(VIEW2.lyqtest2.c5)]), filter(nil), rowset=16
+      (#keys=1, [VIEW2.lyqtest2.c1]), dop=1
+ 10 - output([VIEW2.lyqtest2.c1], [T_FUN_COUNT(VIEW2.lyqtest2.c5)]), filter(nil), rowset=16
+      group([VIEW2.lyqtest2.c1]), agg_func([T_FUN_COUNT(VIEW2.lyqtest2.c5)])
+ 11 - output([VIEW2.lyqtest2.c1], [VIEW2.lyqtest2.c5]), filter(nil), rowset=16
+      access([VIEW2.lyqtest2.c1], [VIEW2.lyqtest2.c5])
+ 12 - output([lyqtest2.c1], [lyqtest2.c5]), filter(nil), rowset=16
+      distinct([lyqtest2.c1], [lyqtest2.c5])
+ 13 - output([lyqtest2.c1], [lyqtest2.c5]), filter(nil), rowset=16
+ 14 - output([lyqtest2.c1], [lyqtest2.c5]), filter(nil), rowset=16
+      (#keys=2, [lyqtest2.c1], [lyqtest2.c5]), dop=1
+ 15 - output([lyqtest2.c1], [lyqtest2.c5]), filter(nil), rowset=16
+      distinct([lyqtest2.c1], [lyqtest2.c5])
+ 16 - output([lyqtest2.c1], [lyqtest2.c5]), filter(nil), rowset=16
+      force partition granule
+ 17 - output([lyqtest2.c1], [lyqtest2.c5]), filter([cast(lyqtest2.c4, DOUBLE(-1, -1)) > cast(100.0, DOUBLE(-1, -1))]), rowset=16
+      access([lyqtest2.c4], [lyqtest2.c1], [lyqtest2.c5]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([lyqtest2.__pk_increment]), range(MIN ; MAX)always true
+SELECT UPPER(c2) AS upper_c2, AVG(c4) FROM lyqtest2 WHERE c1 BETWEEN 1 AND 50 GROUP BY UPPER(c2)
+UNION ALL
+SELECT UPPER(c2), AVG(c4) FROM lyqtest3 WHERE c6 < '2022-01-01' GROUP BY UPPER(c2);
++----------+---------+
+| upper_c2 | AVG(c4) |
++----------+---------+
+| EXAMPLE1 |    40.5 |
+| EXAMPLE2 |    50.5 |
++----------+---------+
+explain basic SELECT UPPER(c2) AS upper_c2, AVG(c4) FROM lyqtest2 WHERE c1 BETWEEN 1 AND 50 GROUP BY UPPER(c2)
+UNION ALL
+SELECT UPPER(c2), AVG(c4) FROM lyqtest3 WHERE c6 < '2022-01-01' GROUP BY UPPER(c2);
+Query Plan
+=========================================================
+|ID|OPERATOR                           |NAME            |
+---------------------------------------------------------
+|0 |UNION ALL                          |                |
+|1 |├─PX COORDINATOR                   |                |
+|2 |│ └─EXCHANGE OUT DISTR             |:EX10001        |
+|3 |│   └─HASH GROUP BY                |                |
+|4 |│     └─EXCHANGE IN DISTR          |                |
+|5 |│       └─EXCHANGE OUT DISTR (HASH)|:EX10000        |
+|6 |│         └─HASH GROUP BY          |                |
+|7 |│           └─PX PARTITION ITERATOR|                |
+|8 |│             └─TABLE RANGE SCAN   |lyqtest2(idx_c1)|
+|9 |└─HASH GROUP BY                    |                |
+|10|  └─TABLE FULL SCAN                |lyqtest3        |
+=========================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([UNION([1])], [UNION([2])]), filter(nil), rowset=16
+  1 - output([UPPER(lyqtest2.c2)], [cast(T_FUN_SUM(T_FUN_SUM(cast(lyqtest2.c4, DOUBLE(-1, -1)))) / cast(T_FUN_COUNT_SUM(T_FUN_COUNT(cast(lyqtest2.c4, DOUBLE(-1,
+       -1)))), DOUBLE(-1, -1)), DOUBLE(-1, -1))]), filter(nil), rowset=16
+  2 - output([UPPER(lyqtest2.c2)], [T_FUN_SUM(T_FUN_SUM(cast(lyqtest2.c4, DOUBLE(-1, -1))))], [T_FUN_COUNT_SUM(T_FUN_COUNT(cast(lyqtest2.c4, DOUBLE(-1, 
+      -1))))]), filter(nil), rowset=16
+      dop=1
+  3 - output([UPPER(lyqtest2.c2)], [T_FUN_SUM(T_FUN_SUM(cast(lyqtest2.c4, DOUBLE(-1, -1))))], [T_FUN_COUNT_SUM(T_FUN_COUNT(cast(lyqtest2.c4, DOUBLE(-1, 
+      -1))))]), filter(nil), rowset=16
+      group([UPPER(lyqtest2.c2)]), agg_func([T_FUN_SUM(T_FUN_SUM(cast(lyqtest2.c4, DOUBLE(-1, -1))))], [T_FUN_COUNT_SUM(T_FUN_COUNT(cast(lyqtest2.c4, DOUBLE(-1,
+       -1))))])
+  4 - output([UPPER(lyqtest2.c2)], [T_FUN_SUM(cast(lyqtest2.c4, DOUBLE(-1, -1)))], [T_FUN_COUNT(cast(lyqtest2.c4, DOUBLE(-1, -1)))]), filter(nil), rowset=16
+  5 - output([UPPER(lyqtest2.c2)], [T_FUN_SUM(cast(lyqtest2.c4, DOUBLE(-1, -1)))], [T_FUN_COUNT(cast(lyqtest2.c4, DOUBLE(-1, -1)))]), filter(nil), rowset=16
+      (#keys=1, [UPPER(lyqtest2.c2)]), dop=1
+  6 - output([UPPER(lyqtest2.c2)], [T_FUN_SUM(cast(lyqtest2.c4, DOUBLE(-1, -1)))], [T_FUN_COUNT(cast(lyqtest2.c4, DOUBLE(-1, -1)))]), filter(nil), rowset=16
+      group([UPPER(lyqtest2.c2)]), agg_func([T_FUN_SUM(cast(lyqtest2.c4, DOUBLE(-1, -1)))], [T_FUN_COUNT(cast(lyqtest2.c4, DOUBLE(-1, -1)))])
+  7 - output([UPPER(lyqtest2.c2)], [cast(lyqtest2.c4, DOUBLE(-1, -1))]), filter(nil), rowset=16
+      force partition granule
+  8 - output([UPPER(lyqtest2.c2)], [cast(lyqtest2.c4, DOUBLE(-1, -1))]), filter(nil), rowset=16
+      access([lyqtest2.__pk_increment], [lyqtest2.c2], [lyqtest2.c4]), partitions(p[0-3])
+      is_index_back=true, is_global_index=false, 
+      range_key([lyqtest2.c1], [lyqtest2.__pk_increment]), range(1,MIN ; 50,MAX), 
+      range_cond([lyqtest2.c1 >= 1], [lyqtest2.c1 <= 50])
+  9 - output([UPPER(lyqtest3.c2)], [cast(T_FUN_SUM(cast(lyqtest3.c4, DOUBLE(-1, -1))) / cast(T_FUN_COUNT(cast(lyqtest3.c4, DOUBLE(-1, -1))), DOUBLE(-1, 
+      -1)), DOUBLE(-1, -1))]), filter(nil), rowset=16
+      group([UPPER(lyqtest3.c2)]), agg_func([T_FUN_SUM(cast(lyqtest3.c4, DOUBLE(-1, -1)))], [T_FUN_COUNT(cast(lyqtest3.c4, DOUBLE(-1, -1)))])
+ 10 - output([lyqtest3.c2], [cast(lyqtest3.c4, DOUBLE(-1, -1))]), filter([lyqtest3.c6 < demote_cast('2022-01-01', MYSQL_DATE(10, 0))]), rowset=16
+      access([lyqtest3.c6], [lyqtest3.c2], [lyqtest3.c4]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([lyqtest3.__pk_increment]), range(MIN ; MAX)always true
+SELECT c1, CONCAT(c2, ' - ', c5) AS combined FROM lyqtest1 WHERE c4 < 50.0
+UNION ALL
+SELECT c1, CONCAT(c2, ' - ', c5) FROM lyqtest3 WHERE c4 > 50.0;
++------+------------------+
+| c1   | combined         |
++------+------------------+
+|    1 | example1 - data1 |
+|    2 | NULL             |
+|    3 | example3 - data3 |
+|    2 | example2 - data5 |
+| NULL | example6 - data6 |
++------+------------------+
+explain basic SELECT c1, CONCAT(c2, ' - ', c5) AS combined FROM lyqtest1 WHERE c4 < 50.0
+UNION ALL
+SELECT c1, CONCAT(c2, ' - ', c5) FROM lyqtest3 WHERE c4 > 50.0;
+Query Plan
+===============================
+|ID|OPERATOR         |NAME    |
+-------------------------------
+|0 |UNION ALL        |        |
+|1 |├─TABLE FULL SCAN|lyqtest1|
+|2 |└─TABLE FULL SCAN|lyqtest3|
+===============================
+Outputs & filters:
+-------------------------------------
+  0 - output([UNION([1])], [UNION([2])]), filter(nil), rowset=16
+  1 - output([lyqtest1.c1], [CONCAT(lyqtest1.c2, ' - ', lyqtest1.c5)]), filter([cast(lyqtest1.c4, DOUBLE(-1, -1)) < cast(50.0, DOUBLE(-1, -1))]), rowset=16
+      access([lyqtest1.c4], [lyqtest1.c1], [lyqtest1.c2], [lyqtest1.c5]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([lyqtest1.__pk_increment]), range(MIN ; MAX)always true
+  2 - output([lyqtest3.c1], [CONCAT(lyqtest3.c2, ' - ', lyqtest3.c5)]), filter([cast(lyqtest3.c4, DOUBLE(-1, -1)) > cast(50.0, DOUBLE(-1, -1))]), rowset=16
+      access([lyqtest3.c4], [lyqtest3.c1], [lyqtest3.c2], [lyqtest3.c5]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([lyqtest3.__pk_increment]), range(MIN ; MAX)always true
+SELECT DATE_FORMAT(a.c6, '%Y-%m') AS month_year, COUNT(*) AS record_count FROM lyqtest1 a JOIN lyqtest2 b ON a.c1 = b.c1 WHERE a.c4 IS NOT NULL GROUP BY DATE_FORMAT(a.c6, '%Y-%m')
+UNION ALL
+SELECT DATE_FORMAT(c.c6, '%Y-%m'), COUNT(*) FROM lyqtest3 c JOIN lyqtest1 d ON c.c1 = d.c1 WHERE c.c2 LIKE 'B%' GROUP BY DATE_FORMAT(c.c6, '%Y-%m');
++------------+--------------+
+| month_year | record_count |
++------------+--------------+
+| 2023-10    |            1 |
+| 2023-11    |            1 |
++------------+--------------+
+explain basic SELECT DATE_FORMAT(a.c6, '%Y-%m') AS month_year, COUNT(*) AS record_count FROM lyqtest1 a JOIN lyqtest2 b ON a.c1 = b.c1 WHERE a.c4 IS NOT NULL GROUP BY DATE_FORMAT(a.c6, '%Y-%m')
+UNION ALL
+SELECT DATE_FORMAT(c.c6, '%Y-%m'), COUNT(*) FROM lyqtest3 c JOIN lyqtest1 d ON c.c1 = d.c1 WHERE c.c2 LIKE 'B%' GROUP BY DATE_FORMAT(c.c6, '%Y-%m');
+Query Plan
+====================================================
+|ID|OPERATOR                       |NAME           |
+----------------------------------------------------
+|0 |UNION ALL                      |               |
+|1 |├─HASH GROUP BY                |               |
+|2 |│ └─HASH JOIN                  |               |
+|3 |│   ├─PX COORDINATOR           |               |
+|4 |│   │ └─EXCHANGE OUT DISTR     |:EX10000       |
+|5 |│   │   └─PX PARTITION ITERATOR|               |
+|6 |│   │     └─TABLE FULL SCAN    |b(idx_c1)      |
+|7 |│   └─TABLE FULL SCAN          |a              |
+|8 |└─HASH GROUP BY                |               |
+|9 |  └─MERGE JOIN                 |               |
+|10|    ├─TABLE FULL SCAN          |d(idx_c1_c2_c3)|
+|11|    └─SORT                     |               |
+|12|      └─TABLE FULL SCAN        |c              |
+====================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([UNION([1])], [UNION([2])]), filter(nil), rowset=16
+  1 - output([DATE_FORMAT(a.c6, '%Y-%m')], [T_FUN_COUNT(*)]), filter(nil), rowset=16
+      group([DATE_FORMAT(a.c6, '%Y-%m')]), agg_func([T_FUN_COUNT(*)])
+  2 - output([a.c6]), filter(nil), rowset=16
+      equal_conds([a.c1 = b.c1]), other_conds(nil)
+  3 - output([b.c1]), filter(nil), rowset=16
+  4 - output([b.c1]), filter(nil), rowset=16
+      dop=1
+  5 - output([b.c1]), filter(nil), rowset=16
+      force partition granule
+  6 - output([b.c1]), filter(nil), rowset=16
+      access([b.c1]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([b.c1], [b.__pk_increment]), range(MIN,MIN ; MAX,MAX)always true
+  7 - output([a.c1], [a.c6]), filter([a.c4 IS NOT NULL]), rowset=16
+      access([a.c1], [a.c4], [a.c6]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([a.__pk_increment]), range(MIN ; MAX)always true
+  8 - output([DATE_FORMAT(c.c6, '%Y-%m')], [T_FUN_COUNT(*)]), filter(nil), rowset=16
+      group([DATE_FORMAT(c.c6, '%Y-%m')]), agg_func([T_FUN_COUNT(*)])
+  9 - output([c.c6]), filter(nil), rowset=16
+      equal_conds([c.c1 = d.c1]), other_conds(nil)
+      merge_directions([ASC])
+ 10 - output([d.c1]), filter(nil), rowset=16
+      access([d.c1]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([d.c1], [d.c2], [d.c3], [d.__pk_increment]), range(MIN,MIN,MIN,MIN ; MAX,MAX,MAX,MAX)always true
+ 11 - output([c.c1], [c.c6]), filter(nil), rowset=16
+      sort_keys([c.c1, ASC])
+ 12 - output([c.c1], [c.c6]), filter([(T_OP_LIKE, c.c2, 'B%', '\\')]), rowset=16
+      access([c.c1], [c.c2], [c.c6]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([c.__pk_increment]), range(MIN ; MAX)always true
+drop view v_union;
+create view v_union as (select c1 from lyqtest1 union select c1 from lyqtest2);
+drop view v_INTERSECT;
+create view v_INTERSECT as (SELECT c5, LENGTH(c2) AS len_c2 FROM lyqtest2 WHERE c4 < 100.0 AND c2 IS NOT NULL
+INTERSECT
+SELECT c5, LENGTH(c2) FROM lyqtest3 WHERE c1 < 10);
+drop view v_EXCEPT;
+create view v_EXCEPT as (SELECT c1, c2, CASE  WHEN c1 > 100 THEN 'High' ELSE 'Low' END AS c1_category FROM lyqtest1 WHERE c2 IS NOT NULL
+EXCEPT
+SELECT c1, c2, CASE WHEN c1 > 100 THEN 'High' ELSE 'Low' END AS c1_category FROM lyqtest2 WHERE c2 IS NOT NULL);
+select * from v_union;
++------+
+| c1   |
++------+
+|    1 |
+|    2 |
+|    3 |
+| NULL |
++------+
+explain basic  select * from v_union;
+Query Plan
+=========================================================
+|ID|OPERATOR                     |NAME                  |
+---------------------------------------------------------
+|0 |HASH UNION DISTINCT          |                      |
+|1 |├─TABLE FULL SCAN            |lyqtest1(idx_c1_c2_c3)|
+|2 |└─PX COORDINATOR             |                      |
+|3 |  └─EXCHANGE OUT DISTR       |:EX10000              |
+|4 |    └─HASH DISTINCT          |                      |
+|5 |      └─PX PARTITION ITERATOR|                      |
+|6 |        └─TABLE FULL SCAN    |lyqtest2(idx_c1)      |
+=========================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([UNION([1])]), filter(nil), rowset=16
+  1 - output([lyqtest1.c1]), filter(nil), rowset=16
+      access([lyqtest1.c1]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([lyqtest1.c1], [lyqtest1.c2], [lyqtest1.c3], [lyqtest1.__pk_increment]), range(MIN,MIN,MIN,MIN ; MAX,MAX,MAX,MAX)always true
+  2 - output([lyqtest2.c1]), filter(nil), rowset=16
+  3 - output([lyqtest2.c1]), filter(nil), rowset=16
+      dop=1
+  4 - output([lyqtest2.c1]), filter(nil), rowset=16
+      distinct([lyqtest2.c1])
+  5 - output([lyqtest2.c1]), filter(nil), rowset=16
+      force partition granule
+  6 - output([lyqtest2.c1]), filter(nil), rowset=16
+      access([lyqtest2.c1]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([lyqtest2.c1], [lyqtest2.__pk_increment]), range(MIN,MIN ; MAX,MAX)always true
+select * from v_INTERSECT;
++-------+--------+
+| c5    | len_c2 |
++-------+--------+
+| data4 |      8 |
+| data5 |      8 |
++-------+--------+
+explain basic select * from v_INTERSECT;
+Query Plan
+===========================================
+|ID|OPERATOR                     |NAME    |
+-------------------------------------------
+|0 |HASH INTERSECT DISTINCT      |        |
+|1 |├─PX COORDINATOR             |        |
+|2 |│ └─EXCHANGE OUT DISTR       |:EX10000|
+|3 |│   └─HASH DISTINCT          |        |
+|4 |│     └─PX PARTITION ITERATOR|        |
+|5 |│       └─TABLE FULL SCAN    |lyqtest2|
+|6 |└─TABLE FULL SCAN            |lyqtest3|
+===========================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERSECT([1])], [INTERSECT([2])]), filter(nil), rowset=16
+  1 - output([lyqtest2.c5], [LENGTH(lyqtest2.c2)]), filter(nil), rowset=16
+  2 - output([lyqtest2.c5], [LENGTH(lyqtest2.c2)]), filter(nil), rowset=16
+      dop=1
+  3 - output([lyqtest2.c5], [LENGTH(lyqtest2.c2)]), filter(nil), rowset=16
+      distinct([lyqtest2.c5], [LENGTH(lyqtest2.c2)])
+  4 - output([lyqtest2.c5], [LENGTH(lyqtest2.c2)]), filter(nil), rowset=16
+      force partition granule
+  5 - output([lyqtest2.c5], [LENGTH(lyqtest2.c2)]), filter([cast(lyqtest2.c4, DOUBLE(-1, -1)) < cast(100.0, DOUBLE(-1, -1))], [lyqtest2.c2 IS NOT NULL]), rowset=16
+      access([lyqtest2.c4], [lyqtest2.c2], [lyqtest2.c5]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, filter_before_indexback[false,false], 
+      range_key([lyqtest2.__pk_increment]), range(MIN ; MAX)always true
+  6 - output([lyqtest3.c5], [LENGTH(lyqtest3.c2)]), filter([lyqtest3.c1 < 10]), rowset=16
+      access([lyqtest3.c1], [lyqtest3.c5], [lyqtest3.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([lyqtest3.__pk_increment]), range(MIN ; MAX)always true
+select * from v_EXCEPT;
++------+----------+-------------+
+| c1   | c2       | c1_category |
++------+----------+-------------+
+|    3 | example3 | Low         |
++------+----------+-------------+
+explain basic select * from v_EXCEPT;
+Query Plan
+=========================================================
+|ID|OPERATOR                     |NAME                  |
+---------------------------------------------------------
+|0 |HASH EXCEPT DISTINCT         |                      |
+|1 |├─TABLE FULL SCAN            |lyqtest1(idx_c1_c2_c3)|
+|2 |└─PX COORDINATOR             |                      |
+|3 |  └─EXCHANGE OUT DISTR       |:EX10000              |
+|4 |    └─HASH DISTINCT          |                      |
+|5 |      └─PX PARTITION ITERATOR|                      |
+|6 |        └─TABLE FULL SCAN    |lyqtest2              |
+=========================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([EXCEPT([1])], [EXCEPT([2])], [EXCEPT([3])]), filter(nil), rowset=16
+  1 - output([lyqtest1.c1], [lyqtest1.c2], [CASE WHEN lyqtest1.c1 > 100 THEN 'High' ELSE 'Low' END]), filter([lyqtest1.c2 IS NOT NULL]), rowset=16
+      access([lyqtest1.c2], [lyqtest1.c1]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([lyqtest1.c1], [lyqtest1.c2], [lyqtest1.c3], [lyqtest1.__pk_increment]), range(MIN,MIN,MIN,MIN ; MAX,MAX,MAX,MAX)always true
+  2 - output([lyqtest2.c1], [lyqtest2.c2], [CASE WHEN lyqtest2.c1 > 100 THEN 'High' ELSE 'Low' END]), filter(nil), rowset=16
+  3 - output([lyqtest2.c1], [lyqtest2.c2], [CASE WHEN lyqtest2.c1 > 100 THEN 'High' ELSE 'Low' END]), filter(nil), rowset=16
+      dop=1
+  4 - output([lyqtest2.c1], [lyqtest2.c2], [CASE WHEN lyqtest2.c1 > 100 THEN 'High' ELSE 'Low' END]), filter(nil), rowset=16
+      distinct([lyqtest2.c1], [lyqtest2.c2], [CASE WHEN lyqtest2.c1 > 100 THEN 'High' ELSE 'Low' END])
+  5 - output([lyqtest2.c2], [lyqtest2.c1], [CASE WHEN lyqtest2.c1 > 100 THEN 'High' ELSE 'Low' END]), filter(nil), rowset=16
+      force partition granule
+  6 - output([lyqtest2.c2], [lyqtest2.c1], [CASE WHEN lyqtest2.c1 > 100 THEN 'High' ELSE 'Low' END]), filter([lyqtest2.c2 IS NOT NULL]), rowset=16
+      access([lyqtest2.c2], [lyqtest2.c1]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([lyqtest2.__pk_increment]), range(MIN ; MAX)always true
+select * from  v_INTERSECT v1 ,(select v2.* from v_EXCEPT v2 left join v_union v3 on v2.c1= v3.c1) tt1 order by 1,2,3;
++-------+--------+------+----------+-------------+
+| c5    | len_c2 | c1   | c2       | c1_category |
++-------+--------+------+----------+-------------+
+| data4 |      8 |    3 | example3 | Low         |
+| data5 |      8 |    3 | example3 | Low         |
++-------+--------+------+----------+-------------+
+explain basic select * from  v_INTERSECT v1 ,(select v2.* from v_EXCEPT v2 left join v_union v3 on v2.c1= v3.c1) tt1 order by 1,2,3;
+Query Plan
+=================================================================
+|ID|OPERATOR                             |NAME                  |
+-----------------------------------------------------------------
+|0 |SORT                                 |                      |
+|1 |└─NESTED-LOOP JOIN CARTESIAN         |                      |
+|2 |  ├─SUBPLAN SCAN                     |v_except              |
+|3 |  │ └─HASH EXCEPT DISTINCT           |                      |
+|4 |  │   ├─TABLE FULL SCAN              |lyqtest1(idx_c1_c2_c3)|
+|5 |  │   └─PX COORDINATOR               |                      |
+|6 |  │     └─EXCHANGE OUT DISTR         |:EX10000              |
+|7 |  │       └─HASH DISTINCT            |                      |
+|8 |  │         └─PX PARTITION ITERATOR  |                      |
+|9 |  │           └─TABLE FULL SCAN      |lyqtest2              |
+|10|  └─MATERIAL                         |                      |
+|11|    └─SUBPLAN SCAN                   |v_intersect           |
+|12|      └─HASH INTERSECT DISTINCT      |                      |
+|13|        ├─PX COORDINATOR             |                      |
+|14|        │ └─EXCHANGE OUT DISTR       |:EX20000              |
+|15|        │   └─HASH DISTINCT          |                      |
+|16|        │     └─PX PARTITION ITERATOR|                      |
+|17|        │       └─TABLE FULL SCAN    |lyqtest2              |
+|18|        └─TABLE FULL SCAN            |lyqtest3              |
+=================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([v1.c5], [v1.len_c2], [v2.c1], [v2.c2], [v2.c1_category]), filter(nil), rowset=16
+      sort_keys([v1.c5, ASC], [v1.len_c2, ASC], [v2.c1, ASC])
+  1 - output([v1.c5], [v1.len_c2], [v2.c1], [v2.c2], [v2.c1_category]), filter(nil), rowset=16
+      conds(nil), nl_params_(nil), use_batch=false
+  2 - output([v2.c1], [v2.c2], [v2.c1_category]), filter(nil), rowset=16
+      access([v2.c1], [v2.c2], [v2.c1_category])
+  3 - output([EXCEPT([1])], [EXCEPT([2])], [EXCEPT([3])]), filter(nil), rowset=16
+  4 - output([lyqtest1.c1], [lyqtest1.c2], [CASE WHEN lyqtest1.c1 > 100 THEN 'High' ELSE 'Low' END]), filter([lyqtest1.c2 IS NOT NULL]), rowset=16
+      access([lyqtest1.c2], [lyqtest1.c1]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([lyqtest1.c1], [lyqtest1.c2], [lyqtest1.c3], [lyqtest1.__pk_increment]), range(MIN,MIN,MIN,MIN ; MAX,MAX,MAX,MAX)always true
+  5 - output([lyqtest2.c1], [lyqtest2.c2], [CASE WHEN lyqtest2.c1 > 100 THEN 'High' ELSE 'Low' END]), filter(nil), rowset=16
+  6 - output([lyqtest2.c1], [lyqtest2.c2], [CASE WHEN lyqtest2.c1 > 100 THEN 'High' ELSE 'Low' END]), filter(nil), rowset=16
+      dop=1
+  7 - output([lyqtest2.c1], [lyqtest2.c2], [CASE WHEN lyqtest2.c1 > 100 THEN 'High' ELSE 'Low' END]), filter(nil), rowset=16
+      distinct([lyqtest2.c1], [lyqtest2.c2], [CASE WHEN lyqtest2.c1 > 100 THEN 'High' ELSE 'Low' END])
+  8 - output([lyqtest2.c2], [lyqtest2.c1], [CASE WHEN lyqtest2.c1 > 100 THEN 'High' ELSE 'Low' END]), filter(nil), rowset=16
+      force partition granule
+  9 - output([lyqtest2.c2], [lyqtest2.c1], [CASE WHEN lyqtest2.c1 > 100 THEN 'High' ELSE 'Low' END]), filter([lyqtest2.c2 IS NOT NULL]), rowset=16
+      access([lyqtest2.c2], [lyqtest2.c1]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([lyqtest2.__pk_increment]), range(MIN ; MAX)always true
+ 10 - output([v1.c5], [v1.len_c2]), filter(nil), rowset=16
+ 11 - output([v1.c5], [v1.len_c2]), filter(nil), rowset=16
+      access([v1.c5], [v1.len_c2])
+ 12 - output([INTERSECT([1])], [INTERSECT([2])]), filter(nil), rowset=16
+ 13 - output([lyqtest2.c5], [LENGTH(lyqtest2.c2)]), filter(nil), rowset=16
+ 14 - output([lyqtest2.c5], [LENGTH(lyqtest2.c2)]), filter(nil), rowset=16
+      dop=1
+ 15 - output([lyqtest2.c5], [LENGTH(lyqtest2.c2)]), filter(nil), rowset=16
+      distinct([lyqtest2.c5], [LENGTH(lyqtest2.c2)])
+ 16 - output([lyqtest2.c5], [LENGTH(lyqtest2.c2)]), filter(nil), rowset=16
+      force partition granule
+ 17 - output([lyqtest2.c5], [LENGTH(lyqtest2.c2)]), filter([cast(lyqtest2.c4, DOUBLE(-1, -1)) < cast(100.0, DOUBLE(-1, -1))], [lyqtest2.c2 IS NOT NULL]), rowset=16
+      access([lyqtest2.c4], [lyqtest2.c2], [lyqtest2.c5]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, filter_before_indexback[false,false], 
+      range_key([lyqtest2.__pk_increment]), range(MIN ; MAX)always true
+ 18 - output([lyqtest3.c5], [LENGTH(lyqtest3.c2)]), filter([lyqtest3.c1 < 10]), rowset=16
+      access([lyqtest3.c1], [lyqtest3.c5], [lyqtest3.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([lyqtest3.__pk_increment]), range(MIN ; MAX)always true
+drop table lyqtest1;
+drop table lyqtest2;
+drop table lyqtest3;
+drop view v_union;
+drop view v_INTERSECT;
+drop view v_EXCEPT;

@@ -1,0 +1,91 @@
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+#owner: zhanyue.zzy
+#owner group: SQL1
+#description: test for real-time major refresh mview
+#tags: mv_optimizer,mview
+
+--result_format 4
+
+--disable_warnings
+--error 0, 9757
+drop materialized view collect_info_mv;
+drop table if exists collect_info;
+drop table if exists collect_item;
+--enable_warnings
+
+create table collect_info(user_id int, item_id int, primary key(user_id, item_id)) partition by hash(user_id) partitions 4;
+create table collect_item(item_id int, price int, primary key(item_id)) duplicate_scope = 'cluster' duplicate_read_consistency = 'weak';
+create materialized view collect_info_mv (primary key(user_id, item_id)) partition by hash(user_id) partitions 4 refresh fast enable query rewrite enable on query computation
+as select collect_info.user_id, collect_info.item_id, collect_item.item_id dup_item_id, collect_item.price from collect_info inner join collect_item on collect_info.item_id = collect_item.item_id;
+
+create or replace view collect_info_view
+as select /*+no_mv_rewrite*/ collect_info.user_id, collect_info.item_id, collect_item.item_id dup_item_id, collect_item.price from collect_info inner join collect_item on collect_info.item_id = collect_item.item_id;
+
+create or replace view res_com1
+as
+select res from 
+(   select group_concat(view_type order by view_type) res
+    from (
+        select collect_info_view.*, '1.normal view' view_type from collect_info_view
+        union all
+        select collect_info_mv.*, '2.mview' from collect_info_mv)
+    group by user_id, item_id
+)
+group by res
+;
+
+create or replace view res_com2
+as
+select res from 
+(   select group_concat(view_type order by view_type) res
+    from (
+        select collect_info_view.*, '1.normal view' view_type from collect_info_view where user_id = 1
+        union all
+        select collect_info_mv.*, '2.mview' from collect_info_mv where user_id = 1)
+    group by user_id, item_id
+)
+group by res
+;
+
+insert into collect_info select distinct floor(random()%1000), abs(random()%1000000) from table(generator(100000));
+insert into collect_item(item_id) select distinct item_id from collect_info;
+
+--replace_regex /last_refresh_scn\([0-9]{6}\)/last_refresh_scn(xxxxxx)/
+explain basic select * from collect_info_mv;
+select * from res_com1;
+
+--replace_regex /last_refresh_scn\([0-9]{6}\)/last_refresh_scn(xxxxxx)/
+explain basic select * from collect_info_mv where user_id = 1;
+select * from res_com2;
+
+let $scn1 = query_get_value(select last_refresh_scn as mv_scn from oceanbase.__all_virtual_mview where mview_id = (select table_id from oceanbase.__all_virtual_table where table_name = 'collect_info_mv'), mv_scn, 1);
+alter system major freeze;
+--source mysql_test/include/wait_daily_merge.inc
+
+select * from res_com1;
+select * from res_com2;
+
+let $__i__=240;
+while($__i__ > 0)
+{
+    sleep 1;
+    dec $__i__;
+    let $scn2=query_get_value(select last_refresh_scn as mv_scn from oceanbase.__all_virtual_mview where mview_id = (select table_id from oceanbase.__all_virtual_table where table_name = 'collect_info_mv'), mv_scn, 1);
+    if($scn1 != $scn2)
+    {
+        let $__i__ = -5;
+    }
+}
+if($__i__ != -5)
+{
+    --echo wait last refresh scn refresh failed
+}
+
+select * from res_com1;
+select * from res_com2;
+
+drop materialized view collect_info_mv;
+drop table if exists collect_info;
+drop table if exists collect_item;

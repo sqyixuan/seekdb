@@ -1,0 +1,202 @@
+# owner: lijinmao.ljm
+# owner group: sql1
+# tags: optimizer
+
+--disable_warnings
+drop database if exists fts;
+create database fts;
+use fts;
+drop table if exists doc;
+drop table if exists doc_part;
+drop table if exists doc_price;
+drop table if exists employee;
+--enable_warnings
+
+create table doc(
+category char(50),
+title varchar(512),
+content varchar(4096),
+extended TEXT,
+id int primary key,
+fulltext index i1(content),
+fulltext index i2(title, content),
+fulltext index i3(category, title, content),
+fulltext index i4(category, title, content, extended)
+);
+
+create table doc_part(
+category char(50),
+title varchar(512),
+content varchar(4096),
+extended TEXT,
+id int primary key,
+fulltext index i1(content),
+fulltext index i2(title, content),
+fulltext index i3(category, title, content),
+fulltext index i4(category, title, content, extended)
+) PARTITION BY hash(id) partitions 10;
+
+create table doc_price (id int primary key, price double);
+
+INSERT INTO doc (category, title, content, extended, id) VALUES
+('Category1', 'Title 1', 'document 1', 'Extended information for document 1', 1),
+('Category1', 'Title 2', 'for document 2', 'Extended information for document 2', 2),
+('Category1', 'Title 3', 'Content for document 3', 'Extended information for document 3', 3),
+('database', 'mysql', 'document : MySQL is a widely-used open-source relational database management system (RDBMS) known for its reliability, performance, and ease of use.', 'Extended information for document 4', 4),
+('database', 'oracle', 'document : Oracle Database is a powerful and feature-rich enterprise-grade relational database management system known for its scalability, security, and support for large-scale transaction processing and data warehousing applications', 'Extended information for document 5', 5),
+('database', 'oceanbase', 'document : OceanBase is a distributed, highly scalable, and high-performance relational database system developed by Ant Group, designed for massive data storage and processing, with strong consistency and availability', 'Extended information for document 6', 6);
+
+insert into doc_part(category, title, content, extended, id) select * from doc;
+
+insert into doc_price values (1, 10), (2, 20), (3, 30), (4,40), (5,50), (6,60);
+
+--explain_protocol 2
+--result_format 4
+
+--echo ######### TEST: match against expr #########
+select id, title, match (content) against ("document") from doc where match (content) against ("document");
+select * from doc where match (content) against ("document");
+select id, title, match (content) against (1) from doc where match (content) against (1);
+select * from doc where match (content, title) against ("document");
+select * from doc where match (category, content, extended, title) against ("document");
+--error 1191
+select id, title, match (title) against ("document") from doc where match (title) against ("document");
+--error 1064
+select id, title, match (content) against (id) from doc where match (content) against (id);
+select id, title from doc where match (content) against (concat('document',' ',null));
+--error 1235
+select id, title from doc where match (content) against (concat(title,' ',null));
+
+--echo ######### TEST: clause limitation ##########
+--echo >>>> JoinedTable
+select doc.id, title, price from doc, doc_price where match (content) against ("document") and doc.id = doc_price.id;
+select doc.id, title, price from doc left join doc_price on (doc.id = doc_price.id) where match (content) against ("document");
+--error ER_NOT_SUPPORTED_YET
+select doc.id, title, price from doc right join doc_price on (doc.id = doc_price.id) where match (content) against ("document");
+select doc.id, title, price from doc left join doc_price on (doc.id = doc_price.id and match (content) against ("document"));
+
+--echo >>>> WHERE CLAUSE
+select id, title from doc where match (content) against ("document") and match (content) against ("database");
+select distinct doc.id, doc.title from doc, doc_part where match (doc.content) against ("document") and match (doc_part.content) against ("document");
+select id, title, match (content) against ("document") from doc where match (content) against ("document") or id > 0;
+select id, title, match (content) against ("document") from doc where match (content) against ("document") >= 0;
+select id, title, match (content) against ("document") from doc where match (content) against ("document") != 1;
+select id, title, match (content) against ("document") from doc where match (content) against ("document") > 0;
+select id, title, match (content) against ("document") from doc where match (content) against ("document") > -1;
+select id, title, match (content) against ("document") from doc where match (content) against ("document") >= 0.2;
+select id, title, match (content) against ("document") from doc where match (content) against ("document") and id > 0;
+
+--echo GROUP BY / HAVING CLAUSE
+select max(match (content) against ("document")) from doc where match (content) against ("document");
+select category, max(match (content) against ("document")) from doc where match (content) against ("document") group by category;
+--error 1054
+select category from doc where match (content) against ("document") group by category having match (content) against ("document") > 0.1;
+select category, max(match (content) against ("document")) from doc where match (content) against ("document") group by id, title having max(match (content) against ("document")) > 0.1;
+select category from doc group by category having max(match (content) against ("document")) > 0.1;
+select category, match (content) against ("document") from doc where match (content) against ("document") group by category, match (content) against ("document");
+select category, match (content) against ("document") as relevance from doc where match (content) against ("document") group by category, relevance;
+select category, match (content) against ("document") as relevance from doc where match (content) against ("document") group by category, relevance with rollup;
+
+--echo ORDER BY / LIMIT CLAUSE
+# groupby 和 order by 中的常量都不会进行参数化，和参数化后的表达式做 same as 判定时会失败，但支持引用别名
+select id, title from doc where match (content) against ("document") order by match (content) against ("document") asc;
+select id, title, match (content) against ("document") as score from doc where match (content) against ("document") order by score desc;
+select id, title, match (content) against ("document") as score from doc where match (content) against ("document") order by score asc;
+select id, title, match (content) against ("document") as score from doc where match (content) against ("document") limit 1;
+
+--echo UPDATE/DELETE 
+--replace_regex /_[0-9_]{2,}+/_xxx/
+DELETE FROM doc WHERE MATCH(content) AGAINST('feature') and id != 5;
+--replace_regex /_[0-9_]{2,}+/_xxx/
+update doc set title = "MySQL" where MATCH(content) AGAINST('feature') and id != 5;
+
+--echo ######### TEST: plan cache ##########
+alter system flush plan cache global;
+select title, match (content) against ("document") from doc where match (content) against ("document");
+select title, match (content) against ("document") from doc where match (content) against ("document");
+select title, match (content) against ("database") from doc where match (content) against ("database");
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'select title, match (content) against (?) from doc where match (content) against (?)';
+--echo expect 1 plan, hit 2 times
+select title, match (content) against ("database") from doc where match (content) against ("document");
+select title, match (content) against ("document") from doc where match (content) against ("document") > 0.1;
+select title, match (content) against ("document") from doc where match (content) against ("document") > 0.2;
+select title, match (content) against ("document") from doc where match (content) against ("document") > -1;
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'select title, match (content) against (?) from doc where match (content) against (?) > ?';
+--echo expect 2 plans, hit 1 time
+
+--echo ######### TEST: 反拼 ##########
+create view doc_view as select id, title, match(content) against("database") as score from doc where match(content) against("database");
+show create view doc_view;
+
+--echo ######### TEST: rescan ##########
+select /*+use_das(doc_part)*/ title from doc where exists (select * from doc_part where doc.id = doc_part.id and match (content) against ('database'));
+# TODO: fix
+#select /*+use_das(doc_part)*/ title from doc_part where exists (select * from doc where doc.id = doc_part.id and match (content) against ('database'));
+select /*+use_nl(doc, doc_part) leading(doc, doc_part) use_das(doc_part)*/ count(*) from doc, doc_part where doc.id = doc_part.id and match (doc.content) against ('database') and match (doc_part.content) against ('database');
+select /*+use_hash(doc, doc_part) leading(doc, doc_part) use_das(doc_part)*/ count(*) from doc, doc_part where doc.id = doc_part.id and match (doc.content) against ('database') and match (doc_part.content) against ('database');
+select /*+use_merge(doc, doc_part) leading(doc, doc_part) use_das(doc_part)*/ count(*) from doc, doc_part where doc.id = doc_part.id and match (doc.content) against ('database') and match (doc_part.content) against ('database');
+select /*+use_nl(doc_part, doc) leading(doc_part, doc)*/ count(*) from doc, doc_part where doc.id = doc_part.id and match (doc.content) against ('database') and match (doc_part.content) against ('database');
+select /*+use_hash(doc_part, doc) leading(doc_part, doc)*/ count(*) from doc, doc_part where doc.id = doc_part.id and match (doc.content) against ('database') and match (doc_part.content) against ('database');
+select /*+use_merge(doc_part, doc) leading(doc_part, doc)*/ count(*) from doc, doc_part where doc.id = doc_part.id and match (doc.content) against ('database') and match (doc_part.content) against ('database');
+
+--echo ######### TEST: topn pushdown ##########
+select id, title, match(content) against('document') as relevance from doc where match(content) against('document');
+select id, title, match(content) against('document') as relevance from doc where match(content) against('document') order by relevance;
+select id, title, match(content) against('document') as relevance from doc where match(content) against('document') order by title;
+select id, title, match(content) against('document') as relevance from doc where match(content) against('document') order by relevance, title;
+select id, title, match(content) against('document') as relevance from doc where match(content) against('document') limit 2;
+select id, title, match(content) against('document') as relevance from doc where match(content) against('document') order by relevance limit 2;
+select id, title, match(content) against('document') as relevance from doc where match(content) against('document') order by title limit 2;
+select id, title, match(content) against('document') as relevance from doc where match(content) against('document') order by relevance, title limit 2;
+select id, title, match(content) against('document') as relevance from doc where match(content) against('document') limit 1 offset 2;
+select id, title, match(content) against('document') as relevance from doc where match(content) against('document') order by relevance limit 2 offset 1;
+select id, title, match(content) against('document') as relevance from doc where match(content) against('document') order by title limit 2 offset 1;
+select id, title, match(content) against('document') as relevance from doc where match(content) against('document') order by relevance, title limit 2 offset 1;
+select id, title, match(content) against('document') as relevance from doc where match(content) against('document') and id > 0 order by relevance limit 2;
+select match(content) against('document') as relevance from doc where match(content) against('document') group by relevance order by relevance limit 2;
+select distinct title, match(content) against('document') as relevance from doc where match(content) against('document') order by relevance limit 2;
+select id, title, match(content) against('document') as relevance from doc_part where match(content) against('document');
+select id, title, match(content) against('document') as relevance from doc_part where match(content) against('document') order by relevance;
+select id, title, match(content) against('document') as relevance from doc_part where match(content) against('document') order by title;
+select id, title, match(content) against('document') as relevance from doc_part where match(content) against('document') limit 2;
+select id, title, match(content) against('document') as relevance from doc_part where match(content) against('document') order by relevance limit 2;
+select id, title, match(content) against('document') as relevance from doc_part where match(content) against('document') order by title limit 2;
+select id, title, match(content) against('document') as relevance from doc_part where match(content) against('document') limit 2 offset 1;
+select id, title, match(content) against('document') as relevance from doc_part where match(content) against('document') order by relevance limit 2 offset 1;
+select id, title, match(content) against('document') as relevance from doc_part where match(content) against('document') order by title limit 2 offset 1;
+select doc.title, match (doc.content) against ('database') as score1, match (doc_part.content) against ('database') as score2 from doc, doc_part where doc.id = doc_part.id and match (doc.content) against ('database') and match (doc_part.content) against ('database') order by doc.title limit 1 offset 1;
+select doc.title, match (doc.content) against ('database') as score1, match (doc_part.content) against ('database') as score2 from doc, doc_part where doc.id = doc_part.id and match (doc.content) against ('database') and match (doc_part.content) against ('database') order by score1 limit 1 offset 1;
+select doc.title, match (doc.content) against ('database') as score1, match (doc_part.content) against ('database') as score2 from doc, doc_part where doc.id = doc_part.id and match (doc.content) against ('database') and match (doc_part.content) against ('database') order by score2 limit 1 offset 1;
+select doc.title, match (doc.content) against ('database') as score1, match (doc_part.content) against ('database') as score2 from doc, doc_part where doc.id = doc_part.id and match (doc.content) against ('database') and match (doc_part.content) against ('database') limit 1 offset 1;
+
+--echo ######### TEST: parallel ##########
+select /*+use_px parallel(20)*/ title from doc where exists (select * from doc_part where doc.id = doc_part.id and match (content) against ('database')) order by title;
+# TODO: fix
+#select /*+use_px parallel(20)*/ title from doc_part where exists (select * from doc where doc.id = doc_part.id and match (content) against ('database')) order by title;
+select /*+use_nl(doc, doc_part) leading(doc, doc_part) use_px parallel(20)*/ count(*) from doc, doc_part where doc.id = doc_part.id and match (doc.content) against ('database') and match (doc_part.content) against ('database');
+select /*+use_hash(doc, doc_part) leading(doc, doc_part) use_px parallel(20)*/ count(*) from doc, doc_part where doc.id = doc_part.id and match (doc.content) against ('database') and match (doc_part.content) against ('database');
+select /*+use_merge(doc, doc_part) leading(doc, doc_part) use_px parallel(20)*/ count(*) from doc, doc_part where doc.id = doc_part.id and match (doc.content) against ('database') and match (doc_part.content) against ('database');
+select /*+use_nl(doc_part, doc) leading(doc_part, doc) use_px parallel(20)*/ count(*) from doc, doc_part where doc.id = doc_part.id and match (doc.content) against ('database') and match (doc_part.content) against ('database');
+select /*+use_hash(doc_part, doc) leading(doc_part, doc) use_px parallel(20)*/ count(*) from doc, doc_part where doc.id = doc_part.id and match (doc.content) against ('database') and match (doc_part.content) against ('database');
+select /*+use_merge(doc_part, doc) leading(doc_part, doc) use_px parallel(20)*/ count(*) from doc, doc_part where doc.id = doc_part.id and match (doc.content) against ('database') and match (doc_part.content) against ('database');
+
+# bug: 
+--disable_warnings
+drop table if exists articles;
+--enable_warnings
+
+CREATE TABLE `articles` (   `article_id` int(10) unsigned NOT NULL AUTO_INCREMENT,   `title` varchar(200) DEFAULT NULL,   `content` text DEFAULT NULL,   FULLTEXT KEY `title` (`title`, `content`) WITH PARSER space BLOCK_SIZE 16384,   FULLTEXT KEY `title_2` (`title`) WITH PARSER space BLOCK_SIZE 16384,   FULLTEXT KEY `content` (`content`) WITH PARSER space BLOCK_SIZE 16384 ) AUTO_INCREMENT = 9 AUTO_INCREMENT_MODE = 'ORDER' DEFAULT CHARSET = utf8mb4 ROW_FORMAT = DYNAMIC COMPRESSION = 'zstd_1.3.8' REPLICA_NUM = 3 BLOCK_SIZE = 16384 USE_BLOOM_FILTER = FALSE TABLET_SIZE = 134217728 PCTFREE = 0;
+select * from articles where match(title,content) against('a') ;
+
+# bug: 
+explain select * from doc where match(content) against('document') and match(content) against('document');
+select * from doc where match(content) against('document') and match(content) against('document');
+
+explain select * from doc where match(content) against('document') and match(content) against('document') > 0.3;
+select * from doc where match(content) against('document') and match(content) against('document') > 0.3;
+
+# bug: 2024122400106620195
+CREATE TABLE `employee` (  `employee_id` int(11) NOT NULL AUTO_INCREMENT,  `first_name` varchar(50) NOT NULL,  `last_name` varchar(50) NOT NULL,  `position1` varchar(50) DEFAULT NULL,  `position` varchar(50) DEFAULT NULL,  `department` varchar(50) DEFAULT NULL,  `hire_date` date DEFAULT NULL,  `salary` decimal(10,2) DEFAULT NULL,  PRIMARY KEY (`employee_id`),  FULLTEXT KEY `index_i1` (`first_name`, `last_name`, `position`) WITH PARSER space BLOCK_SIZE 16384,  FULLTEXT KEY `index_i2` (`first_name`, `last_name`, `position`, `position1`) WITH PARSER space BLOCK_SIZE 16384,  KEY `index_i10` (`position`) BLOCK_SIZE 16384 LOCAL,  KEY `index_11` (`position`) BLOCK_SIZE 16384 LOCAL);  
+select * from  employee USE INDEX (index_i1) where match(`first_name`, `last_name`, `position`) against("Hughes1") or employee_id > 10;
+
+drop database fts;

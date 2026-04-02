@@ -1,0 +1,106 @@
+#
+# owner: zhichen
+# owner group: shenzhen
+# description:
+#  xmltype gbk test
+##
+# NOTICE: USE LATEST mytest.jar to run this case to prevent garbled characters when outputting Chinese.
+# prepare cluster and tenant
+ob1=OBI(cluster=1);
+ob1.reboot;
+ob1.create_client;
+
+# 创建oracle租户, 指定字符集，并切换到oracle租户
+ob1.mysql alter system set resource_hard_limit= 800;
+sleep 2;
+ob_connect(conn_sys, ob1.proxy0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+
+--disable_warnings
+drop tenant if exists oracle;
+--disable_warnings
+drop resource pool if exists oblog_pool;
+--disable_warnings
+drop resource unit if exists oblog_box;
+
+### create oracle tenant
+ob1.mysql create resource unit oblog_box max_cpu=2, memory_size='10G';
+ob1.mysql create resource pool oblog_pool unit = 'oblog_box', unit_num = 1;
+################################################################ 创建租户指定collate collate gbk_bin
+ob1.mysql create tenant oracle replica_num = 1, resource_pool_list=('oblog_pool'), collate gbk_bin set ob_tcp_invited_nodes='%', ob_compatibility_mode='oracle';
+ob1.mysql alter tenant oracle set variables autocommit='on';
+ob1.mysql alter tenant oracle set variables nls_date_format='YYYY-MM-DD HH24:MI:SS';
+ob1.mysql alter tenant oracle set variables nls_timestamp_format='YYYY-MM-DD HH24:MI:SS.FF';
+ob1.mysql alter tenant oracle set variables nls_timestamp_tz_format='YYYY-MM-DD HH24:MI:SS.FF TZR TZD';
+
+sleep 2;
+ob_connect(conn_oracle, ob1.z1.obs0, SYS@oracle, ,SYS, , USE_OB_CONNECTOR);
+
+### create user
+create user obtest IDENTIFIED BY "obtest";
+grant all on *.* to obtest WITH GRANT OPTION;
+grant dba to obtest;
+ob_connect(conn_oracle_obtest,ob1.z1.obs0,OBTEST@oracle,obtest,obtest,,USE_OB_CONNECTOR);
+
+
+connection conn_sys;
+let $restart_usec = query_get_value(select time_to_usec(now(6)) as now, now, 1);
+connection conn_oracle_obtest;
+
+ob1.oblog.set_extra_argument -m;
+ob1.oblog.gen_conf tb_white_list=oracle.*.*  test_mode_on=1 test_mode_ignore_redo_count=10 sort_trans_participants=1 skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+
+connection conn_oracle_obtest;
+
+create table simple_xml_test(pk int primary key, x xmltype);
+ob1.oblog.next;
+
+select
+  LOWER(RAWTOHEX(UTL_RAW.CAST_TO_RAW(TO_CLOB('<data>中文</data>')))) as hex,
+  LOWER(RAWTOHEX(DBMS_CRYPTO.HASH(TO_CLOB('<data>中文</data>'),DBMS_CRYPTO.HASH_MD5))) as md5
+from dual;
+select
+  LOWER(RAWTOHEX(UTL_RAW.CAST_TO_RAW(TO_CLOB(convert('<data>中文</data>', 'ZHS16GBK'))))) as hex,
+  LOWER(RAWTOHEX(DBMS_CRYPTO.HASH(TO_CLOB(convert('<data>中文</data>', 'ZHS16GBK')),DBMS_CRYPTO.HASH_MD5))) as md5
+from dual;
+
+insert into simple_xml_test values(1, '<data>中文</data>');
+ob1.oblog.next;
+insert into simple_xml_test values(2, convert('<data>中文</data>', 'ZHS16GBK'));
+ob1.oblog.next;
+
+select
+  LOWER(RAWTOHEX(UTL_RAW.CAST_TO_RAW(TO_CLOB('<data>english</data>')))) as hex,
+  LOWER(RAWTOHEX(DBMS_CRYPTO.HASH(TO_CLOB('<data>english</data>'),DBMS_CRYPTO.HASH_MD5))) as md5
+from dual;
+select
+  LOWER(RAWTOHEX(UTL_RAW.CAST_TO_RAW(TO_CLOB(convert('<data>english</data>', 'ZHS16GBK'))))) as hex,
+  LOWER(RAWTOHEX(DBMS_CRYPTO.HASH(TO_CLOB(convert('<data>english</data>', 'ZHS16GBK')),DBMS_CRYPTO.HASH_MD5))) as md5
+from dual;
+update simple_xml_test set x = '<data>english</data>' where pk = 1;
+ob1.oblog.next;
+
+delete from simple_xml_test where pk=1;
+ob1.oblog.next;
+
+drop table simple_xml_test;
+ob1.oblog.next;
+
+ob1.oblog.stop;
+
+# restart from restart_usec
+ob1.oblog.gen_conf tb_white_list=oracle.*.* test_mode_on=1 test_mode_ignore_redo_count=10 sort_trans_participants=1 skip_ob_version_compat_check=1;
+ob1.oblog.set_start_tstamp_usec $restart_usec;
+ob1.oblog.restart;
+ob1.oblog.waitUntilRealtime 2400;
+# first insert
+ob1.oblog.next_dml;
+# second insert
+ob1.oblog.next_dml;
+# update
+ob1.oblog.next_dml;
+# delete
+ob1.oblog.next_dml;
+
+ob1.oblog.stop;
+ob1.force_stop;

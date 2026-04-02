@@ -1,0 +1,172 @@
+#
+#       owner : tingshuai.yts
+# owner group : session
+# description : 测试kill远程server session\query的功能
+#
+
+ob1=OBI(cluster=2:2,proxy_num=0);
+ob1.reboot;
+sleep 5;
+
+## get ip/port
+let $z1_obs0_ip=deploy_get_value(ob1.z1.obs0.ip);
+let $z1_obs0_port=deploy_get_value(ob1.z1.obs0.mysql_port);
+## let $z1_obs0_port=50801;
+
+let $z1_obs1_ip=deploy_get_value(ob1.z1.obs1.ip);
+let $z1_obs1_port=deploy_get_value(ob1.z1.obs1.mysql_port);
+## let $z1_obs1_port=50803;
+
+let $z2_obs0_ip=deploy_get_value(ob1.z2.obs0.ip);
+let $z2_obs0_port=deploy_get_value(ob1.z2.obs0.mysql_port);
+## let $z2_obs0_port=50805;
+
+let $get_sessid_sql=select connection_id() as id;
+let $session_count_sql=select count(*) from information_schema.processlist where user='kill_user';
+
+## create yts_tt tenant
+connect (conn_admin_z1_obs0,$z1_obs0_ip,admin,admin,oceanbase,$z1_obs0_port);
+connection conn_admin_z1_obs0;
+source t/session/create_tenant.sql;
+
+## create connection
+connect (conn_yts_z1,$z1_obs0_ip,root@yts_tt,,test,$z1_obs0_port);
+let $z1_root_id = query_get_value($get_sessid_sql,id,1);
+--error 0,1396
+drop user kill_user;
+create user 'kill_user' identified by 'kill_user';
+#GRANT ALL ON *.* TO 'kill_user';
+GRANT CREATE, DROP, SELECT, INSERT, UPDATE ON *.* TO 'kill_user';
+
+connect (conn_yts_z1_obs0,$z1_obs0_ip,kill_user@yts_tt,kill_user,test,$z1_obs0_port);
+let $z1_obs0_id = query_get_value($get_sessid_sql,id,1);
+
+connect (conn_yts_z1_obs1,$z1_obs1_ip,kill_user@yts_tt,kill_user,test,$z1_obs1_port);
+let $z1_obs1_id = query_get_value($get_sessid_sql,id,1);
+
+connect (conn_yts_z2_obs0,$z2_obs0_ip,kill_user@yts_tt,kill_user,test,$z2_obs0_port);
+let $z2_obs0_id = query_get_value($get_sessid_sql,id,1);
+
+
+## case 1 : 测试kill 一个不存在的sessid
+connection conn_yts_z1_obs0;
+--error 1094
+kill 12345;
+
+
+## case 2 : test for kill slave serer session; kill another zone server session
+### case 2.1 kill from master server
+eval $session_count_sql;
+--disable_query_log
+eval kill $z1_obs1_id;
+--enable_query_log
+eval $session_count_sql;
+--disable_query_log
+eval kill $z2_obs0_id;
+--enable_query_log
+eval $session_count_sql;
+
+### case 2.2 kill from slave server
+connect (conn_yts_z1_obs1,$z1_obs1_ip,kill_user@yts_tt,kill_user,test,$z1_obs1_port);
+let $z1_obs1_id = query_get_value($get_sessid_sql,id,1);
+
+connect (conn_yts_z2_obs0,$z2_obs0_ip,kill_user@yts_tt,kill_user,test,$z2_obs0_port);
+let $z2_obs0_id = query_get_value($get_sessid_sql,id,1);
+
+connection conn_yts_z1_obs1;
+eval $session_count_sql;
+--disable_query_log
+eval kill $z1_obs0_id;
+--enable_query_log
+eval $session_count_sql;
+--disable_query_log
+eval kill $z2_obs0_id;
+--enable_query_log
+eval $session_count_sql;
+
+
+## case 3 : test for kill slave serer query; kill another zone server query
+connect (conn_yts_z1_obs0,$z1_obs0_ip,kill_user@yts_tt,kill_user,test,$z1_obs0_port);
+let $z1_obs0_id = query_get_value($get_sessid_sql,id,1);
+
+connect (conn_yts_z2_obs0,$z2_obs0_ip,kill_user@yts_tt,kill_user,test,$z2_obs0_port);
+let $z2_obs0_id = query_get_value($get_sessid_sql,id,1);
+
+connection conn_yts_z1_obs0;
+--disable_warnings
+drop table if exists t1;
+--enable_warnings
+create table t1(c1 int);
+insert into t1 values(1);
+begin;
+select * from t1 where c1 = 1 for update;
+
+connection conn_yts_z1_obs1;
+begin;
+send select * from t1 where c1 = 1 for update;
+
+connection conn_yts_z1_obs0;
+--disable_query_log
+eval kill query $z1_obs1_id;
+--enable_query_log
+
+connection conn_yts_z1_obs1;
+--error 1317
+reap;
+eval $session_count_sql;
+
+connection conn_yts_z2_obs0;
+begin;
+send select * from t1 where c1 = 1 for update;
+
+connection conn_yts_z1_obs0;
+--disable_query_log
+eval kill query $z2_obs0_id;
+--enable_query_log
+
+connection conn_yts_z2_obs0;
+--error 1317
+reap;
+eval $session_count_sql;
+
+connection conn_yts_z1_obs0;
+commit;
+
+
+## case 4 : 测试权限控制相关内容
+### case 4.1 test for kill different tenant session
+## connection conn_admin_z1_obs0;
+## --disable_result_log
+## --disable_query_log
+## --error 1094
+## eval kill $z1_obs0_id;
+## --enable_query_log
+## --enable_result_log
+
+## ### case 4.2 test for kill different user session
+## connection conn_yts_z1_obs0;
+## --disable_result_log
+## --disable_query_log
+## --error 1095
+## eval kill query $z1_root_id;
+## --enable_query_log
+## --enable_result_log
+
+connection conn_yts_z1;
+eval $session_count_sql;
+--disable_query_log
+eval kill $z1_obs0_id;
+--enable_query_log
+eval $session_count_sql;
+
+connection conn_admin_z1_obs0;
+--disable_result_log
+--disable_query_log
+eval kill $z2_obs0_id;
+--enable_query_log
+--enable_result_log
+eval $session_count_sql;
+
+## delete tenant
+connection conn_admin_z1_obs0;
+source t/session/delete_tenant.sql;

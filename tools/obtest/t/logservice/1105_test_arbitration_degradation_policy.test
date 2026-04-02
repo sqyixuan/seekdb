@@ -1,0 +1,231 @@
+#############
+# 测试场景：
+# owner : nianguan
+# owner group: CLOG
+# description: test CLUSTER_POLICY for degradation
+# case0. 验证sys租户执行默认的降级逻辑
+# case1. 验证断网后不进行降级
+# case2. 验证断网后Leader切到和RS连通的机器
+# case3. 验证恢复网络后Leader切回原来优先级高的zone
+# case4. 验证旧主宕机重启后，虽然退出选举“静默”，但Leader不会切回到旧主
+# case5. 验证4F1A下断网后不进行降级
+# case6. 验证4F1A下断网后Leader切到和RS连通的机器
+# case7. 验证4F1A下恢复网络后Leader切回原来优先级高的zone
+############
+ob1=OBI(cluster=1:1:1:1, proxy_num=0, asvr_num=1);
+
+let $extra_conf = "cpu_count=8,memory_limit='20G',system_memory='5G',__min_full_resource_pool_memory='1073741824',cache_wash_threshold='1G',log_disk_size='20G',cluster_id=1";
+let $arb_extra_conf = "ob_startup_mode=arbitration,cpu_count=8,memory_limit='20G',system_memory='5G',__min_full_resource_pool_memory='1073741824',cache_wash_threshold='1G',log_disk_size='20G'";
+
+ob1.z1.obs0.set extra_config=$extra_conf;
+ob1.z2.obs0.set extra_config=$extra_conf;
+ob1.z3.obs0.set extra_config=$extra_conf;
+ob1.z4.obs0.set extra_config=$extra_conf;
+# bootstrap
+ob1.reboot;
+sleep 3;
+
+ob_connect(conn_sys, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+
+# 获取仲裁server的ip、port, 检查仲裁server是否成功运行
+let $arb_svr_ip= deploy_get_value(ob1.asvr0.ip);
+let $arb_svr_port= deploy_get_value(ob1.asvr0.port);
+ob1.check_until_timeout select count(*) from __all_arbitration_service where arbitration_service = "$arb_svr_ip:$arb_svr_port", 1, 30;
+
+# 修改sys租户locality、primary zone，并开启仲裁
+ob1.mysql alter tenant sys enable_arbitration_service = true;
+ob1.check_until_timeout select count(*) from __all_virtual_log_stat where tenant_id=1 and arbitration_member like "%$arb_svr_ip:$arb_svr_port%", 4, 30;
+ob1.mysql alter tenant sys locality='F@z1, F@z2';
+ob1.check_until_timeout select count(*) from oceanbase.__all_tenant where tenant_name = "sys" and previous_locality != "", 0, 300;
+ob1.mysql alter tenant sys primary_zone = 'z1;z2';
+
+# 修改降级策略为CLUSTER_POLICY
+ob1.mysql alter system set arbitration_degradation_policy = "CLUSTER_POLICY";
+
+# case0. 验证sys租户执行默认的降级逻辑
+# 获取rs leader
+let $ob1_rs_leader_ip_port=deploy_get_value(ob1.select select concat(svr_ip,':',svr_port) as host from __all_virtual_ls_meta_table where tenant_id = 1 and ls_id =  1 and role = 1 limit 1, host, 1);
+let $ob1_rs_leader_obs =deploy_get_value(ob1.get_obs_by_addr $ob1_rs_leader_ip_port);
+
+# 获取rs follower
+let $ob1_rs_follower_ip_port=deploy_get_value(ob1.select select concat(svr_ip,':',svr_port) as host from __all_virtual_ls_meta_table where tenant_id = 1 and ls_id =  1 and role = 2 limit 1, host, 1);
+let $ob1_rs_follower_obs=deploy_get_value(ob1.get_obs_by_addr $ob1_rs_follower_ip_port);
+
+$ob1_rs_follower_obs.force_stop;
+$ob1_rs_leader_obs.force_stop;
+$ob1_rs_leader_obs.nstart;
+ob1.check_until_timeout select (count(*) != 0) from __all_virtual_log_stat where tenant_id = 1 and ls_id= 1 and degraded_list like "%$ob1_rs_follower_ip_port%", 1, 300;
+$ob1_rs_follower_obs.nstart;
+ob1.check_until_timeout select count(*) from __all_virtual_log_stat where tenant_id = 1 and ls_id = 1, 2, 300;
+
+sleep 30;
+ob1.check_until_timeout select (count(*) = 0) from __all_virtual_log_stat where tenant_id = 1 and ls_id= 1 and degraded_list like "%$ob1_rs_leader_ip_port%", 1, 120;
+ob_connect(conn_sys, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection conn_sys;
+# 建租户时指定开启仲裁服务;
+let $cpu = 1;
+let $memory = 1073741824;
+let $min_memory = 1073741824;
+let $disk = 536870912;
+let $iops = 100000;
+let $session = 64;
+set @@session.ob_query_timeout = 1000000000;
+# create mysql tenant (2F1A)
+eval CREATE RESOURCE UNIT unit_1 MAX_CPU 1, MEMORY_SIZE='2G';
+eval CREATE RESOURCE POOL pool_1 UNIT = 'unit_1', UNIT_NUM = 1, zone_list = ('z1', 'z2', 'z3', 'z4');
+# 修改primary_zone确保rs和日志流Leader不在同一个zone
+eval CREATE TENANT mysql RESOURCE_POOL_LIST = ('pool_1'),  locality='F@z1, F@z2', primary_zone='z2;z1', enable_arbitration_service=true set ob_tcp_invited_nodes='%';
+let $ob1_mysql_tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = 'mysql', tenant_id, 1);
+
+# check arbitration member exist for tenant's ls
+ob1.check_until_timeout select count(*) from __all_virtual_log_stat where tenant_id=$ob1_mysql_tenant_id and arbitration_member like "%$arb_svr_ip:$arb_svr_port%", 4, 30;
+
+# 获取leader
+let $ob1_leader_ip_port=deploy_get_value(ob1.select select concat(svr_ip,':',svr_port) as host from __all_virtual_ls_meta_table where tenant_id = $ob1_mysql_tenant_id and ls_id =  1001 and role = 1 limit 1, host, 1);
+let $ob1_leader_obs =deploy_get_value(ob1.get_obs_by_addr $ob1_leader_ip_port);
+
+# 获取follower
+let $ob1_follower_ip_port=deploy_get_value(ob1.select select concat(svr_ip,':',svr_port) as host from __all_virtual_ls_meta_table where tenant_id = $ob1_mysql_tenant_id and ls_id =  1001 and role = 2 limit 1, host, 1);
+let $ob1_follower_obs=deploy_get_value(ob1.get_obs_by_addr $ob1_follower_ip_port);
+
+ob_connect(conn_mysql, $ob1_leader_obs, root@mysql, , test, , USE_MYSQL_CONNECTOR);
+create table t1(pk int primary key, c1 int, c2 varchar(20));
+insert into t1 values(1, 1, 'a');
+
+# case1: 2F之间进行断网
+$ob1_leader_obs.block_net $ob1_follower_obs;
+$ob1_follower_obs.block_net $ob1_leader_obs;
+
+# 预期ddl失败
+--error 4012
+alter table t1 add c3 varchar(20);
+
+connection conn_sys;
+# 预期mysql租户不发生降级
+sleep 5;
+ob1.check_until_timeout select (count(*) = 0) from __all_virtual_log_stat where tenant_id = $ob1_mysql_tenant_id and ls_id=1001 and degraded_list like "%$ob1_follower_ip_port%", 1, 60;
+
+# case2. 验证断网后Leader切到和RS连通的机器
+ob1.check_until_timeout select concat(svr_ip,':',svr_port) from __all_virtual_log_stat where tenant_id = $ob1_mysql_tenant_id and ls_id = 1001 and role = 'LEADER' limit 1, $ob1_follower_ip_port, 600;
+
+sleep 5;
+# 预期旧主应该会被降级
+ob1.check_until_timeout select (count(*) != 0) from __all_virtual_log_stat where tenant_id = $ob1_mysql_tenant_id and ls_id=1001 and degraded_list like "%$ob1_leader_ip_port%", 1, 60;
+
+ob_connect(conn_mysql_new_leader, $ob1_follower_obs, root@mysql, , test, , USE_MYSQL_CONNECTOR);
+# 预期成功
+alter table t1 add c3 varchar(20);
+insert into t1 values(2, 2, 'a', 'a');
+
+connection conn_sys;
+# case3. 验证恢复网络后Leader切回原来优先级高的zone
+$ob1_leader_obs.clean_net $ob1_follower_obs;
+$ob1_follower_obs.clean_net $ob1_leader_obs;
+sleep 10;
+ob1.check_until_timeout select concat(svr_ip, ':', svr_port) from __all_virtual_ls_meta_table where tenant_id = $ob1_mysql_tenant_id and ls_id = 1001 and role = 1 limit 1, $ob1_leader_ip_port, 60;
+
+# case4. 验证旧主宕机重启后，虽然退出选举“静默”，但Leader不会切回到旧主
+$ob1_leader_obs.block_net $ob1_follower_obs;
+$ob1_follower_obs.block_net $ob1_leader_obs;
+sleep 10;
+ob1.check_until_timeout select (count(*) = 0) from __all_virtual_log_stat where tenant_id = $ob1_mysql_tenant_id and ls_id=1001 and degraded_list like "%$ob1_follower_ip_port%", 1, 60;
+
+sleep 5;
+# 断网后Leader切到和RS连通的机器
+ob1.check_until_timeout select concat(svr_ip,':',svr_port) from __all_virtual_ls_meta_table where tenant_id = $ob1_mysql_tenant_id and ls_id =  1001 and role = 1 limit 1, $ob1_follower_ip_port, 60;
+
+# 旧主宕机重启
+$ob1_leader_obs.force_stop;
+$ob1_leader_obs.nstart;
+sleep 15;
+
+# Leader不会切到旧主
+ob1.check_until_timeout select concat(svr_ip,':',svr_port) from __all_virtual_log_stat where tenant_id = $ob1_mysql_tenant_id and ls_id =  1001 and role = 'LEADER' limit 1, $ob1_follower_ip_port, 60;
+
+$ob1_leader_obs.clean_net $ob1_follower_obs;
+$ob1_follower_obs.clean_net $ob1_leader_obs;
+
+sleep 5;
+# 2F1A变4F1A
+ob1.mysql alter tenant sys locality='F@z1, F@z2, F@z3, F@z4';
+ob1.check_until_timeout select count(*) from oceanbase.__all_tenant where tenant_name = "sys" and previous_locality != "", 0, 300;
+ob1.mysql alter tenant sys primary_zone = 'z1;z2;z3;z4';
+
+ob1.check_until_timeout select (count(*) = 0) from oceanbase.__all_virtual_log_stat where tenant_id = $ob1_mysql_tenant_id and paxos_replica_num = 2, 0, 120;
+ob1.mysql alter tenant mysql locality='F@z1,F@z2,F@z3,F@z4';
+ob1.check_until_timeout select count(*) from oceanbase.__all_tenant where tenant_name = "mysql" and previous_locality != "", 0, 300;
+ob1.check_until_timeout select (count(*) != 0) from oceanbase.__all_virtual_log_stat where tenant_id = $ob1_mysql_tenant_id and paxos_replica_num = 4, 1, 120;
+
+ob1.mysql alter tenant mysql primary_zone = 'z3;z4;z1;z2';
+ob1.check_until_timeout select count(*) from __all_virtual_ls_meta_table where tenant_id = $ob1_mysql_tenant_id, 8, 120;
+
+# 获取leader、follower位置信息
+let $ob1_z1_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $ob1_z2_ip = deploy_get_value(ob1.z2.obs0.ip);
+let $ob1_z3_ip = deploy_get_value(ob1.z3.obs0.ip);
+let $ob1_z4_ip = deploy_get_value(ob1.z4.obs0.ip);
+
+# 等待leader切到z3
+ob1.check_until_timeout select svr_ip from __all_virtual_ls_meta_table where tenant_id = $ob1_mysql_tenant_id and ls_id = 1001 and role = 1, $ob1_z3_ip, 120;
+
+# 获取leader(即z3)
+let $ob1_leader_ip_port=deploy_get_value(ob1.select select concat(svr_ip,':',svr_port) as host from __all_virtual_ls_meta_table where tenant_id = $ob1_mysql_tenant_id and ls_id =  1001 and role = 1 limit 1, host, 1);
+let $ob1_leader_obs =deploy_get_value(ob1.get_obs_by_addr $ob1_leader_ip_port);
+
+# 获取其余三个zone的follower
+let $ob1_follower1_ip_port=deploy_get_value(ob1.select select concat(svr_ip,':',svr_port) as host from __all_virtual_ls_meta_table where tenant_id = $ob1_mysql_tenant_id and ls_id =  1001 and role = 2 and svr_ip = '$ob1_z1_ip' limit 1, host, 1);
+let $ob1_follower1_obs=deploy_get_value(ob1.get_obs_by_addr $ob1_follower1_ip_port);
+let $ob1_follower2_ip_port=deploy_get_value(ob1.select select concat(svr_ip,':',svr_port) as host from __all_virtual_ls_meta_table where tenant_id = $ob1_mysql_tenant_id and ls_id =  1001 and role = 2 and svr_ip = '$ob1_z2_ip' limit 1, host, 1);
+let $ob1_follower2_obs=deploy_get_value(ob1.get_obs_by_addr $ob1_follower2_ip_port);
+let $ob1_follower4_ip_port=deploy_get_value(ob1.select select concat(svr_ip,':',svr_port) as host from __all_virtual_ls_meta_table where tenant_id = $ob1_mysql_tenant_id and ls_id =  1001 and role = 2 and svr_ip = '$ob1_z4_ip' limit 1, host, 1);
+let $ob1_follower4_obs=deploy_get_value(ob1.get_obs_by_addr $ob1_follower4_ip_port);
+
+# case5. 4F1A下断网后不进行降级
+# 断开z1z2与z3z4之间的网络
+$ob1_follower1_obs.block_net $ob1_leader_obs;
+$ob1_follower1_obs.block_net $ob1_follower4_obs;
+$ob1_follower2_obs.block_net $ob1_leader_obs;
+$ob1_follower2_obs.block_net $ob1_follower4_obs;
+$ob1_leader_obs.block_net $ob1_follower1_obs;
+$ob1_leader_obs.block_net $ob1_follower2_obs;
+$ob1_follower4_obs.block_net $ob1_follower1_obs;
+$ob1_follower4_obs.block_net $ob1_follower2_obs;
+
+ob_connect(conn_mysql, $ob1_leader_obs, root@mysql, , test, , USE_MYSQL_CONNECTOR);
+
+# 预期ddl失败
+--error 4012
+alter table t1 add c4 varchar(20);
+
+sleep 5;
+# 预期mysql租户不会发生降级
+ob1.check_until_timeout select (count(*) = 0) from __all_virtual_log_stat where tenant_id = $ob1_mysql_tenant_id and ls_id=1001 and (degraded_list like "%$ob1_follower1_ip_port%" or degraded_list like "%$ob1_follower2_ip_port%"), 1, 60; 
+
+# case6. 4F1A下断网后Leader切到和RS连通的机器
+# Leader切到z1或者z2
+ob1.check_until_timeout select (count(*) != 0) from __all_virtual_log_stat where tenant_id = $ob1_mysql_tenant_id and ls_id=1001 and role = 'LEADER' and (svr_ip = "$ob1_z1_ip" or svr_ip = "$ob1_z2_ip"), 1, 300;
+
+# 将z3、z4降级
+ob1.check_until_timeout select (count(*) != 0) from __all_virtual_log_stat where tenant_id = $ob1_mysql_tenant_id and ls_id=1001 and degraded_list like "%$ob1_leader_ip_port%" and degraded_list like "%$ob1_follower4_ip_port%", 1, 60;
+
+sleep 5;
+
+ob_connect(conn_mysql_newer_leader, $ob1_follower1_obs, root@mysql, , test, , USE_MYSQL_CONNECTOR);
+# 预期成功
+alter table t1 add c4 varchar(20);
+insert into t1 values(3, 3, 'a', 'a', 'a');
+
+# 恢复z1z2与z3z4之间的网络
+$ob1_follower1_obs.clean_net $ob1_leader_obs;
+$ob1_follower1_obs.clean_net $ob1_follower4_obs;
+$ob1_follower2_obs.clean_net $ob1_leader_obs;
+$ob1_follower2_obs.clean_net $ob1_follower4_obs;
+$ob1_leader_obs.clean_net $ob1_follower1_obs;
+$ob1_leader_obs.clean_net $ob1_follower2_obs;
+$ob1_follower4_obs.clean_net $ob1_follower1_obs;
+$ob1_follower4_obs.clean_net $ob1_follower2_obs;
+
+# case7. 4F1A下恢复网络后Leader切回原来优先级高的zone
+connection conn_sys;
+# 预期Leader应该切回z3
+ob1.check_until_timeout select (count(*) != 0) from __all_virtual_log_stat where tenant_id = $ob1_mysql_tenant_id and ls_id=1001 and role = 'LEADER' and svr_ip = "$ob1_z3_ip", 1, 120;

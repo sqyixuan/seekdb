@@ -1,0 +1,96 @@
+# owner: duotian
+# owner group: LOG
+# Testing Case: Standby switchover check ls gc
+
+ob1=OBI(cluster=1:1:1, proxy_num=0);
+ob2=OBI(cluster=1:1:1, proxy_num=0);
+
+
+let $backup_cluster_name = deploy_get_value(ob1.get_cluster_name);
+let $backup_cluster_id = deploy_get_value(ob1.get_cluster_id);
+let $backup_ip       = deploy_get_value(ob1.z1.obs0.ip);
+let $backup_port     = deploy_get_value(ob1.z1.obs0.mysql_port);
+let $restore_ip         = deploy_get_value(ob2.z1.obs0.ip);
+let $restore_port       = deploy_get_value(ob2.z1.obs0.mysql_port);
+let $backup_dest = deploy_get_value(ob1.get_backup_dest);
+let $backup_mysql_tenant   = backup_mysql_tenant;
+let $restore_mysql_tenant = restore_mysql_tenant;
+let $log_backup_dest = deploy_get_value(ob1.get_log_backup_dest $backup_mysql_tenant);
+let $data_backup_dest = deploy_get_value(ob1.get_data_backup_dest $backup_mysql_tenant);
+let $standby_archive_dest = deploy_get_value(ob1.get_log_backup_dest $restore_mysql_tenant);
+
+# 必须先stop掉老的，删除才能有效，不然可能会有残留。
+ob1.force_stop;
+ob1.clean_backup_dest;
+ob1.reboot;
+
+# 固定sys租户规格
+ob1.mysql alter resource unit sys_unit_config memory_size='2G';
+
+connect(backup_sys_conn, $backup_ip, root@sys,,oceanbase, $backup_port);
+connection backup_sys_conn;
+use oceanbase;
+alter system set resource_hard_limit = 1000;
+alter system set _restore_idle_time = '10s';
+
+CREATE RESOURCE UNIT large_unit MAX_CPU=5, MEMORY_SIZE='10G';
+CREATE RESOURCE POOL large_pool UNIT large_unit, UNIT_NUM 1, ZONE_LIST ('z1', 'z2', 'z3');
+
+ob1.mysql alter system set _backup_idle_time = '10s';
+ob1.mysql alter system set merger_check_interval = '10s';
+ob1.mysql alter system set enable_async_syslog=false;
+
+# create mysql tenant, test create tenant before major freeze
+ob1.mysql CREATE TENANT $backup_mysql_tenant RESOURCE_POOL_LIST = ('large_pool'), primary_zone = "z1,z2" set ob_tcp_invited_nodes='%', ob_compatibility_mode='mysql';
+let $backup_mysql_tenant_id = query_get_value(select tenant_id from oceanbase.__all_tenant where tenant_name='$backup_mysql_tenant', tenant_id, 1);
+
+# open archive
+ob1.mysql alter system set log_archive_dest='location=$log_backup_dest' tenant = '$backup_mysql_tenant';
+ob1.mysql alter system archivelog;
+ob1.check_until_timeout select status from oceanbase.CDB_OB_ARCHIVELOG where tenant_id=$backup_mysql_tenant_id, DOING, 600;
+
+# create log restore source user
+ob_connect(backup_mysql_conn, ob1.z1.obs0,root@$backup_mysql_tenant,,test,,USE_MYSQL_CONNECTOR);
+connection backup_mysql_conn;
+create user mytest identified by "test";
+GRANT SELECT on OCEANBASE.DBA_OB_TENANTS to mytest;
+GRANT SELECT on OCEANBASE.GV$OB_PARAMETERS to mytest;
+GRANT SELECT on OCEANBASE.DBA_OB_ACCESS_POINT to mytest;
+GRANT SELECT on OCEANBASE.GV$OB_LOG_STAT to mytest;
+GRANT SELECT on OCEANBASE.GV$OB_UNITS to mytest;
+GRANT SELECT on OCEANBASE.DBA_OB_LS to mytest;
+
+# get primary tenant access point
+let $server_ip_port_1=deploy_get_value(ob1.select select concat(svr_ip,':',sql_port) as host from CDB_OB_ACCESS_POINT where tenant_id = $backup_mysql_tenant_id order by svr_ip, sql_port limit 1;, host, 1);
+let $server_ip_port_2=deploy_get_value(ob1.select select concat(svr_ip,':',sql_port) as host from CDB_OB_ACCESS_POINT where tenant_id = $backup_mysql_tenant_id and concat(svr_ip,':',sql_port) not like "%$server_ip_port_1%" limit 1, host, 1);
+
+ob2.reboot;
+connect(restore_sys_conn, $restore_ip, root@sys,,oceanbase, $restore_port);
+connection restore_sys_conn;
+use oceanbase;
+alter system set resource_hard_limit = 1000;
+alter system set _restore_idle_time = '10s';
+
+CREATE RESOURCE UNIT large_unit MAX_CPU=5, MEMORY_SIZE='10G';
+CREATE RESOURCE POOL large_pool UNIT large_unit, UNIT_NUM 1, ZONE_LIST ('z1', 'z2', 'z3');
+
+ob2.mysql alter system set debug_sync_timeout = '100000s';
+
+# create standby tenant
+--disable_all_result_log
+ob2.mysql CREATE STANDBY TENANT $restore_mysql_tenant LOG_RESTORE_SOURCE = 'service=$server_ip_port_1;$server_ip_port_2; USER=mytest@$backup_mysql_tenant PASSWORD=test' PRIMARY_ZONE='z1', RESOURCE_POOL_LIST=('large_pool'),locality='F@z1,F@z2,F@z3';
+--enable_all_result_log
+
+# close ls gc in standby tenant
+ob2.mysql set ob_global_debug_sync = 'LS_GC_BEFORE_OFFLINE wait_for signal1 execute 10000';
+sleep 3;
+
+# modify primary tenant primary zone z1,z2 -> z1
+ob1.mysql alter tenant $backup_mysql_tenant primary_zone = 'z1';
+
+ob1.check_until_timeout select count(*) from __all_virtual_ls_status where tenant_id = $backup_mysql_tenant_id, 2, 200;
+
+ob1.mysql alter system switchover to standby tenant $backup_mysql_tenant;
+ob2.mysql alter system switchover to primary tenant $restore_mysql_tenant;
+
+ob2.z1.obs0.check_log_until_success -c "offline_log exist";

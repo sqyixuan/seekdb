@@ -1,0 +1,90 @@
+#owner: linxinjian.lxj
+#owner group: sql1
+# tags: optimizer
+
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+
+--disable_warnings
+drop table if exists t1, t2, t3;
+--enable_warnings
+
+create table if not exists t1 (c1 int primary key, c2 int, c3 date);
+create table if not exists t2 (c1 int, c2 int, c3 int);
+insert into t2 values(1,2,3);
+insert into t2 values(2,2,3);
+insert into t2 values(3,3,4);
+insert into t2 values(4,3,4);
+insert into t2 values(5,4,5);
+
+create table if not exists t3(c1 int);
+drop FUNCTION if EXISTS func_1;
+delimiter /;
+CREATE FUNCTION func_1(n int)
+RETURNS int
+BEGIN
+    insert into t3 values(1);
+    RETURN (select count(*) from t3);
+END /
+delimiter ;/
+
+
+--result_format 4
+--explain_protocol 1
+## issue中用例
+select * from (select /*+ no_merge */ t1.c2, date_format(t1.c3, '%Y-%M-%D') date, count(t1.c1)
+    from t1 left join t1 d on t1.c2 = d.c2 group by t1.c2, date_format(t1.c3, '%Y-%M-%D') ) v where v.date = date_format(now(), '%Y-%M-%D');
+## issue中用例，带版本控制，master为440之前无法下推
+select /*+ OPTIMIZER_FEATURES_ENABLE('4.3.5.2') */* from (select /*+ no_merge */ t1.c2, date_format(t1.c3, '%Y-%M-%D') date, count(t1.c1)
+    from t1 left join t1 d on t1.c2 = d.c2 group by t1.c2, date_format(t1.c3, '%Y-%M-%D') ) v where v.date = date_format(now(), '%Y-%M-%D');
+
+## issue用例扩展
+select * from (select c1, c2+1 val, sum(c3) from t2 group by c1, c2+1)
+    where val + 1 > 4;
+select /*+ NO_QUERY_TRANSFORMATION */* from (select c1, c2+1 val, sum(c3) from t2 group by c1, c2+1)
+    where val + 1 > 4;
+
+## issue中用例，带版本控制，master为440之前无法下推
+select /*+ OPTIMIZER_FEATURES_ENABLE('4.3.5.2') */* from (select c1, c2+1 val, sum(c3) from t2 group by c1, c2+1)
+    where val + 1 > 4;
+
+## having引用自group by表达式或包含/是聚合函数
+select c1, c2 from t2 group by c1, c2 having sum(c3);
+select c1, c2, sum(c3) from t2 group by c1, c2 having sum(c3) > 3;
+select /*+ NO_QUERY_TRANSFORMATION */ c1, c2, sum(c3) from t2 group by c1, c2 having sum(c3) > 3;
+
+## having表达式对groupby表达式is_const
+select * from (select /*+ no_merge */ t2.c2, t2.c3, count(t2.c1)
+    from t2 left join t2 d on t2.c2 = d.c2 group by t2.c2, t2.c3 ) v where 1 * v.c3 + 1  > 4;
+select /*+ NO_QUERY_TRANSFORMATION */ * from (select /*+ no_merge */ t2.c2, t2.c3, count(t2.c1)
+    from t2 left join t2 d on t2.c2 = d.c2 group by t2.c2, t2.c3 ) v where 1 * v.c3 + 1 > 4;
+
+## having的子表达式存在对rollup对引用以及having推到where之后的结果对比
+ ## 反例，rollup([t2.c2 + 1]),filter([t2.c2 + 1 + 1 > 0]),但filter被下压,由于共享表达式可能存在bug，val与c2+1未共享指针，导致find_item失效
+select /*+opt_param('USE_HASH_ROLLUP', 'disabled') no_simplify_group_by*/* from (select c1, c2+1 val, sum(c3) from t2 group by val, c2+1 with rollup)
+    where val + 1 > 4;
+select /*+ NO_QUERY_TRANSFORMATION */* from (select c1, c2+1 val, sum(c3) from t2 group by val, c2+1 with rollup)
+    where val + 1 > 4;
+
+ ## 正例，find_item能在rollup_exprs中找到having_expr
+select /*+opt_param('USE_HASH_ROLLUP', 'disabled') no_simplify_group_by*/* from t2 group by c1+1, c1+1 with rollup having c1 + 1 > 4;
+select /*+ NO_QUERY_TRANSFORMATION */* from t2 group by c1+1, c1+1 with rollup having c1 + 1 > 4;
+
+select /*+opt_param('USE_HASH_ROLLUP', 'disabled')*/* from t2 group by c1+1, c1+1 with rollup having c1 > 4;
+select /*+ NO_QUERY_TRANSFORMATION */* from t2 group by c1, c1 with rollup having c1 + 1 > 4;
+
+select /*+opt_param('USE_HASH_ROLLUP', 'disabled')*/* from t2 group by c1, c1 with rollup having c1 + 1 > 4;
+select /*+ NO_QUERY_TRANSFORMATION */* from t2 group by c1+1, c1+1 with rollup having c1 > 4;
+
+
+select /*+opt_param('USE_HASH_ROLLUP', 'disabled') no_simplify_group_by*/ c1, c2 from t2 group by C2, c1 with rollup having c1 + 1 > 4;
+select /*+ NO_QUERY_TRANSFORMATION */ c1, c2 from t2 group by C2, c1 with rollup having c1 + 1 > 4;
+
+## having中存在udf，按照老逻辑generalized判断可下推，实际不可下推，待修改
+select c1 from t3 group by c1 having func_1(c1) > 1;
+
+drop table if exists t1;
+drop table if exists t2;
+drop table if exists t3;
+drop FUNCTION if EXISTS func_1;

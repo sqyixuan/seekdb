@@ -1,0 +1,145 @@
+# owner: rongxuan.lc
+# description: 本case是为了测试delete_server的时候，选择目的端的时候会考虑磁盘是否够
+
+##用例：
+#1. server正在迁入容许delete; 成功revert到；delete成功；
+#2. delete server正常进行；
+#3. delete server找不到目的端，数据量太大；
+#4. revert失败，对端被下线；
+#D#4. 永久下线迁移unit正常；
+#D#5. 迁移过程中，目的机器下线；检查迁移正常；
+ob1=OBI(cluster=3:3:3,  proxy_num=0, ct_num = 0);
+ob1.reboot;
+ob1.mysql alter system set balancer_idle_time = '10s';
+ob1.mysql alter system set server_data_copy_in_concurrency = 2;
+ob1.mysql alter system set server_data_copy_out_concurrency = 2;
+
+let $cpu = 1;
+let $memory = 1073741824;
+let $min_memory = 1073741824;
+let $disk = 536870912;
+let $iops = 100000;
+let $session = 64;
+let $case_index = 1;
+
+ob1.mysql alter system set enable_rereplication = false;
+ob1.mysql CREATE RESOURCE UNIT unit_$case_index MAX_CPU $cpu, MAX_MEMORY $memory, MAX_IOPS $iops, MAX_DISK_SIZE $disk, MAX_SESSION_NUM $session, MIN_CPU=1, MIN_MEMORY=$min_memory, MIN_IOPS=128;
+ob1.mysql CREATE RESOURCE POOL pool_2 UNIT = 'unit_1', UNIT_NUM = 1, ZONE_LIST = ('z1', 'z2','z3');
+ob1.mysql CREATE TENANT tenant_$case_index RESOURCE_POOL_LIST = ('pool_2'), locality='F@z1,F@z2,F@z3', primary_zone='z1;z2;z3' set ob_tcp_invited_nodes='%';
+sleep 3;
+ob1.create_client tenant=tenant_1,user=root,passwd=,database=test;
+create table test(c1 int primary key, c2 int) partition by hash(c1) partitions 10;
+let $t_id = deploy_get_value(ob1.select select table_id from __all_table where table_name = 'test', table_id, 1);
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from __all_tenant where tenant_name = 'tenant_1', tenant_id, 1);
+let $resource_id = deploy_get_value(ob1.select select resource_pool_id from __all_resource_pool where tenant_id = $tenant_id, resource_pool_id, 1);
+let $unit_id = deploy_get_value(ob1.select select unit_id from __all_unit where zone='z2' and resource_pool_id = $resource_id, unit_id, 1);
+let $unit_addr = deploy_get_value(ob1.select select concat(svr_ip,":", svr_port) addr from __all_unit where unit_id=$unit_id, addr, 1);
+let $dest_addr = deploy_get_value(ob1.select select concat(svr_ip,":", svr_port) addr from __all_server where zone = 'z2' and  concat(svr_ip,":", svr_port) != '$unit_addr', addr, 1);
+#1.server正在迁入容许delete;
+ob1.mysql alter system enable_rebalance = false;
+ob1.create_client tenant=sys,user=root,passwd=,database=oceanbase;
+--disable_query_log
+eval alter system migrate unit $unit_id destination '$dest_addr'; 
+ let $mjob_id = deploy_get_value(ob1.select select job_id from oceanbase.__all_rootservice_job where job_type="MIGRATE_UNIT" and job_status="INPROGRESS",job_id,1);
+
+sleep 2;
+eval alter system delete server '$dest_addr';
+ let $job_id = deploy_get_value(ob1.select select job_id from oceanbase.__all_rootservice_job where job_type="DELETE_SERVER" and job_status="INPROGRESS",job_id,1);
+
+ob1.mysql alter system enable_rebalance = true; 
+###检查unit迁移会reverse掉；
+ob1.check_until_timeout select count(*) from __all_rootservice_event_history where event like '%finish_migrate_unit%' and value2 like '2', 1, 40;
+ob1.check_until_timeout select count(*) from __all_unit where unit_id=$unit_id and concat(svr_ip,":", svr_port) = '$unit_addr', 1, 30;
+ob1.check_until_timeout select count(*) c from oceanbase.__all_rootservice_job where job_id = $mjob_id and job_status="FAILED" ,1,30;
+
+ob1.check_until_timeout select count(*) from __all_server, 8, 600;
+ob1.check_until_timeout select count(*) c from oceanbase.__all_rootservice_job where job_id = $job_id and job_status="SUCCESS" ,1,30;
+
+eval alter system add server '$dest_addr';
+sleep 3;
+##2. delete server正常进行
+ob1.mysql alter system enable_rebalance = true; 
+ob1.check_until_timeout select count(*) from __all_unit where migrate_from_svr_port != 0, 0, 60;
+eval alter system delete server '$dest_addr';
+let $job_id = deploy_get_value(ob1.select select job_id from oceanbase.__all_rootservice_job where job_type="DELETE_SERVER" and job_status="INPROGRESS",job_id,1);
+ob1.check_until_timeout select count(*) c from __all_server, 8, 120; 
+ob1.check_until_timeout select count(*) c from oceanbase.__all_rootservice_job where job_id = $job_id and job_status="SUCCESS" ,1,30;
+eval alter system add server '$dest_addr';
+
+## 3.delete server找不到目的端，数据量太大；
+ob1.mysql update oceanbase.__all_virtual_meta_table set required_size = 1073741824;
+sleep 15;
+let $unit_addr = deploy_get_value(ob1.select select concat(svr_ip,":", svr_port) addr from __all_unit where unit_id=$unit_id, addr, 1);
+eval alter system delete server '$unit_addr';
+let $job_id = deploy_get_value(ob1.select select job_id from oceanbase.__all_rootservice_job where job_type="DELETE_SERVER" and job_status="INPROGRESS",job_id,1);
+sleep 120;
+ob1.check_until_timeout select count(*) from __all_unit where unit_id =$unit_id and concat(svr_ip,":", svr_port) = '$unit_addr', 1, 3;
+eval alter system cancel delete server '$unit_addr';
+ob1.check_until_timeout select count(*) c from oceanbase.__all_rootservice_job where job_id = $job_id and job_status="FAILED" ,1,30;
+
+sleep 3;
+
+#4. revert失败，对端被block掉；
+ob1.mysql alter system report replica;
+let $unit_id = deploy_get_value(ob1.select select unit_id from __all_unit where zone='z2' and resource_pool_id = $resource_id, unit_id, 1);
+let $unit_addr = deploy_get_value(ob1.select select concat(svr_ip,":", svr_port) addr from __all_unit where unit_id=$unit_id, addr, 1);
+let $dest_addr = deploy_get_value(ob1.select select concat(svr_ip,":", svr_port) addr from __all_server where zone = 'z2' and  concat(svr_ip,":", svr_port) != '$unit_addr', addr, 1);
+ob1.mysql alter system set enable_rereplication = false;
+--disable_query_log
+let $obi = deploy_get_value(ob1.get_obs_by_addr $unit_addr);
+$obi.force_stop;
+ob1.check_until_timeout select count(*) from __all_server where status = 'inactive', 1, 12;
+eval alter system migrate unit $unit_id destination '$dest_addr'; 
+ let $mjob_id = deploy_get_value(ob1.select select job_id from oceanbase.__all_rootservice_job where job_type="MIGRATE_UNIT" and job_status="INPROGRESS",job_id,1);
+eval alter system delete server '$dest_addr';
+let $job_id = deploy_get_value(ob1.select select job_id from oceanbase.__all_rootservice_job where job_type="DELETE_SERVER" and job_status="INPROGRESS",job_id,1);
+ob1.mysql alter system set enable_rereplication = true;
+ob1.check_until_timeout select count(*) from __all_unit where migrate_from_svr_port != 0, 0, 60;
+ob1.check_until_timeout select count(*) from __all_unit where unit_id =$unit_id and concat(svr_ip,":", svr_port) = '$dest_addr', 0, 60;
+ob1.check_until_timeout select count(*) c from oceanbase.__all_rootservice_job where job_id = $mjob_id and job_status="SUCCESS" ,1,30;
+
+
+
+
+
+
+##4. 永久下线迁移unit正常；
+# ob1.mysql update oceanbase.__all_virtual_meta_table set required_size = 1073741;
+#let $obi = deploy_get_value(ob1.get_obs_by_addr $unit_addr);
+#$obi.force_stop;
+#eval alter system set server_permanent_offline_time = '20s';
+#sleep 20;
+#ob1.check_until_timeout select count(*) from __all_unit where concat(svr_ip,":", svr_port) = '$unit_addr', 0, 120;
+##5. 迁移过程中，目的机器下线；检查迁移正常；
+#$obi.start;
+#ob1.check_until_timeout select count(*) from __all_server where start_service_time = 0, 0, 30;
+#ob1.mysql alter system enable_rebalance = false;
+#let $unit_addr = deploy_get_value(ob1.select select concat(svr_ip,":", svr_port) addr from __all_unit where unit_id=$unit_id, addr, 1);
+#let $dest_addr = deploy_get_value(ob1.select select concat(svr_ip,":", svr_port) addr from __all_server where zone = 'z2' and  concat(svr_ip,":", svr_port) != '$unit_addr', addr, 1);
+#--disable_query_log
+#eval alter system migrate unit $unid_id destination '$dest_addr';
+#sleep 2;
+#let $obi = deploy_get_value(ob1.get_obs_by_addr $dest_addr);
+#$obi.force_stop;
+#sleep 23;
+#ob1.mysql alter system enable_rebalance =true;
+#ob1.check_until_timeout select count(*) from __all_unit where unit_id=$unit_id and concat(migrate_from_svr_ip,":",migrate_from_svr_port) = '$unit_addr' and concat(svr_ip,":", svr_port)!='$dest_addr', 1, 30;
+#ob1.check_until_timeout select count(*) from __all_unit where migrate_from_svr_port != 0, 0, 60;
+#
+###6. delete server 过程中，目的端机器下线；
+#$obi.start;
+#ob1.check_until_timeout select count(*) from __all_server where start_service_time = 0, 0, 30;
+#let $unit_addr = deploy_get_value(ob1.select select concat(svr_ip,":", svr_port) addr from __all_unit where unit_id=$unit_id, addr, 1);
+##ob1.mysql alter system enable_rebalance = false;
+#eval aler system delete server '$unit_addr';
+#ob1.check_until_timeout select count(*) from __all_unit where migrate_from_svr_port != 0 and unit_id=$unit_id, 1, 60;
+#let $dest_addr = deploy_get_value(ob1.select select concat(svr_ip,":", svr_port) addr from __all_unit where unit_id=$unit_id, addr, 1);
+#let $obi = deploy_get_value(ob1.get_obs_by_addr $dest_addr);
+#$obi.force_stop;
+###等待永久下线后，迁移会取消；重新选择一个目的端；
+#ob1.check_until_timeout select count(*) from __all_unit where unit_id= $unit_id and concat(migrate_from_svr_ip,":",migrate_from_svr_port) = '$unit_addr', 1, 50;
+#ob1.check_until_timeout select count(*) from __all_unit where migrate_from_svr_port != 0, 0, 60;
+#
+#
+#
+#

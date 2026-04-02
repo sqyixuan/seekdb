@@ -1,0 +1,176 @@
+#
+# owner:修铭
+# owner group:liboblog
+# description:
+# 测试点：验证liboblog在表分裂场景下，取历史日志是否正常
+##
+
+ob1=OBI(cluster=1);
+#ob1.reboot;
+
+let $ip=deploy_get_value(ob1.z1.obs0.ip);
+let $port=deploy_get_value(ob1.z1.obs0.mysql_port);
+connect (oblog_conn_sys,$ip,root@sys,,oceanbase,$port);
+
+# 连接sys租户
+connection oblog_conn_sys;
+use test;
+
+# 清理环境
+--disable_warnings
+drop table if exists test1, test2;
+
+# 启动liboblog
+# 设置排序事务内参与者列表配置项为true，保证集群重启情况下，多分区事务语句顺序一致
+ob1.oblog.gen_conf tb_white_list=sys.test.* sort_trans_participants=1 log_level=debug skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+
+# 保存分裂前的时间戳
+let $start_tstamp_before_split = query_get_value(select round(time_to_usec(now()) / 1000000) as now, now, 1);
+
+# test1分裂成多个分区；test2不分裂
+create table test1(pk int primary key, c1 int);
+create table test2(pk int primary key, c1 int);
+
+let $DML_COUNT_BEFORE_SPLIT=0;
+
+# 为了验证分裂后添加到所有分区，下面的数据分布到多个分区上
+begin;
+insert into test2 values (1,1);
+insert into test1 values (1,1),(2,2),(3,3),(4,4),(5,5),(6,6),(7,7),(8,8),(9,9);
+commit;
+ob1.oblog.next_dml;
+inc $DML_COUNT_BEFORE_SPLIT;
+
+## 10 .. 90
+#begin;
+#update test2 set c1=c1+1 where pk=1;
+#update test1 set pk=pk*10, c1=c1*10;
+#commit;
+#ob1.oblog.next_dml;
+#inc $DML_COUNT_BEFORE_SPLIT;
+#
+## 110 .. 190
+#begin;
+#update test2 set c1=c1+1 where pk=1;
+#update test1 set pk=pk + 100, c1=c1 + 100;
+#commit;
+#ob1.oblog.next_dml;
+#inc $DML_COUNT_BEFORE_SPLIT;
+#
+## 190 .. 199
+#begin;
+#update test2 set c1=c1+1 where pk=1;
+#update test1 set pk=pk/10 - 10, c1=c1/10 - 10;
+#commit;
+#ob1.oblog.next_dml;
+#inc $DML_COUNT_BEFORE_SPLIT;
+
+# 分裂成200个分区，差不多耗时3秒钟
+alter table test1 modify partition by hash(pk) partitions 200;
+
+let $DML_COUNT_AFTER_SPLIT=0;
+
+alter system set syslog_level='DEBUG';
+
+## 分裂完成, 来一个分布式事务
+# 从分裂后大号分区开始插入数据
+# 181 .. 189
+begin;
+update test2 set c1=c1+1 where pk=1;
+update test1 set pk=pk-10, c1=c1-10;
+commit;
+ob1.oblog.next_dml;
+inc $DML_COUNT_AFTER_SPLIT;
+alter system set syslog_level='info';
+
+# 171 .. 179
+begin;
+update test2 set c1=c1+1 where pk=1;
+update test1 set pk=pk-10, c1=c1-10;
+commit;
+ob1.oblog.next_dml;
+inc $DML_COUNT_AFTER_SPLIT;
+
+## 161 .. 169
+#begin;
+#update test2 set c1=c1+1 where pk=1;
+#update test1 set pk=pk-10, c1=c1-10;
+#commit;
+#ob1.oblog.next_dml;
+#inc $DML_COUNT_AFTER_SPLIT;
+#
+## 61 .. 69
+#begin;
+#update test2 set c1=c1+1 where pk=1;
+#update test1 set pk=pk-100, c1=c1-100;
+#commit;
+#ob1.oblog.next_dml;
+#inc $DML_COUNT_AFTER_SPLIT;
+#
+## 51 .. 59
+#begin;
+#update test2 set c1=c1+1 where pk=1;
+#update test1 set pk=pk-10, c1=c1-10;
+#commit;
+#ob1.oblog.next_dml;
+#inc $DML_COUNT_AFTER_SPLIT;
+
+## 从分裂前的位点回拉
+#ob1.oblog.set_start_tstamp $start_tstamp_before_split;
+## 要拉取所有的数据
+#let $COUNT = query_get_value(select $DML_COUNT_BEFORE_SPLIT + $DML_COUNT_AFTER_SPLIT as cnt, cnt, 1);
+#ob1.oblog.restart;
+#
+#while ($COUNT > 0)
+#{
+#  ob1.oblog.next_dml;
+#  dec $COUNT;
+#}
+#
+#ob1.oblog.stop;
+#
+## 获取分裂中的时间戳: 刚刚开始分裂，尽量保证没有写分裂日志
+##
+## 开始分裂的DDL操作是OB_DDL_PARTITIONED_TABLE: 35
+## 取分裂开始时间戳+1秒
+##
+## 目的是验证schema能否正常拉取到分裂源分区，然后通过分裂日志结束源分区
+#let $start_tstamp_in_split_begin = query_get_value(select round(schema_version / 1000000) + 1 as begin_time from oceanbase.__all_ddl_operation where operation_type=35 order by schema_version desc limit 1, begin_time, 1);
+#
+## 获取分裂中的时间戳: 分裂结束前的时间，尽量保证分裂日志已经写完
+##
+## 结束分裂的DDL操作是OB_DDL_FINISH_SPLIT: 36
+## 取分裂结束时间戳的秒级下界
+##
+## 目的是验证如果启动时间戳在分裂日志之后，OFFLINE日志之前，能否正常结束分裂源分区
+#let $start_tstamp_in_split_end = query_get_value(select round(schema_version / 1000000) as begin_time from oceanbase.__all_ddl_operation where operation_type=36 order by schema_version desc limit 1, begin_time, 1);
+#
+#
+## 从刚开始分裂的时间戳回拉数据
+#ob1.oblog.set_start_tstamp $start_tstamp_in_split_begin;
+## 仅拉取分裂后的数据
+#let $COUNT = $DML_COUNT_AFTER_SPLIT;
+#ob1.oblog.restart;
+#
+#while ($COUNT > 0)
+#{
+#  ob1.oblog.next_dml;
+#  dec $COUNT;
+#}
+#
+#ob1.oblog.stop;
+#
+## 从结束分裂前的时间戳回拉数据
+#ob1.oblog.set_start_tstamp $start_tstamp_in_split_end;
+## 仅拉取分裂后的数据
+#let $COUNT = $DML_COUNT_AFTER_SPLIT;
+#ob1.oblog.restart;
+#
+#while ($COUNT > 0)
+#{
+#  ob1.oblog.next_dml;
+#  dec $COUNT;
+#}
+#
+#ob1.oblog.stop;

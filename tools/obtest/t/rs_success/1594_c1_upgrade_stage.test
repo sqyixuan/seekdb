@@ -1,0 +1,138 @@
+# owner: yanmu.ztl
+# owner group: rs
+# description: 验证_upgrade_stage配置项相关功能
+
+ob1=OBI(cluster=1, init_unit_cpu=0, proxy_num=0, ct_num=0, locality=hz);
+ob1.reboot;
+
+let $rs = deploy_get_value(ob1.get_leader sys:oceanbase:__all_core_table:0);
+let $rs_ip = deploy_get_value($rs.ip);
+let $rs_port = deploy_get_value($rs.port);
+let $rs_mysql_port = deploy_get_value($rs.mysql_port);
+connect (conn_sys,$rs_ip,root,,oceanbase,$rs_mysql_port);
+
+# case 1: _upgrade_stage不可读写
+connection conn_sys;
+
+# 不可直接写
+--error 4147
+alter system set _upgrade_stage = "PREUPGRADE";
+
+# 不可见
+show parameters like "%_upgrade_stage%";
+select value from __all_sys_parameter where name = "_upgrade_stage";
+
+alter system begin upgrade;
+sleep 5;
+select value from __all_sys_parameter where name = "_upgrade_stage";
+
+alter system begin rolling upgrade;
+sleep 5;
+select value from __all_sys_parameter where name = "_upgrade_stage";
+
+alter system end rolling upgrade;
+sleep 5;
+select value from __all_sys_parameter where name = "_upgrade_stage";
+
+alter system end upgrade;
+sleep 5;
+select value from __all_sys_parameter where name = "_upgrade_stage";
+
+# case 2: 验证混部阶段禁DDL
+create table test.tt(c1 int primary key, c2 varchar(20));
+
+# pre阶段无限制
+alter system begin upgrade;
+sleep 5;
+select value from __all_sys_parameter where name = "_upgrade_stage";
+alter table test.tt set comment = "test1";
+
+# 混部阶段限制部分DDL
+alter system begin rolling upgrade;
+sleep 5;
+select value from __all_sys_parameter where name = "_upgrade_stage";
+--error 4179
+alter table test.tt set comment = "test2";
+create table test.tt1(c1 int primary key, c2 varchar(20));
+
+# 混部阶段也受enable_ddl控制
+alter system enable_ddl = false;
+sleep 5;
+--error 4179
+create table test.tt2(c1 int primary key, c2 varchar(20));
+alter system enable_ddl = true;
+sleep 5;
+
+# post阶段无限制
+alter system end rolling upgrade;
+sleep 5;
+select value from __all_sys_parameter where name = "_upgrade_stage";
+alter table test.tt set comment = "test3";
+
+# 正常阶段无限制
+alter system end upgrade;
+sleep 5;
+select value from __all_sys_parameter where name = "_upgrade_stage";
+alter table test.tt set comment = "test4";
+
+# case 3: 验证混部阶段DDL黑/白名单（部分）
+alter system begin rolling upgrade;
+sleep 5;
+select value from __all_sys_parameter where name = "_upgrade_stage";
+
+# create tablegroup
+create tablegroup yanmu_tg;
+
+# alter tablegroup (can only modify primary_zone/locality)
+--error 4179
+alter tablegroup yanmu_tg add partition (partition c1 values less than (2000));
+alter tablegroup yanmu_tg set primary_zone = RANDOM;
+
+# create table (can't create with constraint、foreign_key、vertical_partition)
+create table test.tt3(c1 int primary key, c2 int, c3 varchar(20), index idx(c2));
+--error 4179
+create table test.tt4(c1 int primary key, c2 int, constraint foreign key (c2) references test.tt3(c1) on update CASCADE on delete CASCADE);
+
+# alter table (can add/drop index、modify primary_zone/locality、modify column length、add column)
+# partition related
+--error 4179
+alter table test.tt3 partition by hash(c1) partitions 2;
+#index related
+alter table test.tt3 drop index idx;
+alter table test.tt3 add index idx(c2);
+# option related
+--error 4179
+alter table test.tt3 set comment = "test5";
+alter table test.tt3 set primary_zone = RANDOM;
+# column related
+--error 4179
+alter table test.tt3 change column c3 c3 varchar(40);
+--error 4179
+alter table test.tt3 drop column c3;
+--error 4179
+alter table test.tt3 modify column c3 varchar(10);
+alter table test.tt3 modify column c3 varchar(40);
+alter table test.tt3 add column c4 varchar(40);
+
+# create/drop index
+drop index idx on test.tt3;
+create index idx on test.tt3(c2);
+
+# modify tenant (can only modify tenant option)
+alter tenant sys set primary_zone = "z1";
+--error 4179
+alter tenant sys set variables ob_query_timeout = 100000000;
+
+# set system variable
+set @@global.ob_query_timeout = 100000000;
+
+# alter database
+alter database test set primary_zone = RANDOM;
+
+set recyclebin=on;
+
+# drop schema
+drop table test.tt3;
+
+# purge schema
+purge recyclebin;

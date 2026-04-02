@@ -1,0 +1,236 @@
+#
+# owner:千溪
+# owner group:liboblog
+# description:
+# 测试点:
+#     create/drop/alter/rename/truncate table
+#     create/drop/alter        tenant
+#     create/drop/alter/rename database (rename暂时不支持)
+#
+##
+
+ob1=OBI(cluster=1,init_unit_cpu=5);
+ob1.reboot;
+ob1.create_client;
+
+source include/liboblog/create_tenant.inc;
+
+# 准备环境
+
+# 启动liboblog
+ob1.oblog.gen_conf tb_white_list=sys.oblog*.*|oblog_tt.*.* skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+
+# 创建database 1
+create database oblog_db1;
+ob1.oblog.next;
+
+# 创建database 2
+create database oblog_db2;
+ob1.oblog.next;
+
+use oblog_db1;
+# 创建表t1
+create table oblog_db1.t1 (pk int primary key);
+ob1.oblog.next;
+
+# 创建表t2
+create table oblog_db1.t2 (pk int primary key);
+ob1.oblog.next;
+
+# 创建带索引的表
+CREATE TABLE IF NOT EXISTS oblog_db1.t3 (c1 int primary key, c2 int, c3 int, c4 int, c5 int, KEY idx_1 (c1,c2,c3), KEY idx_2 (c2,c4), KEY idx_3 (c3,c2), UNIQUE KEY uk_test (c4,c2,c5),UNIQUE KEY uk_test1 (c2,c1));
+ob1.oblog.next;
+set @@recyclebin = on;
+# index create and drp
+DROP INDEX idx_2 on t3;
+ob1.oblog.next;
+# 逆序索引NOT_SUPPORT
+CREATE INDEX idx_2a on t3(c4,c2);
+ob1.oblog.next;
+DROP INDEX uk_test on t3;
+ob1.oblog.next;
+CREATE INDEX uk_testa on t3(c4,c2);
+ob1.oblog.next;
+
+# 创建带生成列的表
+create table table_with_generate_column(c1 int, c2 int, c3 int as (c1 + c2));
+ob1.oblog.next;
+insert into table_with_generate_column (c1, c2) VALUES(1, 2);
+ob1.oblog.next;
+insert into table_with_generate_column (c1, c2) VALUES(3, 4);
+ob1.oblog.next;
+drop table table_with_generate_column;
+ob1.oblog.next;
+
+# 在oblog_tt租户下, drop table t1
+drop table oblog_db1.t1;
+ob1.oblog.next;
+
+connection oblog_conn_sys;
+let $clusterID = query_get_value(show parameters like 'cluster_id', value, 1);
+connection oblog_conn_tt;
+# schema非拆分模式下，DDL回收站中命名clustetID_tenantID_schemaVersion
+# schema拆分模式下，DDL回收站中命名clusterID_schemaVersion，不再包含tenantID
+eval select count(*) from oceanbase.__all_recyclebin where object_name = (select concat("__recycle_\$_", $clusterID, "_", schema_version) from oceanbase.__all_ddl_operation where ddl_stmt_str != '' order by schema_version desc limit 1) order by gmt_create desc limit 1;
+
+connection oblog_conn_tt;
+# alter table t2: 增加列、删除列，rename
+alter table oblog_db1.t2  ADD COLUMN c1 int;
+ob1.oblog.next;
+alter table oblog_db1.t2  ADD COLUMN c2 int;
+ob1.oblog.next;
+alter table oblog_db1.t2 drop COLUMN c2;
+ob1.oblog.next;
+alter table oblog_db1.t2  RENAME to t200;
+ob1.oblog.next;
+
+# rename table t2
+RENAME table oblog_db1.t200 to t300;
+ob1.oblog.next;
+
+insert into oblog_db1.t300 VALUE(1, 1);
+ob1.oblog.next;
+insert into oblog_db1.t300 VALUE(2, 2);
+ob1.oblog.next;
+insert into oblog_db1.t300 VALUE(3, 3);
+ob1.oblog.next;
+# truncate table
+# 先执行DDL_TRUNCATE_TABLE_DROP, 后执行DDL_TRUNCATE_TABLE_CREATE，但只输出1条DDL语句
+truncate table oblog_db1.t300;
+ob1.oblog.next;
+
+# rename table-database
+RENAME table oblog_db1.t300 to oblog_db2.t300;
+ob1.oblog.next;
+
+# alter database
+alter database oblog_db1 REPLICA_NUM=3;
+ob1.oblog.next;
+
+# drop database
+drop database oblog_db1;
+ob1.oblog.next;
+
+connection oblog_conn_tt;
+eval select count(*) from oceanbase.__all_recyclebin where object_name = (select concat("__recycle_\$_", $clusterID, "_", schema_version) from oceanbase.__all_ddl_operation where ddl_stmt_str != '' order by schema_version desc limit 1) order by gmt_create desc limit 1;
+
+# alter tenant
+connection oblog_conn_sys;
+alter tenant oblog_tt COMMENT='alter tenant';
+ob1.oblog.next;
+
+# alter tenant
+connection oblog_conn_tt;
+# 2.0 primary_zone 不允许为空
+alter tenant oblog_tt primary_zone='z1';
+ob1.oblog.next;
+
+# 删除oblog_tt租户
+connection oblog_conn_sys;
+set @@recyclebin = off;
+drop tenant oblog_tt force;
+ob1.oblog.next;
+
+# stop liboblog
+ob1.oblog.stop;
+
+# 清理数据
+--disable_warnings
+drop resource pool if exists oblog_pool;
+--disable_warnings
+drop resource unit if exists oblog_box;
+--disable_warnings
+drop database if exists oblog_db1;
+--disable_warnings
+drop database if exists oblog_db2;
+
+# TODO 不符合预期, 还需要看下
+# 指定ddl_id来创建回收站对象名
+source include/liboblog/create_tenant.inc;
+set @@recyclebin = on;
+
+ob1.mysql alter system set dump_data_dictionary_to_log_interval = '6s' tenant sys;
+ob1.mysql alter system set dump_data_dictionary_to_log_interval = '6s' tenant all_user;
+ob1.mysql alter system set dump_data_dictionary_to_log_interval = '6s' tenant all_meta;
+sleep 8;
+let $restart_ts1_usec = query_get_value(select time_to_usec(now(6)) as now, now, 1);
+# 启动liboblog
+ob1.oblog.gen_conf tb_white_list=sys.oblog*.*|oblog_tt.*.* skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+
+--disable_warnings
+create user if not exists __oceanbase_inner_drc_user;
+ob1.oblog.next;
+grant all privileges on *.* to __oceanbase_inner_drc_user;
+ob1.oblog.next;
+--enable_warnings
+
+purge recyclebin;
+connection oblog_conn_sys;
+delete from oceanbase.__all_ddl_id;
+
+connect (conn_drc,$ip,__oceanbase_inner_drc_user@oblog_tt,,oceanbase,$port);
+connection conn_drc;
+--disable_warnings
+drop database if exists drc_db;
+--enable_warnings
+
+set @@recyclebin = on;
+set @__oceanbase_ddl_id = '1_1004_123456710';
+create database drc_db;
+ob1.oblog.next;
+use drc_db;
+
+set @__oceanbase_ddl_id = '1_1004_123456711';
+create table t1(c1 int primary key, c2 int, c3 int, index(c2), index(c2, c3));
+ob1.oblog.next;
+
+# drop table\purge table
+set @__oceanbase_ddl_id = '1_1004_123456712';
+drop table t1;
+ob1.oblog.next;
+#connection oblog_conn_sys;
+eval select object_name from oceanbase.__all_recyclebin where object_name = '__recycle_\$_1_1004_123456712';
+let $recycle_table_object_name = query_get_value(select object_name from oceanbase.__all_recyclebin order by gmt_create desc limit 1, object_name, 1);
+#connection oblog_conn_tt;
+connection conn_drc;
+set @__oceanbase_ddl_id = '1_1004_123456713';
+eval purge table $recycle_table_object_name;
+ob1.oblog.next;
+
+# drop database\purge database
+set @__oceanbase_ddl_id = '1_1004_123456714';
+drop database drc_db;
+#connection oblog_conn_sys;
+eval select object_name from oceanbase.__all_recyclebin where object_name = '__recycle_\$_1_1004_123456714';
+let $recycle_database_object_name = query_get_value(select object_name from oceanbase.__all_recyclebin order by gmt_create desc limit 1, object_name, 1);
+#connection oblog_conn_tt;
+connection conn_drc;
+set @__oceanbase_ddl_id = '1_1004_123456715';
+eval purge database $recycle_database_object_name;
+
+# stop liboblog
+ob1.oblog.stop;
+
+# test data_dict
+ob1.oblog.gen_conf tb_white_list=sys.oblog*.*|oblog_tt.*.* meta_data_refresh_mode=data_dict enable_formatter_print_log=1;
+ob1.oblog.set_start_tstamp_usec $restart_ts1_usec;
+ob1.oblog.restart;
+# create user
+ob1.oblog.next;
+# grant privileges
+ob1.oblog.next;
+# create db
+ob1.oblog.next;
+# create tb
+ob1.oblog.next;
+# drop tb
+ob1.oblog.next;
+# purge tb
+ob1.oblog.next;
+ob1.oblog.stop;
+
+ob1.oblog.gen_conf tb_white_list=sys.oblog*.*|oblog_tt.*.* meta_data_refresh_mode=data_dict enable_formatter_print_log=1;
+ob1.oblog.restart;
+ob1.oblog.stop;

@@ -1,0 +1,185 @@
+#####################
+# owner : wangzhennan.wzn
+# owner group : rs
+# description : test ls obj lock and table lock in balance process
+#####################
+
+ob1=OBI(cluster=1:1:1,init_unit_cpu=0,proxy_num=0);
+let $extra_conf = "cpu_count=16,memory_limit='20G',system_memory='5G',__min_full_resource_pool_memory='1073741824',stack_size='1536K',cache_wash_threshold='1G',enable_async_syslog=false,_private_buffer_size='16K',_fast_commit_callback_count='1',log_disk_size='20G'";
+ob1.z1.obs0.set extra_config=$extra_conf;
+ob1.z2.obs0.set extra_config=$extra_conf;
+ob1.z3.obs0.set extra_config=$extra_conf;
+ob1.reboot;
+
+let $sys_tenant_id = 1;
+ob1.mysql alter system set enable_rebalance='false';
+ob_connect(conn_sys, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection conn_sys;
+
+--echo #############################
+--echo # 0.1 create mysql tenant
+set @@session.ob_query_timeout = 1000000000;
+eval CREATE RESOURCE UNIT if not exists unit_1 MAX_CPU 2, MEMORY_SIZE='4G';
+eval CREATE RESOURCE POOL if not exists pool_1 UNIT = 'unit_1', UNIT_NUM = 1;
+eval CREATE TENANT mysql RESOURCE_POOL_LIST = ('pool_1'), primary_zone='z1, z2' set ob_tcp_invited_nodes='%';
+source include/check_schema_sync.inc;
+
+let $mysql_tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = 'mysql', tenant_id, 1);
+ob_connect(conn_mysql, ob1.z1.obs0, root@mysql, , test, , USE_MYSQL_CONNECTOR);
+
+--echo ############################
+--echo # 0.2 prepare data
+source t/quick/include/transfer_prepare_data.inc;
+
+--echo ############################
+--echo # 0.3 trigger debug_sync and generate merge ls task
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+ob1.check_until_timeout select count(*) from gv\$ob_parameters where name = 'debug_sync_timeout' and value != '100000s', 0, 10;
+ob1.mysql set ob_global_debug_sync = 'AFTER_LOCK_ALL_BALANCE_JOB wait_for signal_lock_job execute 10000';
+ob1.mysql set ob_global_debug_sync = 'AFTER_LOCK_LS_AND_BEFORE_CHANGE_LS_FLAG wait_for signal_lock_ls execute 10000';
+ob1.mysql set ob_global_debug_sync = 'AFTER_BLOCK_TABLET_IN_WHEN_LS_MERGE wait_for signal_block_tablet_in execute 10000';
+
+--echo # primary zone 2->3, generate merge ls task
+ob1.mysql alter tenant mysql set primary_zone = RANDOM;
+
+--echo ############################
+--echo # 1 test lock __all_balance_job
+connection conn_sys;
+ob1.check_until_timeout select count(*) > 0 from oceanbase.__all_virtual_obj_lock where tenant_id = $mysql_tenant_id and ls_id = 1 and op_type = 'IN_TRANS_COMMON_LOCK', 1, 20;
+alter system change tenant mysql;
+--error 1205
+eval insert /*+query_timeout(10000000)*/ into oceanbase.__all_balance_job values (now(6), now(6), 123, 'default', 'LS_BALANCE', 1, 3, 'INIT', '', 0);
+
+ob1.mysql set ob_global_debug_sync = 'AFTER_LOCK_ALL_BALANCE_JOB clear';
+ob1.mysql set ob_global_debug_sync = 'now signal signal_lock_job';
+
+--echo ############################
+--echo # 2 test ls obj lock in merge_ls task
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_task where tenant_id = $mysql_tenant_id and task_type = 'LS_MERGE' and status = 'INIT', 1, 20;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_ls where tenant_id=1002 and ls_id=1004 and status='NORMAL', 1, 60;
+connection conn_sys;
+alter system change tenant sys;
+ob1.check_until_timeout select count(*) > 0 from oceanbase.__all_virtual_obj_lock where tenant_id = $mysql_tenant_id and obj_id = 1004 and op_type = 'IN_TRANS_COMMON_LOCK', 1, 30;
+
+--echo # create table will be stuck by ls obj lock until trans timeout and releases the ls obj lock
+connection conn_mysql;
+let $begin_time = deploy_get_value(ob1.select select time_to_usec(now(6)) as c, c, 1);
+eval create table t1(c1 int primary key, c2 int) partition by hash(c1) partitions 10;
+ob1.check_until_timeout select (time_to_usec(now(6)) - $begin_time) > 10000000 as t, 1, 1;
+--echo # create table successfully because the trx stuck by debug_sync has been kill due to trx timeout and the ls obj lock has been released
+
+SELECT TABLE_ID, TABLE_NAME, PARTITION_NAME, SUBPARTITION_NAME, TABLET_ID, LS_ID FROM oceanbase.DBA_OB_TABLE_LOCATIONS WHERE TABLE_NAME = 't1' AND ROLE = 'LEADER';
+SELECT LS_ID, STATUS, PRIMARY_ZONE FROM oceanbase.DBA_OB_LS;
+connection conn_sys;
+
+ob1.mysql set ob_global_debug_sync = 'AFTER_LOCK_LS_AND_BEFORE_CHANGE_LS_FLAG clear';
+ob1.mysql set ob_global_debug_sync = 'now signal signal_lock_ls';
+
+--echo ############################
+--echo # 3 test ls obj lock when ls is block_tablet_in
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_ls where tenant_id=$mysql_tenant_id and ls_id=1004 and status='NORMAL' and flag = 'BLOCK_TABLET_IN', 1, 60;
+connection conn_mysql;
+eval create table t2(c1 int) partition by hash(c1) partitions 10;
+--echo # no tablet on ls_id = 1004
+SELECT TABLE_ID, TABLE_NAME, PARTITION_NAME, SUBPARTITION_NAME, TABLET_ID, LS_ID FROM oceanbase.DBA_OB_TABLE_LOCATIONS WHERE TABLE_NAME = 't2' AND ROLE = 'LEADER';
+
+--echo ############################
+--echo # 4 test ls obj lock in create_table
+connection conn_mysql;
+eval create table t3(c1 int) partition by hash(c1) partitions 10;
+SELECT TABLE_ID, TABLE_NAME, PARTITION_NAME, SUBPARTITION_NAME, TABLET_ID, LS_ID FROM oceanbase.DBA_OB_TABLE_LOCATIONS WHERE TABLE_NAME = 't3' AND ROLE = 'LEADER';
+ob1.mysql set ob_global_debug_sync = 'BEFORE_LOCK_LS_WHEN_CREATE_TABLE wait_for signal_lock_create_table execute 10000';
+send create table t4(c1 int) partition by hash(c1) partitions 10;
+connection conn_sys;
+alter system change tenant mysql;
+eval update oceanbase.__all_ls set status = 'CREATING' where ls_id = 1001;
+
+ob1.mysql set ob_global_debug_sync = 'BEFORE_LOCK_LS_WHEN_CREATE_TABLE clear';
+ob1.mysql set ob_global_debug_sync = 'now signal signal_lock_create_table';
+sleep 2;
+--echo # no tablet on 1001
+ob1.check_until_timeout select count(*) from oceanbase.DBA_OB_TABLE_LOCATIONS WHERE TABLE_NAME = 't4' AND ROLE = 'LEADER' and ls_id = 1001, 0, 3;
+connection conn_sys;
+alter system change tenant mysql;
+eval update oceanbase.__all_ls set status = 'NORMAL' where ls_id = 1001;
+
+--echo ############################
+--echo # 5 test hidden table on merging ls
+ob1.mysql set ob_global_debug_sync = 'BEFORE_DROPPING_LS_IN_BALANCE_MERGE_TASK wait_for signal_merge_finish execute 10000';
+ob1.mysql set ob_global_debug_sync = 'BEFORE_TRANSFER_LOCK_TABLE_AND_PART wait_for signal_lock_transfer execute 10000';
+sleep 2;
+ob1.mysql set ob_global_debug_sync = 'AFTER_BLOCK_TABLET_IN_WHEN_LS_MERGE clear';
+ob1.mysql set ob_global_debug_sync = 'now signal signal_block_tablet_in';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_task where task_type = 'LS_MERGE', 1, 60;
+let $merge_task_id = deploy_get_value(ob1.select select task_id from __all_virtual_balance_task where task_type = 'LS_MERGE', task_id, 1);
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_transfer_task where status = 'INIT' and balance_task_id = $merge_task_id, 1, 30;
+connection conn_mysql;
+let $t1_id = deploy_get_value(ob1.select select table_id from __all_virtual_table where table_name = 't1' limit 1, table_id, 1);
+eval SELECT TABLE_ID, TABLE_NAME, PARTITION_NAME, SUBPARTITION_NAME, TABLET_ID, LS_ID FROM oceanbase.DBA_OB_TABLE_LOCATIONS WHERE (TABLE_ID = $t1_id OR DATA_TABLE_ID = $t1_id) AND ROLE = 'LEADER';
+--echo # truncate table before transfer will create new tablets on original ls
+truncate table t1;
+let $t1_id_new = deploy_get_value(ob1.select select table_id from __all_virtual_table where table_name = 't1' limit 1, table_id, 1);
+eval SELECT TABLE_ID, TABLE_NAME, PARTITION_NAME, SUBPARTITION_NAME, TABLET_ID, LS_ID FROM oceanbase.DBA_OB_TABLE_LOCATIONS WHERE (TABLE_ID = $t1_id_new OR DATA_TABLE_ID = $t1_id_new) AND ROLE = 'LEADER';
+create table t1_contrast(c1 int) partition by hash(c1) partitions 10;
+eval SELECT TABLE_ID, TABLE_NAME, PARTITION_NAME, SUBPARTITION_NAME, TABLET_ID, LS_ID FROM oceanbase.DBA_OB_TABLE_LOCATIONS WHERE TABLE_NAME = 't1_contrast' AND ROLE = 'LEADER';
+ob1.mysql set ob_global_debug_sync = 'BEFORE_TRANSFER_LOCK_TABLE_AND_PART clear';
+ob1.mysql set ob_global_debug_sync = 'now signal signal_lock_transfer';
+
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_transfer_task_history, 4, 120;
+--echo # after transfer, no tablet on 1004
+eval SELECT TABLE_ID, TABLE_NAME, PARTITION_NAME, SUBPARTITION_NAME, TABLET_ID, LS_ID FROM oceanbase.DBA_OB_TABLE_LOCATIONS WHERE (TABLE_ID = $t1_id_new OR DATA_TABLE_ID = $t1_id_new) AND ROLE = 'LEADER';
+--echo # truncate table can not create tablet on merging ls
+ob1.mysql alter system set _ob_ddl_timeout = '10s';
+ob1.check_until_timeout select count(*) from gv\$ob_parameters where name = '_ob_ddl_timeout' and value != '10s', 0, 10;
+truncate table t1;
+ob1.mysql alter system set _ob_ddl_timeout = '1000s';
+let $t1_id_new = deploy_get_value(ob1.select select table_id from __all_virtual_table where table_name = 't1' limit 1, table_id, 1);
+eval SELECT TABLE_ID, TABLE_NAME, PARTITION_NAME, SUBPARTITION_NAME, TABLET_ID, LS_ID FROM oceanbase.DBA_OB_TABLE_LOCATIONS WHERE (TABLE_ID = $t1_id_new OR DATA_TABLE_ID = $t1_id_new) AND ROLE = 'LEADER';
+ob1.mysql set ob_global_debug_sync = 'BEFORE_DROPPING_LS_IN_BALANCE_MERGE_TASK clear';
+ob1.mysql set ob_global_debug_sync = 'now signal signal_merge_finish';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_job, 0, 30;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_task, 0, 30;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_transfer_task, 0, 30;
+connection conn_mysql;
+select balance_strategy_name, job_type, status, comment from oceanbase.__all_balance_job_history;
+select task_type, src_ls, dest_ls, part_list, finished_part_list, status from oceanbase.__all_balance_task_history;
+--echo # tablets created on merging ls will be transfered in the second transfer task
+select src_ls, dest_ls, part_list, not_exist_part_list, lock_conflict_part_list, tablet_list, status from oceanbase.__all_transfer_task_history;
+eval SELECT TABLE_ID, TABLE_NAME, PARTITION_NAME, SUBPARTITION_NAME, TABLET_ID, LS_ID FROM oceanbase.DBA_OB_TABLE_LOCATIONS WHERE (TABLE_ID = $t1_id_new OR DATA_TABLE_ID = $t1_id_new) AND ROLE = 'LEADER';
+
+--echo ############################
+--echo # 6 test create table when ls is dropped
+connection conn_mysql;
+eval create table t6_normal(c1 int) partition by hash(c1) partitions 10;
+SELECT TABLE_ID, TABLE_NAME, PARTITION_NAME, SUBPARTITION_NAME, TABLET_ID, LS_ID FROM oceanbase.DBA_OB_TABLE_LOCATIONS WHERE TABLE_NAME = 't6_normal' AND ROLE = 'LEADER';
+ob1.mysql set ob_global_debug_sync = 'BEFORE_LOCK_LS_WHEN_CREATE_TABLE wait_for signal_lock_create_table1 execute 10000';
+send create table t6(c1 int) partition by hash(c1) partitions 10;
+connection conn_sys;
+alter system change tenant mysql;
+eval update oceanbase.__all_ls set status = 'DROPPED' where ls_id = 1001;
+ob1.mysql set ob_global_debug_sync = 'BEFORE_LOCK_LS_WHEN_CREATE_TABLE clear';
+ob1.mysql set ob_global_debug_sync = 'now signal signal_lock_create_table1';
+set ob_global_debug_sync = 'reset';
+# create table successfully
+connection conn_mysql;
+reap;
+--echo # no tablet on 1001
+ob1.check_until_timeout select count(*) from oceanbase.DBA_OB_TABLE_LOCATIONS WHERE TABLE_NAME = 't6' AND ROLE = 'LEADER' and ls_id = 1001, 0, 3;
+connection conn_sys;
+alter system change tenant mysql;
+eval update oceanbase.__all_ls set status = 'NORMAL' where ls_id = 1001;
+
+--echo ############################
+--echo # 7 test ls balance task transaction timeout
+ob1.mysql alter system set debug_sync_timeout = 0;
+ob1.check_until_timeout select count(*) from CDB_OB_BALANCE_JOBS, 0, 60;
+--echo # shrink can be executed when finish transfer task cost too much time
+ob1.mysql alter system set internal_sql_execute_timeout = '30s';
+ob1.mysql alter system set_tp tp_name = EN_FINISH_TRANSFER_TASK_COST_TOO_MUCH_TIME, error_code = 4012, frequency = 1;
+ob1.mysql alter tenant mysql primary_zone = 'z1';
+ob1.check_until_timeout select count(*) from CDB_OB_BALANCE_JOBS where tenant_id = $mysql_tenant_id and BALANCE_STRATEGY like "%LS balance by shrink%", 1, 60;
+ob1.check_until_timeout select count(*) from CDB_OB_BALANCE_JOBS where tenant_id = $mysql_tenant_id, 0, 120;
+--echo # expand can be executed when finish transfer task cost too much time
+ob1.mysql alter tenant mysql primary_zone = 'z1,z2';
+ob1.check_until_timeout select count(*) from CDB_OB_BALANCE_JOBS where tenant_id = $mysql_tenant_id and BALANCE_STRATEGY like "%LS balance by expand%", 1, 60;
+ob1.check_until_timeout select count(*) from CDB_OB_BALANCE_JOBS where tenant_id = $mysql_tenant_id, 0, 120;

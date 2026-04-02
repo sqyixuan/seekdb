@@ -1,0 +1,122 @@
+# owner: huangrenhuang.hrh
+# owner group: 系统组
+# description: mysql event 创建
+# tags: pl
+# author: huangrenhuang.hrh
+
+
+purge recyclebin;
+--result_format 4
+--error 0,1396
+drop user hrh@'%';
+--enable_warnings
+create user hrh identified by 'hrh';
+grant all on *.* to hrh WITH GRANT OPTION;
+--source mysql_test/include/check_schema_sync.inc
+connect (conn,$OBMYSQL_MS0,hrh,hrh,test,$OBMYSQL_PORT);
+
+SET character_set_client = 'utf8mb4';
+SET character_set_connection = 'utf8mb4';
+SET character_set_results = 'utf8mb4';
+
+SET GLOBAL event_scheduler=on;
+
+--echo ------------------------------------------------------------------------------------
+--echo ################## init
+--error 0,1051
+drop table t1;
+CREATE TABLE t1 ( 
+  id int
+);
+
+--echo ################## test
+--echo ############ bug 1, database + event_name > 128
+create database test_longlonglen_database_0123456789_0123456789_0123456789_0123456789_0123456789;
+use test_longlonglen_database_0123456789_0123456789_0123456789_0123456789_0123456789;
+--error ER_EVENT_DOES_NOT_EXIST
+drop event e_longlonglen_event_name_0123456789_0123456789;
+create event e_longlonglen_event_name_0123456789_0123456789 on schedule at "3000-01-01 00:00:00" do select 1;
+select count(*) from information_schema.events where 
+  EVENT_SCHEMA = 'test_longlonglen_database_0123456789_0123456789_0123456789_0123456789_0123456789' and 
+  EVENT_NAME = 'e_longlonglen_event_name_0123456789_0123456789' and DEFINER = 'hrh@%' and EVENT_TYPE ='ONE TIME' and
+  EXECUTE_AT = '3000-01-01 00:00:00' and INTERVAL_VALUE IS NULL and INTERVAL_FIELD IS NULL and STARTS IS NULL and ENDS IS NULL and
+  STATUS = 'ENABLED' and ON_COMPLETION = 'NOT PRESERVE' and LAST_EXECUTED IS NULL and EVENT_COMMENT IS NULL;
+drop database test_longlonglen_database_0123456789_0123456789_0123456789_0123456789_0123456789;
+
+--echo ############ bug 2, double event
+create database test_db;
+use test_db;
+create event e_repeat on schedule at "3000-01-01 00:00:00" do select 1;
+drop database test_db;
+create database test_db;
+use test_db;
+create event e_repeat on schedule at "3000-01-01 00:00:00" do select 1;
+let $wait_condition=
+  select count(*) = 1 from information_schema.events where 
+    EVENT_SCHEMA = 'test_db' and 
+    EVENT_NAME = 'e_repeat' and DEFINER = 'hrh@%' and EVENT_TYPE ='ONE TIME' and
+    EXECUTE_AT = '3000-01-01 00:00:00' and INTERVAL_VALUE IS NULL and INTERVAL_FIELD IS NULL and STARTS IS NULL and ENDS IS NULL and
+    STATUS = 'ENABLED' and ON_COMPLETION = 'NOT PRESERVE' and LAST_EXECUTED IS NULL and EVENT_COMMENT IS NULL;
+--source mysql_test/include/wait_condition.inc
+select count(*) from information_schema.events where 
+  EVENT_SCHEMA = 'test_db' and 
+  EVENT_NAME = 'e_repeat' and DEFINER = 'hrh@%' and EVENT_TYPE ='ONE TIME' and
+  EXECUTE_AT = '3000-01-01 00:00:00' and INTERVAL_VALUE IS NULL and INTERVAL_FIELD IS NULL and STARTS IS NULL and ENDS IS NULL and
+  STATUS = 'ENABLED' and ON_COMPLETION = 'NOT PRESERVE' and LAST_EXECUTED IS NULL and EVENT_COMMENT IS NULL;
+drop database test_db;
+
+--echo ############ bug 3, event exec privilege 
+create database test_db;
+use test_db;
+create event e_eventbody_privilege_hrh on schedule every 5 second do insert into test.t1 values(1);
+--error 0,1396
+drop user test_bug_user@'%';
+--enable_warnings
+create user test_bug_user identified by 'test_bug_user';
+grant all on test_db.* to test_bug_user WITH GRANT OPTION;
+--source mysql_test/include/check_schema_sync.inc
+connect (conn_bug_privilege,$OBMYSQL_MS0,test_bug_user,test_bug_user,test_db,$OBMYSQL_PORT);
+disconnect conn;
+connection conn_bug_privilege;
+--error 0,1142
+select * from test.t1;
+create event e_eventbody_privilege_bug on schedule every 5 second do insert into test.t1 values(2);
+--sleep 20
+drop database test_db;
+disconnect conn_bug_privilege;
+connect (conn,$OBMYSQL_MS0,hrh,hrh,test,$OBMYSQL_PORT);
+connection conn;
+--echo ###### e_eventbody_privilege_hrh need write success
+SELECT CASE WHEN EXISTS(SELECT 1 FROM t1 WHERE id = 1) THEN 'success' ELSE 'failure' END AS privilege_check;
+--echo ###### e_eventbody_privilege_bug need write failure
+SELECT CASE WHEN EXISTS(SELECT 1 FROM t1 WHERE id = 2) THEN 'failure' ELSE 'success' END AS privilege_check;
+drop user test_bug_user@'%';
+delete from t1 where id > 0;
+
+--echo ############ bug 4, event db exec privilege 
+create database test_db;
+use test_db;
+--error 0,1396
+drop user test_bug_user@'%';
+--enable_warnings
+create user test_bug_user identified by 'test_bug_user';
+grant all on test_db.* to test_bug_user WITH GRANT OPTION;
+--source mysql_test/include/check_schema_sync.inc
+connect (conn_bug_privilege,$OBMYSQL_MS0,test_bug_user,test_bug_user,test_db,$OBMYSQL_PORT);
+disconnect conn;
+connection conn_bug_privilege;
+--error 0,1051
+drop table t_bug4;
+CREATE TABLE t_bug4 ( 
+  id int
+);
+create event e_eventbody_privilege_bug on schedule every 5 second do insert into test_db.t_bug4 values(1);
+let $wait_condition=
+  select count(*) = 1 from test_db.t_bug4 where id = 1 limit 1;
+--source mysql_test/include/wait_condition.inc
+select * from test_db.t_bug4 where id = 1 limit 1;
+drop database test_db;
+disconnect conn_bug_privilege;
+connect (conn,$OBMYSQL_MS0,hrh,hrh,test,$OBMYSQL_PORT);
+connection conn;
+drop user test_bug_user@'%';

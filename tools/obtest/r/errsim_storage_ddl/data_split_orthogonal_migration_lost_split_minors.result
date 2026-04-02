@@ -1,0 +1,63 @@
+ob1=OBI(cluster=1:1:2,proxy_num=0,init_unit_cpu=0);
+ob1.reboot;
+===============================================================
+====================     bootstrap   ==========================
+===============================================================
+ob1.mysql alter system set enable_rebalance = 'false';
+ob1.mysql alter system set default_compress_func = 'none';
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+===============================================================
+==================     create tenant   ========================
+===============================================================
+ob1.mysql CREATE RESOURCE UNIT unit_1 MAX_CPU = 2, MEMORY_SIZE = '4G', MAX_IOPS = 2048, LOG_DISK_SIZE = '10G';
+ob1.mysql CREATE RESOURCE POOL pool_1 UNIT = "unit_1", UNIT_NUM = 1, ZONE_LIST = ('z1', 'z2', 'z3');
+ob1.mysql CREATE TENANT $tenant_name resource_pool_list=('pool_1'), locality = "F@z1,F@z3", primary_zone = "z1" set ob_tcp_invited_nodes='%';
+ob1.mysql alter system set ob_compaction_schedule_interval = '10s' tenant sys;
+ob1.mysql alter system set ob_compaction_schedule_interval = '10s' tenant all_user;
+ob1.mysql alter system set ob_compaction_schedule_interval = '10s' tenant all_meta;
+===============================================================
+===================    create tables   ========================
+===============================================================
+ob1.mysql alter system set_tp tp_name = EN_SKIP_MDS_MINI_MERGE, error_code = 4016, frequency = 1;
+create sequence seq_pk_small INCREMENT BY 1 start with 1 minvalue 1 maxvalue 5000000 nocycle noorder nocache;
+create sequence seq_pk_large INCREMENT BY 1 start with 5001 minvalue 1 maxvalue 5000000 nocycle noorder nocache;
+create table test_with_migrate(c1 bigint, c2 bigint, c3 varchar(4096), c4 varchar(4096), c5 varchar(4096),  primary key(c1)) row_format = redundant, compression = 'none'
+partition by range(c1) (
+partition p0 values less than (1),
+partition p1 values less than (10000),
+partition p2 values less than MAXVALUE);
+insert /*+ query_timeout(100000000000) parallel(16) enable_parallel_dml */ into test_with_migrate
+select seq_pk_small.nextval, random(10), randstr(4096, random(10)), randstr(4096, random(10)), randstr(4096, random(10)) from table(generator(2000));
+insert /*+ query_timeout(100000000000) parallel(16) enable_parallel_dml */ into test_with_migrate
+select seq_pk_large.nextval, random(10), randstr(4096, random(10)), randstr(4096, random(10)), randstr(4096, random(10)) from table(generator(2000));
+alter system minor freeze tenant = 'migrate_rebuild_1005_2';
+===============================================================
+================== migrate z3 forward =========================
+===============================================================
+ob1.mysql alter system set errsim_migration_src_server_addr = "$cur";
+ob1.mysql alter system set_tp tp_name = EN_BLOCK_SPLIT_BEFORE_SSTABLES_SPLIT, error_code = 4192, frequency = 1;
+ob1.mysql set ob_global_debug_sync = 'BEFORE_MIGRATION_CREATE_TABLE_STORE wait_for signal3 execute 10000';
+alter table test_with_migrate reorganize partition p1 into ( partition p1_0 values less than (5000), partition p1_1 values less than (10000));
+ob1.check_until_timeout select count(*) > 0 from oceanbase.__all_rootservice_event_history where module like "%ddl scheduler%" and event like "%switch_state%" and extra_info like "%WAIT_COMPACTION_END%", 1, 600;
+ob1.mysql alter system set errsim_test_tablet_id = $errsim_tablet_id;
+insert /*+ query_timeout(100000000000) parallel(16) enable_parallel_dml */ into test_with_migrate
+select seq_pk_small.nextval, random(10), randstr(4096, random(10)), randstr(4096, random(10)), randstr(4096, random(10)) from table(generator(10));
+insert /*+ query_timeout(100000000000) parallel(16) enable_parallel_dml */ into test_with_migrate
+select seq_pk_large.nextval, random(10), randstr(4096, random(10)), randstr(4096, random(10)), randstr(4096, random(10)) from table(generator(10));
+alter system minor freeze tenant = 'migrate_rebuild_1005_2';
+ob1.check_until_timeout select count(*) > 0 from oceanbase.__all_virtual_table_mgr where tablet_id = $errsim_tablet_id and table_type in (11, 12) and svr_ip = '$cur_ip' and svr_port = '$cur_port', 1, 500;
+ob1.mysql alter system migrate unit $unit_id destination "$dst";
+ob1.check_until_timeout select count(*) > 0 from oceanbase.__all_server_event_history where module = 'storage_ha' and event = 'ls_ha_start' and value1 = '$tenant_id' and value2 = '1001' and extra_info = 'MIGRATE_LS_OP', 1, 600;
+ob1.check_until_timeout select count(*) > 0 from oceanbase.__all_server_event_history where module = 'storage_ha' and event = 'physical_copy_task' and value1 = '$tenant_id' and value2 = '1001' and value3 = $errsim_tablet_id, 1, 600;
+ob1.mysql alter system set_tp tp_name = EN_BLOCK_SPLIT_BEFORE_SSTABLES_SPLIT, error_code = 0, frequency = 1;
+select * from oceanbase.__all_server_event_history where module = 'ddl' and event = 'replica_split_resp' and svr_port = '8802' order by gmt_create desc limit 2;
+gmt_create	svr_ip	svr_port	module	event	name1	value1	name2	value2	name3	value3	name4	value4	name5	value5	name6	value6	extra_info
+ob1.mysql set ob_global_debug_sync = 'BEFORE_MIGRATION_CREATE_TABLE_STORE clear';
+ob1.mysql set ob_global_debug_sync = 'now broadcast signal3';
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_rootservice_job where unit_id = $unit_id AND job_type = "MIGRATE_UNIT" and job_status = "SUCCESS", 1, 600;
+ob1.check_until_timeout select count(1) from oceanbase.__all_virtual_ls_meta_table where tenant_id = $tenant_id and ls_id = 1001 and svr_ip = '$dst_ip' and svr_port = '$dst_port' and replica_status = 'NORMAL', 1, 100;
+ob1.check_until_timeout select count(1) as cnt from oceanbase.__all_virtual_ddl_task_status, 0, 600;
+ob1.mysql alter system major freeze tenant = '$tenant_name';
+ob1.check_until_timeout select (frozen_scn - last_scn) as result from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$tenant_id, 0, 600;
+select /*+ query_timeout(1000000000) */ * from oceanbase.CDB_OB_TABLET_CHECKSUM_ERROR_INFO;
+TENANT_ID	TABLET_ID

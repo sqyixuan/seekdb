@@ -1,0 +1,69 @@
+#owner: binifei.bnf
+#owner group: rootserver
+#tags: clear merge error for medium compaction
+
+connect (sys_conn,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,oceanbase,$OBMYSQL_PORT);
+connection sys_conn;
+alter system set enable_major_freeze = true;
+--disable_warnings
+drop table if exists test;
+--enable_warnings
+create table test(c1 int primary key, c2 int);
+insert into test values(0, 2);
+insert into test values(1, 2);
+insert into test values(2, 2);
+
+let $sys_tenant_id = query_get_value(select tenant_id from __all_tenant where tenant_name = 'sys', tenant_id, 1);
+
+############################################################
+connection sys_conn;
+# update __all_tablet_meta_table status column, set status = 1
+--disable_query_log
+set autocommit = 0;
+begin;
+eval update __all_tablet_meta_table set status = 1 where tenant_id = $sys_tenant_id and tablet_id = 1 and ls_id = 1;
+eval insert into __all_rootservice_event_history (module, event, name1, value1, name2, value2, name3, value3) values("daily_merge", "mysqltest_tablet_status_error", "tenant_id", "1", "tablet_id", "1", "ls_id", "1");
+commit;
+set autocommit = 1;
+--enable_query_log
+let $status = query_get_value(select status from __all_tablet_meta_table where tenant_id = $sys_tenant_id and tablet_id = 1 and ls_id = 1, status, 1);
+if ($status != 1)
+{
+    --echo update __all_tablet_meta_table status column failed
+}
+
+# ensure freeze_service_epoch has been updated before clear merge error,
+# since clear merge error need to check freeze_service_epoch.
+let $start_time = query_get_value(select now() as value, value, 1);
+let $__i__ = 100;
+while ($__i__ > 0)
+{
+    let $interval_second = query_get_value("select timestampdiff(second, '$start_time', now()) as value;", value, 1);
+    if ($interval_second <= 120)
+    {
+        let $value = query_get_value(select value from __all_service_epoch where name = 'freeze_service_epoch', value, 1);
+        if ($value >= 1)
+        {
+            let $__i__ = -5;
+        }
+    }
+    if ($interval_second > 120)
+    {
+        --echo check freeze_service_epoch timeout
+        let $__i__ = -3;
+    }
+}
+
+# clear merge error for sys
+# when observer restart, __all_service_epoch exists one old valid freeze_service_epoch. the
+# new freeze_service_epoch may has not been updated. in this case, freeze_service_epoch in memory
+# is equal to -1. give some time for ObMajorMergeScheduler to update the new freeze_service_epoch.
+sleep 20;
+alter system clear merge error tenant = sys;
+
+# check status is valid
+let $status = query_get_value(select status from __all_tablet_meta_table where tenant_id = $sys_tenant_id and tablet_id = 1 and ls_id = 1, status, 1);
+if ($status != 0)
+{
+    --echo clear merge error failed
+}

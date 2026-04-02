@@ -1,0 +1,621 @@
+#owner:zhenjiang.xzj
+#owner group: 技术部-存储-索引与DDL
+#description: 在KEY/HASH分区表中，根据创建不同数据类型及不同约束、索引的表去创建trigger，然后执行DDL【CREATE/DROP/ALTER】操作，最后执行trigger
+#author: wb-zc01081081
+
+--disable_warnings
+
+--disable_result_log
+
+purge recyclebin;
+let $char_charset = 'UTF8';
+
+--enable_result_log
+
+
+#创建数据库naaj_test
+CREATE DATABASE IF NOT EXISTS trigger_test;
+USE trigger_test;
+
+
+SET AUTOCOMMIT=0;
+
+
+--echo #mysql_trigger_ddl
+--echo #mysql_trigger_ddl-1
+--echo #mysql_trigger_ddl-1-1/mysql_trigger_ddl-1-3/mysql_trigger_ddl-1-4
+--echo #mysql_trigger_ddl-2
+--echo #mysql_trigger_ddl-2-1/mysql_trigger_ddl-2-2/mysql_trigger_ddl-2-3
+
+
+--echo #创建不同类型的分区表，使用不同约束索引条件，然后再创建不同触发类型的trigger，最后对表执行DDL操作后触发trigger
+
+
+#KEY分区
+
+
+DROP TABLE IF EXISTS t2;
+
+CREATE TABLE t2(c0 INT,
+                c1 VARCHAR(10),
+                c2 SET('a','b','c','d','e','f','g'),
+                c3 FLOAT,
+                c4 DATE)
+PARTITION BY HASH(c0)
+(PARTITION p1,
+ PARTITION p2,
+ PARTITION p3,
+ PARTITION p4
+);
+
+INSERT INTO t2 VALUES(0,'AA','a','0.123','2000-01-01'),
+                     (1,'BB','a','2.123','2001-11-11'),
+                     (3,'CC','b','3.123','2002-02-01'),
+                     (4,'DD','b','4.123','2003-03-11'),
+                     (5,'EE','c','5.123','2004-04-01'),
+                     (6,'FF','c','6.123','2005-05-11');
+
+
+DROP TABLE IF EXISTS t1;
+
+CREATE TABLE t1(c0 SMALLINT ZEROFILL PRIMARY KEY,
+                c1 CHAR(10),
+                c2 ENUM('a','b','c','d','e','f','g') NOT NULL DEFAULT 'a',
+                c3 DOUBLE,
+                c4 TIME,
+                CONSTRAINT uni_key UNIQUE KEY(c0,c2))
+PARTITION BY KEY(c0)
+(PARTITION r1,
+ PARTITION r2,
+ PARTITION r3,
+ PARTITION r4
+);
+
+INSERT INTO t1 VALUES(0,'AAA','a','10.123','20:01:01'),
+                     (1,'BBB','b','12.123','21:11:11'),
+                     (3,'CCC','c','13.123','22:22:01'),
+                     (4,'DDD','c','14.123','23:33:11'),
+                     (5,'EEE','c','15.123','19:44:01'),
+                     (6,'FFF','d','16.123','18:55:11');
+
+CREATE INDEX ind_1 ON t1(c3,c4);
+
+#创建INSERT/UPDATE/DELETE型触发器
+
+DROP TRIGGER IF EXISTS trg_insert;
+
+DELIMITER //;
+
+CREATE TRIGGER trg_insert BEFORE INSERT ON t2
+FOR EACH ROW
+BEGIN
+    DECLARE c INT;
+    SELECT MAX(c0) INTO c FROM t1;
+
+    IF NEW.c0 = c THEN
+        DELETE FROM t1 WHERE c0 = NEW.c0;
+    ELSE
+        INSERT INTO t1 VALUES(NEW.c0,CONCAT(NEW.c1,NEW.c1),NEW.c2,NEW.c3+NEW.c0,TIME(NEW.c4));
+    END IF;
+END;
+
+//
+
+
+DROP TRIGGER IF EXISTS trg_update;//
+
+
+CREATE TRIGGER trg_update BEFORE UPDATE ON t1
+FOR EACH ROW
+BEGIN
+    UPDATE t2 SET c0=NEW.c0,c1=CONCAT(NEW.c1,NEW.c1) WHERE c0=OLD.c0;
+END
+//
+
+
+DROP TRIGGER IF EXISTS trg_delete;//
+
+
+CREATE TRIGGER trg_delete AFTER DELETE ON t2
+FOR EACH ROW
+BEGIN
+    DELETE FROM t1 WHERE c0=OLD.c0+1;
+END;
+
+//
+
+DELIMITER ;//
+
+#创建索引
+CREATE INDEX ind_2 ON t1(c2);
+
+#修改引用表的索引
+alter system set _enable_drop_and_add_index = true;
+sleep 2;
+ALTER TABLE t1 DROP INDEX ind_1,ADD INDEX ind1(c1),RENAME INDEX ind_2 TO ind2;
+alter system set _enable_drop_and_add_index = false;
+sleep 2;
+
+#新增、删除约束
+alter system set _enable_drop_and_add_index = true;
+sleep 2;
+ALTER TABLE t1 ADD CONSTRAINT unk UNIQUE KEY(c0),DROP INDEX uni_key;
+alter system set _enable_drop_and_add_index = false;
+sleep 2;
+
+#修改并行度，block_size，自增值
+ALTER TABLE t1 SET PARALLEL=10,BLOCK_SIZE=20480,AUTO_INCREMENT=100;
+
+SHOW CREATE TABLE t1;
+
+SELECT /*+INDEX(ind1)*/ * FROM t1 WHERE c1='AAA';
+#EXPLAIN BASIC SELECT /*+INDEX(ind1)*/ * FROM t1 WHERE c1='AAA';
+
+--echo #此处执行OB报错，待开发修复后执行，问题链接：
+
+#INSERT INTO t2 VALUES(7,'GG','d',7.89,'2006-02-12');
+#SELECT * FROM t2 WHERE c0=7;
+#SELECT * FROM t1 WHERE c0=7;
+
+ROLLBACK;
+
+UPDATE t1 SET c0=16,c1='H',c2='a',c3='17.789',c4='06:00:00' WHERE c0=6;
+SELECT * FROM t2 WHERE c0=16;
+SELECT * FROM t1 WHERE c0=16;
+
+ROLLBACK;
+
+DELETE FROM t2 WHERE c0=3;
+SELECT * FROM t2 WHERE c0=3;
+SELECT * FROM t1 WHERE c0=4;
+
+ROLLBACK;
+
+
+#设置表级的字符集和字符序，以及表的备注信息
+
+--echo #暂不支持，待支持后执行sql
+
+--disable_parsing
+
+--echo #此处OB执行成功后，发现对enum类型列有影响，问题链接：
+
+ALTER TABLE t1 CONVERT TO CHARACTER SET 'utf16' COLLATE 'utf16_bin',SET COMMENT '修改表级字符集和字符序';
+SHOW CREATE TABLE t1;
+
+INSERT INTO t2 VALUES(7,'II','d',7.89,'2006-06-06');
+SELECT * FROM t2 WHERE c0=7;
+SELECT * FROM t1 WHERE c0=7;
+
+ROLLBACK;
+
+UPDATE t1 SET c0=10,c1='H',c2='a',c3='17.789',c4='06:00:00' WHERE c0=6;
+SELECT * FROM t2 WHERE c0=10;
+SELECT * FROM t1 WHERE c0=10;
+
+ROLLBACK;
+
+DELETE FROM t2 WHERE c0=0;
+SELECT * FROM t2 WHERE c0=0;
+SELECT * FROM t1 WHERE c0=1;
+
+ROLLBACK;
+
+--enable_parsing
+
+
+#删除索引，新增外键约束
+
+DROP INDEX ind2 ON t1;
+
+--error 01215
+ALTER TABLE t1 DROP INDEX ind1,ADD CONSTRAINT fk_c0_c0 FOREIGN KEY(c0) REFERENCES t2(c0);
+
+SHOW CREATE TABLE t1;
+
+
+INSERT INTO t2 VALUES(7,'II','d',7.89,'2006-06-06');
+SELECT * FROM t2 WHERE c0=7;
+SELECT * FROM t1 WHERE c0=7;
+
+ROLLBACK;
+
+UPDATE t1 SET c0=10,c1='H',c2='a',c3='17.789',c4='06:00:00' WHERE c0=6;
+SELECT * FROM t2 WHERE c0=10;
+SELECT * FROM t1 WHERE c0=10;
+
+ROLLBACK;
+
+DELETE FROM t2 WHERE c0=0;
+SELECT * FROM t2 WHERE c0=0;
+SELECT * FROM t1 WHERE c0=1;
+
+ROLLBACK;
+
+
+#普通表带有外键约束时，删除外键约束,MySQL中，不支持引用分区表的列创建外键约束，OB目前支持，bydesign。
+
+
+DROP TABLE IF EXISTS t2;
+CREATE TABLE t2(c0 SMALLINT ZEROFILL,c1 VARCHAR(10),CONSTRAINT fk_c0_c0 FOREIGN KEY(c0) REFERENCES t1(c0));
+INSERT INTO t2 VALUES(0,'a'),(1,'b'),(3,'b'),(4,'c'),(5,'c'),(6,'a');
+
+
+#创建INSERT/UPDATE/DELETE型触发器
+
+DROP TRIGGER IF EXISTS trg_insert;
+
+DELIMITER //;
+
+CREATE TRIGGER trg_insert BEFORE INSERT ON t2
+FOR EACH ROW
+BEGIN
+    DECLARE c INT;
+    SELECT MAX(c0) INTO c FROM t1;
+
+    IF NEW.c0 = c THEN
+        DELETE FROM t1 WHERE c0 = NEW.c0;
+    ELSE
+        INSERT INTO t1 VALUES(NEW.c0,CONCAT(NEW.c1,NEW.c1),NEW.c1,2*NEW.c0,'00:00:00');
+    END IF;
+END;
+
+//
+
+
+DROP TRIGGER IF EXISTS trg_update;//
+
+
+CREATE TRIGGER trg_update BEFORE UPDATE ON t1
+FOR EACH ROW
+BEGIN
+    UPDATE t2 SET c0=NEW.c0,c1=CONCAT(NEW.c1,NEW.c1) WHERE c0=OLD.c0;
+END
+//
+
+
+DROP TRIGGER IF EXISTS trg_delete;//
+
+
+CREATE TRIGGER trg_delete AFTER DELETE ON t2
+FOR EACH ROW
+BEGIN
+    DELETE FROM t1 WHERE c0=OLD.c0+1;
+END;
+
+//
+
+DELIMITER ;//
+
+
+alter system set _enable_drop_and_add_index = true;
+sleep 2;
+ALTER TABLE t1 DROP INDEX unk,ADD CONSTRAINT uni UNIQUE KEY(c0,c2);
+alter system set _enable_drop_and_add_index = false;
+sleep 2;
+SHOW CREATE TABLE t1;
+
+
+INSERT INTO t2 VALUES(7,'d');
+SELECT * FROM t2 WHERE c0=7;
+SELECT * FROM t1 WHERE c0=7;
+
+ROLLBACK;
+
+--error 01452
+UPDATE t1 SET c0=10,c1='H',c2='a',c3='17.789',c4='06:00:00' WHERE c0=6;
+
+SELECT * FROM t2 WHERE c0=10;
+SELECT * FROM t1 WHERE c0=10;
+
+ROLLBACK;
+
+--error 01451
+DELETE FROM t2 WHERE c0=0;
+SELECT * FROM t2 WHERE c0=0;
+SELECT * FROM t1 WHERE c0=1;
+
+
+#修改表名
+
+
+DROP TABLE IF EXISTS test1;
+ALTER TABLE t1 RENAME test1;
+SHOW TABLES;
+SELECT test1.c0,test1.c1 FROM test1 ORDER BY 1;
+
+--error 01146
+INSERT INTO t2 VALUES(0,'a');
+--error 01452
+UPDATE test1 SET c0=20,c1='b' WHERE c0=3;
+--error 01146
+DELETE FROM t2 WHERE c0=3;
+
+
+#创建trigger后对分区进行操作
+
+
+DROP TABLE IF EXISTS t2;
+
+CREATE TABLE t2(c0 INT,
+                c1 VARCHAR(10),
+                c2 SET('a','b','c','d','e','f','g'),
+                c3 FLOAT,
+                c4 DATE)
+PARTITION BY HASH(c0)
+(PARTITION p1,
+ PARTITION p2,
+ PARTITION p3,
+ PARTITION p4
+);
+
+INSERT INTO t2 VALUES(0,'AA','a','0.123','2000-01-01'),
+                     (1,'BB','a','2.123','2001-11-11'),
+                     (3,'CC','b','3.123','2002-02-01'),
+                     (4,'DD','b','4.123','2003-03-11'),
+                     (5,'EE','c','5.123','2004-04-01'),
+                     (6,'FF','c','6.123','2005-05-11');
+
+
+DROP TABLE IF EXISTS t1;
+
+CREATE TABLE t1(c0 SMALLINT ZEROFILL PRIMARY KEY,
+                c1 CHAR(10),
+                c2 ENUM('a','b','c','d','e','f','g') NOT NULL DEFAULT 'a',
+                c3 DOUBLE,
+                c4 TIME,
+                CONSTRAINT uni_key UNIQUE KEY(c0,c2))
+PARTITION BY KEY(c0)
+(PARTITION r1,
+ PARTITION r2,
+ PARTITION r3,
+ PARTITION r4
+);
+
+INSERT INTO t1 VALUES(0,'AAA','a','10.123','20:01:01'),
+                     (1,'BBB','b','12.123','21:11:11'),
+                     (3,'CCC','c','13.123','22:22:01'),
+                     (4,'DDD','c','14.123','23:33:11'),
+                     (5,'EEE','c','15.123','19:44:01'),
+                     (6,'FFF','d','16.123','18:55:11');
+
+CREATE INDEX ind_1 ON t1(c3,c4);
+
+
+#创建INSERT/UPDATE/DELETE型触发器
+
+DROP TRIGGER IF EXISTS trg_insert;
+
+DELIMITER //;
+
+CREATE TRIGGER trg_insert AFTER INSERT ON t2
+FOR EACH ROW
+BEGIN
+    DECLARE c INT;
+    SELECT MAX(c0) INTO c FROM t1;
+
+    IF NEW.c0 = c THEN
+        DELETE FROM t1 WHERE c0 = NEW.c0;
+    ELSE
+        INSERT INTO t1 VALUES(NEW.c0,CONCAT(NEW.c1,NEW.c1),NEW.c2,NEW.c3+NEW.c0,TIME(NEW.c4));
+    END IF;
+END;
+
+//
+
+
+DROP TRIGGER IF EXISTS trg_update;//
+
+
+CREATE TRIGGER trg_update AFTER UPDATE ON t1
+FOR EACH ROW
+BEGIN
+    UPDATE t2 SET c0=NEW.c0,c1=CONCAT(NEW.c1,NEW.c1) WHERE c0=OLD.c0;
+END
+//
+
+
+DROP TRIGGER IF EXISTS trg_delete;//
+
+
+CREATE TRIGGER trg_delete BEFORE DELETE ON t2
+FOR EACH ROW
+BEGIN
+    DELETE FROM t1 WHERE c0=OLD.c0+1;
+END;
+
+//
+
+DELIMITER ;//
+
+#新增分区并删除其他分区
+
+--error 01235
+ALTER TABLE t1 TRUNCATE PARTITION r2;
+--error 01064
+ALTER TABLE t1 ADD PARTITION (PARTITION r5);
+--error 01235
+ALTER TABLE t1  DROP PARTITION r4;
+
+SHOW CREATE TABLE t1;
+
+--error 01235
+ALTER TABLE t2 TRUNCATE PARTITION p4;
+--error 01064
+ALTER TABLE t2 ADD PARTITION (PARTITION p5);
+--error 01235
+ALTER TABLE t2  DROP PARTITION p3;
+
+SHOW CREATE TABLE t2;
+
+
+
+--echo #创建不同类型的分区表，使用不同约束索引条件，然后再创建不同触发类型的trigger，最后对表中的列执行DDL操作后触发trigger
+
+
+
+DROP TABLE IF EXISTS t2;
+
+CREATE TABLE t2(c0 INT,
+                c1 VARCHAR(10),
+                c2 SET('a','b','c','d','e','f','g'),
+                c3 FLOAT,
+                c4 DATE,
+                c5 YEAR DEFAULT '2000',
+                c6 TEXT ,
+                c7 VARBINARY(10) DEFAULT 'TEST')
+PARTITION BY HASH(c0)
+(PARTITION p1,
+ PARTITION p2,
+ PARTITION p3,
+ PARTITION p4
+);
+
+INSERT INTO t2 VALUES(0,'AA','a',0.123,'2000-01-01','2000','TEST1','TEST1'),
+                     (1,'BB','a',2.123,'2001-11-11','2001','TEST2','TEST2'),
+                     (3,'CC','b',3.123,'2002-02-01','2002','TEST3','TEST3'),
+                     (4,'DD','b',4.123,'2003-03-11','2003','TEST4','TEST4'),
+                     (5,'EE','c',5.123,'2004-04-01','2004','TEST5','TEST5'),
+                     (6,'FF','c',6.123,'2005-05-11','2005','TEST6','TEST6');
+
+
+DROP TABLE IF EXISTS t1;
+
+CREATE TABLE t1(c0 SMALLINT ZEROFILL PRIMARY KEY,
+                c1 CHAR(10),
+                c2 ENUM('a','b','c','d','e','f','g') NOT NULL DEFAULT 'a',
+                c3 DOUBLE,
+                c4 TIME,
+                c5 INT DEFAULT 0,
+                c6 BLOB,
+                c7 BINARY(10) DEFAULT 'test',
+                CONSTRAINT uni_key UNIQUE KEY(c0,c2))
+PARTITION BY KEY(c0)
+(PARTITION r1,
+ PARTITION r2,
+ PARTITION r3,
+ PARTITION r4
+);
+
+INSERT INTO t1 VALUES(0,'AAA','a',10.123,'20:01:01',2000,'TEST1','TEST1'),
+                     (1,'BBB','b',12.123,'21:11:11',2001,'TEST2','TEST2'),
+                     (2,'CCC','c',13.123,'22:22:01',2002,'TEST3','TEST3'),
+                     (3,'DDD','c',14.123,'23:33:11',2003,'TEST4','TEST4'),
+                     (4,'EEE','c',15.123,'19:44:01',2004,'TEST5','TEST5'),
+                     (5,'FFF','d',16.123,'18:55:11',2005,'TEST6','TEST6'),
+                     (6,'EEE','d',16.123,'17:05:17',2006,'TEST7','TEST7');
+
+CREATE INDEX ind_1 ON t1(c3,c4);
+
+
+#创建INSERT/UPDATE/DELETE型触发器
+
+DROP TRIGGER IF EXISTS trg_insert;
+
+DELIMITER //;
+
+CREATE TRIGGER trg_insert BEFORE INSERT ON t1
+FOR EACH ROW
+BEGIN
+    DECLARE c INT;
+    SELECT MAX(c0) INTO c FROM t2;
+
+    IF NEW.c0 = c THEN
+        DELETE FROM t2 WHERE c0 = NEW.c0;
+    ELSE
+        INSERT INTO t2(c0,c1,c2,c3,c4) VALUES(NEW.c0,CONCAT(NEW.c1,NEW.c1),NEW.c2,NEW.c3+NEW.c0,DATE(NEW.c4));
+    END IF;
+END;
+
+//
+
+
+DROP TRIGGER IF EXISTS trg_update;//
+
+
+CREATE TRIGGER trg_update BEFORE UPDATE ON t2
+FOR EACH ROW
+BEGIN
+    UPDATE t1 SET c0=NEW.c0,c1=CONCAT(NEW.c1,NEW.c1) WHERE c0=OLD.c0;
+END
+//
+
+
+DROP TRIGGER IF EXISTS trg_delete;//
+
+
+CREATE TRIGGER trg_delete BEFORE DELETE ON t2
+FOR EACH ROW
+BEGIN
+    DELETE FROM t1 WHERE c0=OLD.c0+1;
+END;
+
+//
+
+DELIMITER ;//
+
+--echo #添加列、删除列、修改列
+
+--echo #暂不支持，待支持后执行sql
+
+--disable_parsing
+
+ALTER TABLE t1 ADD c8 INT(5) ZEROFILL NOT NULL DEFAULT 0 COMMENT'新增列' AFTER c0,DROP c7,MODIFY c1 VARCHAR(5) NOT NULL COMMENT'修改列' AFTER c2,CHANGE c6 m6 BLOB COMMENT'重命名列';
+SHOW CREATE TABLE t1;
+
+#问题同上，待开发修复后执行sql
+#INSERT INTO t1(c0,c1,c2,c3,c4,c5,m6,c8) VALUES(7,'EEE','e',17.123,'16:06:16',2007,'TEST8',0);
+#SELECT * FROM t2 WHERE c0=7;
+#SELECT * FROM t1 WHERE c0=7;
+
+#ROLLBACK;
+
+UPDATE t2 SET c0=8,c1='E',c3=17.654 WHERE c0=6;
+SELECT * FROM t1 WHERE c0=8;
+SELECT * FROM t2 WHERE c0=8;
+
+ROLLBACK;
+
+DELETE FROM t2 WHERE c0=4;
+SELECT * FROM t1 WHERE c0=5;
+SELECT * FROM t2 WHERE c0=4;
+
+ROLLBACK;
+
+ALTER TABLE t2 MODIFY c0 BIGINT PRIMARY KEY AUTO_INCREMENT AFTER c1,CHANGE c1 c1 VARCHAR(10) CHARACTER SET 'binary' COLLATE 'binary' NOT NULL DEFAULT 'TEST' ;
+SHOW CREATE TABLE t2;
+
+
+#问题同上，待开发修复后执行sql
+#INSERT INTO t1(c0,c1,c2,c3,c4,c5,m6,c8) VALUES(7,'EEE','e',17.123,'16:06:16',2007,'TEST8',0);
+#SELECT * FROM t2 WHERE c0=7;
+#SELECT * FROM t1 WHERE c0=7;
+
+#ROLLBACK;
+
+UPDATE t2 SET c0=8,c1='E',c3=17.654 WHERE c0=6;
+SELECT * FROM t1 WHERE c0=8;
+SELECT * FROM t2 WHERE c0=8;
+
+ROLLBACK;
+
+DELETE FROM t2 WHERE c0=4;
+SELECT * FROM t1 WHERE c0=5;
+SELECT * FROM t2 WHERE c0=4;
+
+ROLLBACK;
+
+
+--enable_parsing
+
+DROP TABLE IF EXISTS test1;
+DROP TABLE IF EXISTS t2;
+DROP TABLE IF EXISTS t1;
+
+SET AUTOCOMMIT=1;
+
+--enable_warnings
+
+
+--echo  #########Empty recycle bin, delete test database, tables, etc##########
+purge recyclebin;

@@ -1,0 +1,94 @@
+#owner:zhuhuashi.zhs
+#owner group: sql1
+# tags: optimizer, global_index
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+
+--result_format 4
+--enable_info
+--enable_sorted_result
+
+--disable_warnings
+drop table if exists das_result_mgr_t1;
+drop table if exists das_result_mgr_t2;
+drop table if exists das_result_mgr_t3;
+--enable_warnings
+
+create table das_result_mgr_t1(a int primary key, b int, c int) partition by hash(a) partitions 4;
+create index das_result_mgr_idx1 on das_result_mgr_t1(b) partition by hash(b) partitions 4;
+--disable_info
+--disable_query_log
+--let $count = 1
+while($count <= 1000)
+{
+  --let $stmt=insert into das_result_mgr_t1(a, b, c) values ($count, $count, $count)
+  eval $stmt;
+  inc $count;
+}
+--enable_query_log
+
+create table das_result_mgr_t2(a int primary key, b int, c int) partition by hash(a) partitions 4;
+create index das_result_mgr_idx2 on das_result_mgr_t2(b) partition by hash(b) partitions 4;
+--disable_info
+--disable_query_log
+--let $count = 1
+while($count <= 1000)
+{
+  --let $stmt=insert into das_result_mgr_t2(a, b, c) values ($count, $count, $count)
+  eval $stmt;
+  inc $count;
+}
+--enable_query_log
+
+create table das_result_mgr_t3(a int primary key, b int, c int, d int) partition by hash(a) partitions 2;
+create index das_result_mgr_idx3 on das_result_mgr_t3(b, c) global;
+--disable_info
+--disable_query_log
+--let $count = 1
+while($count <= 10)
+{
+  --let $stmt=insert into das_result_mgr_t3(a, b, c, d) values ($count, $count, $count, $count)
+  eval $stmt;
+  inc $count;
+}
+--enable_query_log
+
+--explain_protocol 2
+
+connect (conn_admin, $OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection conn_admin;
+# insert a trace event to throw an error that das result buffer overflow,
+# test send remaining result through das result fetch RPC
+alter system set_tp tp_no = 301, error_code = 1, frequency = 1;
+sleep 5;
+connection default;
+select /*+index(das_result_mgr_t1 das_result_mgr_idx1)*/ * from das_result_mgr_t1 limit 1;
+
+select /*+index(das_result_mgr_t1 das_result_mgr_idx1)*/ * from das_result_mgr_t1 where b = 1;
+
+select
+    /*+index(das_result_mgr_t1 das_result_mgr_idx1), index(das_result_mgr_t2, das_result_mgr_idx2)*/ *
+from das_result_mgr_t1 join das_result_mgr_t2
+where das_result_mgr_t1.b = das_result_mgr_t2.b
+limit 10;
+
+# 
+connection conn_admin;
+alter system set _rowsets_max_rows=2 tenant=sys;
+alter system set _rowsets_max_rows=2 tenant=all_user;
+alter system set _rowsets_max_rows=2 tenant=all_meta;
+sleep 5;
+connection default;
+select /*+index(das_result_mgr_t3 das_result_mgr_idx3)*/ a, b, c from das_result_mgr_t3 where c>0 and c<6;
+
+connection conn_admin;
+alter system set_tp tp_no = 301, error_code = 0, frequency = 0;
+alter system set _rowsets_max_rows=256 tenant=sys;
+alter system set _rowsets_max_rows=256 tenant=all_user;
+alter system set _rowsets_max_rows=256 tenant=all_meta;
+connection default;
+
+drop table das_result_mgr_t1;
+drop table das_result_mgr_t2;
+drop table das_result_mgr_t3;

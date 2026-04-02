@@ -1,0 +1,12 @@
+connection default;
+show grants for lock_priv;
+select user, lock_tables_priv from mysql.user where user = 'lock_priv';
+select * from information_schema.USER_PRIVILEGES where PRIVILEGE_TYPE = "LOCK TABLES" and GRANTEE = '\'lock_priv\'@\'%\'';
+select * from information_schema.SCHEMA_PRIVILEGES where PRIVILEGE_TYPE = "LOCK TABLES" and GRANTEE = '\'lock_priv\'@\'%\'';
+select * from information_schema.TABLE_PRIVILEGES where PRIVILEGE_TYPE = "LOCK TABLES"  and GRANTEE = '\'lock_priv\'@\'%\'';
+select USER_NAME, PRIV_LOCK_TABLE from oceanbase.DBA_OB_USERS where USER_NAME = 'lock_priv';
+select USERNAME, DATABASE_NAME, PRIV_LOCK_TABLE from oceanbase.DBA_OB_DATABASE_PRIVILEGE where USERNAME = 'lock_priv';
+connection sys;
+select USER_NAME, PRIV_LOCK_TABLE from oceanbase.CDB_OB_USERS where USER_NAME = 'lock_priv';
+select USERNAME, DATABASE_NAME, PRIV_LOCK_TABLE from oceanbase.CDB_OB_DATABASE_PRIVILEGE where USERNAME = 'lock_priv';
+connection default;

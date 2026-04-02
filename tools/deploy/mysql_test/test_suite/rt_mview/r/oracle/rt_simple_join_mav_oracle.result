@@ -1,0 +1,822 @@
+result_format: 4
+set ob_query_timeout = 100000000;
+
+drop materialized view log on t1;
+drop table t1;
+drop table t2;
+drop view t1_v1;
+drop view t1_v2;
+drop materialized view t1_rt_mv1;
+drop materialized view t1_rt_mv2;
+drop sequence seq1;
+create sequence seq1;
+create table t1(c1 int primary key default seq1.nextval, c2 int, c3 int, c4 int, c5 int);
+create index idx_t1_c2 on t1(c2);
+create index idx_t1_c3 on t1(c3);
+create index idx_t1_c4 on t1(c4);
+create table t2(c1 int primary key, c2 int, c3 int, c4 int, c5 int);
+insert into t1(c2, c3, c4) values(1,1,1);
+create materialized view log on t1 with primary key, rowid, sequence (c2, c3, c4) including new values;
+
+create materialized view t1_rt_mv1
+refresh fast on demand
+enable on query computation
+disable query rewrite
+as
+select a.c4 as group_col, count(*) cnt from t1 a, t1 b where a.c2 = b.c3 group by a.c4;
+
+create or replace view t1_v1 
+as
+select a.c4 as group_col, count(*) cnt from t1 a, t1 b where a.c2 = b.c3 group by a.c4;
+
+create or replace view res_com1
+as
+with mv as (select /*+materialize*/ * from t1_rt_mv1),
+     v as (select /*+materialize*/ * from t1_v1)
+select 2 * (select count(*) from (select * from v union select * from mv))
+       -  (select count(*) from (select * from v union all select * from mv)) as expect_0
+from dual;
+
+create materialized view t1_rt_mv2
+refresh fast on demand
+enable on query computation
+disable query rewrite
+as
+select a.c3 a_c3, b.c2 b_c2,
+       count(*) cnt,
+       count(e.c4) cnt_e_c4,
+       sum(e.c4) sum_e_c4,
+       count(c.c3) cnt_c_c3,
+       sum(c.c3) sum_c_c3,
+       avg(e.c4) avg_e_c4,
+       sum(c.c3) * avg(e.c4) calc_1
+from t1 a, t1 b, t1 c, t1 d, t1 e
+where a.c2 = b.c3 and b.c2 = c.c4 and c.c2 = d.c3 and d.c4 = e.c2
+group by a.c3, b.c2
+;
+
+create or replace view t1_v2 as
+select a.c3 a_c3, b.c2 b_c2,
+       count(*) cnt,
+       count(e.c4) cnt_e_c4,
+       sum(e.c4) sum_e_c4,
+       count(c.c3) cnt_c_c3,
+       sum(c.c3) sum_c_c3,
+       avg(e.c4) avg_e_c4,
+       sum(c.c3) * avg(e.c4) calc_1
+from t1 a, t1 b, t1 c, t1 d, t1 e
+where a.c2 = b.c3 and b.c2 = c.c4 and c.c2 = d.c3 and d.c4 = e.c2
+group by a.c3, b.c2
+;
+
+create or replace view res_com2
+as
+with mv as (select /*+materialize*/ * from t1_rt_mv2),
+     v as (select /*+materialize*/ * from t1_v2)
+select 2 * (select count(*) from (select * from v union select * from mv))
+       -  (select count(*) from (select * from v union all select * from mv)) as expect_0
+from dual;
+
+explain basic select * from t1_rt_mv1;
+Query Plan
+====================================================
+|ID|OPERATOR                         |NAME         |
+----------------------------------------------------
+|0 |HASH GROUP BY                    |             |
+|1 |└─SUBPLAN SCAN                   |INNER_RT_MV$$|
+|2 |  └─UNION ALL                    |             |
+|3 |    ├─TABLE FULL SCAN            |T1_RT_MV1    |
+|4 |    ├─HASH GROUP BY              |             |
+|5 |    │ └─HASH JOIN                |             |
+|6 |    │   ├─SUBPLAN SCAN           |PRE_B        |
+|7 |    │   │ └─UNION ALL            |             |
+|8 |    │   │   ├─MERGE ANTI JOIN    |             |
+|9 |    │   │   │ ├─TABLE FULL SCAN  |B            |
+|10|    │   │   │ └─SUBPLAN SCAN     |VIEW2        |
+|11|    │   │   │   └─TABLE FULL SCAN|MLOG$_T1     |
+|12|    │   │   └─SUBPLAN SCAN       |DLT_T$$      |
+|13|    │   │     └─WINDOW FUNCTION  |             |
+|14|    │   │       └─TABLE FULL SCAN|MLOG$_T1     |
+|15|    │   └─SUBPLAN SCAN           |DLT_A        |
+|16|    │     └─TABLE FULL SCAN      |MLOG$_T1     |
+|17|    └─HASH GROUP BY              |             |
+|18|      └─HASH JOIN                |             |
+|19|        ├─SUBPLAN SCAN           |DLT_B        |
+|20|        │ └─TABLE FULL SCAN      |MLOG$_T1     |
+|21|        └─TABLE FULL SCAN        |A            |
+====================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INNER_RT_MV$$.GROUP_COL], [cast(T_FUN_SUM(INNER_RT_MV$$.CNT), NUMBER(38, 0))]), filter([T_FUN_SUM(INNER_RT_MV$$.CNT) > 0]), rowset=16
+      group([INNER_RT_MV$$.GROUP_COL]), agg_func([T_FUN_SUM(INNER_RT_MV$$.CNT)])
+  1 - output([INNER_RT_MV$$.GROUP_COL], [INNER_RT_MV$$.CNT]), filter(nil), rowset=16
+      access([INNER_RT_MV$$.GROUP_COL], [INNER_RT_MV$$.CNT])
+  2 - output([UNION([1])], [UNION([2])]), filter(nil), rowset=16
+  3 - output([T1_RT_MV1.GROUP_COL], [T1_RT_MV1.CNT]), filter(nil), rowset=16
+      access([T1_RT_MV1.GROUP_COL], [T1_RT_MV1.CNT]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([T1_RT_MV1.__pk_increment]), range(MIN ; MAX)always true
+  4 - output([DLT_A.C4], [T_FUN_SUM(DLT_A.DMLFACTOR$$)]), filter(nil), rowset=16
+      group([DLT_A.C4]), agg_func([T_FUN_SUM(DLT_A.DMLFACTOR$$)])
+  5 - output([DLT_A.C4], [DLT_A.DMLFACTOR$$]), filter(nil), rowset=16
+      equal_conds([DLT_A.C2 = PRE_B.C3]), other_conds(nil)
+  6 - output([PRE_B.C3]), filter(nil), rowset=16
+      access([PRE_B.C3])
+  7 - output([UNION([1])]), filter(nil), rowset=16
+  8 - output([B.C3]), filter(nil), rowset=16
+      equal_conds([VIEW2.MLOG$_T1.C1 = B.C1]), other_conds(nil)
+      merge_directions([ASC])
+  9 - output([B.C1], [B.C3]), filter(nil), rowset=16
+      access([B.C1], [B.C3]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([B.C1]), range(MIN ; MAX)always true
+ 10 - output([VIEW2.MLOG$_T1.C1]), filter(nil), rowset=16
+      access([VIEW2.MLOG$_T1.C1])
+ 11 - output([MLOG$_T1.C1]), filter([cast(ORA_ROWSCN, NUMBER(-1, -1)) > last_refresh_scn(xxxxxx)]), rowset=16
+      access([MLOG$_T1.C1], [ORA_ROWSCN]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([MLOG$_T1.C1], [MLOG$_T1.SEQUENCE$$]), range(MIN,MIN ; MAX,MAX)always true
+ 12 - output([DLT_T$$.C3]), filter([DLT_T$$.OLD_NEW$$ = cast('O', VARCHAR2(1048576 ))], [DLT_T$$.SEQUENCE$$ = DLT_T$$.MINSEQ$$]), rowset=16
+      access([DLT_T$$.OLD_NEW$$], [DLT_T$$.SEQUENCE$$], [DLT_T$$.MINSEQ$$], [DLT_T$$.C3])
+ 13 - output([MLOG$_T1.OLD_NEW$$], [MLOG$_T1.SEQUENCE$$], [T_FUN_MIN(MLOG$_T1.SEQUENCE$$)], [MLOG$_T1.C3]), filter(nil), rowset=16
+      win_expr(T_FUN_MIN(MLOG$_T1.SEQUENCE$$)), partition_by([MLOG$_T1.C1]), order_by(nil), window_type(RANGE), upper(UNBOUNDED PRECEDING), lower(UNBOUNDED 
+      FOLLOWING)
+ 14 - output([MLOG$_T1.C1], [MLOG$_T1.SEQUENCE$$], [MLOG$_T1.OLD_NEW$$], [MLOG$_T1.C3]), filter([cast(ORA_ROWSCN, NUMBER(-1, -1)) > last_refresh_scn(xxxxxx)]), rowset=16
+      access([MLOG$_T1.C1], [MLOG$_T1.SEQUENCE$$], [MLOG$_T1.OLD_NEW$$], [MLOG$_T1.C3], [ORA_ROWSCN]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([MLOG$_T1.C1], [MLOG$_T1.SEQUENCE$$]), range(MIN,MIN ; MAX,MAX)always true
+ 15 - output([DLT_A.DMLFACTOR$$], [DLT_A.C2], [DLT_A.C4]), filter(nil), rowset=16
+      access([DLT_A.DMLFACTOR$$], [DLT_A.C2], [DLT_A.C4])
+ 16 - output([CASE WHEN MLOG$_T1.OLD_NEW$$ = cast('N', VARCHAR2(1048576 )) THEN 1 ELSE (T_OP_NEG, 1) END], [MLOG$_T1.C2], [MLOG$_T1.C4]), filter([cast(ORA_ROWSCN,
+       NUMBER(-1, -1)) > last_refresh_scn(xxxxxx)]), rowset=16
+      access([MLOG$_T1.OLD_NEW$$], [MLOG$_T1.C2], [MLOG$_T1.C4], [ORA_ROWSCN]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([MLOG$_T1.C1], [MLOG$_T1.SEQUENCE$$]), range(MIN,MIN ; MAX,MAX)always true
+ 17 - output([A.C4], [T_FUN_SUM(DLT_B.DMLFACTOR$$)]), filter(nil), rowset=16
+      group([A.C4]), agg_func([T_FUN_SUM(DLT_B.DMLFACTOR$$)])
+ 18 - output([A.C4], [DLT_B.DMLFACTOR$$]), filter(nil), rowset=16
+      equal_conds([A.C2 = DLT_B.C3]), other_conds(nil)
+ 19 - output([DLT_B.DMLFACTOR$$], [DLT_B.C3]), filter(nil), rowset=16
+      access([DLT_B.DMLFACTOR$$], [DLT_B.C3])
+ 20 - output([CASE WHEN MLOG$_T1.OLD_NEW$$ = cast('N', VARCHAR2(1048576 )) THEN 1 ELSE (T_OP_NEG, 1) END], [MLOG$_T1.C3]), filter([cast(ORA_ROWSCN, NUMBER(-1,
+       -1)) > last_refresh_scn(xxxxxx)]), rowset=16
+      access([MLOG$_T1.OLD_NEW$$], [MLOG$_T1.C3], [ORA_ROWSCN]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([MLOG$_T1.C1], [MLOG$_T1.SEQUENCE$$]), range(MIN,MIN ; MAX,MAX)always true
+ 21 - output([A.C2], [A.C4]), filter(nil), rowset=16
+      access([A.C2], [A.C4]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([A.C1]), range(MIN ; MAX)always true
+explain basic select * from t1_rt_mv2;
+Query Plan
+=============================================================
+|ID |OPERATOR                                 |NAME         |
+-------------------------------------------------------------
+|0  |HASH GROUP BY                            |             |
+|1  |└─SUBPLAN SCAN                           |INNER_RT_MV$$|
+|2  |  └─UNION ALL                            |             |
+|3  |    ├─TABLE FULL SCAN                    |T1_RT_MV2    |
+|4  |    ├─HASH GROUP BY                      |             |
+|5  |    │ └─HASH JOIN                        |             |
+|6  |    │   ├─HASH JOIN                      |             |
+|7  |    │   │ ├─HASH JOIN                    |             |
+|8  |    │   │ │ ├─HASH JOIN                  |             |
+|9  |    │   │ │ │ ├─SUBPLAN SCAN             |PRE_D        |
+|10 |    │   │ │ │ │ └─UNION ALL              |             |
+|11 |    │   │ │ │ │   ├─HASH RIGHT ANTI JOIN |             |
+|12 |    │   │ │ │ │   │ ├─SUBPLAN SCAN       |VIEW4        |
+|13 |    │   │ │ │ │   │ │ └─TABLE FULL SCAN  |MLOG$_T1     |
+|14 |    │   │ │ │ │   │ └─TABLE FULL SCAN    |D            |
+|15 |    │   │ │ │ │   └─SUBPLAN SCAN         |DLT_T$$      |
+|16 |    │   │ │ │ │     └─WINDOW FUNCTION    |             |
+|17 |    │   │ │ │ │       └─TABLE FULL SCAN  |MLOG$_T1     |
+|18 |    │   │ │ │ └─SUBPLAN SCAN             |PRE_E        |
+|19 |    │   │ │ │   └─UNION ALL              |             |
+|20 |    │   │ │ │     ├─HASH RIGHT ANTI JOIN |             |
+|21 |    │   │ │ │     │ ├─SUBPLAN SCAN       |VIEW5        |
+|22 |    │   │ │ │     │ │ └─TABLE FULL SCAN  |MLOG$_T1     |
+|23 |    │   │ │ │     │ └─TABLE FULL SCAN    |E            |
+|24 |    │   │ │ │     └─SUBPLAN SCAN         |DLT_T$$      |
+|25 |    │   │ │ │       └─WINDOW FUNCTION    |             |
+|26 |    │   │ │ │         └─TABLE FULL SCAN  |MLOG$_T1     |
+|27 |    │   │ │ └─SUBPLAN SCAN               |PRE_C        |
+|28 |    │   │ │   └─UNION ALL                |             |
+|29 |    │   │ │     ├─HASH RIGHT ANTI JOIN   |             |
+|30 |    │   │ │     │ ├─SUBPLAN SCAN         |VIEW3        |
+|31 |    │   │ │     │ │ └─TABLE FULL SCAN    |MLOG$_T1     |
+|32 |    │   │ │     │ └─TABLE FULL SCAN      |C            |
+|33 |    │   │ │     └─SUBPLAN SCAN           |DLT_T$$      |
+|34 |    │   │ │       └─WINDOW FUNCTION      |             |
+|35 |    │   │ │         └─TABLE FULL SCAN    |MLOG$_T1     |
+|36 |    │   │ └─SUBPLAN SCAN                 |PRE_B        |
+|37 |    │   │   └─UNION ALL                  |             |
+|38 |    │   │     ├─HASH RIGHT ANTI JOIN     |             |
+|39 |    │   │     │ ├─SUBPLAN SCAN           |VIEW2        |
+|40 |    │   │     │ │ └─TABLE FULL SCAN      |MLOG$_T1     |
+|41 |    │   │     │ └─TABLE FULL SCAN        |B            |
+|42 |    │   │     └─SUBPLAN SCAN             |DLT_T$$      |
+|43 |    │   │       └─WINDOW FUNCTION        |             |
+|44 |    │   │         └─TABLE FULL SCAN      |MLOG$_T1     |
+|45 |    │   └─SUBPLAN SCAN                   |DLT_A        |
+|46 |    │     └─TABLE FULL SCAN              |MLOG$_T1     |
+|47 |    ├─HASH GROUP BY                      |             |
+|48 |    │ └─HASH JOIN                        |             |
+|49 |    │   ├─HASH JOIN                      |             |
+|50 |    │   │ ├─HASH JOIN                    |             |
+|51 |    │   │ │ ├─HASH JOIN                  |             |
+|52 |    │   │ │ │ ├─SUBPLAN SCAN             |PRE_D        |
+|53 |    │   │ │ │ │ └─UNION ALL              |             |
+|54 |    │   │ │ │ │   ├─HASH RIGHT ANTI JOIN |             |
+|55 |    │   │ │ │ │   │ ├─SUBPLAN SCAN       |VIEW7        |
+|56 |    │   │ │ │ │   │ │ └─TABLE FULL SCAN  |MLOG$_T1     |
+|57 |    │   │ │ │ │   │ └─TABLE FULL SCAN    |D            |
+|58 |    │   │ │ │ │   └─SUBPLAN SCAN         |DLT_T$$      |
+|59 |    │   │ │ │ │     └─WINDOW FUNCTION    |             |
+|60 |    │   │ │ │ │       └─TABLE FULL SCAN  |MLOG$_T1     |
+|61 |    │   │ │ │ └─SUBPLAN SCAN             |PRE_E        |
+|62 |    │   │ │ │   └─UNION ALL              |             |
+|63 |    │   │ │ │     ├─HASH RIGHT ANTI JOIN |             |
+|64 |    │   │ │ │     │ ├─SUBPLAN SCAN       |VIEW8        |
+|65 |    │   │ │ │     │ │ └─TABLE FULL SCAN  |MLOG$_T1     |
+|66 |    │   │ │ │     │ └─TABLE FULL SCAN    |E            |
+|67 |    │   │ │ │     └─SUBPLAN SCAN         |DLT_T$$      |
+|68 |    │   │ │ │       └─WINDOW FUNCTION    |             |
+|69 |    │   │ │ │         └─TABLE FULL SCAN  |MLOG$_T1     |
+|70 |    │   │ │ └─SUBPLAN SCAN               |PRE_C        |
+|71 |    │   │ │   └─UNION ALL                |             |
+|72 |    │   │ │     ├─HASH RIGHT ANTI JOIN   |             |
+|73 |    │   │ │     │ ├─SUBPLAN SCAN         |VIEW6        |
+|74 |    │   │ │     │ │ └─TABLE FULL SCAN    |MLOG$_T1     |
+|75 |    │   │ │     │ └─TABLE FULL SCAN      |C            |
+|76 |    │   │ │     └─SUBPLAN SCAN           |DLT_T$$      |
+|77 |    │   │ │       └─WINDOW FUNCTION      |             |
+|78 |    │   │ │         └─TABLE FULL SCAN    |MLOG$_T1     |
+|79 |    │   │ └─SUBPLAN SCAN                 |DLT_B        |
+|80 |    │   │   └─TABLE FULL SCAN            |MLOG$_T1     |
+|81 |    │   └─TABLE FULL SCAN                |A            |
+|82 |    ├─HASH GROUP BY                      |             |
+|83 |    │ └─HASH JOIN                        |             |
+|84 |    │   ├─HASH JOIN                      |             |
+|85 |    │   │ ├─HASH JOIN                    |             |
+|86 |    │   │ │ ├─HASH JOIN                  |             |
+|87 |    │   │ │ │ ├─SUBPLAN SCAN             |PRE_D        |
+|88 |    │   │ │ │ │ └─UNION ALL              |             |
+|89 |    │   │ │ │ │   ├─HASH RIGHT ANTI JOIN |             |
+|90 |    │   │ │ │ │   │ ├─SUBPLAN SCAN       |VIEW9        |
+|91 |    │   │ │ │ │   │ │ └─TABLE FULL SCAN  |MLOG$_T1     |
+|92 |    │   │ │ │ │   │ └─TABLE FULL SCAN    |D            |
+|93 |    │   │ │ │ │   └─SUBPLAN SCAN         |DLT_T$$      |
+|94 |    │   │ │ │ │     └─WINDOW FUNCTION    |             |
+|95 |    │   │ │ │ │       └─TABLE FULL SCAN  |MLOG$_T1     |
+|96 |    │   │ │ │ └─SUBPLAN SCAN             |PRE_E        |
+|97 |    │   │ │ │   └─UNION ALL              |             |
+|98 |    │   │ │ │     ├─HASH RIGHT ANTI JOIN |             |
+|99 |    │   │ │ │     │ ├─SUBPLAN SCAN       |VIEW10       |
+|100|    │   │ │ │     │ │ └─TABLE FULL SCAN  |MLOG$_T1     |
+|101|    │   │ │ │     │ └─TABLE FULL SCAN    |E            |
+|102|    │   │ │ │     └─SUBPLAN SCAN         |DLT_T$$      |
+|103|    │   │ │ │       └─WINDOW FUNCTION    |             |
+|104|    │   │ │ │         └─TABLE FULL SCAN  |MLOG$_T1     |
+|105|    │   │ │ └─SUBPLAN SCAN               |DLT_C        |
+|106|    │   │ │   └─TABLE FULL SCAN          |MLOG$_T1     |
+|107|    │   │ └─TABLE FULL SCAN              |B            |
+|108|    │   └─TABLE FULL SCAN                |A            |
+|109|    ├─HASH GROUP BY                      |             |
+|110|    │ └─HASH JOIN                        |             |
+|111|    │   ├─HASH JOIN                      |             |
+|112|    │   │ ├─HASH JOIN                    |             |
+|113|    │   │ │ ├─HASH JOIN                  |             |
+|114|    │   │ │ │ ├─SUBPLAN SCAN             |PRE_E        |
+|115|    │   │ │ │ │ └─UNION ALL              |             |
+|116|    │   │ │ │ │   ├─HASH RIGHT ANTI JOIN |             |
+|117|    │   │ │ │ │   │ ├─SUBPLAN SCAN       |VIEW11       |
+|118|    │   │ │ │ │   │ │ └─TABLE FULL SCAN  |MLOG$_T1     |
+|119|    │   │ │ │ │   │ └─TABLE FULL SCAN    |E            |
+|120|    │   │ │ │ │   └─SUBPLAN SCAN         |DLT_T$$      |
+|121|    │   │ │ │ │     └─WINDOW FUNCTION    |             |
+|122|    │   │ │ │ │       └─TABLE FULL SCAN  |MLOG$_T1     |
+|123|    │   │ │ │ └─SUBPLAN SCAN             |DLT_D        |
+|124|    │   │ │ │   └─TABLE FULL SCAN        |MLOG$_T1     |
+|125|    │   │ │ └─TABLE FULL SCAN            |C            |
+|126|    │   │ └─TABLE FULL SCAN              |B            |
+|127|    │   └─TABLE FULL SCAN                |A            |
+|128|    └─HASH GROUP BY                      |             |
+|129|      └─HASH JOIN                        |             |
+|130|        ├─HASH JOIN                      |             |
+|131|        │ ├─HASH JOIN                    |             |
+|132|        │ │ ├─HASH JOIN                  |             |
+|133|        │ │ │ ├─SUBPLAN SCAN             |DLT_E        |
+|134|        │ │ │ │ └─TABLE FULL SCAN        |MLOG$_T1     |
+|135|        │ │ │ └─TABLE FULL SCAN          |D            |
+|136|        │ │ └─TABLE FULL SCAN            |C            |
+|137|        │ └─TABLE FULL SCAN              |B            |
+|138|        └─TABLE FULL SCAN                |A            |
+=============================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INNER_RT_MV$$.A_C3], [INNER_RT_MV$$.B_C2], [cast(T_FUN_SUM(INNER_RT_MV$$.CNT), NUMBER(38, 0))], [cast(T_FUN_SUM(INNER_RT_MV$$.CNT_E_C4), NUMBER(38,
+       0))], [CASE WHEN T_FUN_SUM(INNER_RT_MV$$.CNT_E_C4) = 0 THEN NULL ELSE T_FUN_SUM(INNER_RT_MV$$.SUM_E_C4) END], [cast(T_FUN_SUM(INNER_RT_MV$$.CNT_C_C3), 
+      NUMBER(38, 0))], [CASE WHEN T_FUN_SUM(INNER_RT_MV$$.CNT_C_C3) = 0 THEN NULL ELSE T_FUN_SUM(INNER_RT_MV$$.SUM_C_C3) END], [CASE WHEN T_FUN_SUM(INNER_RT_MV$$.CNT_E_C4) 
+      = 0 THEN NULL ELSE T_FUN_SUM(INNER_RT_MV$$.SUM_E_C4) END / T_FUN_SUM(INNER_RT_MV$$.CNT_E_C4)], [CASE WHEN T_FUN_SUM(INNER_RT_MV$$.CNT_C_C3) = 0 THEN NULL 
+      ELSE T_FUN_SUM(INNER_RT_MV$$.SUM_C_C3) END * CASE WHEN T_FUN_SUM(INNER_RT_MV$$.CNT_E_C4) = 0 THEN NULL ELSE T_FUN_SUM(INNER_RT_MV$$.SUM_E_C4) END / T_FUN_SUM(INNER_RT_MV$$.CNT_E_C4)]), filter([T_FUN_SU
+      M(INNER_RT_MV$$.CNT) > 0]), rowset=16
+      group([INNER_RT_MV$$.A_C3], [INNER_RT_MV$$.B_C2]), agg_func([T_FUN_SUM(INNER_RT_MV$$.CNT)], [T_FUN_SUM(INNER_RT_MV$$.CNT_E_C4)], [T_FUN_SUM(INNER_RT_MV$$.SUM_E_C4)],
+       [T_FUN_SUM(INNER_RT_MV$$.CNT_C_C3)], [T_FUN_SUM(INNER_RT_MV$$.SUM_C_C3)])
+  1 - output([INNER_RT_MV$$.A_C3], [INNER_RT_MV$$.B_C2], [INNER_RT_MV$$.CNT], [INNER_RT_MV$$.CNT_E_C4], [INNER_RT_MV$$.SUM_E_C4], [INNER_RT_MV$$.CNT_C_C3],
+       [INNER_RT_MV$$.SUM_C_C3]), filter(nil), rowset=16
+      access([INNER_RT_MV$$.A_C3], [INNER_RT_MV$$.B_C2], [INNER_RT_MV$$.CNT], [INNER_RT_MV$$.CNT_E_C4], [INNER_RT_MV$$.SUM_E_C4], [INNER_RT_MV$$.CNT_C_C3],
+       [INNER_RT_MV$$.SUM_C_C3])
+  2 - output([UNION([1])], [UNION([2])], [UNION([3])], [UNION([4])], [UNION([5])], [UNION([6])], [UNION([7])]), filter(nil), rowset=16
+  3 - output([T1_RT_MV2.A_C3], [T1_RT_MV2.B_C2], [T1_RT_MV2.CNT], [T1_RT_MV2.CNT_E_C4], [T1_RT_MV2.SUM_E_C4], [T1_RT_MV2.CNT_C_C3], [T1_RT_MV2.SUM_C_C3]), filter(nil), rowset=16
+      access([T1_RT_MV2.A_C3], [T1_RT_MV2.B_C2], [T1_RT_MV2.CNT], [T1_RT_MV2.CNT_E_C4], [T1_RT_MV2.SUM_E_C4], [T1_RT_MV2.CNT_C_C3], [T1_RT_MV2.SUM_C_C3]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([T1_RT_MV2.__pk_increment]), range(MIN ; MAX)always true
+  4 - output([DLT_A.C3], [PRE_B.C2], [T_FUN_SUM(DLT_A.DMLFACTOR$$)], [T_FUN_SUM(DLT_A.DMLFACTOR$$ * CASE WHEN PRE_E.C4 IS NULL THEN 0 ELSE 1 END)], [T_FUN_SUM(DLT_A.DMLFACTOR$$ 
+      * PRE_E.C4)], [T_FUN_SUM(DLT_A.DMLFACTOR$$ * CASE WHEN PRE_C.C3 IS NULL THEN 0 ELSE 1 END)], [T_FUN_SUM(DLT_A.DMLFACTOR$$ * PRE_C.C3)]), filter(nil), rowset=16
+      group([DLT_A.C3], [PRE_B.C2]), agg_func([T_FUN_SUM(DLT_A.DMLFACTOR$$)], [T_FUN_SUM(DLT_A.DMLFACTOR$$ * CASE WHEN PRE_E.C4 IS NULL THEN 0 ELSE 1 END)],
+       [T_FUN_SUM(DLT_A.DMLFACTOR$$ * PRE_E.C4)], [T_FUN_SUM(DLT_A.DMLFACTOR$$ * CASE WHEN PRE_C.C3 IS NULL THEN 0 ELSE 1 END)], [T_FUN_SUM(DLT_A.DMLFACTOR$$ 
+      * PRE_C.C3)])
+  5 - output([DLT_A.C3], [PRE_B.C2], [DLT_A.DMLFACTOR$$], [PRE_E.C4], [PRE_C.C3]), filter(nil), rowset=16
+      equal_conds([DLT_A.C2 = PRE_B.C3]), other_conds(nil)
+  6 - output([PRE_B.C2], [PRE_E.C4], [PRE_C.C3], [PRE_B.C3]), filter(nil), rowset=16
+      equal_conds([PRE_B.C2 = PRE_C.C4]), other_conds(nil)
+  7 - output([PRE_E.C4], [PRE_C.C3], [PRE_C.C4]), filter(nil), rowset=16
+      equal_conds([PRE_C.C2 = PRE_D.C3]), other_conds(nil)
+  8 - output([PRE_E.C4], [PRE_D.C3]), filter(nil), rowset=16
+      equal_conds([PRE_D.C4 = PRE_E.C2]), other_conds(nil)
+  9 - output([PRE_D.C3], [PRE_D.C4]), filter(nil), rowset=16
+      access([PRE_D.C3], [PRE_D.C4])
+ 10 - output([UNION([1])], [UNION([2])]), filter(nil), rowset=16
+ 11 - output([D.C3], [D.C4]), filter(nil), rowset=16
+      equal_conds([VIEW4.MLOG$_T1.C1 = D.C1]), other_conds(nil)
+ 12 - output([VIEW4.MLOG$_T1.C1]), filter(nil), rowset=16
+      access([VIEW4.MLOG$_T1.C1])
+ 13 - output([MLOG$_T1.C1]), filter([cast(ORA_ROWSCN, NUMBER(-1, -1)) > last_refresh_scn(xxxxxx)]), rowset=16
+      access([MLOG$_T1.C1], [ORA_ROWSCN]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([MLOG$_T1.C1], [MLOG$_T1.SEQUENCE$$]), range(MIN,MIN ; MAX,MAX)always true
+ 14 - output([D.C1], [D.C3], [D.C4]), filter(nil), rowset=16
+      access([D.C1], [D.C3], [D.C4]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([D.C1]), range(MIN ; MAX)always true
+ 15 - output([DLT_T$$.C3], [DLT_T$$.C4]), filter([DLT_T$$.OLD_NEW$$ = cast('O', VARCHAR2(1048576 ))], [DLT_T$$.SEQUENCE$$ = DLT_T$$.MINSEQ$$]), rowset=16
+      access([DLT_T$$.OLD_NEW$$], [DLT_T$$.SEQUENCE$$], [DLT_T$$.MINSEQ$$], [DLT_T$$.C3], [DLT_T$$.C4])
+ 16 - output([MLOG$_T1.OLD_NEW$$], [MLOG$_T1.SEQUENCE$$], [T_FUN_MIN(MLOG$_T1.SEQUENCE$$)], [MLOG$_T1.C3], [MLOG$_T1.C4]), filter(nil), rowset=16
+      win_expr(T_FUN_MIN(MLOG$_T1.SEQUENCE$$)), partition_by([MLOG$_T1.C1]), order_by(nil), window_type(RANGE), upper(UNBOUNDED PRECEDING), lower(UNBOUNDED 
+      FOLLOWING)
+ 17 - output([MLOG$_T1.C1], [MLOG$_T1.SEQUENCE$$], [MLOG$_T1.OLD_NEW$$], [MLOG$_T1.C3], [MLOG$_T1.C4]), filter([cast(ORA_ROWSCN, NUMBER(-1, -1)) > last_refresh_scn(xxxxxx)]), rowset=16
+      access([MLOG$_T1.C1], [MLOG$_T1.SEQUENCE$$], [MLOG$_T1.OLD_NEW$$], [MLOG$_T1.C3], [MLOG$_T1.C4], [ORA_ROWSCN]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([MLOG$_T1.C1], [MLOG$_T1.SEQUENCE$$]), range(MIN,MIN ; MAX,MAX)always true
+ 18 - output([PRE_E.C2], [PRE_E.C4]), filter(nil), rowset=16
+      access([PRE_E.C2], [PRE_E.C4])
+ 19 - output([UNION([1])], [UNION([2])]), filter(nil), rowset=16
+ 20 - output([E.C2], [E.C4]), filter(nil), rowset=16
+      equal_conds([VIEW5.MLOG$_T1.C1 = E.C1]), other_conds(nil)
+ 21 - output([VIEW5.MLOG$_T1.C1]), filter(nil), rowset=16
+      access([VIEW5.MLOG$_T1.C1])
+ 22 - output([MLOG$_T1.C1]), filter([cast(ORA_ROWSCN, NUMBER(-1, -1)) > last_refresh_scn(xxxxxx)]), rowset=16
+      access([MLOG$_T1.C1], [ORA_ROWSCN]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([MLOG$_T1.C1], [MLOG$_T1.SEQUENCE$$]), range(MIN,MIN ; MAX,MAX)always true
+ 23 - output([E.C1], [E.C2], [E.C4]), filter(nil), rowset=16
+      access([E.C1], [E.C2], [E.C4]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([E.C1]), range(MIN ; MAX)always true
+ 24 - output([DLT_T$$.C2], [DLT_T$$.C4]), filter([DLT_T$$.OLD_NEW$$ = cast('O', VARCHAR2(1048576 ))], [DLT_T$$.SEQUENCE$$ = DLT_T$$.MINSEQ$$]), rowset=16
+      access([DLT_T$$.OLD_NEW$$], [DLT_T$$.SEQUENCE$$], [DLT_T$$.MINSEQ$$], [DLT_T$$.C2], [DLT_T$$.C4])
+ 25 - output([MLOG$_T1.OLD_NEW$$], [MLOG$_T1.SEQUENCE$$], [T_FUN_MIN(MLOG$_T1.SEQUENCE$$)], [MLOG$_T1.C2], [MLOG$_T1.C4]), filter(nil), rowset=16
+      win_expr(T_FUN_MIN(MLOG$_T1.SEQUENCE$$)), partition_by([MLOG$_T1.C1]), order_by(nil), window_type(RANGE), upper(UNBOUNDED PRECEDING), lower(UNBOUNDED 
+      FOLLOWING)
+ 26 - output([MLOG$_T1.C1], [MLOG$_T1.SEQUENCE$$], [MLOG$_T1.OLD_NEW$$], [MLOG$_T1.C2], [MLOG$_T1.C4]), filter([cast(ORA_ROWSCN, NUMBER(-1, -1)) > last_refresh_scn(xxxxxx)]), rowset=16
+      access([MLOG$_T1.C1], [MLOG$_T1.SEQUENCE$$], [MLOG$_T1.OLD_NEW$$], [MLOG$_T1.C2], [MLOG$_T1.C4], [ORA_ROWSCN]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([MLOG$_T1.C1], [MLOG$_T1.SEQUENCE$$]), range(MIN,MIN ; MAX,MAX)always true
+ 27 - output([PRE_C.C4], [PRE_C.C2], [PRE_C.C3]), filter(nil), rowset=16
+      access([PRE_C.C4], [PRE_C.C2], [PRE_C.C3])
+ 28 - output([UNION([1])], [UNION([2])], [UNION([3])]), filter(nil), rowset=16
+ 29 - output([C.C4], [C.C2], [C.C3]), filter(nil), rowset=16
+      equal_conds([VIEW3.MLOG$_T1.C1 = C.C1]), other_conds(nil)
+ 30 - output([VIEW3.MLOG$_T1.C1]), filter(nil), rowset=16
+      access([VIEW3.MLOG$_T1.C1])
+ 31 - output([MLOG$_T1.C1]), filter([cast(ORA_ROWSCN, NUMBER(-1, -1)) > last_refresh_scn(xxxxxx)]), rowset=16
+      access([MLOG$_T1.C1], [ORA_ROWSCN]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([MLOG$_T1.C1], [MLOG$_T1.SEQUENCE$$]), range(MIN,MIN ; MAX,MAX)always true
+ 32 - output([C.C1], [C.C4], [C.C2], [C.C3]), filter(nil), rowset=16
+      access([C.C1], [C.C4], [C.C2], [C.C3]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([C.C1]), range(MIN ; MAX)always true
+ 33 - output([DLT_T$$.C4], [DLT_T$$.C2], [DLT_T$$.C3]), filter([DLT_T$$.OLD_NEW$$ = cast('O', VARCHAR2(1048576 ))], [DLT_T$$.SEQUENCE$$ = DLT_T$$.MINSEQ$$]), rowset=16
+      access([DLT_T$$.OLD_NEW$$], [DLT_T$$.SEQUENCE$$], [DLT_T$$.MINSEQ$$], [DLT_T$$.C4], [DLT_T$$.C2], [DLT_T$$.C3])
+ 34 - output([MLOG$_T1.OLD_NEW$$], [MLOG$_T1.SEQUENCE$$], [T_FUN_MIN(MLOG$_T1.SEQUENCE$$)], [MLOG$_T1.C4], [MLOG$_T1.C2], [MLOG$_T1.C3]), filter(nil), rowset=16
+      win_expr(T_FUN_MIN(MLOG$_T1.SEQUENCE$$)), partition_by([MLOG$_T1.C1]), order_by(nil), window_type(RANGE), upper(UNBOUNDED PRECEDING), lower(UNBOUNDED 
+      FOLLOWING)
+ 35 - output([MLOG$_T1.C1], [MLOG$_T1.SEQUENCE$$], [MLOG$_T1.OLD_NEW$$], [MLOG$_T1.C4], [MLOG$_T1.C2], [MLOG$_T1.C3]), filter([cast(ORA_ROWSCN, NUMBER(-1,
+       -1)) > last_refresh_scn(xxxxxx)]), rowset=16
+      access([MLOG$_T1.C1], [MLOG$_T1.SEQUENCE$$], [MLOG$_T1.OLD_NEW$$], [MLOG$_T1.C4], [MLOG$_T1.C2], [MLOG$_T1.C3], [ORA_ROWSCN]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([MLOG$_T1.C1], [MLOG$_T1.SEQUENCE$$]), range(MIN,MIN ; MAX,MAX)always true
+ 36 - output([PRE_B.C3], [PRE_B.C2]), filter(nil), rowset=16
+      access([PRE_B.C3], [PRE_B.C2])
+ 37 - output([UNION([1])], [UNION([2])]), filter(nil), rowset=16
+ 38 - output([B.C3], [B.C2]), filter(nil), rowset=16
+      equal_conds([VIEW2.MLOG$_T1.C1 = B.C1]), other_conds(nil)
+ 39 - output([VIEW2.MLOG$_T1.C1]), filter(nil), rowset=16
+      access([VIEW2.MLOG$_T1.C1])
+ 40 - output([MLOG$_T1.C1]), filter([cast(ORA_ROWSCN, NUMBER(-1, -1)) > last_refresh_scn(xxxxxx)]), rowset=16
+      access([MLOG$_T1.C1], [ORA_ROWSCN]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([MLOG$_T1.C1], [MLOG$_T1.SEQUENCE$$]), range(MIN,MIN ; MAX,MAX)always true
+ 41 - output([B.C1], [B.C3], [B.C2]), filter(nil), rowset=16
+      access([B.C1], [B.C3], [B.C2]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([B.C1]), range(MIN ; MAX)always true
+ 42 - output([DLT_T$$.C3], [DLT_T$$.C2]), filter([DLT_T$$.OLD_NEW$$ = cast('O', VARCHAR2(1048576 ))], [DLT_T$$.SEQUENCE$$ = DLT_T$$.MINSEQ$$]), rowset=16
+      access([DLT_T$$.OLD_NEW$$], [DLT_T$$.SEQUENCE$$], [DLT_T$$.MINSEQ$$], [DLT_T$$.C3], [DLT_T$$.C2])
+ 43 - output([MLOG$_T1.OLD_NEW$$], [MLOG$_T1.SEQUENCE$$], [T_FUN_MIN(MLOG$_T1.SEQUENCE$$)], [MLOG$_T1.C3], [MLOG$_T1.C2]), filter(nil), rowset=16
+      win_expr(T_FUN_MIN(MLOG$_T1.SEQUENCE$$)), partition_by([MLOG$_T1.C1]), order_by(nil), window_type(RANGE), upper(UNBOUNDED PRECEDING), lower(UNBOUNDED 
+      FOLLOWING)
+ 44 - output([MLOG$_T1.C1], [MLOG$_T1.SEQUENCE$$], [MLOG$_T1.OLD_NEW$$], [MLOG$_T1.C3], [MLOG$_T1.C2]), filter([cast(ORA_ROWSCN, NUMBER(-1, -1)) > last_refresh_scn(xxxxxx)]), rowset=16
+      access([MLOG$_T1.C1], [MLOG$_T1.SEQUENCE$$], [MLOG$_T1.OLD_NEW$$], [MLOG$_T1.C3], [MLOG$_T1.C2], [ORA_ROWSCN]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([MLOG$_T1.C1], [MLOG$_T1.SEQUENCE$$]), range(MIN,MIN ; MAX,MAX)always true
+ 45 - output([DLT_A.DMLFACTOR$$], [DLT_A.C2], [DLT_A.C3]), filter(nil), rowset=16
+      access([DLT_A.DMLFACTOR$$], [DLT_A.C2], [DLT_A.C3])
+ 46 - output([CASE WHEN MLOG$_T1.OLD_NEW$$ = cast('N', VARCHAR2(1048576 )) THEN 1 ELSE (T_OP_NEG, 1) END], [MLOG$_T1.C2], [MLOG$_T1.C3]), filter([cast(ORA_ROWSCN,
+       NUMBER(-1, -1)) > last_refresh_scn(xxxxxx)]), rowset=16
+      access([MLOG$_T1.OLD_NEW$$], [MLOG$_T1.C2], [MLOG$_T1.C3], [ORA_ROWSCN]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([MLOG$_T1.C1], [MLOG$_T1.SEQUENCE$$]), range(MIN,MIN ; MAX,MAX)always true
+ 47 - output([A.C3], [DLT_B.C2], [T_FUN_SUM(DLT_B.DMLFACTOR$$)], [T_FUN_SUM(DLT_B.DMLFACTOR$$ * CASE WHEN PRE_E.C4 IS NULL THEN 0 ELSE 1 END)], [T_FUN_SUM(DLT_B.DMLFACTOR$$ 
+      * PRE_E.C4)], [T_FUN_SUM(DLT_B.DMLFACTOR$$ * CASE WHEN PRE_C.C3 IS NULL THEN 0 ELSE 1 END)], [T_FUN_SUM(DLT_B.DMLFACTOR$$ * PRE_C.C3)]), filter(nil), rowset=16
+      group([A.C3], [DLT_B.C2]), agg_func([T_FUN_SUM(DLT_B.DMLFACTOR$$)], [T_FUN_SUM(DLT_B.DMLFACTOR$$ * CASE WHEN PRE_E.C4 IS NULL THEN 0 ELSE 1 END)],
+       [T_FUN_SUM(DLT_B.DMLFACTOR$$ * PRE_E.C4)], [T_FUN_SUM(DLT_B.DMLFACTOR$$ * CASE WHEN PRE_C.C3 IS NULL THEN 0 ELSE 1 END)], [T_FUN_SUM(DLT_B.DMLFACTOR$$ 
+      * PRE_C.C3)])
+ 48 - output([A.C3], [DLT_B.C2], [DLT_B.DMLFACTOR$$], [PRE_E.C4], [PRE_C.C3]), filter(nil), rowset=16
+      equal_conds([A.C2 = DLT_B.C3]), other_conds(nil)
+ 49 - output([DLT_B.C2], [DLT_B.DMLFACTOR$$], [PRE_E.C4], [PRE_C.C3], [DLT_B.C3]), filter(nil), rowset=16
+      equal_conds([DLT_B.C2 = PRE_C.C4]), other_conds(nil)
+ 50 - output([PRE_E.C4], [PRE_C.C3], [PRE_C.C4]), filter(nil), rowset=16
+      equal_conds([PRE_C.C2 = PRE_D.C3]), other_conds(nil)
+ 51 - output([PRE_E.C4], [PRE_D.C3]), filter(nil), rowset=16
+      equal_conds([PRE_D.C4 = PRE_E.C2]), other_conds(nil)
+ 52 - output([PRE_D.C3], [PRE_D.C4]), filter(nil), rowset=16
+      access([PRE_D.C3], [PRE_D.C4])
+ 53 - output([UNION([1])], [UNION([2])]), filter(nil), rowset=16
+ 54 - output([D.C3], [D.C4]), filter(nil), rowset=16
+      equal_conds([VIEW7.MLOG$_T1.C1 = D.C1]), other_conds(nil)
+ 55 - output([VIEW7.MLOG$_T1.C1]), filter(nil), rowset=16
+      access([VIEW7.MLOG$_T1.C1])
+ 56 - output([MLOG$_T1.C1]), filter([cast(ORA_ROWSCN, NUMBER(-1, -1)) > last_refresh_scn(xxxxxx)]), rowset=16
+      access([MLOG$_T1.C1], [ORA_ROWSCN]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([MLOG$_T1.C1], [MLOG$_T1.SEQUENCE$$]), range(MIN,MIN ; MAX,MAX)always true
+ 57 - output([D.C1], [D.C3], [D.C4]), filter(nil), rowset=16
+      access([D.C1], [D.C3], [D.C4]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([D.C1]), range(MIN ; MAX)always true
+ 58 - output([DLT_T$$.C3], [DLT_T$$.C4]), filter([DLT_T$$.OLD_NEW$$ = cast('O', VARCHAR2(1048576 ))], [DLT_T$$.SEQUENCE$$ = DLT_T$$.MINSEQ$$]), rowset=16
+      access([DLT_T$$.OLD_NEW$$], [DLT_T$$.SEQUENCE$$], [DLT_T$$.MINSEQ$$], [DLT_T$$.C3], [DLT_T$$.C4])
+ 59 - output([MLOG$_T1.OLD_NEW$$], [MLOG$_T1.SEQUENCE$$], [T_FUN_MIN(MLOG$_T1.SEQUENCE$$)], [MLOG$_T1.C3], [MLOG$_T1.C4]), filter(nil), rowset=16
+      win_expr(T_FUN_MIN(MLOG$_T1.SEQUENCE$$)), partition_by([MLOG$_T1.C1]), order_by(nil), window_type(RANGE), upper(UNBOUNDED PRECEDING), lower(UNBOUNDED 
+      FOLLOWING)
+ 60 - output([MLOG$_T1.C1], [MLOG$_T1.SEQUENCE$$], [MLOG$_T1.OLD_NEW$$], [MLOG$_T1.C3], [MLOG$_T1.C4]), filter([cast(ORA_ROWSCN, NUMBER(-1, -1)) > last_refresh_scn(xxxxxx)]), rowset=16
+      access([MLOG$_T1.C1], [MLOG$_T1.SEQUENCE$$], [MLOG$_T1.OLD_NEW$$], [MLOG$_T1.C3], [MLOG$_T1.C4], [ORA_ROWSCN]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([MLOG$_T1.C1], [MLOG$_T1.SEQUENCE$$]), range(MIN,MIN ; MAX,MAX)always true
+ 61 - output([PRE_E.C2], [PRE_E.C4]), filter(nil), rowset=16
+      access([PRE_E.C2], [PRE_E.C4])
+ 62 - output([UNION([1])], [UNION([2])]), filter(nil), rowset=16
+ 63 - output([E.C2], [E.C4]), filter(nil), rowset=16
+      equal_conds([VIEW8.MLOG$_T1.C1 = E.C1]), other_conds(nil)
+ 64 - output([VIEW8.MLOG$_T1.C1]), filter(nil), rowset=16
+      access([VIEW8.MLOG$_T1.C1])
+ 65 - output([MLOG$_T1.C1]), filter([cast(ORA_ROWSCN, NUMBER(-1, -1)) > last_refresh_scn(xxxxxx)]), rowset=16
+      access([MLOG$_T1.C1], [ORA_ROWSCN]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([MLOG$_T1.C1], [MLOG$_T1.SEQUENCE$$]), range(MIN,MIN ; MAX,MAX)always true
+ 66 - output([E.C1], [E.C2], [E.C4]), filter(nil), rowset=16
+      access([E.C1], [E.C2], [E.C4]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([E.C1]), range(MIN ; MAX)always true
+ 67 - output([DLT_T$$.C2], [DLT_T$$.C4]), filter([DLT_T$$.OLD_NEW$$ = cast('O', VARCHAR2(1048576 ))], [DLT_T$$.SEQUENCE$$ = DLT_T$$.MINSEQ$$]), rowset=16
+      access([DLT_T$$.OLD_NEW$$], [DLT_T$$.SEQUENCE$$], [DLT_T$$.MINSEQ$$], [DLT_T$$.C2], [DLT_T$$.C4])
+ 68 - output([MLOG$_T1.OLD_NEW$$], [MLOG$_T1.SEQUENCE$$], [T_FUN_MIN(MLOG$_T1.SEQUENCE$$)], [MLOG$_T1.C2], [MLOG$_T1.C4]), filter(nil), rowset=16
+      win_expr(T_FUN_MIN(MLOG$_T1.SEQUENCE$$)), partition_by([MLOG$_T1.C1]), order_by(nil), window_type(RANGE), upper(UNBOUNDED PRECEDING), lower(UNBOUNDED 
+      FOLLOWING)
+ 69 - output([MLOG$_T1.C1], [MLOG$_T1.SEQUENCE$$], [MLOG$_T1.OLD_NEW$$], [MLOG$_T1.C2], [MLOG$_T1.C4]), filter([cast(ORA_ROWSCN, NUMBER(-1, -1)) > last_refresh_scn(xxxxxx)]), rowset=16
+      access([MLOG$_T1.C1], [MLOG$_T1.SEQUENCE$$], [MLOG$_T1.OLD_NEW$$], [MLOG$_T1.C2], [MLOG$_T1.C4], [ORA_ROWSCN]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([MLOG$_T1.C1], [MLOG$_T1.SEQUENCE$$]), range(MIN,MIN ; MAX,MAX)always true
+ 70 - output([PRE_C.C4], [PRE_C.C2], [PRE_C.C3]), filter(nil), rowset=16
+      access([PRE_C.C4], [PRE_C.C2], [PRE_C.C3])
+ 71 - output([UNION([1])], [UNION([2])], [UNION([3])]), filter(nil), rowset=16
+ 72 - output([C.C4], [C.C2], [C.C3]), filter(nil), rowset=16
+      equal_conds([VIEW6.MLOG$_T1.C1 = C.C1]), other_conds(nil)
+ 73 - output([VIEW6.MLOG$_T1.C1]), filter(nil), rowset=16
+      access([VIEW6.MLOG$_T1.C1])
+ 74 - output([MLOG$_T1.C1]), filter([cast(ORA_ROWSCN, NUMBER(-1, -1)) > last_refresh_scn(xxxxxx)]), rowset=16
+      access([MLOG$_T1.C1], [ORA_ROWSCN]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([MLOG$_T1.C1], [MLOG$_T1.SEQUENCE$$]), range(MIN,MIN ; MAX,MAX)always true
+ 75 - output([C.C1], [C.C4], [C.C2], [C.C3]), filter(nil), rowset=16
+      access([C.C1], [C.C4], [C.C2], [C.C3]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([C.C1]), range(MIN ; MAX)always true
+ 76 - output([DLT_T$$.C4], [DLT_T$$.C2], [DLT_T$$.C3]), filter([DLT_T$$.OLD_NEW$$ = cast('O', VARCHAR2(1048576 ))], [DLT_T$$.SEQUENCE$$ = DLT_T$$.MINSEQ$$]), rowset=16
+      access([DLT_T$$.OLD_NEW$$], [DLT_T$$.SEQUENCE$$], [DLT_T$$.MINSEQ$$], [DLT_T$$.C4], [DLT_T$$.C2], [DLT_T$$.C3])
+ 77 - output([MLOG$_T1.OLD_NEW$$], [MLOG$_T1.SEQUENCE$$], [T_FUN_MIN(MLOG$_T1.SEQUENCE$$)], [MLOG$_T1.C4], [MLOG$_T1.C2], [MLOG$_T1.C3]), filter(nil), rowset=16
+      win_expr(T_FUN_MIN(MLOG$_T1.SEQUENCE$$)), partition_by([MLOG$_T1.C1]), order_by(nil), window_type(RANGE), upper(UNBOUNDED PRECEDING), lower(UNBOUNDED 
+      FOLLOWING)
+ 78 - output([MLOG$_T1.C1], [MLOG$_T1.SEQUENCE$$], [MLOG$_T1.OLD_NEW$$], [MLOG$_T1.C4], [MLOG$_T1.C2], [MLOG$_T1.C3]), filter([cast(ORA_ROWSCN, NUMBER(-1,
+       -1)) > last_refresh_scn(xxxxxx)]), rowset=16
+      access([MLOG$_T1.C1], [MLOG$_T1.SEQUENCE$$], [MLOG$_T1.OLD_NEW$$], [MLOG$_T1.C4], [MLOG$_T1.C2], [MLOG$_T1.C3], [ORA_ROWSCN]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([MLOG$_T1.C1], [MLOG$_T1.SEQUENCE$$]), range(MIN,MIN ; MAX,MAX)always true
+ 79 - output([DLT_B.DMLFACTOR$$], [DLT_B.C3], [DLT_B.C2]), filter(nil), rowset=16
+      access([DLT_B.DMLFACTOR$$], [DLT_B.C3], [DLT_B.C2])
+ 80 - output([CASE WHEN MLOG$_T1.OLD_NEW$$ = cast('N', VARCHAR2(1048576 )) THEN 1 ELSE (T_OP_NEG, 1) END], [MLOG$_T1.C3], [MLOG$_T1.C2]), filter([cast(ORA_ROWSCN,
+       NUMBER(-1, -1)) > last_refresh_scn(xxxxxx)]), rowset=16
+      access([MLOG$_T1.OLD_NEW$$], [MLOG$_T1.C3], [MLOG$_T1.C2], [ORA_ROWSCN]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([MLOG$_T1.C1], [MLOG$_T1.SEQUENCE$$]), range(MIN,MIN ; MAX,MAX)always true
+ 81 - output([A.C2], [A.C3]), filter(nil), rowset=16
+      access([A.C2], [A.C3]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([A.C1]), range(MIN ; MAX)always true
+ 82 - output([A.C3], [B.C2], [T_FUN_SUM(DLT_C.DMLFACTOR$$)], [T_FUN_SUM(DLT_C.DMLFACTOR$$ * CASE WHEN PRE_E.C4 IS NULL THEN 0 ELSE 1 END)], [T_FUN_SUM(DLT_C.DMLFACTOR$$ 
+      * PRE_E.C4)], [T_FUN_SUM(DLT_C.DMLFACTOR$$ * CASE WHEN DLT_C.C3 IS NULL THEN 0 ELSE 1 END)], [T_FUN_SUM(DLT_C.DMLFACTOR$$ * DLT_C.C3)]), filter(nil), rowset=16
+      group([A.C3], [B.C2]), agg_func([T_FUN_SUM(DLT_C.DMLFACTOR$$)], [T_FUN_SUM(DLT_C.DMLFACTOR$$ * CASE WHEN PRE_E.C4 IS NULL THEN 0 ELSE 1 END)], [T_FUN_SUM(DLT_C.DMLFACTOR$$ 
+      * PRE_E.C4)], [T_FUN_SUM(DLT_C.DMLFACTOR$$ * CASE WHEN DLT_C.C3 IS NULL THEN 0 ELSE 1 END)], [T_FUN_SUM(DLT_C.DMLFACTOR$$ * DLT_C.C3)])
+ 83 - output([A.C3], [B.C2], [DLT_C.DMLFACTOR$$], [PRE_E.C4], [DLT_C.C3]), filter(nil), rowset=16
+      equal_conds([A.C2 = B.C3]), other_conds(nil)
+ 84 - output([B.C2], [DLT_C.DMLFACTOR$$], [PRE_E.C4], [DLT_C.C3], [B.C3]), filter(nil), rowset=16
+      equal_conds([B.C2 = DLT_C.C4]), other_conds(nil)
+ 85 - output([DLT_C.DMLFACTOR$$], [PRE_E.C4], [DLT_C.C3], [DLT_C.C4]), filter(nil), rowset=16
+      equal_conds([DLT_C.C2 = PRE_D.C3]), other_conds(nil)
+ 86 - output([PRE_E.C4], [PRE_D.C3]), filter(nil), rowset=16
+      equal_conds([PRE_D.C4 = PRE_E.C2]), other_conds(nil)
+ 87 - output([PRE_D.C3], [PRE_D.C4]), filter(nil), rowset=16
+      access([PRE_D.C3], [PRE_D.C4])
+ 88 - output([UNION([1])], [UNION([2])]), filter(nil), rowset=16
+ 89 - output([D.C3], [D.C4]), filter(nil), rowset=16
+      equal_conds([VIEW9.MLOG$_T1.C1 = D.C1]), other_conds(nil)
+ 90 - output([VIEW9.MLOG$_T1.C1]), filter(nil), rowset=16
+      access([VIEW9.MLOG$_T1.C1])
+ 91 - output([MLOG$_T1.C1]), filter([cast(ORA_ROWSCN, NUMBER(-1, -1)) > last_refresh_scn(xxxxxx)]), rowset=16
+      access([MLOG$_T1.C1], [ORA_ROWSCN]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([MLOG$_T1.C1], [MLOG$_T1.SEQUENCE$$]), range(MIN,MIN ; MAX,MAX)always true
+ 92 - output([D.C1], [D.C3], [D.C4]), filter(nil), rowset=16
+      access([D.C1], [D.C3], [D.C4]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([D.C1]), range(MIN ; MAX)always true
+ 93 - output([DLT_T$$.C3], [DLT_T$$.C4]), filter([DLT_T$$.OLD_NEW$$ = cast('O', VARCHAR2(1048576 ))], [DLT_T$$.SEQUENCE$$ = DLT_T$$.MINSEQ$$]), rowset=16
+      access([DLT_T$$.OLD_NEW$$], [DLT_T$$.SEQUENCE$$], [DLT_T$$.MINSEQ$$], [DLT_T$$.C3], [DLT_T$$.C4])
+ 94 - output([MLOG$_T1.OLD_NEW$$], [MLOG$_T1.SEQUENCE$$], [T_FUN_MIN(MLOG$_T1.SEQUENCE$$)], [MLOG$_T1.C3], [MLOG$_T1.C4]), filter(nil), rowset=16
+      win_expr(T_FUN_MIN(MLOG$_T1.SEQUENCE$$)), partition_by([MLOG$_T1.C1]), order_by(nil), window_type(RANGE), upper(UNBOUNDED PRECEDING), lower(UNBOUNDED 
+      FOLLOWING)
+ 95 - output([MLOG$_T1.C1], [MLOG$_T1.SEQUENCE$$], [MLOG$_T1.OLD_NEW$$], [MLOG$_T1.C3], [MLOG$_T1.C4]), filter([cast(ORA_ROWSCN, NUMBER(-1, -1)) > last_refresh_scn(xxxxxx)]), rowset=16
+      access([MLOG$_T1.C1], [MLOG$_T1.SEQUENCE$$], [MLOG$_T1.OLD_NEW$$], [MLOG$_T1.C3], [MLOG$_T1.C4], [ORA_ROWSCN]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([MLOG$_T1.C1], [MLOG$_T1.SEQUENCE$$]), range(MIN,MIN ; MAX,MAX)always true
+ 96 - output([PRE_E.C2], [PRE_E.C4]), filter(nil), rowset=16
+      access([PRE_E.C2], [PRE_E.C4])
+ 97 - output([UNION([1])], [UNION([2])]), filter(nil), rowset=16
+ 98 - output([E.C2], [E.C4]), filter(nil), rowset=16
+      equal_conds([VIEW10.MLOG$_T1.C1 = E.C1]), other_conds(nil)
+ 99 - output([VIEW10.MLOG$_T1.C1]), filter(nil), rowset=16
+      access([VIEW10.MLOG$_T1.C1])
+100 - output([MLOG$_T1.C1]), filter([cast(ORA_ROWSCN, NUMBER(-1, -1)) > last_refresh_scn(xxxxxx)]), rowset=16
+      access([MLOG$_T1.C1], [ORA_ROWSCN]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([MLOG$_T1.C1], [MLOG$_T1.SEQUENCE$$]), range(MIN,MIN ; MAX,MAX)always true
+101 - output([E.C1], [E.C2], [E.C4]), filter(nil), rowset=16
+      access([E.C1], [E.C2], [E.C4]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([E.C1]), range(MIN ; MAX)always true
+102 - output([DLT_T$$.C2], [DLT_T$$.C4]), filter([DLT_T$$.OLD_NEW$$ = cast('O', VARCHAR2(1048576 ))], [DLT_T$$.SEQUENCE$$ = DLT_T$$.MINSEQ$$]), rowset=16
+      access([DLT_T$$.OLD_NEW$$], [DLT_T$$.SEQUENCE$$], [DLT_T$$.MINSEQ$$], [DLT_T$$.C2], [DLT_T$$.C4])
+103 - output([MLOG$_T1.OLD_NEW$$], [MLOG$_T1.SEQUENCE$$], [T_FUN_MIN(MLOG$_T1.SEQUENCE$$)], [MLOG$_T1.C2], [MLOG$_T1.C4]), filter(nil), rowset=16
+      win_expr(T_FUN_MIN(MLOG$_T1.SEQUENCE$$)), partition_by([MLOG$_T1.C1]), order_by(nil), window_type(RANGE), upper(UNBOUNDED PRECEDING), lower(UNBOUNDED 
+      FOLLOWING)
+104 - output([MLOG$_T1.C1], [MLOG$_T1.SEQUENCE$$], [MLOG$_T1.OLD_NEW$$], [MLOG$_T1.C2], [MLOG$_T1.C4]), filter([cast(ORA_ROWSCN, NUMBER(-1, -1)) > last_refresh_scn(xxxxxx)]), rowset=16
+      access([MLOG$_T1.C1], [MLOG$_T1.SEQUENCE$$], [MLOG$_T1.OLD_NEW$$], [MLOG$_T1.C2], [MLOG$_T1.C4], [ORA_ROWSCN]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([MLOG$_T1.C1], [MLOG$_T1.SEQUENCE$$]), range(MIN,MIN ; MAX,MAX)always true
+105 - output([DLT_C.DMLFACTOR$$], [DLT_C.C4], [DLT_C.C2], [DLT_C.C3]), filter(nil), rowset=16
+      access([DLT_C.DMLFACTOR$$], [DLT_C.C4], [DLT_C.C2], [DLT_C.C3])
+106 - output([CASE WHEN MLOG$_T1.OLD_NEW$$ = cast('N', VARCHAR2(1048576 )) THEN 1 ELSE (T_OP_NEG, 1) END], [MLOG$_T1.C4], [MLOG$_T1.C2], [MLOG$_T1.C3]), filter([cast(ORA_ROWSCN,
+       NUMBER(-1, -1)) > last_refresh_scn(xxxxxx)]), rowset=16
+      access([MLOG$_T1.OLD_NEW$$], [MLOG$_T1.C4], [MLOG$_T1.C2], [MLOG$_T1.C3], [ORA_ROWSCN]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([MLOG$_T1.C1], [MLOG$_T1.SEQUENCE$$]), range(MIN,MIN ; MAX,MAX)always true
+107 - output([B.C3], [B.C2]), filter(nil), rowset=16
+      access([B.C3], [B.C2]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([B.C1]), range(MIN ; MAX)always true
+108 - output([A.C2], [A.C3]), filter(nil), rowset=16
+      access([A.C2], [A.C3]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([A.C1]), range(MIN ; MAX)always true
+109 - output([A.C3], [B.C2], [T_FUN_SUM(DLT_D.DMLFACTOR$$)], [T_FUN_SUM(DLT_D.DMLFACTOR$$ * CASE WHEN PRE_E.C4 IS NULL THEN 0 ELSE 1 END)], [T_FUN_SUM(DLT_D.DMLFACTOR$$ 
+      * PRE_E.C4)], [T_FUN_SUM(DLT_D.DMLFACTOR$$ * CASE WHEN C.C3 IS NULL THEN 0 ELSE 1 END)], [T_FUN_SUM(DLT_D.DMLFACTOR$$ * C.C3)]), filter(nil), rowset=16
+      group([A.C3], [B.C2]), agg_func([T_FUN_SUM(DLT_D.DMLFACTOR$$)], [T_FUN_SUM(DLT_D.DMLFACTOR$$ * CASE WHEN PRE_E.C4 IS NULL THEN 0 ELSE 1 END)], [T_FUN_SUM(DLT_D.DMLFACTOR$$ 
+      * PRE_E.C4)], [T_FUN_SUM(DLT_D.DMLFACTOR$$ * CASE WHEN C.C3 IS NULL THEN 0 ELSE 1 END)], [T_FUN_SUM(DLT_D.DMLFACTOR$$ * C.C3)])
+110 - output([A.C3], [B.C2], [DLT_D.DMLFACTOR$$], [PRE_E.C4], [C.C3]), filter(nil), rowset=16
+      equal_conds([A.C2 = B.C3]), other_conds(nil)
+111 - output([B.C2], [DLT_D.DMLFACTOR$$], [PRE_E.C4], [C.C3], [B.C3]), filter(nil), rowset=16
+      equal_conds([B.C2 = C.C4]), other_conds(nil)
+112 - output([DLT_D.DMLFACTOR$$], [PRE_E.C4], [C.C3], [C.C4]), filter(nil), rowset=16
+      equal_conds([C.C2 = DLT_D.C3]), other_conds(nil)
+113 - output([DLT_D.DMLFACTOR$$], [PRE_E.C4], [DLT_D.C3]), filter(nil), rowset=16
+      equal_conds([DLT_D.C4 = PRE_E.C2]), other_conds(nil)
+114 - output([PRE_E.C2], [PRE_E.C4]), filter(nil), rowset=16
+      access([PRE_E.C2], [PRE_E.C4])
+115 - output([UNION([1])], [UNION([2])]), filter(nil), rowset=16
+116 - output([E.C2], [E.C4]), filter(nil), rowset=16
+      equal_conds([VIEW11.MLOG$_T1.C1 = E.C1]), other_conds(nil)
+117 - output([VIEW11.MLOG$_T1.C1]), filter(nil), rowset=16
+      access([VIEW11.MLOG$_T1.C1])
+118 - output([MLOG$_T1.C1]), filter([cast(ORA_ROWSCN, NUMBER(-1, -1)) > last_refresh_scn(xxxxxx)]), rowset=16
+      access([MLOG$_T1.C1], [ORA_ROWSCN]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([MLOG$_T1.C1], [MLOG$_T1.SEQUENCE$$]), range(MIN,MIN ; MAX,MAX)always true
+119 - output([E.C1], [E.C2], [E.C4]), filter(nil), rowset=16
+      access([E.C1], [E.C2], [E.C4]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([E.C1]), range(MIN ; MAX)always true
+120 - output([DLT_T$$.C2], [DLT_T$$.C4]), filter([DLT_T$$.OLD_NEW$$ = cast('O', VARCHAR2(1048576 ))], [DLT_T$$.SEQUENCE$$ = DLT_T$$.MINSEQ$$]), rowset=16
+      access([DLT_T$$.OLD_NEW$$], [DLT_T$$.SEQUENCE$$], [DLT_T$$.MINSEQ$$], [DLT_T$$.C2], [DLT_T$$.C4])
+121 - output([MLOG$_T1.OLD_NEW$$], [MLOG$_T1.SEQUENCE$$], [T_FUN_MIN(MLOG$_T1.SEQUENCE$$)], [MLOG$_T1.C2], [MLOG$_T1.C4]), filter(nil), rowset=16
+      win_expr(T_FUN_MIN(MLOG$_T1.SEQUENCE$$)), partition_by([MLOG$_T1.C1]), order_by(nil), window_type(RANGE), upper(UNBOUNDED PRECEDING), lower(UNBOUNDED 
+      FOLLOWING)
+122 - output([MLOG$_T1.C1], [MLOG$_T1.SEQUENCE$$], [MLOG$_T1.OLD_NEW$$], [MLOG$_T1.C2], [MLOG$_T1.C4]), filter([cast(ORA_ROWSCN, NUMBER(-1, -1)) > last_refresh_scn(xxxxxx)]), rowset=16
+      access([MLOG$_T1.C1], [MLOG$_T1.SEQUENCE$$], [MLOG$_T1.OLD_NEW$$], [MLOG$_T1.C2], [MLOG$_T1.C4], [ORA_ROWSCN]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([MLOG$_T1.C1], [MLOG$_T1.SEQUENCE$$]), range(MIN,MIN ; MAX,MAX)always true
+123 - output([DLT_D.DMLFACTOR$$], [DLT_D.C3], [DLT_D.C4]), filter(nil), rowset=16
+      access([DLT_D.DMLFACTOR$$], [DLT_D.C3], [DLT_D.C4])
+124 - output([CASE WHEN MLOG$_T1.OLD_NEW$$ = cast('N', VARCHAR2(1048576 )) THEN 1 ELSE (T_OP_NEG, 1) END], [MLOG$_T1.C3], [MLOG$_T1.C4]), filter([cast(ORA_ROWSCN,
+       NUMBER(-1, -1)) > last_refresh_scn(xxxxxx)]), rowset=16
+      access([MLOG$_T1.OLD_NEW$$], [MLOG$_T1.C3], [MLOG$_T1.C4], [ORA_ROWSCN]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([MLOG$_T1.C1], [MLOG$_T1.SEQUENCE$$]), range(MIN,MIN ; MAX,MAX)always true
+125 - output([C.C4], [C.C2], [C.C3]), filter(nil), rowset=16
+      access([C.C4], [C.C2], [C.C3]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([C.C1]), range(MIN ; MAX)always true
+126 - output([B.C3], [B.C2]), filter(nil), rowset=16
+      access([B.C3], [B.C2]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([B.C1]), range(MIN ; MAX)always true
+127 - output([A.C2], [A.C3]), filter(nil), rowset=16
+      access([A.C2], [A.C3]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([A.C1]), range(MIN ; MAX)always true
+128 - output([A.C3], [B.C2], [T_FUN_SUM(DLT_E.DMLFACTOR$$)], [T_FUN_SUM(DLT_E.DMLFACTOR$$ * CASE WHEN DLT_E.C4 IS NULL THEN 0 ELSE 1 END)], [T_FUN_SUM(DLT_E.DMLFACTOR$$ 
+      * DLT_E.C4)], [T_FUN_SUM(DLT_E.DMLFACTOR$$ * CASE WHEN C.C3 IS NULL THEN 0 ELSE 1 END)], [T_FUN_SUM(DLT_E.DMLFACTOR$$ * C.C3)]), filter(nil), rowset=16
+      group([A.C3], [B.C2]), agg_func([T_FUN_SUM(DLT_E.DMLFACTOR$$)], [T_FUN_SUM(DLT_E.DMLFACTOR$$ * CASE WHEN DLT_E.C4 IS NULL THEN 0 ELSE 1 END)], [T_FUN_SUM(DLT_E.DMLFACTOR$$ 
+      * DLT_E.C4)], [T_FUN_SUM(DLT_E.DMLFACTOR$$ * CASE WHEN C.C3 IS NULL THEN 0 ELSE 1 END)], [T_FUN_SUM(DLT_E.DMLFACTOR$$ * C.C3)])
+129 - output([A.C3], [B.C2], [DLT_E.DMLFACTOR$$], [DLT_E.C4], [C.C3]), filter(nil), rowset=16
+      equal_conds([A.C2 = B.C3]), other_conds(nil)
+130 - output([B.C2], [DLT_E.DMLFACTOR$$], [DLT_E.C4], [C.C3], [B.C3]), filter(nil), rowset=16
+      equal_conds([B.C2 = C.C4]), other_conds(nil)
+131 - output([DLT_E.DMLFACTOR$$], [DLT_E.C4], [C.C3], [C.C4]), filter(nil), rowset=16
+      equal_conds([C.C2 = D.C3]), other_conds(nil)
+132 - output([DLT_E.DMLFACTOR$$], [DLT_E.C4], [D.C3]), filter(nil), rowset=16
+      equal_conds([D.C4 = DLT_E.C2]), other_conds(nil)
+133 - output([DLT_E.DMLFACTOR$$], [DLT_E.C2], [DLT_E.C4]), filter(nil), rowset=16
+      access([DLT_E.DMLFACTOR$$], [DLT_E.C2], [DLT_E.C4])
+134 - output([CASE WHEN MLOG$_T1.OLD_NEW$$ = cast('N', VARCHAR2(1048576 )) THEN 1 ELSE (T_OP_NEG, 1) END], [MLOG$_T1.C2], [MLOG$_T1.C4]), filter([cast(ORA_ROWSCN,
+       NUMBER(-1, -1)) > last_refresh_scn(xxxxxx)]), rowset=16
+      access([MLOG$_T1.OLD_NEW$$], [MLOG$_T1.C2], [MLOG$_T1.C4], [ORA_ROWSCN]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([MLOG$_T1.C1], [MLOG$_T1.SEQUENCE$$]), range(MIN,MIN ; MAX,MAX)always true
+135 - output([D.C3], [D.C4]), filter(nil), rowset=16
+      access([D.C3], [D.C4]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([D.C1]), range(MIN ; MAX)always true
+136 - output([C.C4], [C.C2], [C.C3]), filter(nil), rowset=16
+      access([C.C4], [C.C2], [C.C3]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([C.C1]), range(MIN ; MAX)always true
+137 - output([B.C3], [B.C2]), filter(nil), rowset=16
+      access([B.C3], [B.C2]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([B.C1]), range(MIN ; MAX)always true
+138 - output([A.C2], [A.C3]), filter(nil), rowset=16
+      access([A.C2], [A.C3]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([A.C1]), range(MIN ; MAX)always true
+
+select * from res_com1;
++----------+
+| EXPECT_0 |
++----------+
+|        0 |
++----------+
+select * from res_com2;
++----------+
+| EXPECT_0 |
++----------+
+|        0 |
++----------+
+
+insert into t1(c2, c3, c4) select uniform(1, 5, random()), uniform(1, 5, random()), uniform(1, 5, random()) from table(generator(20));
+select * from res_com1;
++----------+
+| EXPECT_0 |
++----------+
+|        0 |
++----------+
+select * from res_com2;
++----------+
+| EXPECT_0 |
++----------+
+|        0 |
++----------+
+
+insert into t1(c2, c3, c4) select uniform(1, 5, random()), uniform(1, 5, random()), uniform(1, 5, random()) from table(generator(20));
+update t1 set c2 = c4 where c3 > 3;
+delete from t1 where c4 < 2;
+select * from res_com1;
++----------+
+| EXPECT_0 |
++----------+
+|        0 |
++----------+
+select * from res_com2;
++----------+
+| EXPECT_0 |
++----------+
+|        0 |
++----------+
+
+delete from t1;
+select * from res_com1;
++----------+
+| EXPECT_0 |
++----------+
+|        0 |
++----------+
+select * from res_com2;
++----------+
+| EXPECT_0 |
++----------+
+|        0 |
++----------+
+
+insert into t1(c2, c3, c4) select uniform(1, 5, random()), uniform(1, 5, random()), uniform(1, 5, random()) from table(generator(40));
+select * from res_com1;
++----------+
+| EXPECT_0 |
++----------+
+|        0 |
++----------+
+select * from res_com2;
++----------+
+| EXPECT_0 |
++----------+
+|        0 |
++----------+
+
+call DBMS_MVIEW.REFRESH('t1_rt_mv1', 'f');
+call DBMS_MVIEW.REFRESH('t1_rt_mv2', 'f');
+
+update t1 set c4 = c2 where c3 > 2;
+select * from res_com1;
++----------+
+| EXPECT_0 |
++----------+
+|        0 |
++----------+
+select * from res_com2;
++----------+
+| EXPECT_0 |
++----------+
+|        0 |
++----------+
+
+delete from t1 where c3 < 2 and c2 < 3;
+select * from res_com1;
++----------+
+| EXPECT_0 |
++----------+
+|        0 |
++----------+
+select * from res_com2;
++----------+
+| EXPECT_0 |
++----------+
+|        0 |
++----------+
+
+drop materialized view log on t1;
+drop table t1;
+drop table t2;
+drop view t1_v1;
+drop view t1_v2;
+drop materialized view t1_rt_mv1;
+drop materialized view t1_rt_mv2;

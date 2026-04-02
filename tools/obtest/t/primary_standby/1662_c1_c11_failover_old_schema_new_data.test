@@ -1,0 +1,90 @@
+# owner: msy164651
+# description: 测试在备库处于旧schema新数据的场景下，failover之后新数据可以被回滚掉
+# case1：创建租户，创建用户表插一行数据，然后把备库的z2隔离，然后做一条ddl加一列，插入新数据，确认备库同步完成之后，宕掉主库，执行备库failover，然后在flashback之前失败掉，修改掉已经持久化的备机读时间戳，把schema的数据改回去
+#
+ob1=OBI(cluster=1,proxy_num=0);
+ob2=OBI(cluster=1:1,leaderob=ob1,proxy_num=0);
+ob1.reboot;
+ob2.reboot;
+let $cpu = 2;
+let $memory = 2073741824;
+let $min_memory = 2073741824;
+let $disk = 536870912;
+let $iops = 100000;
+let $session = 64;
+ob1.mysql CREATE RESOURCE UNIT unit_1 MAX_CPU $cpu, MAX_MEMORY $memory, MAX_IOPS $iops, MAX_DISK_SIZE $disk, MAX_SESSION_NUM $session, MIN_CPU=1, MIN_MEMORY=$min_memory, MIN_IOPS=128;
+ob1.mysql CREATE RESOURCE POOL pool_1 UNIT = 'unit_1', UNIT_NUM = 1, ZONE_LIST = ('z1');
+ob1.mysql CREATE TENANT tt RESOURCE_POOL_LIST = ('pool_1'), primary_zone='z1' set ob_tcp_invited_nodes='%',ob_compatibility_mode='oracle';
+sleep 3;
+ob_connect(conn1, ob1.z1.obs0, SYS@tt, , sys, , USE_OB_CONNECTOR);
+connection conn1;
+create table t(c1 int primary key, c2 int);
+create index idx_t on t(c2);
+insert into t values (1,2);
+insert into t values (3,4);
+insert into t values (5,6);
+select * from t;
+set @@global.undo_retention = 900;
+ob_connect(sys_conn, ob2.z1.obs0, root, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection sys_conn;
+sleep 3;
+alter system set balancer_idle_time = '10s';
+alter system set server_data_copy_out_concurrency = 30;
+alter system set server_data_copy_in_concurrency = 30;
+alter system set data_copy_concurrency = 60;
+alter system set max_stale_time_for_weak_consistency = '120s';
+alter system set debug_sync_timeout = '100000s';
+let $partition_cnt = deploy_get_value(ob1.select select count(*) c from __all_virtual_meta_table where tenant_id = 1001, c, 1);
+ob2.check_until_timeout select count(*) c from __all_virtual_meta_table where tenant_id = 1001 and zone = 'z1', $partition_cnt, 120;
+ob2.check_until_timeout select count(*) c from __all_virtual_meta_table where tenant_id = 1001 and zone = 'z2', $partition_cnt, 120;
+ob1.check_until_timeout select switchover_status from oceanbase.__all_virtual_cluster, TO STANDBY, 100;
+ob1.check_until_timeout select switchover_status from oceanbase.__all_virtual_cluster, TO STANDBY, 30;
+let $tenant_id = deploy_get_value(ob2.select select tenant_id from oceanbase.__all_tenant where tenant_name = 'tt', tenant_id, 1);
+let $row_id = deploy_get_value(ob2.select select row_id from oceanbase.__all_core_table where table_name = '__all_schema_status' and column_name = 'tenant_id' and column_value = $tenant_id, row_id, 1);
+let $schema_version = deploy_get_value(ob2.select select column_value from oceanbase.__all_core_table where table_name = '__all_schema_status' and column_name = 'readable_schema_version' and row_id = $row_id, column_value, 1);
+let $snapshot = deploy_get_value(ob2.select select column_value from oceanbase.__all_core_table where table_name = '__all_schema_status' and column_name = 'snapshot_timestamp' and row_id = $row_id, column_value, 1);
+connection conn1;
+insert into t values (7,7);
+ob1.check_until_timeout select switchover_status from oceanbase.__all_virtual_cluster, TO STANDBY, 30;
+let $snapshot = deploy_get_value(ob2.select select column_value from oceanbase.__all_core_table where table_name = '__all_schema_status' and column_name = 'snapshot_timestamp' and row_id = $row_id, column_value, 1);
+let $table_id = deploy_get_value(ob2.select select table_id from __all_virtual_table where table_name = 't', table_id, 1);
+let $user_ts = deploy_get_value(ob2.select select min(weak_read_timestamp) as ts from __all_virtual_partition_info where tenant_id = 1001, ts, 1);
+--disable_query_log
+echo "read with inner_wrs - 200ms";
+let $user_ts = deploy_get_value(ob2.select select ($snapshot - 200000) as ts, ts, 1);
+eval select * from t as of scn $user_ts;
+--enable_query_log
+alter table t add c3 int;
+insert into t values (2,2,2);
+#回放完成
+ob1.check_until_timeout select switchover_status from oceanbase.__all_virtual_cluster, TO STANDBY, 30;
+ob1.force_stop;
+#控制备库在持久化flashback点前失败点
+ob2.mysql set ob_global_debug_sync = 'BEFORE_SEND_FLASHBACK_RPC wait_for continue_signal';
+ob_connect(sys_conn, ob2.z2.obs0, root, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection sys_conn;
+--error 4012
+alter system ACTIVATE PHYSICAL STANDBY CLUSTER;
+#备库处于pending状态
+ob2.mysql_p select switchover_status from oceanbase.__all_virtual_cluster;
+#同步线程已经停掉，然后把回放点修改回去
+ob2.mysql update oceanbase.__all_failover_info set sys_table_scn = $snapshot;
+ob2.mysql update oceanbase.__all_failover_info set user_table_scn = $snapshot;
+ob2.mysql update oceanbase.__all_core_table set column_value = $schema_version where table_name = '__all_schema_status' and column_name = 'readable_schema_version' and row_id = $row_id;
+ob2.mysql update oceanbase.__all_core_table set column_value = $snapshot where table_name = '__all_schema_status' and column_name = 'snapshot_timestamp' and row_id = $row_id;
+ob2.mysql set ob_global_debug_sync = 'now signal continue_signal';
+ob_connect(sys_conn, ob2.z2.obs0, root, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection sys_conn;
+set ob_query_timeout = 1000000000;
+alter system ACTIVATE PHYSICAL STANDBY CLUSTER;
+ob2.force_stop;
+sleep 10;
+ob2.start;
+ob2.check_until_timeout select count(*) from __all_virtual_core_meta_table where role = 1, 1, 200;
+ob2.check_until_timeout select count(*) from oceanbase.__all_virtual_server_schema_info where tenant_id = 1001 and refreshed_schema_version = received_schema_version and refreshed_schema_version >= $schema_version, 2, 100;
+ob_connect(tt2_conn_z2, ob2.z2.obs0, SYS@tt, , sys, , USE_OB_CONNECTOR);
+connection tt2_conn_z2;
+select * from t;
+ob_connect(tt2_conn_z1, ob2.z1.obs0, SYS@tt, , sys, , USE_OB_CONNECTOR);
+connection tt2_conn_z1;
+select * from t;

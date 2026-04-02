@@ -1,0 +1,222 @@
+#owner: zhuangyifeng.zyf
+#owner group: sql1
+# tags: optimizer
+
+--disable_query_log
+--disable_result_log
+--disable_warnings
+
+set @@session.explicit_defaults_for_timestamp=off;
+
+--echo 非分区表
+drop table if exists t1;
+drop table if exists tx_smpay_traderecord;
+create table t1 (
+  pk int primary key,
+  c1 int,
+  c2 int,
+  c3 int,
+  c4 int as (c1 + c2) virtual,
+  c5 int as (c2 + c3) stored,
+  c6 text
+) with column group (all columns, each column);
+
+set cte_max_recursion_depth=100000;
+insert into t1(pk, c1, c2, c3, c6) select * from (with RECURSIVE cte(a,b,c,d,e) as (select 1,1,1,1,repeat(1, 1024) union all select a+1,b+1,c+1,d+1,repeat(a, 1024) from cte where a < 5000) select * from cte);
+insert into t1(pk, c1, c2, c3, c6) select * from (with RECURSIVE cte(a,b,c,d,e) as (select 5001,1,1,1,repeat(1, 1024) union all select a+1,b+1,c-1,d+1,repeat(a, 1024) from cte where a < 10000) select * from cte);
+call dbms_stats.gather_table_stats(NULL, 'T1');
+
+--enable_query_log
+--enable_result_log
+--enable_warnings
+--result_format 4
+--explain_protocol 2
+
+# 有效触发
+select /*+use_late_materialization*/ c1, c2, c3, c4, c5 from t1 where c1 >= 1000 and c1 <= 1005 order by c2 limit 5;
+select /*+use_late_materialization*/ c1, c2, c3, c4, c5 from t1 where c1 >= 1000 and c1 <= 1005 order by c4 limit 5;
+select /*+use_late_materialization*/ c1, c2, c3, c4, c5 from t1 where c1 >= 1000 and c1 <= 1005 order by c5 limit 5;
+select /*+use_late_materialization*/ c1, c2, c3, c4, c5 from t1 where c3 + 4 >= 1000 and c3 + 4 <= 1005 order by c1 limit 5;
+
+# 晚期物化后，再触发别的改写
+select /*+NO_EXPAND(@"SEL$1") use_late_materialization use_concat(@"SEL$74784567")*/ * from t1 where c1 > 1 and (c2 > 1 or pk > 1) order by c2 limit 10;
+# order by 中的无法被替换成 函数索引列， 所以也无法触发晚期物化
+select /*+use_late_materialization*/ c1, c2, c3, c4, c5 from t1 where c3 + 4 >= 1000 and c3 + 4 <= 1005 order by c1, c3 + 4 limit 5;
+# no limit
+select /*+use_late_materialization*/ c1, c2, c3, c4, c5 from t1 where c1 >= 1000 and c1 <= 1005 order by c1 desc, c2 asc;
+# no order by
+select /*+use_late_materialization*/ c1, c2, c3, c4, c5 from t1 where c1 >= 1000 and c1 <= 1005 limit 10;
+drop table t1;
+
+--echo 分区表案例
+CREATE TABLE tx_smpay_traderecord (
+  recorddate date NOT NULL COMMENT '记录日期',
+  ordernum varchar(36) NOT NULL COMMENT '支付订单号',
+  shopid int(11) NOT NULL COMMENT '店铺id',
+  tradetype varchar(2) DEFAULT NULL COMMENT '交易类型',
+  fromtype varchar(2) DEFAULT NULL COMMENT '交易来源',
+  tradechannel varchar(20) DEFAULT NULL COMMENT '交易渠道',
+  acquirerchannel varchar(16) DEFAULT NULL COMMENT '收单渠道',
+  usescenes varchar(2) DEFAULT NULL COMMENT '支付场景',
+  shopname varchar(128) DEFAULT NULL COMMENT '商户名称',
+  userid int(11) DEFAULT NULL COMMENT '用户ID',
+  openid varchar(255) DEFAULT NULL COMMENT 'openid',
+  originalamount decimal(18,2) DEFAULT NULL COMMENT '原支付金额',
+  payamount decimal(18,2) DEFAULT NULL COMMENT '实际支付金额',
+  reducedifference decimal(18,2) DEFAULT NULL COMMENT '总减免金额',
+  platformdifference decimal(18,2) DEFAULT NULL COMMENT '平台减免',
+  vaccountdifference decimal(18,2) DEFAULT NULL COMMENT '零钱减免',
+  shopreduce decimal(18,2) DEFAULT NULL COMMENT '商户减免金额',
+  payfee decimal(18,2) DEFAULT NULL COMMENT '交易结算手续费（实际支付）',
+  servicechargerate decimal(8,6) DEFAULT NULL COMMENT '手续费费率',
+  rebatepayment decimal(18,2) DEFAULT NULL COMMENT '返利金金额',
+  sumpayment decimal(18,2) DEFAULT NULL COMMENT '总发金额',
+  partrebatereason int(11) DEFAULT NULL COMMENT '部分返利原因',
+  trade_code varchar(64) DEFAULT NULL COMMENT '微信/支付宝/云闪付流水号',
+  paystatus varchar(2) DEFAULT NULL COMMENT '支付状态',
+  paysuccesstime datetime DEFAULT NULL COMMENT '支付成功时间',
+  qrcode varchar(64) DEFAULT NULL COMMENT '收款码编号',
+  transactionid varchar(64) DEFAULT NULL COMMENT '三方订单号',
+  merid varchar(64) DEFAULT NULL COMMENT '商户号',
+  terminalnumber varchar(64) DEFAULT NULL COMMENT '交易终端号',
+  transfercard varchar(64) DEFAULT NULL COMMENT '转入卡号',
+  behalfpaystatus varchar(2) DEFAULT NULL COMMENT '入账状态',
+  behalfpaydate datetime DEFAULT NULL COMMENT '合并入账成功，撤销成功时间',
+  behalfretmsg varchar(255) DEFAULT NULL COMMENT '入账失败原因',
+  remark varchar(255) DEFAULT NULL COMMENT '付款备注',
+  splittrade varchar(10) DEFAULT NULL COMMENT '是否分账交易',
+  group_profit_percent decimal(8,6) DEFAULT NULL COMMENT '管理方分润比例',
+  group_profit_amount decimal(18,2) DEFAULT NULL COMMENT '管理方分润金额',
+  shop_behalf_type varchar(2) DEFAULT NULL COMMENT '商户代付模式',
+  revoketime datetime DEFAULT NULL COMMENT '撤销时间',
+  batchno varchar(20) DEFAULT NULL COMMENT '批量入账流水',
+  paytype varchar(16) DEFAULT NULL COMMENT '交易类型',
+  orderrefundstatus varchar(2) DEFAULT NULL COMMENT '退款方式',
+  needbehalfpay varchar(2) DEFAULT NULL COMMENT '标记趣街代付还是易生代付',
+  refundreason varchar(128) DEFAULT NULL COMMENT '退款原因',
+  originordernum varchar(36) DEFAULT NULL COMMENT '退款的正向交易订单号',
+  behalfpayrequestid varchar(36) DEFAULT NULL COMMENT '代付流水号',
+  behalfpayaddtime datetime DEFAULT NULL COMMENT '代付发起时间',
+  realrebateamount decimal(18,2) DEFAULT NULL COMMENT '实际使用返利额度',
+  remainingrebateamount decimal(18,2) DEFAULT NULL COMMENT '剩余返利额度',
+  traderecordcoupon text DEFAULT NULL COMMENT '使用的优惠券(text)',
+  acctname varchar(64) DEFAULT NULL COMMENT '转入账户名称',
+  cashbackamount decimal(18,2) DEFAULT NULL COMMENT '返现金额',
+  monthtradeup decimal(18,2) DEFAULT NULL COMMENT '月返利额度',
+  channelorgid varchar(32) DEFAULT NULL COMMENT '渠道机构号',
+  plattype varchar(16) DEFAULT NULL COMMENT '平台类型',
+  updatetime datetime DEFAULT NULL COMMENT '更新日期',
+  refundorder varchar(36) DEFAULT NULL COMMENT '退款订单号',
+  refundtradecode varchar(36) DEFAULT NULL COMMENT '退款银行流水',
+  refundsuctime datetime DEFAULT NULL COMMENT '退款成功时间',
+  refundamount decimal(18,2) DEFAULT NULL COMMENT '客户实际退款金额',
+  merchantrefundamt decimal(18,2) DEFAULT NULL COMMENT '商户退款金额',
+  refundtradefee decimal(18,2) DEFAULT NULL COMMENT '平台手续费退款',
+  flushplatdifference decimal(18,2) DEFAULT NULL COMMENT '冲正平台减免',
+  flusvaccountdifference decimal(18,2) DEFAULT NULL COMMENT '冲正零钱减免',
+  charger decimal(18,2) DEFAULT NULL COMMENT '手续费承担方',
+  groupbehalftype varchar(2) DEFAULT NULL COMMENT '集团到账模式',
+  groupactivityid varchar(36) DEFAULT NULL COMMENT '分润活动id',
+  shopsplitscale decimal(8,6) DEFAULT NULL COMMENT '商户分账比例',
+  shopsplitamount decimal(18,2) DEFAULT NULL COMMENT '商户分账金额',
+  groupsplitamount decimal(18,2) DEFAULT NULL COMMENT '集群分账金额',
+  prebehalfdate date DEFAULT NULL COMMENT '预代付日期',
+  splitplatformreduce decimal(18,2) DEFAULT NULL COMMENT '平台补贴分账金额',
+  splitshopreduce decimal(18,2) DEFAULT NULL COMMENT '商户优惠分账金额',
+  batch varchar(32) DEFAULT NULL COMMENT '批量代付标记',
+  appid varchar(32) DEFAULT NULL COMMENT '应用ID',
+  outtradeno varchar(36) DEFAULT NULL COMMENT '商户订单流水号',
+  preorderno varchar(36) DEFAULT NULL COMMENT '预下单流水号',
+  appname varchar(64) DEFAULT NULL COMMENT '应用名称',
+  outrefundno varchar(36) DEFAULT NULL COMMENT '外部退款流水号',
+  refundsendtime datetime DEFAULT NULL COMMENT '退款发往渠道方时间',
+  failreason varchar(255) DEFAULT NULL COMMENT '退款失败原因',
+  del varchar(2) DEFAULT NULL COMMENT '是否逻辑删除',
+  templateid varchar(36) DEFAULT NULL COMMENT '券模版id',
+  orderamount decimal(18,2) DEFAULT NULL COMMENT '原支付订单金额',
+  hbfqnum int(11) DEFAULT NULL COMMENT '分期数',
+  extresmsg varchar(255) DEFAULT NULL COMMENT '下单失败原因',
+  clusterids json DEFAULT NULL COMMENT '商户所属集群id',
+  groupids json DEFAULT NULL COMMENT '管理方id',
+  rebatescale decimal(8,6) DEFAULT NULL COMMENT '返利比例',
+  equipname varchar(64) DEFAULT NULL COMMENT '收款设备名称',
+  employeeid varchar(32) DEFAULT NULL COMMENT '员工编号',
+  addtime datetime DEFAULT NULL COMMENT '建单时间',
+  tradefee decimal(18,2) DEFAULT NULL COMMENT 'zz',
+  orgsucctime datetime DEFAULT NULL,
+  splitType varchar(2) DEFAULT NULL COMMENT '交易',
+  ext_info json DEFAULT NULL COMMENT '扩展字段信息',
+  pCode varchar(64) DEFAULT NULL COMMENT '省',
+  cityCode varchar(64) DEFAULT NULL COMMENT '市',
+  districtCode varchar(64) DEFAULT NULL COMMENT '区',
+  shopType int(11) DEFAULT NULL COMMENT '店铺一级分类',
+  smTypeId int(11) DEFAULT NULL COMMENT '店铺二级分类',
+  finType varchar(16) DEFAULT NULL COMMENT '金融归属',
+  bizscene varchar(10) DEFAULT NULL COMMENT '业务场景00普通收款 01扫码点餐 02会员储值 03团购券核销 04外卖订单',
+  ordertype varchar(10) DEFAULT NULL COMMENT '订单类型',
+  extamount decimal(18,2) DEFAULT NULL COMMENT '组合支付金额',
+  extamtdetail json DEFAULT NULL COMMENT '扫码点餐扩展字段',
+  extdiscount decimal(18,2) DEFAULT NULL COMMENT '组合支付优惠',
+  extpayamount decimal(18,2) DEFAULT NULL COMMENT '组合支付实付',
+  PRIMARY KEY (recorddate, ordernum, shopid),
+  KEY idx_01 (shopid, ordernum) BLOCK_SIZE 16384 LOCAL,
+  KEY idx_02 (ordernum) BLOCK_SIZE 16384 LOCAL,
+  KEY idx_03 (paysuccesstime) BLOCK_SIZE 16384 LOCAL,
+  KEY idx_04 (addtime) BLOCK_SIZE 16384 LOCAL,
+  KEY idx_05 (originordernum) BLOCK_SIZE 16384 LOCAL,
+  KEY idx_06 (outtradeno) BLOCK_SIZE 16384 LOCAL,
+  INDEX idx_clusterids ((json_query(clusterids,'$[*]' RETURNING unsigned WITHOUT ARRAY WRAPPER asis error on error null on empty null on mismatch))) BLOCK_SIZE 16384,
+  INDEX idx_groupids ((json_query(groupids,'$[*]' RETURNING char(64) charset utf8mb4 WITHOUT ARRAY WRAPPER asis error on error null on empty null on mismatch))) BLOCK_SIZE 16384
+) DEFAULT CHARSET = utf8mb4 ROW_FORMAT = DYNAMIC COMPRESSION = 'zstd_1.3.8' REPLICA_NUM = 3 BLOCK_SIZE = 16384 USE_BLOOM_FILTER = FALSE TABLET_SIZE = 134217728 PCTFREE = 0 LOB_INROW_THRESHOLD=4096
+ partition by range columns(recorddate) subpartition by hash(shopid)
+(partition P20231231 values less than ('2024-01-01') (
+subpartition P20231231sp0,
+subpartition P20231231sp1,
+subpartition P20231231sp2,
+subpartition P20231231sp3,
+subpartition P20231231sp4),
+partition P20240101 values less than ('2024-01-02') (
+subpartition P20240101sp0,
+subpartition P20240101sp1,
+subpartition P20240101sp2,
+subpartition P20240101sp3,
+subpartition P20240101sp4),
+partition P20240102 values less than ('2024-01-03') (
+subpartition P20240102sp0,
+subpartition P20240102sp1,
+subpartition P20240102sp2,
+subpartition P20240102sp3,
+subpartition P20240102sp4),
+partition P20240103 values less than ('2024-01-04') (
+subpartition P20240103sp0,
+subpartition P20240103sp1,
+subpartition P20240103sp2,
+subpartition P20240103sp3,
+subpartition P20240103sp4)) WITH COLUMN GROUP(all columns, each column);
+
+SELECT /*+full(sm) use_late_materialization*/ * FROM tx_smpay_traderecord sm WHERE
+	( sm.recorddate >= '2024-06-30'
+		AND sm.recorddate <  '2024-07-25'
+		AND 
+	sm.addtime >= '2024-07-01'
+		AND sm.addtime <  '2024-07-25'
+		AND sm.splittrade = '1'
+	AND (sm.ordertype IN ('00','04') OR sm.ordertype IS NULL)) 
+ORDER BY
+	sm.addtime DESC 
+	LIMIT 0,10;
+
+drop table tx_smpay_traderecord;
+
+--echo # late materialization for column store table
+create table t1 (pk int primary key, c1 int, c2 int, c3 int) with column group (each column);
+create index i1 on t1(c1, c2);
+select /*+use_late_materialization*/ * from t1 where c1 >= 1000 and c1 <= 1005 order by c2 limit 5;
+drop table t1;
+
+create table t1(id int, c1 int, c2 int, c3 int, primary key(id, c3)) partition by hash(c3) partitions 4 with column group (each column);
+create index i1 on t1(c1) local;
+create index i2 on t1(c2) global;
+select /*+use_late_materialization*/ * from t1 where c1 >= 1000 and c1 <= 1005 order by c1 limit 5, 10;
+select /*+use_late_materialization*/ * from t1 where c2 >= 1000 and c2 <= 1005 order by c2 limit 5, 10;
+drop table t1;

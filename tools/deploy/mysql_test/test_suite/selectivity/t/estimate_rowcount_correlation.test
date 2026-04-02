@@ -1,0 +1,178 @@
+#owner: wuyuming.wym
+#owner group: sql1
+# tags: optimizer
+
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+
+--disable_warnings
+drop table if exists t1,t2;
+drop table if exists d1,d2;
+--enable_warnings
+
+create table t1(pk int, c1 int, c2 decimal(12, 5), c3 int, c4 int, c5 int);
+create table t2(pk int, c1 int, c2 decimal(12, 5), c3 int, c4 int, c5 int);
+
+insert into t1 
+select v1.id, v1.num, v2.num / 100.0, v1.id % 100, v1.id % 10, 0
+from 
+(select row_number() over () as id, num from (select row_number() over () % 10000 as num from table(generator(20000)) order by random(1))) v1,
+(select row_number() over () as id, num from (select row_number() over () % 1000 as num from table(generator(20000)) order by random(2))) v2
+where v1.id = v2.id;
+
+insert into t2
+select v1.id, v1.num, v2.num / 100.0, v1.id % 100, v1.id % 10, 0
+from 
+(select row_number() over () as id, num from (select row_number() over () % 2000 as num from table(generator(20000)) order by random(3))) v1,
+(select row_number() over () as id, num from (select row_number() over () % 1000 as num from table(generator(20000)) order by random(4))) v2
+where v1.id = v2.id;
+
+--source mysql_test/include/minor_merge_tenant.inc
+call dbms_stats.gather_table_stats(null, 't1');
+call dbms_stats.gather_table_stats(null, 't2');
+
+--enable_query_log
+
+--result_format 4
+--explain_protocol 2
+
+set optimizer_dynamic_sampling = 0;
+
+# test combine ndv
+select count(distinct pk), count(distinct c1), count(distinct c2), count(distinct c3), count(distinct c4), count(distinct c5) from t1;
+select count(*) from (select distinct pk, c2 from t1);
+select count(*) from (select distinct pk, c5 from t1);
+select count(*) from (select distinct pk, c1, c2 from t1);
+select count(*) from (select distinct c1, c2 from t1);
+select count(*) from (select distinct c3, c2 from t1);
+select count(*) from (select distinct c2, c4 from t1);
+select count(*) from (select distinct c1, c5 from t1);
+select count(*) from (select distinct c4, c5 from t1);
+select count(*) from (select distinct c1, c2, c3, c4, c5 from t1);
+
+explain select distinct c3, c4 from t1;
+explain select /*+opt_param('cardinality_estimation_model', 'INDEPENDENT')*/ distinct c3, c4 from t1;
+explain select /*+opt_param('cardinality_estimation_model', 'PARTIAL')*/ distinct c3, c4 from t1;
+explain select /*+opt_param('cardinality_estimation_model', 'FULL')*/ distinct c3, c4 from t1;
+explain select /*+opt_param('cardinality_estimation_model', 'INDEPENDENT')*/ distinct v1.c3, v2.c4 from t1 v1, t1 v2 where v1.c1=v2.c1;
+explain select /*+opt_param('cardinality_estimation_model', 'PARTIAL')*/ distinct v1.c3, v2.c4 from t1 v1, t1 v2 where v1.c1=v2.c1;
+explain select /*+opt_param('cardinality_estimation_model', 'FULL')*/ distinct v1.c3, v2.c4 from t1 v1, t1 v2 where v1.c1=v2.c1;
+explain select /*+opt_param('cardinality_estimation_model', 'INDEPENDENT')*/ count(*) from t1 v1, t1 v2 where v1.c3 = v2.c3 and v1.c4 = v2.c4;
+explain select /*+opt_param('cardinality_estimation_model', 'PARTIAL')*/ count(*) from t1 v1, t1 v2 where v1.c3 = v2.c3 and v1.c4 = v2.c4;
+explain select /*+opt_param('cardinality_estimation_model', 'FULL')*/ count(*) from t1 v1, t1 v2 where v1.c3 = v2.c3 and v1.c4 = v2.c4;
+
+# test equal preds in the single table
+explain select 1 from t1 where c1 = c2;
+explain select 1 from t1 where c1 != c2;
+explain select 1 from t1 where c1 <=> c2;
+explain select 1 from t1 where c1 * c2 = c1 + c2;
+explain select 1 from (select /*+no_rewrite*/ t1.c2 as c1, t2.c2 as c2 from t1, t2) where c1 = c2;
+select count(*) from t1, t2 where t1.c2 = t2.c2;
+select count(*) from (select *, first_value(c1) over (partition by c2) as win from t1) where c1 = win;
+select count(*) from (select *, first_value(c1) over (partition by c2) as win from t1) where c1 != win;
+select count(*) from (select *, first_value(c1) over (partition by c3) as win from t1) where c1 = win;
+select count(*) from (select *, first_value(c2) over (partition by c3) as win from t1) where c2 = win;
+select count(*) from (select *, last_value(pk) over (partition by c2) as win from t1) where pk = win;
+
+
+# TODO: large deviation for ce
+select count(*) from (select *, last_value(c2) over (partition by pk) as win from t1) where c2 = win;
+select count(*) from (select count(*) over (partition by c2) as r1, row_number() over (partition by c2 order by c1) as r2 from t1) where r1 = r2;
+
+
+# test different correlation
+show variables like 'cardinality_estimation_model';
+set cardinality_estimation_model = 'INDEPENDENT';
+explain select 1 from t1 where c3 = 1 and c4 = 1;
+explain select 1 from t1 where c3 = 1 and c4 = 1 and c1 < 5000;
+explain select 1 from t1 where c3 = 1 and c4 = 1 and c1 < 5000 and c2 < 5;
+explain select 1 from t1 where c3 = 1 or c4 = 1;
+explain select 1 from t1 where c1 < 5000 or c2 < 5;
+explain select distinct c1 from t1 where c1 < 5000 and c2 < 5;
+explain select 1 from t1 where (c3, 1) = (1, c4);
+explain select 1 from t1 where (c3, 1) != (1, c4);
+
+set cardinality_estimation_model = 'PARTIAL';
+explain select 1 from t1 where c3 = 1 and c4 = 1;
+explain select 1 from t1 where c3 = 1 and c4 = 1 and c1 < 5000;
+explain select 1 from t1 where c3 = 1 and c4 = 1 and c1 < 5000 and c2 < 5;
+explain select 1 from t1 where c3 = 1 or c4 = 1;
+explain select 1 from t1 where c1 < 5000 or c2 < 5;
+explain select distinct c1 from t1 where c1 < 5000 and c2 < 5;
+explain select 1 from t1 where (c3, 1) = (1, c4);
+explain select 1 from t1 where (c3, 1) != (1, c4);
+
+set cardinality_estimation_model = 'FULL';
+explain select 1 from t1 where c3 = 1 and c4 = 1;
+explain select 1 from t1 where c3 = 1 and c4 = 1 and c1 < 5000;
+explain select 1 from t1 where c3 = 1 and c4 = 1 and c1 < 5000 and c2 < 5;
+explain select 1 from t1 where c3 = 1 or c4 = 1;
+explain select 1 from t1 where c1 < 5000 or c2 < 5;
+explain select /*+opt_param('cardinality_estimation_model', 'independent')*/ 1 from t1 where c3 = 1 and c4 = 1;
+explain select /*+opt_param('cardinality_estimation_model', 1)*/ 1 from t1 where c3 = 1 and c4 = 1;
+explain select /*+opt_param('cardinality_estimation_model', 'PARTIAL')*/ 1 from t1 where c3 = 1 or c4 = 1;
+explain select distinct c1 from t1 where c1 < 5000 and c2 < 5;
+explain select 1 from t1 where (c3, 1) = (1, c4);
+explain select 1 from t1 where (c3, 1) != (1, c4);
+
+
+--explain_protocol 0
+--disable_query_log
+insert into t1 select * from t1;
+create index i1 on t1(c3);
+create index i2 on t1(c4);
+
+insert into t2 select pk + 20000, c1 + 2000, c2 + 10, c3 + 100, c4 + 10, c5 from t2;
+create index i3 on t2(c1);
+create index i4 on t2(c2);
+--source mysql_test/include/minor_merge_tenant.inc
+--enable_query_log
+
+set cardinality_estimation_model = 1;
+
+explain select /*+index(t1 i1) opt_param('_enable_storage_cardinality_estimation', 'false')*/ 1 from t1 where c3 = 1 and c4 = 1;
+explain select /*+index(t1 i2) opt_param('_enable_storage_cardinality_estimation', 'false')*/ 1 from t1 where c3 = 1 and c4 = 1;
+explain select /*+full(t1) opt_param('_enable_storage_cardinality_estimation', 'false')*/ 1 from t1 where c3 = 1 and c4 = 1;
+
+explain select /*+index(t1 i1) opt_param('_enable_storage_cardinality_estimation', 'true')*/ 1 from t1 where c3 = 1 and c4 = 1;
+explain select /*+index(t1 i2) opt_param('_enable_storage_cardinality_estimation', 'true')*/ 1 from t1 where c3 = 1 and c4 = 1;
+explain select /*+full(t1) opt_param('_enable_storage_cardinality_estimation', 'true')*/ 1 from t1 where c3 = 1 and c4 = 1;
+
+explain select /*+index(t2 i3) opt_param('_enable_storage_cardinality_estimation', 'false')*/ 1 from t2 where c1 > 1000 and c2 > 2;
+explain select /*+index(t2 i4) opt_param('_enable_storage_cardinality_estimation', 'false')*/ 1 from t2 where c1 > 1000 and c2 > 2;
+explain select /*+full(t2) opt_param('_enable_storage_cardinality_estimation', 'false')*/ 1 from t2 where c1 > 1000 and c2 > 2;
+
+explain select /*+index(t2 i3) opt_param('_enable_storage_cardinality_estimation', 'true')*/ 1 from t2 where c1 > 1000 and c2 > 2;
+explain select /*+index(t2 i4) opt_param('_enable_storage_cardinality_estimation', 'true')*/ 1 from t2 where c1 > 1000 and c2 > 2;
+explain select /*+full(t2) opt_param('_enable_storage_cardinality_estimation', 'true')*/ 1 from t2 where c1 > 1000 and c2 > 2;
+
+explain select /*+index(t2 i3) opt_param('_enable_storage_cardinality_estimation', 'false')*/ 1 from t2 where c1 > 3000 and c2 > 2;
+explain select /*+index(t2 i4) opt_param('_enable_storage_cardinality_estimation', 'false')*/ 1 from t2 where c1 > 3000 and c2 > 2;
+explain select /*+full(t2) opt_param('_enable_storage_cardinality_estimation', 'false')*/ 1 from t2 where c1 > 3000 and c2 > 2;
+
+explain select /*+index(t2 i3) opt_param('_enable_storage_cardinality_estimation', 'true')*/ 1 from t2 where c1 > 3000 and c2 > 2;
+explain select /*+index(t2 i4) opt_param('_enable_storage_cardinality_estimation', 'true')*/ 1 from t2 where c1 > 3000 and c2 > 2;
+explain select /*+full(t2) opt_param('_enable_storage_cardinality_estimation', 'true')*/ 1 from t2 where c1 > 3000 and c2 > 2;
+
+set cardinality_estimation_model = 0;
+
+explain select /*+index(t1 i1) opt_param('_enable_storage_cardinality_estimation', 'false')*/ 1 from t1 where c3 = 1 and c4 = 1;
+explain select /*+index(t1 i2) opt_param('_enable_storage_cardinality_estimation', 'false')*/ 1 from t1 where c3 = 1 and c4 = 1;
+explain select /*+full(t1) opt_param('_enable_storage_cardinality_estimation', 'false')*/ 1 from t1 where c3 = 1 and c4 = 1;
+
+explain select /*+index(t1 i1) opt_param('_enable_storage_cardinality_estimation', 'true')*/ 1 from t1 where c3 = 1 and c4 = 1;
+explain select /*+index(t1 i2) opt_param('_enable_storage_cardinality_estimation', 'true')*/ 1 from t1 where c3 = 1 and c4 = 1;
+explain select /*+full(t1) opt_param('_enable_storage_cardinality_estimation', 'true')*/ 1 from t1 where c3 = 1 and c4 = 1;
+
+set cardinality_estimation_model = 2;
+
+explain select /*+index(t1 i1) opt_param('_enable_storage_cardinality_estimation', 'false')*/ 1 from t1 where c3 = 1 and c4 = 1;
+explain select /*+index(t1 i2) opt_param('_enable_storage_cardinality_estimation', 'false')*/ 1 from t1 where c3 = 1 and c4 = 1;
+explain select /*+full(t1) opt_param('_enable_storage_cardinality_estimation', 'false')*/ 1 from t1 where c3 = 1 and c4 = 1;
+
+explain select /*+index(t1 i1) opt_param('_enable_storage_cardinality_estimation', 'true')*/ 1 from t1 where c3 = 1 and c4 = 1;
+explain select /*+index(t1 i2) opt_param('_enable_storage_cardinality_estimation', 'true')*/ 1 from t1 where c3 = 1 and c4 = 1;
+explain select /*+full(t1) opt_param('_enable_storage_cardinality_estimation', 'true')*/ 1 from t1 where c3 = 1 and c4 = 1;
+
+drop table t1, t2;
+set optimizer_dynamic_sampling = 1;

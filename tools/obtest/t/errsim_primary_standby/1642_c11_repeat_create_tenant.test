@@ -1,0 +1,100 @@
+#rs
+#msy164651
+#测试点：备库重复建租户
+#case 1 主库创建租户，控制备库不进行同步，开始备库同步，设计备库在持久化member list之前失败，备库创建租户一直失败，重复创建，然后可以成功写member list, 在持久化member list之后失败，再次创建租户的时候，不会进行创建partition，直接跳到底层持久化memberlist
+ob1=OBI(cluster=1, proxy_num = 0);
+ob2=OBI(cluster=1, proxy_num = 0, leaderob=ob1);
+ob1.force_stop;
+ob2.force_stop;
+ob1.reboot;
+ob2.reboot;
+ob_connect(conn1, ob1.z1.obs0, root@sys, , oceanbase, , USE_OB_CONNECTOR);
+ob_connect(conn2, ob2.z1.obs0, root@sys, , oceanbase, , USE_OB_CONNECTOR);
+connection conn1;
+#检查备库同步完成
+let $primary_schema_version = deploy_get_value(ob1.select select max(schema_version) as s from oceanbase.__all_ddl_operation, s, 1);
+ob2.check_until_timeout select count(*) from oceanbase.__all_ddl_operation where schema_version = $primary_schema_version, 1, 30;
+ob2.check_until_timeout select count(*) from oceanbase.__all_cluster, 2, 20;
+ob2.mysql alter system set balancer_idle_time = '10s';
+ob2.mysql alter system set server_data_copy_out_concurrency = 30;
+ob2.mysql alter system set server_data_copy_in_concurrency = 30;
+ob2.mysql alter system set data_copy_concurrency = 60;
+#控制备库在创建租户的时候持久化member list之前报错，实际上partition已经创建完成
+connection conn2;
+alter system set_tp tp_no = 81, error_code = 4013, frequency = 1;
+#在主库上创建一个租户
+ob1.mysql CREATE RESOURCE POOL pool_1 UNIT = 'sys_unit_config', UNIT_NUM = 1, ZONE_LIST = ('z1');
+ob1.mysql CREATE TENANT tt RESOURCE_POOL_LIST = ('pool_1'), primary_zone='z1' set ob_tcp_invited_nodes='%';
+
+#备库开始同步
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = 'tt', tenant_id, 1);
+#备库同步建租户失败,但是partition已经创建成功
+ob2.check_until_timeout select count(*) >= 9 from oceanbase.__all_root_table where tenant_id = $tenant_id, 1, 10;
+ob2.mysql_p select tenant_id, tenant_name  from oceanbase.__all_tenant;
+
+#放开报错，让partition创建同步成功
+connection conn2;
+alter system set_tp tp_no = 81, error_code = 4013, frequency = 0;
+let $primary_schema_version = deploy_get_value(ob1.select select max(schema_version) as s from oceanbase.__all_ddl_operation, s, 1);
+ob2.check_until_timeout select count(*) from oceanbase.__all_ddl_operation where schema_version = $primary_schema_version, 1, 30;
+#副本拷贝成功
+let $partition_count = deploy_get_value(ob1.select select count(*) as c from oceanbase.__all_root_table where tenant_id = $tenant_id, c, 1);
+ob2.check_until_timeout select count(*) from oceanbase.__all_root_table where tenant_id= $tenant_id, $partition_count, 100;
+#schema刷新成功
+let $primary_schema_version = deploy_get_value(ob1.select select max(schema_version) as s from oceanbase.__all_virtual_ddl_operation where tenant_id = $tenant_id, s, 1);
+ob2.check_until_timeout select count(*) from __all_virtual_server_schema_info where tenant_id = $tenant_id and refreshed_schema_version = $primary_schema_version, 1, 100;
+ob1.mysql drop tenant tt force;
+let $primary_schema_version = deploy_get_value(ob1.select select max(schema_version) as s from oceanbase.__all_ddl_operation, s, 1);
+ob2.check_until_timeout select count(*) from oceanbase.__all_ddl_operation where schema_version = $primary_schema_version, 1, 30;
+
+#case 2
+connection conn2;
+alter system set_tp tp_no = 82, error_code = 4013, frequency = 1;
+ob1.mysql CREATE TENANT tt1 RESOURCE_POOL_LIST = ('pool_1'), primary_zone='z1' set ob_tcp_invited_nodes='%';
+#备库开始同步
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = 'tt1', tenant_id, 1);
+ob2.check_until_timeout select count(*) > 0 from oceanbase.__all_partition_member_list where tenant_id = $tenant_id, 1, 30;
+let $primary_schema_version = deploy_get_value(ob1.select select max(schema_version) as s from oceanbase.__all_ddl_operation, s, 1);
+ob2.mysql_p select count(*) from oceanbase.__all_ddl_operation where schema_version = $primary_schema_version;
+
+#备库不会创建新的partition了，打开错误注入后，租户可以创建成功
+connection conn2;
+alter system set_tp tp_no = 82, error_code = 4013, frequency = 0;
+ob2.check_until_timeout select count(*) from oceanbase.__all_tenant where tenant_id = $tenant_id, 1, 30;
+
+#副本拷贝成功
+let $partition_count = deploy_get_value(ob1.select select count(*) as c from oceanbase.__all_root_table where tenant_id = $tenant_id, c, 1);
+ob2.check_until_timeout select count(*) from oceanbase.__all_root_table where tenant_id= $tenant_id, $partition_count, 100;
+#schema刷新成功
+let $primary_schema_version = deploy_get_value(ob1.select select max(schema_version) as s from oceanbase.__all_virtual_ddl_operation where tenant_id = $tenant_id, s, 1);
+ob2.check_until_timeout select count(*) from __all_virtual_server_schema_info where tenant_id = $tenant_id and refreshed_schema_version = $primary_schema_version, 1, 100;
+ob1.mysql drop tenant tt1 force;
+let $primary_schema_version = deploy_get_value(ob1.select select max(schema_version) as s from oceanbase.__all_ddl_operation, s, 1);
+ob2.check_until_timeout select count(*) from oceanbase.__all_ddl_operation where schema_version = $primary_schema_version, 1, 30;
+
+#case 3
+connection conn2;
+alter system set_tp tp_no = 82, error_code = 4013, frequency = 1;
+ob1.mysql CREATE TENANT tt2 RESOURCE_POOL_LIST = ('pool_1'), primary_zone='z1' set ob_tcp_invited_nodes='%';
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = 'tt2', tenant_id, 1);
+ob2.check_until_timeout select count(*) > 0 from oceanbase.__all_partition_member_list where tenant_id = $tenant_id, 1, 30;
+#删除序列化的结果，使用旧模式
+ob2.mysql update oceanbase.__all_partition_member_list set b_member_list_arg = '';
+
+ob2.mysql_p select count(*) from oceanbase.__all_ddl_operation where schema_version = $primary_schema_version;
+
+#备库不会创建新的partition了，打开错误注入后，租户可以创建成功
+connection conn2;
+alter system set_tp tp_no = 82, error_code = 4013, frequency = 0;
+ob2.check_until_timeout select count(*) from oceanbase.__all_tenant where tenant_id = $tenant_id, 1, 30;
+
+#副本拷贝成功
+let $partition_count = deploy_get_value(ob1.select select count(*) as c from oceanbase.__all_root_table where tenant_id = $tenant_id, c, 1);
+ob2.check_until_timeout select count(*) from oceanbase.__all_root_table where tenant_id= $tenant_id, $partition_count, 100;
+#schema刷新成功
+let $primary_schema_version = deploy_get_value(ob1.select select max(schema_version) as s from oceanbase.__all_virtual_ddl_operation where tenant_id = $tenant_id, s, 1);
+ob2.check_until_timeout select count(*) from __all_virtual_server_schema_info where tenant_id = $tenant_id and refreshed_schema_version = $primary_schema_version, 1, 100;
+
+
+
+

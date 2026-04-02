@@ -1,0 +1,70 @@
+ob1=OBI(cluster=2:2:2, proxy_num=0);
+===============================================================
+====================     bootstrap   ==========================
+===============================================================
+test case for bootstrap begin
+ob1.reboot;
+ob1.mysql alter system set enable_rebalance='false';
+ob1.mysql alter system set syslog_io_bandwidth_limit = '4G';
+test case for bootstrap finish
+===============================================================
+==================     create tenant   ========================
+===============================================================
+test case for create tenant begin
+set @@session.ob_query_timeout = 1000000000;
+CREATE RESOURCE UNIT unit_1 MAX_CPU 2, MEMORY_SIZE='8G';
+CREATE RESOURCE POOL pool_1 UNIT = 'unit_1', UNIT_NUM = 1;
+CREATE TENANT mysql RESOURCE_POOL_LIST = ('pool_1'), primary_zone='z1' set ob_tcp_invited_nodes='%';
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_server_schema_info as a join oceanbase.__all_virtual_server_schema_info as b on a.tenant_id = b.tenant_id  where a.refreshed_schema_version != b.refreshed_schema_version, 0, 60;
+test case for create tenant finish
+===============================================================
+============             execute ddl            ===============
+===============================================================
+test case for create index begin
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+ob1.mysql set ob_global_debug_sync = 'AFTER_MACRO_BLOCK_WRITER_DDL_CALLBACK_WAIT wait_for signal_ddl_callback execute 100000';
+create table t1(c1 varchar(1024), c2 bigint, c3 varchar(1024), primary key(c1, c2)) with column group (all columns, each column);
+create sequence s1 cache 1000000 noorder;
+set ob_query_timeout=100000000;
+insert into t1 select randstr(1024, random()) c1, s1.nextval c2, randstr(512, random()) c3 from table(generator(100000));
+SET SESSION _FORCE_PARALLEL_DDL_DOP = 2;
+alter table t1 modify column c3 varchar(512);
+===============================================================
+============           dump ddl sstable         ===============
+===============================================================
+alter system minor freeze tenant mysql;
+===============================================================
+==================     migrate unit    ========================
+===============================================================
+test migrate unit begin
+ob1.mysql alter system set debug_sync_timeout = '1000s';
+ob1.mysql alter system switch replica leader ls = 1 server = '$sys_ls_obs_z1' tenant = 'sys';
+ob1.check_until_timeout select count(*) = 1 from oceanbase.DBA_OB_LS_LOCATIONS where role = 'LEADER' and zone = 'z1', 1, 60;
+ob1.mysql set ob_global_debug_sync = 'BEFORE_SEND_DRTASK_RPC wait_for signal';
+ob1.check_until_timeout SELECT COUNT(*) = 1 FROM oceanbase.__all_rootservice_job WHERE unit_id = $unit_id AND job_type = "MIGRATE_UNIT" AND job_status = "INPROGRESS", 1, 20;
+ob1.check_until_timeout SELECT COUNT(*) > 0 FROM oceanbase.__all_virtual_ls_replica_task, 1, 20;
+ob1.mysql alter system switch replica leader ls = 1 server = '$sys_ls_obs_z2' tenant = 'sys';
+ob1.check_until_timeout select count(*) = 1 from oceanbase.DBA_OB_LS_LOCATIONS where role = 'LEADER' and zone = 'z2', 1, 60;
+ob1.mysql set ob_global_debug_sync = 'now signal signal';
+ob1.check_until_timeout SELECT COUNT(*) = 1 FROM oceanbase.DBA_OB_UNITS WHERE UNIT_ID = $unit_id AND MIGRATE_FROM_SVR_IP IS NULL, 1, 400;
+ob1.check_until_timeout SELECT COUNT(*) = 1 FROM oceanbase.GV\$OB_UNITS WHERE UNIT_ID = $unit_id AND SVR_IP = '$z3_dst_ip0' AND SVR_PORT = $z3_dst_port0 AND TENANT_ID = $mysql_tenant_id - 1, 1, 20;
+ob1.check_until_timeout SELECT COUNT(*) = 1 FROM oceanbase.GV\$OB_UNITS WHERE UNIT_ID = $unit_id AND SVR_IP = '$z3_dst_ip0' AND SVR_PORT = $z3_dst_port0 AND TENANT_ID = $mysql_tenant_id, 1, 20;
+ob1.check_until_timeout SELECT COUNT(*) = $ls_count FROM oceanbase.__all_virtual_ls_meta_table WHERE tenant_id = $mysql_tenant_id AND role = 1 AND member_list LIKE '%$z3_dst0%' AND member_list NOT LIKE '%$z3_dst1%', 1, 20;
+ob1.check_until_timeout SELECT COUNT(*) = 1 FROM oceanbase.__all_rootservice_job WHERE unit_id = $unit_id AND job_type = "MIGRATE_UNIT" AND job_status = "SUCCESS", 1, 20;
+ob1.check_until_timeout SELECT COUNT(*) AS cnt FROM oceanbase.DBA_OB_UNITS WHERE UNIT_ID = $unit_id AND TENANT_ID = $mysql_tenant_id AND SVR_IP LIKE '%$z3_dst_ip0%' AND SVR_PORT LIKE '%$z3_dst_port0%', 1, 20;
+ob1.check_until_timeout SELECT COUNT(*) from oceanbase.GV\$OB_UNITS WHERE UNIT_ID = $unit_id and tenant_id = $mysql_tenant_id, 1, 100;
+ob1.check_until_timeout SELECT COUNT(*) from oceanbase.GV\$OB_UNITS WHERE UNIT_ID = $unit_id and tenant_id = $mysql_tenant_id - 1, 1, 100;
+test migrate unit finish
+===============================================================
+==================     recover ddl     ========================
+===============================================================
+recover ddl begin
+ob1.mysql set ob_global_debug_sync = 'AFTER_MACRO_BLOCK_WRITER_DDL_CALLBACK_WAIT clear';
+ob1.mysql set ob_global_debug_sync = 'now broadcast signal_ddl_callback';
+count(*)
+100000
+ob1.check_until_timeout select (frozen_scn - last_scn) as result from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$mysql_tenant_id, 0, 600;
+TENANT_ID	TABLET_ID
+===============================================================
+===================         clear      ========================
+===============================================================

@@ -1,0 +1,108 @@
+ob1=OBI(cluster=1:1:1, proxy_num=0);
+ob1.z1.obs0.set extra_config = "cache_wash_threshold='1G',_ob_minor_merge_schedule_interval='3s'";
+ob1.z2.obs0.set extra_config = "cache_wash_threshold='1G',_ob_minor_merge_schedule_interval='3s'";
+ob1.z3.obs0.set extra_config = "cache_wash_threshold='1G',_ob_minor_merge_schedule_interval='3s'";
+ob1.force_stop;
+ob1.clean_backup_dest;
+ob1.reboot;
+ob1.mysql alter resource unit sys_unit_config memory_size='2G';
+use oceanbase;
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+ob1.mysql alter system set _backup_idle_time = '10s';
+ob1.mysql alter system set merger_check_interval = '10s';
+ob1.mysql alter system set enable_async_syslog = false;
+ob1.mysql alter system set ob_compaction_schedule_interval = '10s' tenant all_user;
+===============================================================
+==================     create tenant   ========================
+===============================================================
+ob1.mysql CREATE RESOURCE POOL resource_pool UNIT = "small_unit", UNIT_NUM = 1, ZONE_LIST = ('z1', 'z2');
+ob1.mysql CREATE TENANT backup_mysql_tenant resource_pool_list=('resource_pool'), locality = "F@z1,F@z2", primary_zone = "z1,z2" set ob_tcp_invited_nodes='%', ob_compatibility_mode='mysql';
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_server_schema_info as a join oceanbase.__all_virtual_server_schema_info as b on a.tenant_id = b.tenant_id  where a.refreshed_schema_version != b.refreshed_schema_version, 0, 60;
+create tenant finished
+===============================================================
+==================     create table ===========================
+===============================================================
+set global wait_timeout = 288000;
+create user test IDENTIFIED BY "test";
+grant all on *.* to test WITH GRANT OPTION;
+create table t1(a int, b int, c int, PRIMARY KEY (a)) partition by hash(a) partitions 5;
+===============================================================
+==================     start archive   ========================
+===============================================================
+ob1.mysql alter system archivelog;
+ob1.check_until_timeout select status from oceanbase.CDB_OB_ARCHIVELOG where tenant_id=$backup_mysql_tenant_id, DOING, 600;
+ob1.mysql alter system major freeze tenant = '$backup_mysql_tenant';
+ob1.check_until_timeout select (frozen_scn - last_scn) as result from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$backup_mysql_tenant_id, 0, 3600;
+ob1.mysql set ob_global_debug_sync = 'BEFORE_TABLET_FULL_DIRECT_LOAD_MGR_CLOSE wait_for signal1 execute 10000';
+create /*+ parallel(10) */ index t1ib on t1(b) local;
+ob1.z1.obs0.check_log_until_success -c "start wait.*name=signal1, signal_cnt=0";
+ob1.mysql alter system minor freeze tenant = '$backup_mysql_tenant';
+ob1.check_until_timeout select count(*) >= 3 FROM __all_virtual_table_mgr where tenant_id=1002 and table_type=14 and tablet_id in (select tablet_id from __all_virtual_tablet_to_table_history where tenant_id=1002 and table_id in (select table_id from __all_virtual_table where table_name like '%t1ib%')), 1, 600;
+===============================================================
+==================     start backup data   ====================
+===============================================================
+ob1.mysql alter system backup database;
+ob1.check_until_timeout select count(*) c from __all_backup_job_history where tenant_id = 1, 1, 600;
+ob1.check_until_timeout select result from oceanbase.CDB_OB_BACKUP_JOB_HISTORY where tenant_id = $backup_mysql_tenant_id, 0, 10;
+ob1.check_until_timeout select result from oceanbase.CDB_OB_BACKUP_TASK_HISTORY where tenant_id = $backup_mysql_tenant_id, 0, 10;
+ob1.mysql set ob_global_debug_sync = 'BEFORE_TABLET_FULL_DIRECT_LOAD_MGR_CLOSE clear';
+ob1.mysql set ob_global_debug_sync = 'now signal signal1';
+ob1.check_until_timeout select STATUS from cdb_indexes where con_id=$backup_mysql_tenant_id and index_name like 't1ib', VALID, 300;
+===============================================================
+===============  CALC RESTORE POINT  ==========================
+===============================================================
+ob1.check_until_timeout select checkpoint_scn > $scn from CDB_OB_ARCHIVELOG where tenant_id = $backup_mysql_tenant_id, 1, 600;
+===============================================================
+===============  FULL RESTORE  ===============================
+===============================================================
+ob1.mysql alter system restore $restore_mysql_tenant from '$restore_path' until scn=$scn with 'pool_list=small_pool_1&primary_zone=z1,z2&method=full';
+ob1.check_until_timeout SELECT status FROM __all_tenant WHERE tenant_id = 1003, NORMAL, 600;
+ob1.check_until_timeout select count(*) from __all_virtual_ls_meta_table where tenant_id = 1004 and restore_status = 0, 9, 600;
+ob1.check_until_timeout select status FROM __all_tenant WHERE tenant_id = 1004, NORMAL, 600;
+ob1.check_until_timeout select count(*) FROM __all_restore_job, 0, 600;
+use oceanbase;
+select count(*) as cnt FROM __all_virtual_table_mgr where tenant_id=1004 and ls_id=1 and table_flag!=0;
+cnt
+1884
+select count(*) as cnt FROM __all_virtual_table_mgr where tenant_id=1004 and ls_id!=1 and table_flag!=0;
+cnt
+15
+ob1.check_until_timeout select count(*) FROM __all_virtual_table_mgr where tenant_id=1004 and table_type=14 and tablet_id in (select tablet_id from __all_virtual_tablet_to_table_history where tenant_id=1004 and table_id in (select table_id from __all_virtual_table where table_name like '%t1ib%')), 0, 600;
+select count(*) FROM __all_virtual_table_mgr where tenant_id=1004 and table_type=14 and tablet_id in (select tablet_id from __all_virtual_tablet_to_table_history where tenant_id=1004 and table_id in (select table_id from __all_virtual_table where table_name like '%t1ib%'));
+count(*)
+0
+select count(*) FROM __all_virtual_table_mgr where tenant_id=1004 and table_type=10 and tablet_id in (select tablet_id from __all_virtual_tablet_to_table_history where tenant_id=1004 and table_id in (select table_id from __all_virtual_table where table_name like '%t1ib%'));
+count(*)
+15
+use test;
+select * from t1;
+a	b	c
+5	5	5
+10	10	10
+15	15	15
+20	20	20
+25	25	25
+1	1	1
+6	6	6
+11	11	11
+16	16	16
+21	21	21
+26	26	26
+2	2	2
+7	7	7
+12	12	12
+17	17	17
+22	22	22
+27	27	27
+3	3	3
+8	8	8
+13	13	13
+18	18	18
+23	23	23
+28	28	28
+4	4	4
+9	9	9
+14	14	14
+19	19	19
+24	24	24
+29	29	29

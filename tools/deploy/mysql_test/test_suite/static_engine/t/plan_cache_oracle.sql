@@ -1,0 +1,136 @@
+
+######### SELECT
+#** for cast
+select * from type_t where char_c = cast(100 as char(3));
+select * from type_t where char_c = cast(100 as char(4));
+
+select * from type_t where date_c = TO_DATE('2015-01-01', 'YYYY-MM-DD');
+select * from type_t where time_c = timestamp'1970-01-01 08:00:00.000001';
+
+select * from type_t where int_c = 1;
+select * from type_t where smallint_c = 1;
+select * from type_t where integer_c = 1;
+select * from type_t where float_c = 0.1;
+select * from type_t where double_c = 0.1;
+select * from type_t where decimal_c = 0.100;
+select * from type_t where char_c = 'good';
+select * from type_t where varchar_c = 'good';
+select * from type_t where binary_c = 'good';
+select * from type_t where date_c = date'2015-01-01';
+select * from type_t where time_c = timestamp'970-01-01 08:00:00.000001';
+
+#** function
+select * from type_t where time_c = current_timestamp;
+select date_c from type_t where time_c = current_timestamp(0);
+select date_c, time_c from type_t where time_c = current_timestamp(1);
+
+select * from type_t where varchar_c = concat('hello', 'world');
+select * from type_t where varchar_c = substr('ahello', 2);
+select * from type_t where varchar_c = substr('abhello', 3, 5);
+#for trim
+select * from type_t where varchar_c = trim(' hello ');
+select * from type_t where varchar_c = trim(leading 'x' from 'xxhelloworldxx');
+select * from type_t where varchar_c = trim(leading from '  hello  ');
+select * from type_t where varchar_c = trim(trailing 'x' from 'xxhelloworldxx');
+select * from type_t where varchar_c = trim(trailing from '  hello  ');
+select * from type_t where varchar_c = trim(both 'x' from 'xxhelloworldxx');
+select * from type_t where varchar_c = trim(both from '  hello  ');
+
+select * from type_t where int_c = length('helloworld');
+select * from type_t where varchar_c = upper('hello');
+select * from type_t where varchar_c = lower('HELLO');
+select * from type_t where 'abc' like '%bc';
+select * from type_t where 'abc' not like '%bc';
+select * from type_t where 'ab%' like 'abc%' escape 'c';
+
+select * from type_t where varchar_c = lpad('1', 4, '1');
+select * from type_t where varchar_c = rpad('1', 4, '1');
+
+select * from type_t where int_c = instr('foobarbar', 'bar');
+select * from type_t where varchar_c = replace('xxxloworld', 'xxx', 'hel');
+
+select * from type_t where int_c = round(1.1);
+select * from type_t where double_c = round(111.1e-2,1);
+select * from type_t where int_c = ceil(0.95);
+select * from type_t where int_c = floor(1.1);
+select * from type_t where int_c = abs(-1);
+select * from type_t where int_c = sign(-2);
+
+select * from type_t where int_c = greatest(2, '1', 0);
+select * from type_t where int_c = greatest(2, 1, 0);
+
+select c1, case c1 when 1 then 'is 1' else 'not 1' end from t1 where c1 = 1;
+#k3:r6538287
+select c1 from t1 where c1 = 1;
+
+#**operator
+select * from t1 where c1 = MOD((2 + 2 -2)*2/2, 10);
+select * from t1 where c1 = case when 2 > 3 then 1 else 0 end and (3 > 4) or (4 > 5);
+select * from t1 where c1 != 1;
+
+select/*+ read_consistency(WEAK)*/ * from dist_t where c1 = case when ((2 < 4) and (3 > 4)) then 1 else 0 end or (4 > 5);
+select/*+ read_consistency(WEAK)*/ * from dist_t where c1 = case when (c1 >= 2 and c2 <= 2) then 1 else 0 end or c1 = 1;
+select/*+ read_consistency(WEAK)*/ * from dist_t where c1 != 1;
+
+select * from t1 where c1 not between 1 and 2;
+select * from t1 where c1 between 0 and 3;
+select * from t1 where c1 between null and 3;
+
+select/*+ read_consistency(WEAK)*/ * from dist_t where c1 between 0 and 3;
+
+select * from t1 where c1 in (1, 2);
+
+select * from t1 where c1 = case when (null is null) then 1 else 0 end;
+select * from t1 where c1 = case when (0 is not null) then 1 else 0 end;
+select * from t1 where c1 = case when (null is not null) then 1 else 0 end;
+
+select * from t1 where c1 = bitand(1, 5);
+
+select * from t2 where c1 = 1 and c2 = 1 and c3 like '%test%' and c1 between 1 and 10;
+
+#***as
+select c1 c1, c2 as m from t1 where c1 = 1 or c2 = 2 or c1 < 5;
+select s.c1, s.c2+1 from (select c1, c2 from t1) s;
+select j1.c1 from t1 j1, t1 j2 where j1.c1 = j2.c2 and j1.c1 = 1;
+select * from (select * from t1) s;
+
+select/*+ read_consistency(WEAK)*/ j1.c1 from dist_t j1, dist_t j2 where j1.c1 = j2.c2 and j1.c1 = 1;
+
+#**group by
+select c1, sum(c2), avg(c2), count(c2), max(c2), min(c2) from t1 group by c1;
+select c1, sum(c2) from t1 group by c1 order by c1;
+select c1, sum(c2) from t1 group by c1 having c1 > 1;
+select sum(c1)+c2 from t2 group by c2 having sum(c1) > 7 order by 1;
+
+#** having
+select c1, sum(c2) from t1 group by c1 having sum(c2) > 4;
+
+#** order by
+select * from t1 where c1 = 1 order by c2;
+select * from t1 order by 2;
+select c1, sum(c2) from t1 group by c1 order by 1 desc, 2 asc;
+
+SELECT * from t1 RIGHT JOIN t2 on t1.c1=t2.c1 order by t2.c1;
+
+#** union
+select * from t1 union select * from t1 union select * from t1;
+select * from t1 union all select * from t1;
+
+#** for update
+select * from t1 for update nowait;
+select c1 from t1 where c1 = 1 for update;
+
+#** subquery
+select * from t1 where t1.c1 > any(select t2.c2 from t2);
+select t1.c1 from t1, (select * from t2) v order by t1.c1;
+select * from t1, t2 where exists(select c2 from t2 where t2.c1 = t1.c1);
+
+select * from t1 where (1 = 1) or c1 = 1;
+select c1, sum(c2) from t1 group by c1 having (1 = 1 or c1 > 5);
+select * from t1 join t2 on (1 = 1 or t1.c1 = t2.c1) order by t1.c1;
+
+select/*+QUERY_TIMEOUT(100000000)*/c1 from t1 where c1 > 5;
+select/*+QUERY_TIMEOUT(100000000)*/c1 from t1 where c1 = 5;
+
+###acs case
+select * from acs_test where c2 = 1;

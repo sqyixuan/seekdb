@@ -1,0 +1,85 @@
+ob1=OBI(cluster=1,proxy_num=0);
+ob2=OBI(cluster=1,leaderob=ob1,proxy_num=0);
+ob1.reboot;
+ob2.reboot;
+ob1.mysql set @@global.ob_query_timeout = 100000000;
+ob1.mysql CREATE RESOURCE UNIT unit_1 MAX_CPU $cpu, MAX_MEMORY $memory, MAX_IOPS $iops, MAX_DISK_SIZE $disk, MAX_SESSION_NUM $session, MIN_CPU=1, MIN_MEMORY=$min_memory, MIN_IOPS=128;
+ob1.mysql CREATE RESOURCE POOL pool_1 UNIT = 'unit_1', UNIT_NUM = 1, ZONE_LIST = ('z1');
+ob1.mysql CREATE TENANT tt RESOURCE_POOL_LIST = ('pool_1'), primary_zone='z1' set ob_tcp_invited_nodes='%',ob_compatibility_mode='oracle';
+create table t(c1 int primary key, c2 int, c3 int);
+insert into t values (1,2,3);
+insert into t values (3,4,5);
+insert into t values (5,6,7);
+select * from t;
+C1	C2	C3
+1	2	3
+3	4	5
+5	6	7
+alter system set balancer_idle_time = '10s';
+alter system set server_data_copy_out_concurrency = 30;
+alter system set server_data_copy_in_concurrency = 30;
+alter system set data_copy_concurrency = 60;
+alter system set max_stale_time_for_weak_consistency = '120s';
+alter system set debug_sync_timeout = '100000s';
+ob2.check_until_timeout select count(*) c from __all_virtual_meta_table where tenant_id = 1001 and zone = 'z1', $partition_cnt, 120;
+ob1.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO STANDBY, 100;
+ob1.mysql alter system major freeze;
+ob1.check_version 2;
+ob2.check_version 2;
+ob1.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO STANDBY, 30;
+ob1.mysql set @@global.ob_query_timeout = 100000000;
+ob1.mysql alter system commit to switchover to physical standby;
+ob2.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO PRIMARY, 30;
+ob2.mysql set ob_global_debug_sync = 'BEFORE_SWITCHOVER_FROM_PENDING_TO_PRIMARY wait_for continue_signal';
+alter system commit to switchover to primary;
+ERROR HY000: Timeout
+ob2.force_stop;
+ob2.start;
+ob2.check_until_timeout select count(*) from oceanbase.__all_server where status ='active' and start_service_time > 0, 1, 100;
+ob2.check_until_timeout select count(*) from oceanbase.__all_virtual_core_meta_table, 1, 100;
+ob2.check_until_timeout select count(*) from oceanbase.__all_virtual_server_schema_info where tenant_id = 1001 and refreshed_schema_version > 1, 1, 150;
+set @@session.ob_query_timeout = 100000000;
+alter system ACTIVATE PHYSICAL STANDBY CLUSTER;
+ob2.mysql_p select cluster_status from oceanbase.__all_cluster where cluster_id = $cluster_id;
+cluster_status
+2
+ob1.mysql_p select switchover_status,cluster_role,cluster_status from oceanbase.v\$ob_cluster;
+ob1.force_stop;
+ob1.z1.obs0.nstart -m physical_flashback -f $failover_scn;
+ob1.start;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_core_meta_table,1, 100;
+ob1.mysql alter system convert to physical standby;
+ob2.mysql alter system enable cluster synchronization '$cluster_name' cluster_id = $cluster_id;
+ob2.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO STANDBY, 100;
+select * from t;
+C1	C2	C3
+1	2	3
+3	4	5
+5	6	7
+alter table  t add c4 int;
+insert into t values (4,4,4,4);
+ob2.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO STANDBY, 30;
+select /*+ read_consistency(weak) */* from t;
+C1	C2	C3	C4
+1	2	3	NULL
+3	4	5	NULL
+4	4	4	4
+5	6	7	NULL
+ob2.force_stop;
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+ob1.mysql set ob_global_debug_sync = 'BEFORE_FAILOVER_FROM_PENDING_TO_FLASHBACK wait_for continue_signal';
+alter system ACTIVATE PHYSICAL STANDBY CLUSTER;
+ERROR HY000: Timeout
+ob1.mysql set ob_global_debug_sync = 'now signal continue_signal';
+ob1.force_stop;
+ob1.start;
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where status ='active' and start_service_time > 0, 1, 200;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_core_meta_table, 1, 100;
+alter system ACTIVATE PHYSICAL STANDBY CLUSTER;
+select * from t;
+C1	C2	C3	C4
+1	2	3	NULL
+3	4	5	NULL
+5	6	7	NULL
+alter table  t add c5 int;
+insert into t values (7,4,4,4,7);

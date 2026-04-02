@@ -1,0 +1,227 @@
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+#owner : jianyun.sjy
+#owner group: storage
+#description: basic ddl case for shared storage
+
+connect (obsys_ddl,$OBMYSQL_MS0,root@sys,,oceanbase,$OBMYSQL_PORT);
+
+# check shared storage mode and clog clean
+connection obsys_ddl;
+select count(*) > 0 from __all_zone_storage;
+sleep 30;
+select * from __all_virtual_replay_stat where pending_cnt > 0;
+
+
+connection default;
+let $tenant_id = `select effective_tenant_id()`;
+connection obsys_ddl;
+let $unit_config_name = `select name from __all_unit_config where unit_config_id = (select unit_config_id from __all_resource_pool where tenant_id = $tenant_id)`;
+let $unit_config_memory = `select concat(memory_size, 'B') from __all_unit_config where unit_config_id = (select unit_config_id from __all_resource_pool where tenant_id = $tenant_id)`;
+--disable_query_log
+eval alter resource unit $unit_config_name memory_size = '3G';
+--enable_query_log
+connection default;
+
+# check shared-storage does not support column group
+--disable_warnings
+drop table if exists t1;
+--enable_warnings
+alter system set default_table_store_format = 'column';
+alter system set default_table_store_format = 'row';
+create table t1(c1 int, c2 int) with column group(all columns, each column);
+drop table t1;
+create table t1(c1 int, c2 int) with column group(each column);
+drop table t1;
+create table t1 (c1 int, c2 varchar(30), c3 varchar(30), c4 varchar(40));
+alter table t1 add column group(all columns, each column);
+alter table t1 drop column group(all columns, each column);
+alter table t1 add column group(each column);
+create index idx1 on t1(c1) with column group(all columns, each column);
+alter table t1 drop index idx1;
+create index idx1 on t1(c1) with column group(each column);
+alter table t1 drop index idx1;
+create index idx1 on t1(c1) with column group(all columns);
+
+# create index with empty table
+--disable_warnings
+drop table if exists t1;
+--enable_warnings
+create table t1 (c1 int primary key, c2 varchar(255)) partition by hash(c1) partitions 2;
+create index idx1 on t1 (c2, c1);
+
+
+
+# create global unique index with data and parallel
+--disable_warnings
+drop table if exists t1;
+drop sequence if exists s1;
+--enable_warnings
+create table t1(c1 varchar(1024), c2 bigint, c3 longtext, primary key(c1, c2)) partition by hash(c2) partitions 2;
+create sequence s1 cache 1000000 noorder;
+set ob_query_timeout=100000000;
+insert into t1 select randstr(1024, random()) c1, s1.nextval c2, randstr(512, random()) c3 from table(generator(100000));
+create/*+parallel(8)*/ unique index idx1 on t1 (c2, c1) global partition by hash(c2) partitions 2;
+
+
+
+# drop primary key with lob
+--disable_warnings
+drop table if exists t1;
+drop sequence if exists s1;
+--enable_warnings
+create table t1 (c1 bigint primary key, c2 varchar(255), c3 longtext);
+create sequence s1 cache 1000000 noorder;
+insert into t1 select s1.nextval c1, randstr(255, random()) c2, randstr(1024, random()) c3 from table(generator(100000));
+SET SESSION _FORCE_PARALLEL_DDL_DOP = 10;
+alter table t1 drop primary key;
+
+
+
+# drop column with lob
+--disable_warnings
+drop table if exists t1;
+drop sequence if exists s1;
+--enable_warnings
+create table t1(c1 bigint, c2 varchar(1024), c3 longtext) partition by hash(c1) partitions 8;
+create sequence s1 cache 1000000 noorder;
+set ob_query_timeout=1000000000;
+insert into t1 select s1.nextval c1, randstr(512, random()) c2, randstr(1024, random()) c3 from table(generator(100000));
+SET SESSION _FORCE_PARALLEL_DDL_DOP = 10;
+alter table t1 drop column c2;
+
+
+# add autoinc column
+--disable_warnings
+drop table if exists t1;
+--enable_warnings
+create table t1(c1 int, c2 int) partition by hash(c1) partitions 3;
+insert into t1 values(1,1),(2,2),(3,3),(4,4),(5,5),(6,6),(7,7),(8,8),(9,9);
+SET SESSION _FORCE_PARALLEL_DDL_DOP = 10;
+alter table t1 add column c3 int auto_increment;
+# check if autoinc_service is synced properly
+--disable_query_log
+let $max_autoinc_value = query_get_value(select max(c3) as c3 from t1, c3, 1);
+insert into t1 values(10,10,NULL);
+let $new_max_autoinc_value = query_get_value(select max(c3) as c3 from t1, c3, 1);
+let $compare_result = query_get_value(select ($new_max_autoinc_value = $max_autoinc_value + 1) as result, result, 1);
+--enable_query_log
+if ($compare_result != 1)
+{
+--echo unexpected autoinc_value, $new_max_autoinc_value, $new_max_autoinc_value
+}
+# check other column types
+alter table t1 drop column c3;
+alter table t1 add column c3 float auto_increment;
+alter table t1 drop column c3;
+alter table t1 add column c3 tinyint auto_increment;
+alter table t1 drop column c3;
+alter table t1 drop column c2, add column c3 double auto_increment;
+# check table with large data
+drop table t1;
+create table t1(c1 int);
+insert into t1 select * from table(generator(100000));
+alter table t1 add column c2 int auto_increment;
+drop table t1;
+create table t1(c1 int) partition by hash(c1) partitions 3;
+insert into t1 select * from table(generator(100000));
+alter table t1 add column c2 int auto_increment;
+
+# check clog replay
+connection obsys_ddl;
+
+let $sleep_cnt = 20;
+while ($sleep_cnt > 0)
+{
+  --disable_query_log
+  sleep 5;
+  let $pending_cnt = query_get_value(select count(*) from __all_virtual_replay_stat where pending_cnt > 0, count(*), 1);
+  --enable_query_log
+  if ($pending_cnt == 0) {
+    --echo  no clog pending
+    let $sleep_cnt = 0;
+  }
+  dec $sleep_cnt;
+}
+
+# major freeze
+--source mysql_test/include/majorfreeze.inc
+--source mysql_test/include/wait_daily_merge.inc
+
+--disable_warnings
+drop table if exists t1;
+drop sequence if exists s1;
+--enable_warnings
+
+# column store
+# shared storage does not support column store right now, add this test later
+#create table t1(c1 varchar(1024), c2 bigint, c3 longtext, primary key(c1, c2)) partition by hash(c2) partitions 2 with column group(all columns, each column);
+#create sequence s1 cache 1000000 noorder;
+#set ob_query_timeout=100000000;
+#insert into t1 select randstr(1024, random()) c1, s1.nextval c2, randstr(512, random()) c3 from table(generator(100000));
+#create index idx1 on t1(c1, c2) with column group(all columns, each column);
+
+# check execution_id
+--disable_warnings
+drop table  if exists t1;
+--enable_warnings
+create table t1 (c1 int, c2 int, c3 int auto_increment);
+alter table t1 drop column c3;
+
+let $tenant_id = query_get_value(select effective_tenant_id() TENANT_ID from dual, TENANT_ID, 1);
+
+let $table_id = query_get_value(select table_id from oceanbase.__all_virtual_table where table_name like 't1', table_id, 1);
+
+connection obsys_ddl;
+--disable_query_log
+eval select distinct execution_id from __all_virtual_ddl_checksum where tenant_id = $tenant_id and table_id = $table_id;
+--enable_query_log
+connection default;
+
+#adjusting auto-split attribute is not allowed in ss mode
+--disable_warnings
+drop table if exists t1;
+--enable_warnings
+
+--error 1235
+create table t1(c1 int primary key, c2 int) partition by range(c1) size('135MB') (partition p1 values less than (100));
+--error 1235
+create table t1(c1 int primary key, c2 int) partition by range(c1) size('135MB');
+--error 1235
+create table t1(c1 int primary key, c2 int) partition by range(c1);
+--error 4147
+alter system set enable_auto_split=true;
+alter system set enable_auto_split=false;
+--error 4147
+alter system SET auto_split_tablet_size = '256mb';
+
+create table t1(c1 int primary key, c2 int);
+--error 1235 
+alter table t1 partition by range(c1) size('135MB') (partition p1 values less than (100));
+--error 1235 
+alter table t1 partition by range(c1) size('135MB');
+--error 1235 
+alter table t1 partition by range(c1);
+drop table t1;
+
+create table t1(c1 int, c2 int, c3 int, primary key(c1,c2,c3)) partition by range columns(c1,c2,c3) (partition p1 values less than(100,100,100));
+--error 1235 
+alter table t1 partition by range(c1) size('135MB') (partition p1 values less than (100));
+--error 1235 
+alter table t1 partition by range(c1) size('135MB');
+--error 1235 
+alter table t1 partition by range(c1);
+drop table t1;
+
+
+# cleanup
+--disable_warnings
+drop table if exists t1;
+drop sequence if exists s1;
+--enable_warnings
+
+connection obsys_ddl;
+--disable_query_log
+eval alter resource unit $unit_config_name memory_size = '$unit_config_memory';
+--enable_query_log

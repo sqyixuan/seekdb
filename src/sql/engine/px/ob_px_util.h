@@ -497,24 +497,15 @@ public:
       }
     }
     // frames
-    int64_t frame_count = 0;
-    char **frames = nullptr;
-    if (ctx.get_ori_frame_cnt() != 0 && ctx.get_ori_frames() != nullptr) {
-      frame_count = ctx.get_ori_frame_cnt();
-      frames = ctx.get_ori_frames();
-    } else {
-      frame_count = ctx.get_frame_cnt();
-      frames = ctx.get_frames();
-    }
-    OB_UNIS_ENCODE(frame_count);
+    OB_UNIS_ENCODE(ctx.get_frame_cnt());
     if (OB_SUCC(ret)) {
-      if (OB_FAIL(serialize_frame_info<SERIALIZE_PLAN_PART>(buf, buf_len, pos, expr_frame_info.const_frame_, frames, frame_count))) {
+      if (OB_FAIL(serialize_frame_info<SERIALIZE_PLAN_PART>(buf, buf_len, pos, expr_frame_info.const_frame_, ctx.get_frames(), ctx.get_frame_cnt()))) {
         SQL_LOG(WARN, "serialize const frame failed", K(ret));
-      } else if (OB_FAIL(serialize_frame_info<SERIALIZE_PLAN_PART>(buf, buf_len, pos, expr_frame_info.param_frame_, frames, frame_count))) {
+      } else if (OB_FAIL(serialize_frame_info<SERIALIZE_PLAN_PART>(buf, buf_len, pos, expr_frame_info.param_frame_, ctx.get_frames(), ctx.get_frame_cnt()))) {
         SQL_LOG(WARN, "serialize param frame failed", K(ret));
-      } else if (OB_FAIL(serialize_frame_info<SERIALIZE_PLAN_PART>(buf, buf_len, pos, expr_frame_info.dynamic_frame_, frames, frame_count))) {
+      } else if (OB_FAIL(serialize_frame_info<SERIALIZE_PLAN_PART>(buf, buf_len, pos, expr_frame_info.dynamic_frame_, ctx.get_frames(), ctx.get_frame_cnt()))) {
         SQL_LOG(WARN, "serialize dynamic frame failed", K(ret));
-      } else if (OB_FAIL(serialize_frame_info<SERIALIZE_PLAN_PART>(buf, buf_len, pos, expr_frame_info.datum_frame_, frames, frame_count, true))) {
+      } else if (OB_FAIL(serialize_frame_info<SERIALIZE_PLAN_PART>(buf, buf_len, pos, expr_frame_info.datum_frame_, ctx.get_frames(), ctx.get_frame_cnt(), true))) {
         SQL_LOG(WARN, "serialize datum frame failed", K(ret));
       }
     }
@@ -837,20 +828,11 @@ public:
         }
       }
     }
-    int64_t frame_count = 0;
-    char **frames = nullptr;
-    if (ctx.get_ori_frame_cnt() != 0 && ctx.get_ori_frames() != nullptr) {
-      frame_count = ctx.get_ori_frame_cnt();
-      frames = ctx.get_ori_frames();
-    } else {
-      frame_count = ctx.get_frame_cnt();
-      frames = ctx.get_frames();
-    }
-    OB_UNIS_ADD_LEN(frame_count);
-    len += get_serialize_frame_info_size<SERIALIZE_PLAN_PART>(expr_frame_info.const_frame_, frames, frame_count);
-    len += get_serialize_frame_info_size<SERIALIZE_PLAN_PART>(expr_frame_info.param_frame_, frames, frame_count);
-    len += get_serialize_frame_info_size<SERIALIZE_PLAN_PART>(expr_frame_info.dynamic_frame_, frames, frame_count);
-    len += get_serialize_frame_info_size<SERIALIZE_PLAN_PART>(expr_frame_info.datum_frame_, frames, frame_count, true);
+    OB_UNIS_ADD_LEN(ctx.get_frame_cnt());
+    len += get_serialize_frame_info_size<SERIALIZE_PLAN_PART>(expr_frame_info.const_frame_, ctx.get_frames(), ctx.get_frame_cnt());
+    len += get_serialize_frame_info_size<SERIALIZE_PLAN_PART>(expr_frame_info.param_frame_, ctx.get_frames(), ctx.get_frame_cnt());
+    len += get_serialize_frame_info_size<SERIALIZE_PLAN_PART>(expr_frame_info.dynamic_frame_, ctx.get_frames(), ctx.get_frame_cnt());
+    len += get_serialize_frame_info_size<SERIALIZE_PLAN_PART>(expr_frame_info.datum_frame_, ctx.get_frames(), ctx.get_frame_cnt(), true);
     SQL_LOG(DEBUG, "trace end get ser expr frame info size", K(ret), K(len));
     return len;
   }

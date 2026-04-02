@@ -1,0 +1,114 @@
+ob1=OBI(cluster=1,proxy_num=0);
+ob1.clean_backup_dest;
+ob1.reboot;
+
+ob2=OBI(cluster=1:1:1,proxy_num=0,version=4_3_5_1);
+ob2.clean_backup_dest;
+ob2.reboot;
+
+ob2.mysql create resource unit box max_cpu 2, memory_size='6G';
+ob2.mysql create resource pool pool unit = 'box', unit_num = 1;
+ob2.mysql create tenant mysql replica_num = 1, resource_pool_list=('pool') set ob_tcp_invited_nodes='%';
+
+ob_connect(primary_conn, ob2.z1.obs0, root@mysql,,test,,USE_MYSQL_CONNECTOR);
+connection primary_conn;
+create table a(x int, y varchar(10));
+insert into a values (1, 'a'),(2, 'b'),(3, 'c');
+select*from a;
+
+ob1.mysql create resource unit box max_cpu 2, memory_size='6G';
+ob1.mysql create resource pool pool unit = 'box', unit_num = 1;
+
+let $cluster=ob2;
+let $tenant_name=mysql;
+#step1: 设置备份相关的参数
+let $time = deploy_get_value($cluster.select select unix_timestamp() as a ,a,1);
+#各个租户备份dest 规则: ${tenant_name}_$cluster_$time, 租户名+集群名+时间 这样能保证唯一
+let $log_backup_dest = deploy_get_value($cluster.get_log_backup_dest ${tenant_name}_${cluster}_$time);
+let $data_backup_dest = deploy_get_value($cluster.get_data_backup_dest ${tenant_name}_${cluster}_$time);
+let $tenant_mode= deploy_get_value($cluster.select select COMPATIBILITY_MODE from oceanbase.dba_ob_tenants where tenant_name='$tenant_name',COMPATIBILITY_MODE,1);
+
+if($tenant_mode == MYSQL)
+{
+ob_connect (conn0,$cluster.z1.obs0,root@$tenant_name,,oceanbase,,USE_OB_CONNECTOR);
+--disable_query_log
+eval alter system set data_backup_dest='$data_backup_dest';
+eval alter system set log_archive_dest='location=$log_backup_dest';
+--enable_query_log
+}
+
+if($tenant_mode == ORACLE)
+{
+ob_connect (conn0,$cluster.z1.obs0,SYS@$tenant_name,,SYS,,USE_OB_CONNECTOR);
+--disable_query_log
+eval alter system set data_backup_dest='$data_backup_dest';
+eval alter system set log_archive_dest='location=$log_backup_dest';
+--enable_query_log
+}
+
+#step2: 开启归档及相关检查
+$cluster.mysql alter system archivelog tenant=$tenant_name;
+let $tenant_id= deploy_get_value($cluster.select select tenant_id from oceanbase.dba_ob_tenants where tenant_name='$tenant_name',tenant_id,1);
+$cluster.check_until_timeout select status from oceanbase.CDB_OB_ARCHIVELOG where tenant_id=$tenant_id, DOING, 600;
+
+#step3: 做一次全量的数据备份
+$cluster.mysql_root ALTER SYSTEM BACKUP TENANT = $tenant_name;
+let $tenant_id= deploy_get_value($cluster.select select tenant_id from oceanbase.dba_ob_tenants where tenant_name='$tenant_name',tenant_id,1);
+$cluster.check_until_timeout select result from oceanbase.CDB_OB_BACKUP_JOB_HISTORY where tenant_id = $tenant_id, 0, 1000;
+$cluster.check_until_timeout select result from oceanbase.CDB_OB_BACKUP_TASK_HISTORY where tenant_id = $tenant_id, 0, 1000;
+
+
+let $cluster1=ob2; 
+let $cluster2=ob1; 
+let $tenant_primary=mysql; 
+let $tenant_standby=mysql_standby; 
+
+let $tenant_id= deploy_get_value($cluster1.select select tenant_id from oceanbase.dba_ob_tenants where tenant_name='$tenant_primary',tenant_id,1);
+let $log_backup_dest = deploy_get_value($cluster1.select select VALUE from oceanbase.cdb_ob_archive_dest where TENANT_ID=$tenant_id and NAME='path',VALUE,1);
+let $data_backup_dest = deploy_get_value($cluster1.select select VALUE from cdb_ob_backup_parameter where TENANT_ID=$tenant_id limit 1,VALUE,1);
+
+let $back_mode= deploy_get_value($cluster1.select SELECT SUBSTRING_INDEX("$log_backup_dest", ":", 1) as a ,a ,1);
+
+if($back_mode == oss )
+{
+let $back_tmp = deploy_get_value($cluster1.get_log_backup_dest $tenant_source);
+let $oss_key= deploy_get_value($cluster1.select SELECT SUBSTRING_INDEX("$back_tmp", "&", -1) as a ,a ,1);
+let $data_backup_dest = deploy_get_value($cluster1.select SELECT REPLACE("$data_backup_dest", CONCAT('&', SUBSTRING_INDEX("$data_backup_dest", '&', -1)), '&$oss_key') as a, a ,1);
+let $log_backup_dest = deploy_get_value($cluster1.select SELECT REPLACE("$log_backup_dest", CONCAT('&', SUBSTRING_INDEX("$log_backup_dest", '&', -1)), '&$oss_key') as a, a ,1);
+}
+
+if($back_mode == s3 )
+{
+let $back_tmp = deploy_get_value($cluster1.get_log_backup_dest $tenant_source);
+let $s3_key= deploy_get_value($cluster1.select SELECT SUBSTRING_INDEX("$back_tmp", "&", -2) as a ,a ,1);
+let $data_backup_dest = deploy_get_value($cluster1.select SELECT REPLACE("$data_backup_dest", CONCAT('&', SUBSTRING_INDEX("$data_backup_dest", '&', -3)), '&$s3_key') as a, a ,1);
+let $log_backup_dest = deploy_get_value($cluster1.select SELECT REPLACE("$log_backup_dest", CONCAT('&', SUBSTRING_INDEX("$log_backup_dest", '&', -3)), '&$s3_key') as a, a ,1);
+}
+let $restore_path = $log_backup_dest,$data_backup_dest;
+
+
+#step2: 获取恢复位点【在主租户对应的集群cluster1中操作】
+ob_connect (conn0,$cluster1.z1.obs0,root@sys,,oceanbase,,USE_OB_CONNECTOR);
+let $restore_checkpoint1 = `select ceil(min_restore_scn / 1000) as min_restore_scn from CDB_OB_BACKUP_SET_FILES where tenant_id = $tenant_id`;
+let $restore_checkpoint2 = `select ceil(UNIX_TIMESTAMP(current_timestamp(6)) * 1000000)`;
+$cluster.check_until_timeout select floor(checkpoint_scn / 1000) > '$restore_checkpoint1' from CDB_OB_ARCHIVELOG where tenant_id= $tenant_id, 1, 600;
+$cluster.check_until_timeout select floor(checkpoint_scn / 1000) > '$restore_checkpoint2' from CDB_OB_ARCHIVELOG where tenant_id= $tenant_id, 1, 600;
+let $restore_checkpoint = `select usec_to_time(floor(checkpoint_scn/1000)) from CDB_OB_ARCHIVELOG where tenant_id= $tenant_id`;
+sleep 10;
+
+#step3: 创建备租户【在备租户对应的集群cluster2中操作】
+#对应的备租户的cpu/内存/locality/primary 分布可以根据环境做相应的适配，建议同zone 和主租户的资源规格保持一致
+ob_connect (conn1,$cluster2.z1.obs0,root@sys,,oceanbase,,USE_OB_CONNECTOR);
+--disable_query_log
+eval alter system restore $tenant_standby from '$restore_path' until time='$restore_checkpoint' with 'pool_list=pool&primary_zone=z1';
+--enable_query_log
+
+#step4:检查备租户是否创建成功【在备租户对应的集群cluster2中操作】
+$cluster2.check_until_timeout select status FROM oceanbase.__all_tenant WHERE tenant_name='$tenant_standby', NORMAL, 3600;
+
+#step5:开启备租户数据同步【在备租户对应的集群cluster2中操作】
+$cluster2.mysql ALTER SYSTEM RECOVER STANDBY TENANT $tenant_standby UNTIL UNLIMITED;
+
+ob_connect(standby_conn, ob1.z1.obs0, root@mysql_standby,,test,,USE_MYSQL_CONNECTOR);
+connection standby_conn;
+select*from a;

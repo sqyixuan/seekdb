@@ -1,0 +1,112 @@
+# owner: msy164651
+# owner group: rs
+# description: 添加备库的限制
+# case 1：主库上有分裂时，不能接入备库，存在备库时，不能做分裂
+# case 2：升级过程中不能添加备库
+# case 3：主备库集群版本号不一致的时候不能添加备库
+
+ob1=OBI(cluster=1, init_unit_cpu=0, proxy_num=0, ct_num=0, locality=hz);
+ob2=OBI(cluster=1, leaderob=ob1, init_unit_cpu=0, proxy_num=0);
+ob1.reboot;
+ob1.mysql alter system set _enable_split_partition = true;
+# 为了避免备库add cluster，备库不走reboot
+ob2.reset;
+ob2.deploy;
+ob2.bootstrap;
+
+let $rs_ip = deploy_get_value(ob2.z1.obs0.ip);
+let $rs_port = deploy_get_value(ob2.z1.obs0.port);
+let $rs_mysql_port = deploy_get_value(ob2.z1.obs0.mysql_port);
+connect (conn_sys_standby,$rs_ip,root,,oceanbase,$rs_mysql_port);
+connection conn_sys_standby;
+let $cluster_id = query_get_value(select cluster_id from oceanbase.v\$ob_cluster, cluster_id, 1);
+let $cluster_name = query_get_value(select cluster_name from oceanbase.v\$ob_cluster, cluster_name, 1);
+let $rs_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $rs_port = deploy_get_value(ob1.z1.obs0.port);
+let $rs_mysql_port = deploy_get_value(ob1.z1.obs0.mysql_port);
+connect (conn_sys,$rs_ip,root,,oceanbase,$rs_mysql_port);
+connection conn_sys;
+create table t1(c1 int primary key, c2 int);
+alter table t1 partition by hash(c1) partitions 10;
+
+--disable_query_log
+# case 1: 有分裂时，不能添加备库
+--error 4709
+eval alter system add cluster '$cluster_name' cluster_id = $cluster_id;
+ob1.mysql alter system major freeze;
+sleep 30;
+ob1.check_version 2;
+create tablegroup tg;
+alter tablegroup tg partition by hash partitions 100;
+--error 4709
+eval alter system add cluster '$cluster_name' cluster_id = $cluster_id;
+ob1.mysql alter system major freeze;
+sleep 30;
+ob1.check_version 3;
+eval alter system add cluster '$cluster_name' cluster_id = $cluster_id;
+ob1.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO STANDBY, 200;
+--enable_query_log
+connection conn_sys;
+create tablegroup tg1 binding true;
+--error 4179
+alter tablegroup tg1 partition by hash partitions 1;
+create table t2 (c1 int primary key, c2 int) tablegroup tg1;
+--error 4179
+alter table t2 partition by hash (c1) partitions 1;
+--disable_query_log
+eval alter system remove cluster '$cluster_name' cluster_id = $cluster_id;
+--enable_query_log
+#case 2
+ob2.force_stop;
+ob3=OBI(cluster=1, leaderob=ob1, init_unit_cpu=0, proxy_num=0);
+ob3.reset;
+ob3.deploy;
+ob3.bootstrap;
+ob_connect(conn3, ob3.z1.obs0, root@sys, ,oceanbase, , USE_OB_CONNECTOR);
+connection conn3;
+let $cluster_id = query_get_value(select cluster_id from oceanbase.v\$ob_cluster, cluster_id, 1);
+ob1.mysql alter system begin upgrade;
+ob1.mysql alter system set enable_upgrade_mode = 'True';
+connection conn_sys;
+--disable_query_log
+--error 4709
+eval alter system add cluster '$cluster_name' cluster_id = $cluster_id;
+--enable_query_log
+ob1.mysql alter system end upgrade;
+ob1.mysql alter system set enable_upgrade_mode = 'false';
+--disable_query_log
+eval alter system add cluster '$cluster_name' cluster_id = $cluster_id;
+--enable_query_log
+ob3.force_stop;
+--disable_query_log
+eval alter system remove cluster '$cluster_name' cluster_id = $cluster_id;
+--enable_query_log
+--error 4179
+#casr 3
+ob4=OBI(cluster=1, leaderob=ob1, init_unit_cpu=0, proxy_num=0);
+ob4.reset;
+ob4.deploy;
+ob4.bootstrap;
+ob_connect(conn4, ob4.z1.obs0, root@sys, ,oceanbase, , USE_OB_CONNECTOR);
+connection conn4;
+let $cluster_id = query_get_value(select cluster_id from oceanbase.v\$ob_cluster, cluster_id, 1);
+
+let $ver = query_get_value(show PARAMETERS like '%min_observer_version%', value, 1);
+ob1.mysql alter system set min_observer_version = "3.4.40"; 
+ob1.check_until_timeout select value from oceanbase.__all_sys_parameter where name like "min_observer_version", 3.4.40, 10;
+connection conn_sys;
+--disable_query_log
+--error 4696
+eval alter system add cluster '$cluster_name' cluster_id = $cluster_id;
+--enable_query_log
+ob1.mysql alter system set min_observer_version = "$ver";
+--disable_query_log
+ob1.mysql alter system add cluster '$cluster_name' cluster_id = $cluster_id;
+--enable_query_log
+ob1.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO STANDBY, 200;
+#不能切换
+ob1.mysql alter system set min_observer_version = "3.4.40";
+ob1.check_until_timeout select value from oceanbase.__all_sys_parameter where name like "min_observer_version", 3.4.40, 10;
+connection conn_sys;
+--error 4179
+alter system commit to switchover to physical standby;

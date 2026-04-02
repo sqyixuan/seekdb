@@ -1,0 +1,138 @@
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+# owner: jianming.cjq
+# owner group: Storage Group
+# description: direct load data replace mode
+
+--source mysql_test/test_suite/direct_load_data/include/copy_data_for_direct_load.inc
+
+connect (conn_query,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,oceanbase,$OBMYSQL_PORT);
+
+--disable_warnings
+
+connection default;
+--enable_query_log
+use test;
+
+--source mysql_test/test_suite/direct_load_data/include/set_direct_load_allow_fallback_false.inc
+
+set @@foreign_key_checks = true;
+
+# Create table
+--disable_warnings
+drop table if exists lineitem;
+--enable_warnings
+create table lineitem(
+    l_orderkey           bigint NOT NULL ,
+    l_partkey            bigint NOT NULL ,
+    l_suppkey            bigint NOT NULL ,
+    l_linenumber         bigint NOT NULL ,
+    l_quantity           bigint NOT NULL ,
+    l_extendedprice      decimal(10,2) NOT NULL ,
+    l_discount           decimal(10,2) NOT NULL ,
+    l_tax                decimal(10,2) NOT NULL ,
+    l_returnflag         char(1) ,
+    l_linestatus         char(1) ,
+    l_shipdate           date ,
+    l_commitdate         date ,
+    l_receiptdate        date ,
+    l_shipinstruct       char(25) ,
+    l_shipmode           char(10) ,
+    l_comment            varchar(44),
+    primary key(L_ORDERKEY, L_LINENUMBER)
+);
+
+set @@ob_query_timeout = 1000000*60*60*10, @@ob_trx_timeout=1000000*60*60*10;
+
+# Start load data
+
+--disable_query_log
+eval load data infile "$OBSERVER_DIR/$DATA_FOLDER_NAME/lineitem/lineitem-100k.tbl" into table lineitem fields terminated by '|' enclosed by '' lines starting by '' terminated by '\n';
+--enable_query_log
+
+select count(*) from lineitem;
+
+
+# 导入重复的100行数据
+--disable_query_log
+eval load data /*+ direct(true,0) parallel(2) load_batch_size(100) */ infile "$OBSERVER_DIR/$DATA_FOLDER_NAME/lineitem/lineitem-100k-head100-diff-comment.tbl" replace into table lineitem fields terminated by '|' enclosed by '' lines starting by '' terminated by '\n';
+--enable_query_log
+
+select count(*) from lineitem;
+select count(*) from lineitem where l_comment = 'aaa oceanbase';
+
+--disable_query_log
+eval load data infile "$OBSERVER_DIR/$DATA_FOLDER_NAME/lineitem/lineitem-100k-head100-diff-comment2.tbl" replace into table lineitem fields terminated by '|' enclosed by '' lines starting by '' terminated by '\n';
+--enable_query_log
+
+select count(*) from lineitem;
+select count(*) from lineitem where l_comment = 'bbb oceanbase';
+
+
+# 测试普通索引
+truncate table lineitem;
+
+create index i1 on lineitem(l_linenumber);
+
+--disable_query_log
+eval load data infile "$OBSERVER_DIR/$DATA_FOLDER_NAME/lineitem/lineitem-100k.tbl" into table lineitem fields terminated by '|' enclosed by '' lines starting by '' terminated by '\n';
+--enable_query_log
+
+select index_status from oceanbase.__all_table where data_table_id = (select table_id from oceanbase.__all_table where table_name = 'lineitem');
+
+select count(*) from lineitem where l_linenumber = 1;
+
+
+# 测试普通索引有数据的情况
+--echo index_with_data
+--disable_query_log
+eval load data /*+ direct(true,0) parallel(2) load_batch_size(100) */ infile "$OBSERVER_DIR/$DATA_FOLDER_NAME/lineitem/lineitem-100k-head100-diff-comment.tbl" replace into table lineitem fields terminated by '|' enclosed by '' lines starting by '' terminated by '\n';
+--enable_query_log
+
+select index_status from oceanbase.__all_table where data_table_id = (select table_id from oceanbase.__all_table where table_name = 'lineitem');
+select count(*) from lineitem where l_linenumber = 1;
+
+
+# 测试外键成功
+--disable_warnings
+drop table if exists main_table;
+drop table if exists fk_table;
+--enable_warnings
+
+create table fk_table(k1 int primary key, c2 int);
+insert into fk_table values(1,2),(2,2),(3,2);
+
+create table main_table (c1 int primary key, c2 int, fk int, constraint fk_1 foreign key(fk) references fk_table(k1));
+
+--disable_query_log
+eval load data /*+ direct(true,0) parallel(1) load_batch_size(100) */ infile "$OBSERVER_DIR/$DATA_FOLDER_NAME/misc/foreign-key.csv" into table main_table fields terminated by '|' enclosed by '' lines starting by '' terminated by '\n';
+--enable_query_log
+
+select count(*) from main_table;
+
+# 测试外键失败
+drop table main_table;
+drop table fk_table;
+
+create table fk_table(k1 int primary key, c2 int);
+
+create table main_table (c1 int primary key, c2 int, fk int, constraint fk_1 foreign key(fk) references fk_table(k1) on update CASCADE on delete CASCADE);
+
+
+--disable_query_log
+--error 5785
+eval load data /*+ direct(true,0) parallel(1) load_batch_size(100) */ infile "$OBSERVER_DIR/$DATA_FOLDER_NAME/misc/foreign-key.csv" into table main_table fields terminated by '|' enclosed by '' lines starting by '' terminated by '\n';
+--enable_query_log
+
+select count(*) from main_table;
+
+# Query table
+disconnect conn_query;
+
+# Clean Up
+drop table lineitem;
+drop table main_table;
+drop table fk_table;
+
+--source mysql_test/test_suite/direct_load_data/include/set_direct_load_allow_fallback_true.inc

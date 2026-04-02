@@ -1,0 +1,53 @@
+# owner: binifei.bnf
+# owner group: cloud storage
+# Test Case: test shared storage major compaction prewarm about index
+
+ob1=OBI(cluster=1:1:1, proxy_num=0, init_unit_cpu=5);
+ob1.reboot;
+
+ob1.mysql alter system set ob_compaction_schedule_interval = '10s' tenant sys;
+ob1.mysql alter system set ob_compaction_schedule_interval = '10s' tenant all_user;
+ob1.mysql alter system set ob_compaction_schedule_interval = '10s' tenant all_meta;
+ob1.mysql alter system set merger_check_interval = '10s' tenant sys;
+ob1.mysql alter system set merger_check_interval = '10s' tenant all_user;
+ob1.mysql alter system set merger_check_interval = '10s' tenant all_meta;
+# set major compaction prewarm level to only prewarm index
+ob1.mysql alter system set _ss_major_compaction_prewarm_level = 1 tenant sys;
+ob1.mysql alter system set _ss_major_compaction_prewarm_level = 1 tenant all_user;
+ob1.mysql alter system set _ss_major_compaction_prewarm_level = 1 tenant all_meta;
+# disable replica prewarm to avoid the impact of replica prewarm
+ob1.mysql alter system set _enable_ss_replica_prewarm = false tenant sys;
+ob1.mysql alter system set _enable_ss_replica_prewarm = false tenant all_user;
+ob1.mysql alter system set _enable_ss_replica_prewarm = false tenant all_meta;
+# disable major_merge launched by major_freeze_duty_time
+ob1.mysql alter system set major_freeze_duty_time = 'Disable' tenant sys;
+ob1.mysql alter system set major_freeze_duty_time = 'Disable' tenant all_user;
+ob1.mysql alter system set major_freeze_duty_time = 'Disable' tenant all_meta;
+
+let $proxy_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $proxy_port = deploy_get_value(ob1.z1.obs0.mysql_port);
+connect(conn1, $proxy_ip, root@obtest,, test, $proxy_port);
+connection conn1;
+
+# generage data
+create table t1 (c1 varchar(10), c2 bigint, c3 bigint, c4 bigint, c5 bigint);
+--disable_query_log
+set ob_query_timeout = 100000000;
+eval insert into t1 select randstr(10, random()) c1, random() c2, zipf(1, 100, random(3)), normal(0, 1, random()), uniform(1, 100, random()) from table(generator(500000));
+--enable_query_log
+
+# launch and wait major freeze
+ob1.mysql alter system major freeze tenant = 'obtest';
+source include/compaction/wait_tenant_major_finish_on_ss.inc;
+
+# check whether succ to prewarm
+let $tenant_id=deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = 'obtest', tenant_id, 1);
+let $ip1 = deploy_get_value(ob1.z1.obs0.ip);
+let $port1 = deploy_get_value(ob1.z1.obs0.port);
+let $ip2 = deploy_get_value(ob1.z2.obs0.ip);
+let $port2 = deploy_get_value(ob1.z2.obs0.port);
+let $ip3 = deploy_get_value(ob1.z3.obs0.ip);
+let $port3 = deploy_get_value(ob1.z3.obs0.port);
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_sysstat where name = 'ss_micro_cache major_compaction prewarm count' and tenant_id = $tenant_id and svr_ip = '$ip1' and svr_port = $port1 and value > 0, 1, 60;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_sysstat where name = 'ss_micro_cache major_compaction prewarm count' and tenant_id = $tenant_id and svr_ip = '$ip2' and svr_port = $port2 and value > 0, 1, 60;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_sysstat where name = 'ss_micro_cache major_compaction prewarm count' and tenant_id = $tenant_id and svr_ip = '$ip3' and svr_port = $port3 and value > 0, 1, 60;

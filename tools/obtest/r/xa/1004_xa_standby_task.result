@@ -1,0 +1,65 @@
+ob1=OBI(cluster=1:1, proxy_num=0);
+ob1.z1.obs0.set extra_config = "cpu_count=16,memory_limit='29G',system_memory='7G',__min_full_resource_pool_memory='1073741824',cache_wash_threshold='1G',_ob_minor_merge_schedule_interval='3s'";
+ob1.force_stop;
+ob1.clean_backup_dest;
+ob1.reboot;
+ob1.mysql alter resource unit sys_unit_config memory_size='2G';
+use oceanbase;
+ob1.mysql alter system set _backup_idle_time = '10s';
+ob1.mysql alter system set merger_check_interval = '10s';
+ob1.mysql alter system set enable_async_syslog=false;
+ob1.mysql CREATE TENANT $backup_oracle_tenant RESOURCE_POOL_LIST = ('small_pool'), primary_zone = "RANDOM" set ob_tcp_invited_nodes='%', ob_compatibility_mode='oracle';
+set global wait_timeout = 288000;
+create table xa_tt01(a int, b int);
+ob1.mysql alter system archivelog;
+ob1.check_until_timeout select status from oceanbase.CDB_OB_ARCHIVELOG where tenant_id=$backup_oracle_tenant_id, DOING, 600;
+ob1.mysql alter system set major_freeze_duty_time = 'Disable' tenant sys;
+ob1.mysql alter system set major_freeze_duty_time = 'Disable' tenant all_user;
+ob1.mysql alter system set major_freeze_duty_time = 'Disable' tenant all_meta;
+ob1.check_until_timeout select (frozen_scn - last_scn) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $backup_oracle_tenant_id, 0, 600;
+ob1.mysql alter system backup database;
+ob1.check_until_timeout select count(*) c from __all_backup_job_history where tenant_id = 1, 1, 600;
+ob1.check_until_timeout select result from oceanbase.CDB_OB_BACKUP_JOB_HISTORY where tenant_id = $backup_oracle_tenant_id, 0, 10;
+ob1.check_until_timeout select result from oceanbase.CDB_OB_BACKUP_TASK_HISTORY where tenant_id = $backup_oracle_tenant_id, 0, 10;
+set autocommit = 'OFF';
+declare l_xid DBMS_XA_XID; l_ret PLS_INTEGER; BEGIN l_xid := DBMS_XA_XID(0, '', ''); l_xid.formatid := 123; l_xid.gtrid := UTL_RAW.cast_to_raw('gtrid01003'); l_xid.bqual := UTL_RAW.cast_to_raw('bqual001'); l_ret := DBMS_XA.XA_START(xid => l_xid, flag => DBMS_XA.TMNOFLAGS); insert into xa_tt01 values (1, 1); END;
+declare l_xid DBMS_XA_XID; l_ret PLS_INTEGER; BEGIN l_xid := DBMS_XA_XID(0, '', ''); l_xid.formatid := 123; l_xid.gtrid := UTL_RAW.cast_to_raw('gtrid01003'); l_xid.bqual := UTL_RAW.cast_to_raw('bqual001'); l_ret := DBMS_XA.XA_END(xid => l_xid, flag => DBMS_XA.TMSUSPEND); END;
+declare l_xid DBMS_XA_XID; l_ret PLS_INTEGER; BEGIN l_xid := DBMS_XA_XID(0, '', ''); l_xid.formatid := 123; l_xid.gtrid := UTL_RAW.cast_to_raw('gtrid01003'); l_xid.bqual := UTL_RAW.cast_to_raw('bqual001'); l_ret := DBMS_XA.XA_PREPARE(xid => l_xid); END;
+select globalid, branchid from gv$ob_transaction_participants where role = 'LEADER' and formatid = 123;
+GLOBALID	BRANCHID
+67747269643031303033	627175616C303031
+select tenant_id, formatid, globalid, branchid from gv$ob_global_transaction;
+TENANT_ID	FORMATID	GLOBALID	BRANCHID
+1002	-2	67747269643031303033	NULL
+1002	123	67747269643031303033	627175616C303031
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_log_archive_progress where checkpoint_scn>=$check_scn and tenant_id=$backup_oracle_tenant_id, 1, 50;
+use oceanbase;
+ob1.check_until_timeout SELECT status FROM __all_tenant WHERE tenant_id = 1003, NORMAL, 200;
+ob1.check_until_timeout select count(*) from __all_virtual_ls_meta_table where tenant_id = 1004 and restore_status = 0, 6, 600;
+ob1.check_until_timeout select status FROM __all_tenant WHERE tenant_id = 1004, NORMAL, 200;
+ob1.check_until_timeout select count(*) FROM __all_restore_job, 0, 200;
+ob1.mysql ALTER SYSTEM RECOVER STANDBY TENANT $restore_oracle_tenant UNTIL UNLIMITED;
+select tenant_role from __all_virtual_tenant_info where tenant_id = 1004;
+tenant_role
+STANDBY
+select tenant_id, formatid, globalid, branchid from gv$ob_global_transaction;
+TENANT_ID	FORMATID	GLOBALID	BRANCHID
+1004	123	67747269643031303033	627175616C303031
+select gtrid, bqual, format_id,	coordinator from __all_pending_transaction;
+gtrid	bqual	format_id	coordinator
+ob1.mysql ALTER SYSTEM ACTIVATE STANDBY TENANT $restore_oracle_tenant;
+select tenant_role from __all_virtual_tenant_info where tenant_id = 1004;
+tenant_role
+PRIMARY
+declare l_xid DBMS_XA_XID; l_ret PLS_INTEGER; BEGIN l_xid := DBMS_XA_XID(0, '', ''); l_xid.formatid := 123; l_xid.gtrid := UTL_RAW.cast_to_raw('gtrid01003'); l_xid.bqual := UTL_RAW.cast_to_raw('bqual001'); l_ret := DBMS_XA.XA_COMMIT(xid => l_xid, onePhase => FALSE); END;
+select * from xa_tt01;
+A	B
+1	1
+select gtrid, bqual, format_id,	coordinator from __all_pending_transaction;
+gtrid	bqual	format_id	coordinator
+declare l_xid DBMS_XA_XID; l_ret PLS_INTEGER; BEGIN l_xid := DBMS_XA_XID(0, '', ''); l_xid.formatid := 123; l_xid.gtrid := UTL_RAW.cast_to_raw('gtrid01003'); l_xid.bqual := UTL_RAW.cast_to_raw('bqual001'); l_ret := DBMS_XA.XA_COMMIT(xid => l_xid, onePhase => FALSE); END;
+select * from xa_tt01;
+A	B
+1	1
+select gtrid, bqual, format_id,	coordinator from __all_pending_transaction;
+gtrid	bqual	format_id	coordinator

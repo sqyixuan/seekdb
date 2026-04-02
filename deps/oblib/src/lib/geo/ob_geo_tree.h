@@ -22,7 +22,6 @@
 #include "lib/string/ob_string.h"
 #include "lib/container/ob_vector.h"
 #include "lib/container/ob_array_iterator.h"
-#include <type_traits>
 
 namespace oceanbase {
 namespace common {
@@ -70,13 +69,6 @@ public:
   self_t operator+(difference_type step)
   {
     base_t tmp = base_t::operator+(step);
-    return self_t(tmp);
-  };
-  // Template overload for integral types to avoid ambiguity with pointer arithmetic
-  template<typename IntegralType, typename std::enable_if<std::is_integral<IntegralType>::value && !std::is_same<IntegralType, difference_type>::value, int>::type = 0>
-  self_t operator+(IntegralType step)
-  {
-    base_t tmp = base_t::operator+(static_cast<difference_type>(step));
     return self_t(tmp);
   };
   self_t &operator+=(difference_type step)
@@ -136,18 +128,6 @@ ObGeomConstIterator<T> operator+(
 {
   ObGeomConstIterator<T> iter2 = iter;
   iter2 += diff;
-  return iter2;
-}
-
-// Template overload for integral types to avoid ambiguity with pointer arithmetic
-template <typename T, typename IntegralType>
-typename std::enable_if<std::is_integral<IntegralType>::value && !std::is_same<IntegralType, typename ObGeomConstIterator<T>::difference_type>::value, ObGeomConstIterator<T>>::type
-operator+(
-  IntegralType diff,
-  const ObGeomConstIterator<T>& iter)
-{
-  ObGeomConstIterator<T> iter2 = iter;
-  iter2 += static_cast<typename ObGeomConstIterator<T>::difference_type>(diff);
   return iter2;
 }
 

@@ -1,0 +1,146 @@
+# owner: ryan.ly
+# owner group: pl/sql测试
+# description: user_jobs表信息核对,验证递交任务是否执行
+# tags: ddl,dml,pl
+# author: wb-qzq593756
+
+
+--echo # 清理环境
+--disable_warnings
+--error 0,600
+drop user dbmsjob1 cascade;
+--error 0,942
+drop table t_table;
+--error 0,2289
+drop sequence tab_seq;
+--enable_warnings
+
+
+--echo # 创建测试用户
+create user dbmsjob1 IDENTIFIED BY ali1234;
+grant all on *.* to dbmsjob1 WITH GRANT OPTION;
+grant dba to dbmsjob1;
+grant all privileges to dbmsjob1;
+--source mysql_test/include/check_schema_sync.inc
+
+
+--echo # 切换dbmsjob1账户执行测试
+connect (conn,$OBMYSQL_MS0,dbmsjob1@oracle,ali1234,dbmsjob1,$OBMYSQL_PORT);
+connection conn;
+--source output_print_enable.inc
+
+
+
+
+--echo ######### 完整流程 #########
+--echo # 标签: submit-1, test-4
+create table t_table(c1 number, c2 nvarchar2(10), c3 date default sysdate);
+
+CREATE SEQUENCE tab_seq 
+INCREMENT BY 1 
+START WITH 1 
+NOMAXVALUE 
+NOCYCLE;
+
+delimiter //;
+--echo # 测试首次submit时, job是否立刻执行
+create or replace procedure my_pro is
+begin
+  insert into t_table(c1,c2) values(tab_seq.nextval,'第一个job');
+  commit;
+end;
+//
+
+
+declare
+  job_id number;
+begin
+  dbms_job.submit(job_id,'my_pro;', sysdate, 'sysdate+1/24/60');
+  commit;
+end;
+//
+
+
+sleep 2//
+--echo # 预期结果为1, 当前有bug: 
+select count(*) from t_table order by c1//
+
+
+--echo # 获取id,停止job
+let $job_id = query_get_value(select a.job from (select job from user_jobs order by job desc) a where rownum = 1)//
+
+begin
+  dbms_job.broken($job_id, true, sysdate);
+  commit;
+end;
+//
+
+
+
+
+--echo # 接上, 停掉前一个job, 重新递交新的job
+delete from t_table//
+
+create or replace procedure my_pro1 is
+begin
+  insert into t_table(c1,c2) values(tab_seq.nextval,'第二个job');
+  commit;
+end;
+//
+
+
+declare
+  job_id number;
+begin
+  dbms_job.submit(job_id,'my_pro1;', sysdate, 'sysdate+1/24/60');
+  commit;
+end;
+//
+delimiter ;//
+
+
+sleep 2;
+--echo # 预期结果: 1, 第二个job不被执行:
+select count(*) from t_table order by c1;
+
+--echo # 预期结果: 0,Y 和0,N
+select failures, broken from user_jobs order by job;
+
+select job, failures, broken from user_jobs order by job;
+
+--error 42399
+delete from user_jobs;
+
+--error 42399
+update user_jobs set job = 100;
+
+--error 42399
+update user_jobs set failures = 200 where broken = 'N';
+
+--error 42399
+insert into user_jobs(job, failures, broken) values(6,6,6);
+
+
+delimiter //;
+declare
+  var1 varchar2(10) := $job_id + 7;
+begin
+  dbms_output.put_line('使用变量做运算: ' || var1);
+end;
+//
+delimiter ;//
+--echo # 预期结果: 
+select println() from dual;
+
+
+--echo # 清理测试用户
+--source output_print_disable.inc
+disconnect conn;
+connect (conn_test,$OBMYSQL_MS0,test@oracle,test,test,$OBMYSQL_PORT);
+connection conn_test;
+
+--disable_warnings
+--error 0,600
+drop user dbmsjob1 cascade;
+--enable_warnings
+

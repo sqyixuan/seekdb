@@ -112,7 +112,7 @@ public:
     index_--;
     return *this;
   }
-  inline ObSEArrayIterator operator+(int64_t off) const
+  inline ObSEArrayIterator operator+(int64_t off)
   {
     OB_ASSERT(arr_ != NULL);
     return ObSEArrayIterator(arr_, index_ + off);
@@ -128,7 +128,7 @@ public:
     OB_ASSERT(arr_ == rhs.arr_);
     return index_ - rhs.index_;
   }
-  inline ObSEArrayIterator operator-(int64_t index) const
+  inline ObSEArrayIterator operator-(int64_t index)
   {
     OB_ASSERT(arr_ != NULL);
     return ObSEArrayIterator(arr_, this->index_ - index);

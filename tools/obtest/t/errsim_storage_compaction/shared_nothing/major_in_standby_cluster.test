@@ -1,0 +1,184 @@
+# owner:lixia.yq
+# owner group:storage
+# test RS compaction check
+# 1) switch major check RS
+# 2) rs can't get all tablets' checksum items
+
+ob1=OBI(cluster=1:1, proxy_num=0);
+ob2=OBI(cluster=1, proxy_num=0);
+
+let $restore_ip         = deploy_get_value(ob2.z1.obs0.ip);
+let $restore_port       = deploy_get_value(ob2.z1.obs0.mysql_port);
+
+ob1.z1.obs0.set extra_config = "cpu_count=14,memory_limit='38G',system_memory='7G',__min_full_resource_pool_memory='1073741824',cache_wash_threshold='1G',_ob_minor_merge_schedule_interval='3s'";
+ob1.z2.obs0.set extra_config = "cpu_count=14,memory_limit='38G',system_memory='7G',__min_full_resource_pool_memory='1073741824',cache_wash_threshold='1G',_ob_minor_merge_schedule_interval='3s'";
+ob1.reboot;
+
+# 固定sys租户规格
+ob1.mysql alter resource unit sys_unit_config memory_size='2G';
+
+ob_connect(sys_conn, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection sys_conn;
+CREATE RESOURCE UNIT large_unit MAX_CPU=2, MEMORY_SIZE='4G';
+CREATE RESOURCE POOL large_pool UNIT large_unit, UNIT_NUM 1, ZONE_LIST ('z1', 'z2');
+
+ob1.mysql alter system set _backup_idle_time = '10s';
+ob1.mysql alter system set merger_check_interval = '10s';
+ob1.mysql alter system set enable_async_syslog=false;
+
+ob1.mysql CREATE TENANT backup_mysql_tenant RESOURCE_POOL_LIST = ('large_pool'), primary_zone = "z1" set ob_tcp_invited_nodes='%', ob_compatibility_mode='mysql';
+let $backup_tenant_id = query_get_value(select tenant_id from oceanbase.__all_tenant where tenant_name='backup_mysql_tenant', tenant_id, 1);
+let $server_ip_port_1=deploy_get_value(ob1.select select concat(svr_ip,':',sql_port) as host from CDB_OB_LS_LOCATIONS where tenant_id = $backup_tenant_id and ls_id = 1 and role = 'LEADER' order by svr_ip, sql_port limit 1, host, 1);
+let $server_ip_port_2=deploy_get_value(ob1.select select concat(svr_ip,':',sql_port) as host from CDB_OB_LS_LOCATIONS where tenant_id = $backup_tenant_id and ls_id = 1 and role = 'FOLLOWER' order by svr_ip, sql_port limit 1, host, 1);
+
+ob_connect(primary_tenant_conn, ob1.z1.obs0,root@backup_mysql_tenant,,test,,USE_MYSQL_CONNECTOR);
+connection primary_tenant_conn;
+
+create user mytest identified by "test";
+GRANT SELECT on OCEANBASE.DBA_OB_ACCESS_POINT to mytest;
+GRANT SELECT on OCEANBASE.GV$OB_UNITS to mytest;
+GRANT SELECT on OCEANBASE.DBA_OB_TENANTS to mytest;
+GRANT SELECT on OCEANBASE.GV$OB_PARAMETERS to mytest;
+GRANT SELECT on OCEANBASE.GV$OB_LOG_STAT to mytest;
+GRANT SELECT on OCEANBASE.DBA_OB_LS to mytest;
+
+#########################################################################
+# TEST_1: create table&index in primary tenant + tenant major
+#########################################################################
+connection primary_tenant_conn;
+--disable_warnings
+drop table if exists test01;
+--enable_warnings
+create table test01(c1 int, c2 int, c3 varchar(40960)) compression= 'none';
+create index idx1 on test01(c2);
+
+let $data_table_id = deploy_get_value(ob1.select select table_id from oceanbase.__all_virtual_table where table_name='test01', table_id, 1);
+let $tablet_id = deploy_get_value(ob1.select select tablet_id from oceanbase.__all_virtual_tablet_to_ls where table_id = $data_table_id limit 1, tablet_id, 1);
+
+--disable_query_log
+let $cnt=1;
+while($cnt < 10)
+{
+  eval insert into test01 values($cnt, $cnt, repeat('oceanbase', 4096));
+  inc $cnt;
+}
+--enable_query_log
+let $schema_version = deploy_get_value(ob1.select select max(schema_version) as s from oceanbase.__all_virtual_ddl_operation where tenant_id = $backup_tenant_id, s, 1);
+
+ob1.mysql alter system set compaction_low_thread_score = 20 tenant backup_mysql_tenant;
+ob1.mysql alter system set ob_compaction_schedule_interval = '10s' tenant backup_mysql_tenant;
+ob1.mysql alter system set merger_check_interval = '10s' tenant backup_mysql_tenant;
+ob1.mysql alter system major freeze tenant backup_mysql_tenant;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $backup_tenant_id and LAST_SCN != GLOBAL_BROADCAST_SCN , 1, 100;
+let $major_scn = deploy_get_value(ob1.select select GLOBAL_BROADCAST_SCN from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $backup_tenant_id, GLOBAL_BROADCAST_SCN, 1);
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $backup_tenant_id and LAST_SCN != GLOBAL_BROADCAST_SCN , 0, 300;
+
+#########################################################################
+# TEST_2: create standby tenant
+#########################################################################
+
+ob2.reboot;
+ob2.mysql alter resource unit sys_unit_config memory_size='2G';
+connect(restore_sys_conn, $restore_ip, root@sys,,oceanbase, $restore_port);
+connection restore_sys_conn;
+use oceanbase;
+alter system set resource_hard_limit = 1000;
+alter system set _restore_idle_time = '10s';
+ob2.mysql alter system set _backup_idle_time = '10s';
+ob2.mysql alter system set enable_async_syslog=false;
+
+CREATE RESOURCE UNIT large_unit_1 MAX_CPU=5, MEMORY_SIZE='10G';
+CREATE RESOURCE POOL large_pool_1 UNIT large_unit_1, UNIT_NUM 1, ZONE_LIST ('z1');
+
+--disable_all_result_log
+eval CREATE STANDBY TENANT IF NOT EXISTS standby_mysql_tenant LOG_RESTORE_SOURCE = 'service=$server_ip_port_1;$server_ip_port_2 USER=mytest@backup_mysql_tenant PASSWORD=test', PRIMARY_ZONE='z1', RESOURCE_POOL_LIST=('large_pool_1'),locality='F@z1', comment='mysql';
+--enable_all_result_log
+
+ob2.check_until_timeout SELECT status FROM dba_ob_tenants WHERE TENANT_NAME = 'standby_mysql_tenant', NORMAL, 200;
+
+ob2.mysql alter system set merger_check_interval = '10s' tenant standby_mysql_tenant;
+ob2.mysql alter system set ob_compaction_schedule_interval = '10s' tenant standby_mysql_tenant;
+ob2.mysql alter system set compaction_low_thread_score = 20 tenant standby_mysql_tenant;
+
+connection restore_sys_conn;
+let $standby_tenant_id= query_get_value(select tenant_id from oceanbase.__all_tenant where tenant_name='standby_mysql_tenant', tenant_id, 1);
+
+let $current = `select ceil(UNIX_TIMESTAMP(current_timestamp(6)) * 1000000)`;
+ob0.check_until_timeout select floor(readable_scn / 1000) > '$current' from __all_virtual_tenant_info where tenant_id = $standby_tenant_id, 1, 600;
+ob2.check_until_timeout select count(*) from oceanbase.__all_virtual_server_schema_info where tenant_id = $standby_tenant_id and refreshed_schema_version < $schema_version, 0, 30;
+ob_connect(standby_tenant_conn, ob2.z1.obs0,root@standby_mysql_tenant,,test,,USE_MYSQL_CONNECTOR);
+connection standby_tenant_conn;
+select c1,c2 from test.test01;
+
+ob2.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $standby_tenant_id and LAST_SCN != $major_scn, 0, 300;
+
+#########################################################################
+# TEST_3: make user index table to schedule tablet medium merge after tenant major
+#########################################################################
+# make RS check major finish
+# EN_SKIP_INDEX_MAJOR = 4016
+ob1.mysql alter system set_tp tp_no = 711, error_code = 4016, frequency = 1;
+
+ob1.mysql alter system major freeze tenant backup_mysql_tenant;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $backup_tenant_id and LAST_SCN != GLOBAL_BROADCAST_SCN , 1, 100;
+let $major_scn = deploy_get_value(ob1.select select GLOBAL_BROADCAST_SCN from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $backup_tenant_id, GLOBAL_BROADCAST_SCN, 1);
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $backup_tenant_id and LAST_SCN != GLOBAL_BROADCAST_SCN , 0, 300;
+
+let $replica_checksum_cnt = deploy_get_value(ob1.select select count(*) as c from oceanbase.__all_virtual_tablet_replica_checksum where tenant_id=$backup_tenant_id and compaction_scn=$major_scn and (tablet_id < 50000 or tablet_id > 100000), c, 1);
+let $tablet_checksum_cnt = deploy_get_value(ob1.select select count(*) as c from oceanbase.__all_tablet_checksum where compaction_scn=$major_scn, c, 1);
+
+if ($replica_checksum_cnt != $tablet_checksum_cnt) {
+  --echo checksum item mismatch, $replica_checksum_cnt, $tablet_checksum_cnt
+}
+ob1.mysql alter system set_tp tp_no = 711, error_code = 4016, frequency = 0;
+# EN_SCHEDULE_MEDIUM_COMPACTION = 5489
+ob1.mysql alter system set_tp tp_no = 709, error_code = 5489, frequency = 1;
+
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tablet_replica_checksum where tenant_id = $backup_tenant_id and tablet_id=$tablet_id and compaction_scn > $major_scn, 0, 300;
+ob1.mysql alter system set_tp tp_no = 709, error_code = 5489, frequency = 0;
+ob1.check_until_timeout select count(*) from oceanbase.__all_tablet_checksum where tenant_id = $backup_tenant_id and tablet_id=$tablet_id and compaction_scn > $major_scn, 0, 300;
+
+ob2.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $standby_tenant_id and LAST_SCN != $major_scn, 0, 300;
+
+#########################################################################
+# TEST_4: switchover
+#########################################################################
+#switch to standby tenant, all ls should be follower role
+ob1.mysql ALTER SYSTEM SWITCHOVER TO STANDBY TENANT backup_mysql_tenant;
+ob1.check_until_timeout select count(*) from __all_virtual_ls_info where tenant_id=$backup_tenant_id and ls_state != "FOLLOWER", 0, 100;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tenant_info where tenant_id = $backup_tenant_id and tenant_role = 'STANDBY' and switchover_status = 'NORMAL', 1, 10;
+let $standby_switchover_epoch = deploy_get_value(ob1.select select switchover_epoch from oceanbase.__all_virtual_tenant_info where tenant_id = $backup_tenant_id, switchover_epoch, 1);
+
+#switch to primary tenant, all ls should be leader role
+ob2.mysql ALTER SYSTEM SWITCHOVER TO PRIMARY TENANT standby_mysql_tenant;
+ob2.check_until_timeout select count(*) from __all_virtual_ls_info where tenant_id=$standby_tenant_id and ls_state != "LEADER", 0, 100;
+ob2.check_until_timeout select count(*) from oceanbase.__all_virtual_tenant_info where tenant_id = $standby_tenant_id and switchover_epoch = $standby_switchover_epoch, 0, 10;
+ob2.check_until_timeout select count(*) from oceanbase.__all_virtual_tenant_info where tenant_id = $standby_tenant_id and tenant_role = 'PRIMARY' and switchover_status = 'NORMAL' and recovery_until_scn = 4611686018427387903, 1, 10;
+
+# build connection
+let $server_ip_port_standby=deploy_get_value(ob2.select select concat(svr_ip,':',sql_port) as host from CDB_OB_LS_LOCATIONS where tenant_id = $standby_tenant_id and ls_id = 1 limit 1, host, 1);
+ob1.mysql alter system set LOG_RESTORE_SOURCE = 'service=$server_ip_port_standby USER=mytest@standby_mysql_tenant PASSWORD=test' tenant = 'backup_mysql_tenant';
+
+connection standby_tenant_conn;
+--disable_query_log
+let $cnt=10;
+while($cnt < 20)
+{
+  eval insert into test01 values($cnt, $cnt, repeat('oceanbase', 4096));
+  inc $cnt;
+}
+--enable_query_log
+
+# EN_SPECIAL_TABLE_HAVE_LARGER_SCN = 4023
+ob2.mysql alter system set_tp tp_no = 732, error_code = 4023, frequency = 1;
+ob2.mysql alter system major freeze tenant standby_mysql_tenant;
+ob2.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $standby_tenant_id and LAST_SCN != GLOBAL_BROADCAST_SCN , 1, 100;
+let $major_scn = deploy_get_value(ob2.select select GLOBAL_BROADCAST_SCN from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $standby_tenant_id, GLOBAL_BROADCAST_SCN, 1);
+ob2.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $standby_tenant_id and LAST_SCN != GLOBAL_BROADCAST_SCN , 0, 300;
+
+# clear EN_SPECIAL_TABLE_HAVE_LARGER_SCN
+ob2.mysql alter system set_tp tp_no = 732, error_code = 4023, frequency = 0;
+
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $backup_tenant_id and LAST_SCN != $major_scn , 0, 300;
+connection primary_tenant_conn;
+select c1,c2 from test.test01;

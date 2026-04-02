@@ -1,0 +1,3 @@
+source t/compat/include_for_obtest_ss/load_data_obdocker_mix.inc;
+source t/compat/include_for_obtest_ss/trans_obdocker_mix_newleader.inc;
+source t/compat/include_for_obtest_ss/trans_obdocker_mix_oldleader.inc;

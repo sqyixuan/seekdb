@@ -1,0 +1,187 @@
+# owner: dachuan.sdc
+# owner group: SQL2
+# description:  test for share time_zone map
+# tags: time_zone
+
+connect (conn_admin, $OBMYSQL_MS0,admin,$OBMYSQL_PWD,oceanbase,$OBMYSQL_PORT);
+connection conn_admin;
+
+## 1. import timezone info for one tenant.
+### import
+let $tz_file = 0;
+let $TENANT = tenant1;
+eval call oceanbase.drop_tenant_force('$TENANT');
+eval call oceanbase.create_mysql_tenant_mini('$TENANT');
+--source mysql_test/test_suite/time_zone/t/include/import_time_zone_for_tenant.inc
+connection conn_admin;
+eval call oceanbase.drop_tenant_force('$TENANT');
+--sleep 20
+eval call oceanbase.create_mysql_tenant_mini('$TENANT');
+--source mysql_test/test_suite/time_zone/t/include/import_time_zone_for_tenant.inc
+### recpord memory usage
+connection conn_admin;
+eval call oceanbase.drop_tenant_force('$TENANT');
+--sleep 30
+--disable_query_log
+--disable_warnings
+drop table if exists test.mem_used ;
+drop table if exists test.mem_used_new;
+create table test.mem_used  as select tenant_id, label, ctx_name, mod_type, mod_id, mod_name, used, count
+  from __all_virtual_memory_info
+  where label like '%TZ%' and SVR_IP=HOST_IP() and SVR_PORT=RPC_PORT() order by tenant_id, label;
+create table test.mem_used_new like test.mem_used ;
+--enable_query_log
+--enable_warnings
+
+
+
+## 2. import timezone info for new tenant, same as first.
+### import
+let $TENANT = tenant2;
+eval call oceanbase.drop_tenant_force('$TENANT');
+eval call oceanbase.create_mysql_tenant_mini('$TENANT');
+--source mysql_test/test_suite/time_zone/t/include/import_time_zone_for_tenant.inc
+
+### check memory usage
+connection conn_admin;
+--sleep 20
+delete from test.mem_used_new;
+insert into test.mem_used_new select tenant_id, label, ctx_name, mod_type, mod_id, mod_name, used, count from __all_virtual_memory_info
+  where label like '%TZ%' and SVR_IP=HOST_IP() and SVR_PORT=RPC_PORT() order by tenant_id, label;
+--echo ## expect allocate little memory.
+select a.tenant_id, a.label, a.ctx_name, a.mod_type, a.mod_id, a.mod_name, a.used - b.used used, a.count - b.count count
+  from test.mem_used_new a, test.mem_used  b where a.tenant_id = b.tenant_id and a.label = b.label and a.mod_id = b.mod_id order by tenant_id, label;
+
+
+
+### 3. upgrade timezone, this is not normal, just in case of non standard operation.
+eval alter system change tenant $TENANT;
+delete from __all_tenant_time_zone_name where time_zone_id = 1;
+update __all_sys_stat set value = value + 1 where name = 'current_timezone_version';
+alter system change tenant sys;
+--sleep 30
+
+### check memory usage again
+delete from test.mem_used_new;
+insert into test.mem_used_new select tenant_id, label, ctx_name, mod_type, mod_id, mod_name, used, count from __all_virtual_memory_info
+  where label like '%TZ%' and SVR_IP=HOST_IP() and SVR_PORT=RPC_PORT() order by tenant_id, label;
+--echo ## expect allocate huge memory.
+select a.tenant_id, a.label, a.ctx_name, a.mod_type, a.mod_id, a.mod_name, a.used - b.used, a.count - b.count
+  from test.mem_used_new a, test.mem_used  b where a.tenant_id = b.tenant_id and a.label = b.label and a.mod_id = b.mod_id order by tenant_id, label;
+
+eval call oceanbase.drop_tenant_force('$TENANT');
+--sleep 20
+
+
+## 4. import timezone info for new tenant, not same as first.
+### 4.1. more timezone
+let $tz_file = 1;
+let $TENANT = tenant3;
+eval call oceanbase.drop_tenant_force('$TENANT');
+eval call oceanbase.create_mysql_tenant_mini('$TENANT');
+--source mysql_test/test_suite/time_zone/t/include/import_time_zone_for_tenant.inc
+connection conn_admin;
+--sleep 20
+delete from test.mem_used_new;
+insert into test.mem_used_new select tenant_id, label, ctx_name, mod_type, mod_id, mod_name, used, count from __all_virtual_memory_info
+  where label like '%TZ%' and SVR_IP=HOST_IP() and SVR_PORT=RPC_PORT() order by tenant_id, label;
+--echo ## expect allocate huge memory.
+select a.tenant_id, a.label, a.ctx_name, a.mod_type, a.mod_id, a.mod_name, a.used - b.used, a.count - b.count
+  from test.mem_used_new a, test.mem_used  b where a.tenant_id = b.tenant_id and a.label = b.label and a.mod_id = b.mod_id order by tenant_id, label;
+
+connect (conn3, $OBMYSQL_MS0,root@tenant3,,oceanbase,$OBMYSQL_PORT);
+connection conn3;
+set time_zone = 'shanting';
+connection conn_admin;
+eval call oceanbase.drop_tenant_force('$TENANT');
+--sleep 10
+
+
+### 4.2. less timezone
+let $tz_file = 2;
+let $TENANT = tenant4;
+eval call oceanbase.drop_tenant_force('$TENANT');
+eval call oceanbase.create_mysql_tenant_mini('$TENANT');
+--source mysql_test/test_suite/time_zone/t/include/import_time_zone_for_tenant.inc
+connection conn_admin;
+--sleep 20
+delete from test.mem_used_new;
+insert into test.mem_used_new select tenant_id, label, ctx_name, mod_type, mod_id, mod_name, used, count from __all_virtual_memory_info
+  where label like '%TZ%' and SVR_IP=HOST_IP() and SVR_PORT=RPC_PORT() order by tenant_id, label;
+--echo ## expect allocate huge memory.
+select a.tenant_id, a.label, a.ctx_name, a.mod_type, a.mod_id, a.mod_name, a.used - b.used, a.count - b.count
+  from test.mem_used_new a, test.mem_used  b where a.tenant_id = b.tenant_id and a.label = b.label and a.mod_id = b.mod_id order by tenant_id, label;
+
+connect (conn4, $OBMYSQL_MS0,root@tenant4,,oceanbase,$OBMYSQL_PORT);
+connection conn4;
+--error 1298
+set time_zone = 'test1';
+connection conn_admin;
+eval call oceanbase.drop_tenant_force('$TENANT');
+--sleep 10
+
+
+### 4.3 same number of timezone, different timezone name.
+let $tz_file = 3;
+let $TENANT = tenant5;
+eval call oceanbase.drop_tenant_force('$TENANT');
+eval call oceanbase.create_mysql_tenant_mini('$TENANT');
+--source mysql_test/test_suite/time_zone/t/include/import_time_zone_for_tenant.inc
+connection conn_admin;
+--sleep 20
+delete from test.mem_used_new;
+insert into test.mem_used_new select tenant_id, label, ctx_name, mod_type, mod_id, mod_name, used, count from __all_virtual_memory_info
+  where label like '%TZ%' and SVR_IP=HOST_IP() and SVR_PORT=RPC_PORT() order by tenant_id, label;
+--echo ## expect allocate huge memory.
+select a.tenant_id, a.label, a.ctx_name, a.mod_type, a.mod_id, a.mod_name, a.used - b.used, a.count - b.count
+  from test.mem_used_new a, test.mem_used  b where a.tenant_id = b.tenant_id and a.label = b.label and a.mod_id = b.mod_id order by tenant_id, label;
+
+connect (conn5, $OBMYSQL_MS0,root@tenant5,,oceanbase,$OBMYSQL_PORT);
+connection conn5;
+--error 1298
+set time_zone = 'Asia/Singapore';
+set time_zone = 'Asia/SingaporeTemp';
+connection conn_admin;
+eval call oceanbase.drop_tenant_force('$TENANT');
+--sleep 10
+
+
+### 4.4 same number of timezone, different timezone order.
+let $tz_file = 4;
+let $TENANT = tenant6;
+eval call oceanbase.drop_tenant_force('$TENANT');
+eval call oceanbase.create_mysql_tenant_mini('$TENANT');
+--source mysql_test/test_suite/time_zone/t/include/import_time_zone_for_tenant.inc
+connection conn_admin;
+--sleep 20
+delete from test.mem_used_new;
+insert into test.mem_used_new select tenant_id, label, ctx_name, mod_type, mod_id, mod_name, used, count from __all_virtual_memory_info
+  where label like '%TZ%' and SVR_IP=HOST_IP() and SVR_PORT=RPC_PORT() order by tenant_id, label;
+--echo ## expect allocate huge memory.
+select a.tenant_id, a.label, a.ctx_name, a.mod_type, a.mod_id, a.mod_name, a.used - b.used, a.count - b.count
+  from test.mem_used_new a, test.mem_used  b where a.tenant_id = b.tenant_id and a.label = b.label and a.mod_id = b.mod_id order by tenant_id, label;
+
+connect (conn6, $OBMYSQL_MS0,root@tenant6,,oceanbase,$OBMYSQL_PORT);
+connection conn6;
+set time_zone = 'Africa/Accra';
+set time_zone = 'Africa/Abidjan';
+connection conn_admin;
+eval call oceanbase.drop_tenant_force('$TENANT');
+--sleep 10
+
+
+## 5. ## test recycle memory of dropped tenant.
+connection conn_admin;
+--disable_query_log
+--sleep 30
+delete from test.mem_used_new;
+insert into test.mem_used_new select tenant_id, label, ctx_name, mod_type, mod_id, mod_name, used, count from __all_virtual_memory_info
+  where label like '%TZ%' and SVR_IP=HOST_IP() and SVR_PORT=RPC_PORT() order by tenant_id, label;
+--echo ## expect allocate zero memory.
+select a.tenant_id, a.label, a.ctx_name, a.mod_type, a.mod_id, a.mod_name, a.used - b.used, a.count - b.count
+  from test.mem_used_new a, test.mem_used  b where a.tenant_id = b.tenant_id and a.label = b.label and a.mod_id = b.mod_id order by tenant_id, label;
+drop table test.mem_used ;
+drop table test.mem_used_new;
+--enable_query_log
+
+

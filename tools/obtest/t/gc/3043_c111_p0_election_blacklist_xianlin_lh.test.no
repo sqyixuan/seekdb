@@ -1,0 +1,123 @@
+##
+# owner:xianlin.lh
+# owner group:transaction
+# description:
+# 测试功能点: 测试选举黑名单功能
+#
+# 设计文档：
+#
+# 测试功能点：
+#
+# 1 primary zone所在的server出现无主选举（阻塞网络构造）
+#   leader会切到primary region的另外一个server上；
+#
+# 2 测试关闭此功能
+#   修改election_blacklist_interval = 0
+#   rs会将leader切回到primary zone；
+#
+# 3 测试primary region两个replica均revoke，主不会切到异地
+#   修改election_blacklist_interval = 30分钟，构造primary region两个副本均出现无主选举
+#   Leader会在primary zone所在的server上（保证不切到异地）
+##
+ob1=OBI(cluster=1:1:1,proxy_num=0,init_unit_cpu=0,locality=HZ:HZ:SZ);
+ob1.reboot;
+sleep 15;
+
+ob1.mysql alter system set enable_auto_leader_switch = true;
+ob1.mysql create resource pool xx1 unit = 'sys_unit_config', unit_num = 1, zone_list = ('z1', 'z2', 'z3');
+ob1.mysql create tenant xx1 replica_num 3, primary_zone 'z1', resource_pool_list('xx1') set ob_tcp_invited_nodes='%';
+
+sleep 3;
+
+let $ip1 = deploy_get_value(ob1.z1.obs0.ip);
+let $mysql_port1 = deploy_get_value(ob1.z1.obs0.mysql_port);
+let $port1 = deploy_get_value(ob1.z1.obs0.port);
+
+let $ip2 = deploy_get_value(ob1.z2.obs0.ip);
+let $mysql_port2 = deploy_get_value(ob1.z2.obs0.mysql_port);
+let $port2 = deploy_get_value(ob1.z2.obs0.port);
+
+let $ip3 = deploy_get_value(ob1.z3.obs0.ip);
+let $mysql_port3 = deploy_get_value(ob1.z3.obs0.mysql_port);
+let $port3 = deploy_get_value(ob1.z3.obs0.port);
+
+connect(xx1_conn, $ip3, root@xx1, , test, $mysql_port3);
+connection xx1_conn;
+create table t1 (k int primary key,v int);
+
+connect(xx2_conn, $ip3, root, , oceanbase, $mysql_port3);
+connection xx2_conn;
+
+# 此时leader在z1上
+--disable_query_log
+eval select count(*) from __all_virtual_meta_table where role = 1 and svr_ip = "$ip1" and svr_port = "$port1";
+--enable_query_log
+# 阻塞z1的网络，构造无主选举
+ob1.z1.obs0.block_net ob1.z2.obs0;
+ob1.z1.obs0.block_net ob1.z3.obs0;
+
+sleep 30;
+
+ob1.z1.obs0.clean_net ob1.z2.obs0;
+ob1.z1.obs0.clean_net ob1.z3.obs0;
+
+# 此时leader在z2上，测试功能点1
+--disable_query_log
+eval select count(*)  from __all_virtual_meta_table where role = 1 and svr_ip = "$ip2" and svr_port = "$port2";
+--enable_query_log
+
+sleep 60;
+
+# 此时leader仍在z2上，测试功能点1，在开启黑名单后，leader不会回切
+--disable_query_log
+eval select count(*) from __all_virtual_meta_table where role = 1 and svr_ip = "$ip2" and svr_port = "$port2";
+--enable_query_log
+ob1.mysql alter system set election_blacklist_interval = '0s';
+
+sleep 10;
+
+# 此时leader会被rs切回到z1上，测试功能点2，关闭此功能后，leader切回primary zone
+--disable_query_log
+eval select count(*) from __all_virtual_meta_table where role = 1 and svr_ip = "$ip1" and svr_port = "$port1";
+--enable_query_log
+
+ob1.mysql alter system set election_blacklist_interval = '1800s';
+
+sleep 30;
+
+# 此时leader仍在z1上, 有主连任不会比较优先级，因此当前leader不会卸任，符合预期
+--disable_query_log
+eval select count(*) from __all_virtual_meta_table where role = 1 and svr_ip = "$ip1" and svr_port = "$port1";
+--enable_query_log
+
+# 修改primary zone为z2
+alter tenant xx1 primary_zone = "z2";
+
+sleep 10;
+
+# 此时leader被rs改选到z2上，为测试功能点3做准备
+--disable_query_log
+eval select count(*) from __all_virtual_meta_table where role = 1 and svr_ip = "$ip2" and svr_port = "$port2";
+--enable_query_log
+ob1.z2.obs0.block_net ob1.z1.obs0;
+ob1.z2.obs0.block_net ob1.z3.obs0;
+
+sleep 30;
+
+ob1.z2.obs0.clean_net ob1.z1.obs0;
+ob1.z2.obs0.clean_net ob1.z3.obs0;
+
+sleep 10;
+
+# 此时leader被rs改选到z2上，测试功能点3，Leader不会选到异地
+--disable_query_log
+eval select count(*) from __all_virtual_meta_table where role = 1 and svr_ip = "$ip2" and svr_port = "$port2";
+--enable_query_log
+# 修改primary zone为z1
+alter tenant xx1 primary_zone = "z1";
+
+sleep 10;
+# 此时leader被rs改选到z1上，测试功能点3，Leader不会选到异地
+--disable_query_log
+eval select count(*) from __all_virtual_meta_table where role = 1 and svr_ip = "$ip1" and svr_port = "$port1";
+--enable_query_log

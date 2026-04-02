@@ -1,0 +1,52 @@
+# owner: rongxuan.lc
+# owner group: STORAGE
+#
+# BUG: 
+#
+# If stand zone replica need migrate because unit migrated, but not task generated because
+# server blocked, a loop migrate task will be generated to migrate it back.
+#
+
+ob1=OBI(cluster=2:2:2,proxy_num=0,init_unit_cpu=0);
+ob1.reboot;
+
+ob1.mysql alter system set debug_sync_timeout = '1000s';
+ob1.mysql alter system set enable_rebalance = 'False';
+ob1.mysql alter system set enable_rereplication = 'False';
+ob1.mysql alter system set balancer_idle_time = '10s';
+ob1.mysql alter system set resource_hard_limit=900;
+ob1.mysql alter system set resource_soft_limit=800;
+ob1.mysql alter system set enable_auto_leader_switch = 'False';
+sleep 2;
+
+ob1.mysql alter resource pool sys_pool unit_num = 2;
+
+let $ip = deploy_get_value(ob1.z1.obs1.ip);
+let $port = deploy_get_value(ob1.z1.obs1.port);
+
+ob1.create_client;
+use oceanbase;
+
+--disable_query_log
+eval update oceanbase.__all_server set block_migrate_in_time = start_service_time where svr_ip = "$ip" and svr_port= $port;
+--enable_query_log
+
+alter system reload server;
+
+let $unit_id = deploy_get_value(ob1.select select unit_id from oceanbase.__all_unit where zone= 'z1' and unit_id != 1, unit_id, 1);
+
+eval update oceanbase.__all_root_table set unit_id = $unit_id where table_id = 1099511627911 and zone = 'z1';
+
+set ob_global_debug_sync = 'BEFORE_REBALANCE_TASK_EXECUTE wait_for execute';
+
+ob1.mysql alter system set enable_rebalance = 'True';
+ob1.mysql alter system set enable_rereplication = 'True';
+
+sleep 15;
+
+select count(*) from oceanbase.__all_virtual_rebalance_task_stat where table_id = 1099511627911;
+set ob_global_debug_sync = 'now signal execute';
+sleep 15;
+select count(*) from oceanbase.__all_virtual_rebalance_task_stat where table_id = 1099511627911;
+ob1.mysql alter system major freeze;
+ob1.check_version 2;

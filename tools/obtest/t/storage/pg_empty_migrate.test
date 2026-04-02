@@ -1,0 +1,39 @@
+# owner:yongle.xh
+# owner group:storage
+--disable_query_log
+ob1=OBI(cluster=2:2:2,proxy_num=0,init_unit_cpu=2);
+ob1.reboot;
+
+ob1.mysql alter system set merger_check_interval='10s';
+ob1.mysql alter system set enable_rebalance = 'false';
+ob1.mysql alter system set resource_hard_limit=500;
+ob1.mysql alter resource pool obtestpool unit_num 2;
+
+#在zone1上建立连接
+let $ip=deploy_get_value(ob1.z1.obs0.ip);
+let $port=deploy_get_value(ob1.z1.obs0.mysql_port);
+connect (conn1,$ip,admin@obtest,admin,oceanbase,$port);
+connect (conn2,$ip,root@sys,,oceanbase,$port);
+connection conn1;
+use test;
+eval create tablegroup tg1 binding true;
+
+
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_table_mgr where tenant_id=$tenant_id and table_type=0, 0, 60;
+
+let $tablegroup_id=deploy_get_value(ob1.select select tablegroup_id from oceanbase.__all_virtual_tablegroup where tablegroup_name='tg1', tablegroup_id, 1);
+let $tenant_id=deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name='obtest', tenant_id, 1);
+let $src_host = deploy_get_value(ob1.select select concat(svr_ip,':',svr_port) host from __all_virtual_partition_location where tenant_id=$tenant_id and table_id=$tablegroup_id and role=1 and partition_id=0, host, 1);
+let $src_port = deploy_get_value(ob1.select select svr_port from __all_virtual_partition_location where tenant_id=$tenant_id and table_id=$tablegroup_id and role=1 and partition_id=0, svr_port, 1);
+let $src = deploy_get_value(ob1.get_obs_by_addr $src_host);
+let $src_ip = deploy_get_value($src.ip);
+let $src_zone = deploy_get_value(ob1.select select zone from oceanbase.__all_server where svr_ip='$src_ip' and svr_port = $src_port, zone, 1);
+let $dst_host = deploy_get_value(ob1.select select concat(svr_ip, ':', svr_port) host from oceanbase.__all_server where zone='$src_zone' and (svr_ip!='$src_ip' or svr_port != $src_port), host, 1);
+let $dst_port = deploy_get_value(ob1.select select svr_port from oceanbase.__all_server where zone='$src_zone' and (svr_ip!='$src_ip' or svr_port != $src_port), svr_port, 1);
+let $dst = deploy_get_value(ob1.get_obs_by_addr $dst_host);
+let $dst_ip = deploy_get_value($dst.ip);
+
+
+ob1.mysql alter system move replica partition_id = '0%0@$tablegroup_id' source = '$src_ip:$src_port' DESTINATION = '$dst_ip:$dst_port';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_partition_location where tenant_id=$tenant_id and table_id=$tablegroup_id and partition_id=0 and role=1 and member_list like '%$dst_ip:$dst_port%', 1, 20;
+

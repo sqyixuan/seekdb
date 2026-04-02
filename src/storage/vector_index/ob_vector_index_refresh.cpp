@@ -730,11 +730,11 @@ int ObVectorIndexRefresher::do_rebuild() {
         LOG_INFO("succ to send rebuild vector index rpc", K(rs_addr), K(refresh_ctx_));
       }
       if (OB_SUCC(ret)) {
-        if (OB_FAIL(ObDDLExecutorUtil::wait_ddl_finish(rebuild_index_arg.tenant_id_,
-                                                       rebuild_index_res.task_id_,
-                                                       false/*do not retry at executor*/,
-                                                       session_info,
-                                                       common_rpc_proxy,
+        if (OB_FAIL(ObDDLExecutorUtil::wait_ddl_finish(rebuild_index_arg.tenant_id_, 
+                                                       rebuild_index_res.task_id_, 
+                                                       false/*do not retry at executor*/, 
+                                                       session_info, 
+                                                       common_rpc_proxy, 
                                                        is_support_cancel))) {
           LOG_WARN("fail wait rebuild vec index finish", K(ret));
         } else {

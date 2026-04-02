@@ -1,0 +1,51 @@
+##
+# owner      : zg410411
+# owner group: mv
+# description: 测试收藏夹MV创建过程撞上合并
+##
+ob1=OBI(cluster=1,oblog_version=current,proxy_num=0,asvr_num=0);
+ob1.reboot;
+
+ob_connect(conn_z1_sys, ob1.z1.obs0, root, , oceanbase, , USE_MYSQL_CONNECTOR);
+CREATE RESOURCE UNIT unit_1 MAX_CPU 2, MEMORY_SIZE '4G';
+CREATE RESOURCE POOL pool_1 UNIT = 'unit_1', UNIT_NUM = 1;
+CREATE TENANT mysql RESOURCE_POOL_LIST = ('pool_1'), primary_zone='z1' set ob_tcp_invited_nodes='%';
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name='mysql', tenant_id, 1);
+ob_connect(conn_mysql1, ob1.z1.obs0, root@mysql, ,test, , USE_OB_CONNECTOR);
+
+## ------------check mv creation with concurrent compaction------------
+ob1.mysql alter system set ob_compaction_schedule_interval = '3s' tenant mysql;
+ob1.mysql alter system set merger_check_interval='10s';
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+sleep 5;
+connection conn_mysql1;
+create table collect_info(user_id int, item_id int, primary key(user_id, item_id)) partition by hash(user_id) partitions 4;
+create table collect_item(item_id int, price int, primary key(item_id)) duplicate_scope = 'cluster' duplicate_read_consistency = 'weak';
+insert into collect_item values(1, 100);
+insert into collect_item values(2, 200);
+insert into collect_item values(3, 300);
+insert into collect_info values(1, 1);
+insert into collect_info values(1, 2);
+insert into collect_info values(2, 1);
+insert into collect_info values(2, 3);
+insert into collect_info values(3, 3);
+
+connection conn_z1_sys;
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'CREATE_TABLE_BEFORE_PUBLISH_SCHEMA wait_for mv_continue_signal';
+sleep 5;
+connection conn_mysql1;
+send create materialized view collect_info_mv2 (primary key(user_id, item_id)) partition by hash(user_id) partitions 4 refresh fast enable query rewrite enable on query computation as select collect_info.user_id, collect_info.item_id, collect_item.item_id dup_item_id, collect_item.price from collect_info inner join collect_item on collect_info.item_id = collect_item.item_id;
+connection conn_z1_sys;
+sleep 5;
+alter system major freeze tenant = mysql;
+ob1.check_until_timeout select (count(*) > 0) as c from __all_virtual_compaction_diagnose_info where diagnose_info like "%materialized view creation has not finished%", 1, 300;
+set ob_global_debug_sync = 'now signal mv_continue_signal';
+connection conn_mysql1;
+reap;
+connection conn_z1_sys;
+ob1.check_until_timeout select (count(*) > 0) as c from __all_virtual_compaction_diagnose_info where diagnose_info like "%materialized view creation has not finished%", 0, 300;
+
+connection conn_z1_sys;
+set ob_global_debug_sync = 'CREATE_TABLE_BEFORE_PUBLISH_SCHEMA clear';
+set ob_global_debug_sync = 'reset';

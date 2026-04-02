@@ -253,10 +253,6 @@ protected:
   }
 };
 
-#ifdef __APPLE__
-GTEST_ALLOW_UNINSTANTIATED_PARAMETERIZED_TEST(ObBitPackingTest);
-#endif
-
 INSTANTIATE_TEST_CASE_P(
     FastPForLib,
     ObBitPackingTest,

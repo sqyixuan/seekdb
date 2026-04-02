@@ -1,0 +1,114 @@
+#
+# owner:shuning.tsn
+#
+# description: 测试liboblog设置租户起始schema版本
+# 测试点:
+#   1. 多租户设置
+#   2. 基于租户id:schema_version设置
+#   3. 以|区分多个租户
+
+ob1=OBI(cluster=1, init_unit_cpu=6);
+ob1.reboot;
+
+# 准备环境
+let $ip=deploy_get_value(ob1.z1.obs0.ip);
+let $port=deploy_get_value(ob1.z1.obs0.mysql_port);
+connect (oblog_conn_sys,$ip,admin@sys,admin,oceanbase,$port);
+
+connection oblog_conn_sys;
+--disable_warnings
+drop tenant if exists oblog_tt1;
+--disable_warnings
+drop tenant if exists oblog_tt2;
+--disable_warnings
+drop database if exists oblog_db1;
+--disable_warnings
+drop database if exists oblog_db2;
+
+
+# 创建租户
+create resource unit oblog_box max_cpu=2, memory_size='10G';
+create resource pool oblog_pool1 unit = 'oblog_box', unit_num = 1, zone_list = ('z1');
+create resource pool oblog_pool2 unit = 'oblog_box', unit_num = 1, zone_list = ('z1');
+# create tenant, 创建oblog_tt1、oblog_tt2租户
+create tenant oblog_tt1 replica_num = 1, primary_zone='z1', resource_pool_list=('oblog_pool1') set ob_tcp_invited_nodes='%';
+create tenant oblog_tt2 replica_num = 1, primary_zone='z1', resource_pool_list=('oblog_pool2') set ob_tcp_invited_nodes='%';
+
+let $start_tstamp = query_get_value(select round(time_to_usec(now(6))) as now, now, 1);
+# 租户1
+connect (oblog_conn_tt1,$ip,root@oblog_tt1,,oceanbase,$port);
+connection oblog_conn_tt1;
+
+create database oblog_db1;
+use oblog_db1;
+create table tb1(a int primary key, b int);
+let $cnt=0;
+insert into tb1 values(1, 1);
+inc $cnt;
+alter table tb1 add column c int not null default 0;
+
+update tb1 set c = 1 where a = 1;
+inc $cnt;
+alter table tb1 add column d char not null default '0';
+
+update tb1 set c = 21, d = 'a' where a = 1;
+inc $cnt;
+alter table tb1 drop column b;
+
+update tb1 set c = 31, d = 'b' where a = 1;
+inc $cnt;
+# 主键列修改暂时被禁掉
+# alter table tb1 modify a bigint;
+
+update tb1 set c = 41, d = 'c' where a = 1;
+inc $cnt;
+alter table tb1 add column e int default 1;
+
+update tb1 set c = 51 where a = 1;
+inc $cnt;
+update tb1 set c = 61, d = 'd', e = 6 where a = 1;
+inc $cnt;
+alter table tb1 drop column d;
+
+update tb1 set e = 71 where a = 1;
+inc $cnt;
+alter table tb1 drop column e;
+
+# 租户2
+connect (oblog_conn_tt2,$ip,root@oblog_tt2,,oceanbase,$port);
+connection oblog_conn_tt2;
+
+create database oblog_db2;
+use oblog_db2;
+
+connection oblog_conn_sys;
+use oceanbase;
+let $tt1_tenant_id = query_get_value(select tenant_id from __all_tenant where tenant_name="oblog_tt1", tenant_id, 1);
+let $tt2_tenant_id = query_get_value(select tenant_id from __all_tenant where tenant_name="oblog_tt2", tenant_id, 1);
+alter system change tenant oblog_tt1;
+let $tt1_schema_version = query_get_value(select max(schema_version) as ver from __all_ddl_operation, ver, 1);
+alter system change tenant oblog_tt2;
+let $tt2_schema_version = query_get_value(select max(schema_version) as ver from __all_ddl_operation, ver, 1);
+
+# 受offline ddl限制，如果租户在start_tstamp和data_start_schema_version之间不能有 offline ddl，否则start_tstamp和最后一个offline ddl之间的数据无法输出
+#ob1.oblog.gen_conf tb_white_list=oblog_tt1.*.*|oblog_tt2.oblog_db2.* log_level=INFO data_start_schema_version=$tt1_tenant_id:$tt1_schema_version|$tt2_tenant_id:$tt2_schema_version skip_ob_version_compat_check=1;
+#ob1.oblog.set_start_tstamp_usec $start_tstamp;
+
+#ob1.oblog.restart;
+#while ($cnt>0)
+#{
+#  ob1.oblog.next_dml;
+#  dec $cnt;
+#}
+#ob1.oblog.stop;
+
+#ob1.oblog.check_log '[START_SCHEMA_MATCH] set_data_start_schema_version succ(tenant_id=1003';
+#ob1.oblog.check_log '[START_SCHEMA_MATCH] set_data_start_schema_version succ(tenant_id=1004';
+
+# 20201204 此case在restart的过程中报错直接退出，怀疑mytest工具修改了功能，不影响主流程，暂时忽略
+#ob1.oblog.set_start_tstamp_usec $start_tstamp;
+#ob1.oblog.gen_conf tb_white_list=oblog_tt1.*.*|oblog_tt2.*.* log_level=INFO data_start_schema_version=$tt1_tenant_id:$tt1_schema_version|$tt2_tenant_id:$tt2_schema_version|1,01:423423424234 skip_ob_version_compat_check=1;
+
+#ob1.oblog.restart;
+#sleep 10;
+#ob1.oblog.check_log 'data_start_schema_version pattern is invalid';

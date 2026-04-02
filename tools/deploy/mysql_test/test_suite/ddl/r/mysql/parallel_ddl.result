@@ -1,0 +1,143 @@
+result_format: 4
+
+## 1. 测试重试之后能成功的场景
+alter system set debug_sync_timeout = '100000s';
+alter system change tenant sys;
+set ob_global_debug_sync = 'HANG_BEFORE_RESOLVER_FINISH wait_for continue_signal';
+
+
+set ob_global_debug_sync = 'HANG_BEFORE_RESOLVER_FINISH wait_for continue_signal';
+drop table if exists t1;
+create table t1(pk int primary key, b int);
+### 这条 SQL 在 resolver 的时候用的是上面那个有 pk 列的 t1 去解析的，现在给 alter table 加了 debug_sync 让它卡在了 resolver 结束的点上，模拟并发 ddl 的场景
+alter table t1 add column c int;
+
+drop table t1;
+create table t1(a int, b int);
+
+set ob_global_debug_sync = 'now signal continue_signal';
+
+### resolver 结束之后那条 alter table 的 SQL 会在 RS 检查 t1 是不是变化了，如果变化了的话就说明有其他 ddl 比自己先发到了 RS，自己 resolver 的时候还没有刷新到，然后就会去重试
+### 重试的时候会刷到新 t1 的 schema，然后就会在新 t1 上执行加列的动作
+show create table t1;
+Table	Create Table
+t1	CREATE TABLE `t1` (
+  `a` int(11) DEFAULT NULL,
+  `b` int(11) DEFAULT NULL,
+  `c` int(11) DEFAULT NULL
+) DEFAULT CHARSET = utf8mb4 COMPRESSION = 'lz4_1.0' REPLICA_NUM = 1 BLOCK_SIZE = 16384 USE_BLOOM_FILTER = FALSE TABLET_SIZE = 134217728 PCTFREE = 10
+
+### 2. 测试重试之后会失败的场景
+alter system change tenant sys;
+set ob_global_debug_sync = 'HANG_BEFORE_RESOLVER_FINISH wait_for continue_signal';
+
+set ob_global_debug_sync = 'HANG_BEFORE_RESOLVER_FINISH wait_for continue_signal';
+drop table if exists t1;
+create table t1(pk int primary key, b int);
+### 这条 SQL 在 resolver 的时候用的是上面那个有 pk 列的 t1 去解析的，现在给 alter table 加了 debug_sync 让它卡在了 resolver 结束的点上，模拟并发 ddl 的场景
+alter table t1 modify b int default 1;
+
+drop table t1;
+create table t1(c int, d int);
+
+set ob_global_debug_sync = 'now signal continue_signal';
+
+ERROR 42S22: Unknown column 'b' in 't1'
+### resolver 结束之后那条 alter table 的 SQL 会在 RS 检查 t1 是不是变化了，如果变化了的话就说明有其他 ddl 比自己先发到了 RS，自己 resolver 的时候还没有刷新到，然后就会去重试
+### 重试的时候会刷到新 t1 的 schema，然后就会在新 t1 上执行 modify 列的动作，然后会发现列 b 不存在了，最后失败掉
+show create table t1;
+Table	Create Table
+t1	CREATE TABLE `t1` (
+  `c` int(11) DEFAULT NULL,
+  `d` int(11) DEFAULT NULL
+) DEFAULT CHARSET = utf8mb4 COMPRESSION = 'lz4_1.0' REPLICA_NUM = 1 BLOCK_SIZE = 16384 USE_BLOOM_FILTER = FALSE TABLET_SIZE = 134217728 PCTFREE = 10
+
+## 3. 测试 DDL 会失败回滚的情况
+alter system change tenant sys;
+set ob_global_debug_sync = 'HANG_BEFORE_RESOLVER_FINISH wait_for continue_signal';
+
+set ob_global_debug_sync = 'HANG_BEFORE_RESOLVER_FINISH wait_for continue_signal';
+drop table if exists t1;
+create table t1(a int, b int);
+### 现在给 alter table 加了 debug_sync 让它卡在了 resolver 结束的点上，模拟并发 ddl 的场景
+alter table t1 add unique idx1(a), add unique idx2(b);
+
+drop table t1;
+create table t1(a varchar(10), b varchar(10));
+insert into t1 values('aaa', 'bbb');
+insert into t1 values('aaa', 'bbb');
+
+set ob_global_debug_sync = 'now signal continue_signal';
+
+ERROR 23000: Duplicate entry 'aaa' for key 'idx1'
+show create table t1;
+Table	Create Table
+t1	CREATE TABLE `t1` (
+  `a` varchar(10) DEFAULT NULL,
+  `b` varchar(10) DEFAULT NULL
+) DEFAULT CHARSET = utf8mb4 COMPRESSION = 'lz4_1.0' REPLICA_NUM = 1 BLOCK_SIZE = 16384 USE_BLOOM_FILTER = FALSE TABLET_SIZE = 134217728 PCTFREE = 10
+show index from t1;
+Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible
+drop table t1;
+
+
+## 1. 测试重试之后能成功的场景
+alter system change tenant sys;
+set ob_global_debug_sync = 'HANG_BEFORE_RESOLVER_FINISH wait_for continue_signal';
+
+set ob_global_debug_sync = 'HANG_BEFORE_RESOLVER_FINISH wait_for continue_signal';
+drop table if exists t1;
+create table t1(pk int primary key, a int);
+### 这条 SQL 在 resolver 的时候用的是上面那个有 pk 列的 t1 去解析的，现在给 create index 加了 debug_sync 让它卡在了 resolver 结束的点上，模拟并发 ddl 的场景
+create index t1_idx on t1(a);
+
+drop table t1;
+create table t1(a int, b int) partition by hash(b) partitions 5;
+
+set ob_global_debug_sync = 'now signal continue_signal';
+
+show create table t1;
+Table	Create Table
+t1	CREATE TABLE `t1` (
+  `a` int(11) DEFAULT NULL,
+  `b` int(11) DEFAULT NULL,
+  KEY `t1_idx` (`a`) BLOCK_SIZE 16384 GLOBAL
+) DEFAULT CHARSET = utf8mb4 COMPRESSION = 'lz4_1.0' REPLICA_NUM = 1 BLOCK_SIZE = 16384 USE_BLOOM_FILTER = FALSE TABLET_SIZE = 134217728 PCTFREE = 10
+ partition by hash(b)
+(partition p0,
+partition p1,
+partition p2,
+partition p3,
+partition p4)
+
+## 2. 测试重试之后会失败的场景
+alter system change tenant sys;
+set ob_global_debug_sync = 'HANG_BEFORE_RESOLVER_FINISH wait_for continue_signal';
+
+set ob_global_debug_sync = 'HANG_BEFORE_RESOLVER_FINISH wait_for continue_signal';
+drop table if exists t1;
+create table t1(pk int primary key, a int);
+### 这条 SQL 在 resolver 的时候用的是上面那个有 pk 列的 t1 去解析的，现在给 create index 加了 debug_sync 让它卡在了 resolver 结束的点上，模拟并发 ddl 的场景
+create index t1_idx on t1(a);
+
+drop table t1;
+create table t1(c int, b int) partition by hash(b) partitions 5;
+
+set ob_global_debug_sync = 'now signal continue_signal';
+
+ERROR 42000: Key column 'a' doesn't exist in table
+### resolver 结束之后那条 alter table 的 SQL 会在 RS 检查 t1 是不是变化了，如果变化了的话就说明有其他 ddl 比自己先发到了 RS，自己 resolver 的时候还没有刷新到，然后就会去重试
+### 重试的时候会刷到新 t1 的 schema，然后就会在新 t1 上执行加列的动作
+show create table t1;
+Table	Create Table
+t1	CREATE TABLE `t1` (
+  `c` int(11) DEFAULT NULL,
+  `b` int(11) DEFAULT NULL
+) DEFAULT CHARSET = utf8mb4 COMPRESSION = 'lz4_1.0' REPLICA_NUM = 1 BLOCK_SIZE = 16384 USE_BLOOM_FILTER = FALSE TABLET_SIZE = 134217728 PCTFREE = 10
+ partition by hash(b)
+(partition p0,
+partition p1,
+partition p2,
+partition p3,
+partition p4)
+drop table t1;

@@ -1,0 +1,102 @@
+# owner: yongle.xh
+# owner group: storage
+# description: this case is use for create pg commit fail
+#
+
+--disable_query_log
+ob1=OBI(cluster=1:1:1,proxy_num=1,init_unit_cpu=2, init_unit_num=1);
+ob1.reboot;
+
+#设置灰度切主的时间为0, 关闭自动切主，关闭自动balance
+ob1.mysql alter system set resource_hard_limit = 800;
+ob1.mysql alter system set merger_switch_leader_duration_time=0;
+ob1.mysql alter system set enable_auto_leader_switch = true;
+ob1.mysql alter system set enable_rereplication = false;
+ob1.mysql alter system set enable_rebalance = false;
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+ob1.mysql alter system set enable_pg = true;
+ob1.mysql alter system set schema_drop_gc_delay_time = '10s';
+
+#在zone1上建立连接
+let $ip=deploy_get_value(ob1.z1.obs0.ip);
+let $port=deploy_get_value(ob1.z1.obs0.mysql_port);
+connect (conn1,$ip,admin@obtest,admin,oceanbase,$port);
+connect (conn2,$ip,root@sys,,oceanbase,$port);
+
+connection conn1;
+use test;
+create tablegroup tg1 primary_zone = 'z2'  binding = true partition by hash partitions 20 ;
+
+ob1.z2.obs0.mysql alter system set_tp tp_no = 14, error_code = 4361, frequency = 1;
+
+--error 4361
+create table test2(c1 int primary key, c2 int) tablegroup = 'tg1' partition by hash(c1) partitions 20;
+
+# clear z2 tp
+ob1.z2.obs0.force_stop;
+ob1.check_until_timeout select status from oceanbase.__all_server where zone='z2', inactive, 60; 
+ob1.z2.obs0.nstart;
+ob1.check_until_timeout select status from oceanbase.__all_server where zone='z2', active, 60; 
+ob1.check_until_timeout select count(*) from __all_virtual_tablegroup a, __all_virtual_meta_table b where a.tablegroup_name = 'tg1' and a.tablegroup_id=b.table_id and role=1 and zone='z2', 20, 60;
+
+create table test2(c1 int primary key, c2 int) tablegroup = 'tg1' partition by hash(c1) partitions 20;
+create table test3(c1 int primary key, c2 int) tablegroup = 'tg1' partition by hash(c1) partitions 20;
+insert into test3(c1,c2) values(1,1);
+
+ob1.z3.obs0.check_log_until_success -c "fail to commit log";
+
+ob1.z3.obs0.mysql alter system set_tp tp_no = 14, error_code = 4361, frequency = 0;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_table_mgr a, oceanbase.__all_virtual_table b where b.table_name = 'test2' and a.table_id=b.table_id and a.table_type=1, 60, 60; 
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_table_mgr a, oceanbase.__all_virtual_table b where b.table_name = 'test3' and a.table_id=b.table_id and a.table_type=1, 60, 60; 
+
+insert into test2(c1,c2) values(2,2);
+insert into test3(c1,c2) values(2,2);
+
+ob1.z2.obs0.force_stop;
+ob1.check_until_timeout select status from oceanbase.__all_server where zone='z2', inactive, 60; 
+ob1.z2.obs0.nstart;
+ob1.check_until_timeout select status from oceanbase.__all_server where zone='z2', active, 60; 
+ob1.check_until_timeout select count(*) from __all_virtual_tablegroup a, __all_virtual_meta_table b where a.tablegroup_name = 'tg1' and a.tablegroup_id=b.table_id and role=1 and zone='z2', 20, 60;
+insert into test2(c1,c2) values(3,3);
+insert into test3(c1,c2) values(3,3);
+
+alter tablegroup tg1 primary_zone = 'z3';
+
+ob1.z3.obs0.force_stop;
+ob1.check_until_timeout select status from oceanbase.__all_server where zone='z3', inactive, 60; 
+ob1.z3.obs0.nstart;
+ob1.check_until_timeout select status from oceanbase.__all_server where zone='z3', active, 60; 
+ob1.check_until_timeout select count(*) from __all_virtual_tablegroup a, __all_virtual_meta_table b where a.tablegroup_name = 'tg1' and a.tablegroup_id=b.table_id and role=1 and zone='z3', 20, 60;
+insert into test2(c1,c2) values(4,4);
+insert into test3(c1,c2) values(4,4);
+
+
+select * from test2;
+select * from test3;
+
+ob1.z2.obs0.mysql alter system set_tp tp_no = 14, error_code = 4361, frequency = 1;
+let $test2_id = deploy_get_value(ob1.select select table_id from oceanbase.__all_virtual_table where table_name = 'test2', table_id, 1);
+let $test3_id = deploy_get_value(ob1.select select table_id from oceanbase.__all_virtual_table where table_name = 'test3', table_id, 1);
+let $tg1_id = deploy_get_value(ob1.select select tablegroup_id from  __all_virtual_tablegroup where tablegroup_name = 'tg1', tablegroup_id, 1);
+drop table test2;
+drop table test3;
+purge recyclebin;
+drop tablegroup tg1;
+purge recyclebin;
+sleep 10;
+
+ob1.z2.obs0.mysql alter system set_tp tp_no = 14, error_code = 4361, frequency = 0;
+
+#检查test2, test3, tg1是否备成功gc，预期已经删除
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_pg_partition_info where table_id = $test2_id, 0, 200;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_pg_partition_info where table_id = $test3_id, 0, 200;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where table_id = $tg1_id, 0, 200;
+
+ob1.z2.obs0.force_stop;
+ob1.check_until_timeout select status from oceanbase.__all_server where zone='z2', inactive, 60; 
+ob1.z2.obs0.nstart;
+ob1.check_until_timeout select status from oceanbase.__all_server where zone='z2', active, 60; 
+
+ob1.check_until_timeout select count(*) from __all_virtual_tablegroup a, __all_virtual_meta_table b where a.tablegroup_name = 'tg1' and a.tablegroup_id=b.table_id and role=1 and zone='z2', 0, 60;
+ob1.mysql alter system major freeze;
+ob1.check_version 2;

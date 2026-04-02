@@ -1,0 +1,339 @@
+#owner: msy164651
+#owner group: rs
+#description: 主备库mysql租户ddl的同步 
+
+ob1=OBI(cluster=1, proxy_num = 0);
+ob2=OBI(cluster=1, proxy_num = 0, leaderob=ob1);
+ob1.reboot;
+ob2.reboot;
+ob1.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO STANDBY, 30;
+ob1.mysql alter system set enable_sys_table_ddl = true;
+ob2.mysql alter system set enable_sys_table_ddl = true;
+ob_connect(conn2, ob2.z1.obs0, root@sys,,oceanbase,,USE_OB_CONNECTOR);
+connection conn2;
+source include/standby_sync_ddl.inc;
+#租户相关
+let $cpu = 1;
+let $memory = 1073741824;
+let $min_memory = 1073741824;
+let $disk = 536870912;
+let $iops = 100000;
+let $session = 64;
+#创建租户
+ob1.mysql create resource unit test_resource_unit max_cpu $cpu, max_memory $memory, max_iops $iops, max_disk_size $disk, max_session_num $session, MIN_CPU=1, MIN_MEMORY=$min_memory, MIN_IOPS=128;
+ob1.mysql create resource pool test_resource_pool1 unit = 'test_resource_unit', unit_num = 1, zone_list = ('z1');
+ob1.mysql create tenant tt replica_num = 1, primary_zone='z1', locality='F@z1', resource_pool_list=('test_resource_pool1') set ob_tcp_invited_nodes='%', ob_compatibility_mode='oracle';
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = 'tt', tenant_id, 1);
+#在备库中查询同步到租户的schema
+ob2.check_until_timeout select count(*) from oceanbase.__all_tenant where tenant_id = $tenant_id, 1, 10;
+ob2.mysql_p select tenant_id, tenant_name , primary_zone, locality from oceanbase.__all_tenant; 
+ob1.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO STANDBY, 200;
+ob_connect(conn1, ob1.z1.obs0, SYS@tt,,SYS,,USE_OB_CONNECTOR);
+ob_connect(conn11, ob1.z1.obs0, root@sys,,oceanbase,,USE_OB_CONNECTOR);
+ob_connect(conn2, ob1.z1.obs0, SYS@tt,,SYS,,USE_OB_CONNECTOR);
+set ob_read_consistency = 2;
+
+#系统变量
+#add system variable只在升级的时候使用，因为不插all_ddl_operation表，备库需要独立处理，否则同步不来
+#modify sys variable
+connection conn1;
+set global ob_query_timeout = 100000000;
+set global ob_query_timeout = 100000001;
+ob1.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO STANDBY, 30;
+
+#create database
+
+#create tablegroup
+connection conn1;
+eval create tablegroup tg  partition by hash partitions 10;
+eval create tablegroup tg1 binding true;
+ob1.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO STANDBY, 130;
+drop tablegroup tg;
+drop tablegroup tg1;
+
+#create table
+connection conn1;
+set recyclebin = off; 
+create table t1(c1 int primary key, c2 int, c3 int) partition by hash(c1) partitions 10;
+insert into t1 values(1,1,1);
+create tablegroup tg1 binding true;
+create table t2(c1 int primary key, c2 int, c3 int) tablegroup=tg1;
+ob1.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO STANDBY, 130;
+drop table t1;
+drop table t2;
+drop tablegroup tg1;
+set recyclebin = on;
+
+#alter table 
+connection conn1;
+create table t1(c1 int primary key, c2 int, c3 int) partition by hash(c1) partitions 10;
+alter table t1 add c4 int;
+ob1.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO STANDBY, 130;
+drop table t1;
+#alter database
+
+#drop database
+
+#alter tablegroup
+connection conn1;
+set recyclebin = off;
+create tablegroup tg  partition by hash partitions 10;
+create tablegroup tg1 binding true;
+create table t1(c1 int primary key, c2 int, c3 int) partition by hash(c1) partitions 10;
+alter tablegroup tg add table t1;
+create table t3(c1 int primary key, c2 int, c3 int) partition by hash(c1) partitions 10;
+alter tablegroup tg add table t3;
+ob1.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO STANDBY, 130;
+drop table t1;
+drop table t3;
+drop tablegroup tg;
+drop tablegroup tg1;
+set recyclebin = on;
+
+#drop tablegroup
+connection conn1;
+create tablegroup tg  partition by hash partitions 10;
+create table t2(c1 int primary key, c2 int, c3 int) tablegroup = tg partition by hash(c1) partitions 10;
+connection conn11;
+alter system change tenant tt;
+let $table_id = query_get_value(select table_id from oceanbase.__all_table_v2 where table_name = 't2', table_id, 1);
+connection conn1;
+drop table t2;
+connection conn11;
+alter system change tenant tt;
+let $obj_name = query_get_value(select object_name from oceanbase.__all_recyclebin where table_id = $table_id, object_name, 1);
+connection conn1;
+--disable_query_log
+eval purge table $obj_name;
+--enable_query_log
+drop tablegroup tg;
+ob1.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO STANDBY, 130;
+
+#rename table
+connection conn1;
+create table t1(c1 int primary key, c2 int, c3 int) partition by hash(c1) partitions 10;
+create tablegroup tg  partition by hash partitions 10;
+alter table t1 rename to t11;
+create table t2(c1 int primary key, c2 int, c3 int) tablegroup=tg partition by hash(c1) partitions 10;
+alter table t2 rename to t1;
+insert into t1 values (7,1,1);
+ob1.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO STANDBY, 130;
+set recyclebin = off;
+drop table t1;
+drop table t11;
+drop tablegroup tg;
+set recyclebin = on;
+
+#truncate table
+connection conn1;
+create table t1(c1 int primary key, c2 int, c3 int) partition by hash(c1) partitions 10;
+truncate table t1;
+ob1.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO STANDBY, 130;
+drop table t1;
+
+#create index
+connection conn1;
+create table t1(c1 int primary key, c2 int, c3 int) partition by hash(c1) partitions 10;
+create index il on t1(c2);
+ob1.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO STANDBY, 130;
+
+#drop index
+connection conn1;
+drop index il;
+ob1.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO STANDBY, 30;
+drop table t1;
+
+#flashback index
+#暂时不单独使用
+#purge index
+#暂时不单独使用
+
+#create table like
+#不能使用，语法不支持
+connection conn1;
+create table t1(c1 int primary key, c2 int, c3 int) partition by hash(c1) partitions 10;
+--error 900
+create table t2 like t1;
+ob1.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO STANDBY, 130;
+drop table t1;
+
+#flashback table
+connection conn1;
+set recyclebin = on;
+create table t2(c1 int primary key, c2 int, c3 int);
+connection conn11;
+alter system change tenant tt;
+let $table_id = query_get_value(select table_id from oceanbase.__all_table_v2 where table_name = 't2', table_id, 1);
+connection conn1;
+create index il2 on t2(c2);
+create index ill on t2(c3) local;
+drop table t2;
+ob1.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO STANDBY, 130;
+connection conn11;
+alter system change tenant tt;
+let $obj_name = query_get_value(select object_name from oceanbase.__all_recyclebin where table_id = $table_id, object_name, 1);
+connection conn1;
+--disable_query_log
+eval flashback table $obj_name to before drop;
+--enable_query_log
+ob1.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO STANDBY, 30;
+
+#purge table
+connection conn1;
+drop table t2;
+connection conn11;
+alter system change tenant tt;
+let $obj_name = query_get_value(select object_name from oceanbase.__all_recyclebin where table_id = $table_id, object_name, 1);
+connection conn1;
+--disable_query_log
+eval purge table $obj_name;
+--enable_query_log
+ob1.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO STANDBY, 130;
+
+#optimize 
+connection conn1;
+purge recyclebin;
+create table t2(c1 int primary key, c2 int, c3 int);
+alter table t2 shrink space;
+alter tenant "tt" shrink space;
+ob1.mysql optimize tenant tt;
+ob1.mysql optimize tenant all;
+ob1.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO STANDBY, 130;
+drop table t2;
+
+#flashback database
+#
+##purge database
+
+#create user
+connection conn1;
+create user 'u101' identified by pass1;
+ob1.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO STANDBY, 30;
+grant select on *.* to 'u101';
+ob1.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO STANDBY, 30;
+alter user 'u101' identified by 99;
+ob1.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO STANDBY, 30;
+alter user 'u101' ACCOUNT LOCK;
+ob1.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO STANDBY, 30;
+alter user 'u101' ACCOUNT UNLOCK;
+ob1.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO STANDBY, 30;
+revoke drop on *.* from 'u101';
+ob1.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO STANDBY, 30;
+--error 600
+drop user 'u101';
+ob1.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO STANDBY, 30;
+#create alter drop outline
+connection conn1;
+create table t2(c1 int primary key, c2 int, c3 int);
+create outline o1 on select * from t2;
+drop outline o1;
+ob2.check_until_timeout select count(*) from oceanbase.__all_virtual_user where user_name='u99', 0, 10;
+
+#create drop utd
+CREATE OR REPLACE TYPE ty1 IS TABLE OF INT;
+CREATE OR REPLACE TYPE ty2 IS TABLE OF VARCHAR2(1000);
+ob1.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO STANDBY, 30;
+#create drop synonym
+connection conn1;
+create synonym syn1 for t1;
+drop synonym syn1;
+ob1.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO STANDBY, 30;
+#create drop planbaseline
+connection conn11;
+alter system change tenant sys;
+alter system flush plan cache global;
+alter system set plan_cache_evict_interval = '5s';
+connection conn1;
+set optimizer_use_sql_plan_baselines = true;
+set optimizer_capture_sql_plan_baselines = true;
+set autocommit = 0;
+select DBMS_SPM.DROP_SQL_PLAN_BASELINE('529F6E6454EF579C7CC265D1F6131D70', NULL) from dual;
+CREATE TABLE t1(c1 INT, c2 INT, c3 INT);
+create index idx on t1(c2, c1);
+select * from t1 where c1 = 1;
+select * from t1 where c1 = '1';
+--disable_result_log
+--disable_query_log
+connection conn11;
+let $plan_hash_value_1 = query_get_value(select plan_hash from oceanbase.__all_virtual_plan_stat where query_sql = 'select * from t1 where c1 = 1' and tenant_id = 1001, plan_hash, 1);
+let $plan_hash_value_2 = query_get_value(select plan_hash from oceanbase.__all_virtual_plan_stat where query_sql = 'select * from t1 where c1 = \'1\'' and tenant_id = 1001, plan_hash, 1);
+
+connection conn1;
+--disable_query_log
+--disable_result_log
+eval set @plan_hash_value_1 = $plan_hash_value_1;
+eval set @plan_hash_value_2 = $plan_hash_value_2;
+--enable_query_log
+--enable_result_log
+select DBMS_SPM.DROP_SQL_PLAN_BASELINE( '529F6E6454EF579C7CC265D1F6131D70',@plan_hash_value_1 ) from dual;
+connection conn11;
+--echo // expected 1
+select sql_text, outline_data from oceanbase.__all_virtual_tenant_plan_baseline where sql_text = 'select * from t1 where c1 = ?' and tenant_id = 1001;
+connection conn1;
+select DBMS_SPM.LOAD_PLANS_FROM_CURSOR_CACHE(
+  '529F6E6454EF579C7CC265D1F6131D70',
+  NULL,
+  'NO',
+  'YES'
+) from dual;
+--sleep 30
+connection conn11;
+--echo // expected 2 rows, fixed = 0, enabled = 1;
+select sql_id, fixed, enabled, outline_data from oceanbase.__all_virtual_tenant_plan_baseline where tenant_id = 1001 and sql_text = 'select * from t1 where c1 = ?';
+--echo //drop baseline
+connection conn1;
+select DBMS_SPM.DROP_SQL_PLAN_BASELINE(
+  '529F6E6454EF579C7CC265D1F6131D70',
+  NULL
+) from dual;
+--echo // expected 0
+connection conn11;
+select count(*) from oceanbase.__all_virtual_tenant_plan_baseline where tenant_id = 1001 and sql_text = 'select * from t1 where c1 = ?';
+#create drop udf
+
+#create sequence
+connection conn1;
+create sequence seq1 minvalue 1 maxvalue 2147483647 start with 1 increment by 1 cache 20;
+drop sequence seq1;
+ob1.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO STANDBY, 30;
+
+#create tablespace
+connection conn1;
+set recyclebin = off;
+create tablespace yanli;
+create table t1111(v1 int) tablespace yanli;
+ob1.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO STANDBY, 30;
+drop table t1111;
+#drop tablespace yanli;
+ob1.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO STANDBY, 30;
+set recyclebin = on;
+
+#do keystore
+#eval ADMINISTER KEY MANAGEMENT CREATE KEYSTORE keystore_name IDENTIFIED BY oceanbase_password;
+#ob1.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO STANDBY, 30;
+
+#label 相关
+#select ols_policy_create('MY_POLICY', 'MY_LABEL', '') RET from dual;
+
+#create alter drop routine
+#package
+create or replace procedure proc is begin null; end;
+drop procedure proc;
+create or replace function func return int is begin return 1; end;
+drop function func;
+create or replace package body pack is procedure proc is begin null; end; end;
+drop package body pack;
+ob1.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO STANDBY, 30;
+#virtual
+
+ob1.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO STANDBY, 30;
+ob1.mysql alter system commit to switchover to physical standby;
+ob2.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO PRIMARY, 30;
+ob2.mysql alter system commit to switchover to primary;
+sleep 10;
+ob2.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO STANDBY, 30;
+ob2.mysql alter system commit to switchover to physical standby;
+ob1.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO PRIMARY, 30;
+ob1.mysql alter system commit to switchover to primary;
+
+

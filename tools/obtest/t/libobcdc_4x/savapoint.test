@@ -1,0 +1,131 @@
+##############
+#owner: bohou.ws
+#test point: obcdc handle single ls transaction
+##############
+# prepare cluster and tenant
+ob1=OBI(cluster=1, proxy_num=1);
+
+ob1.reboot;
+
+sleep 3;
+
+source include/liboblog/4_x/create_mysql_tenant.inc;
+set ob_query_timeout=90000000;
+set ob_trx_timeout=1200000000;
+
+create database obcdc_db;
+
+use obcdc_db;
+let $col_size = 51200;
+eval create table test_sp (c1 int primary key, c2 varchar($col_size), c3 varchar($col_size));
+let $start_tstamp_usec = query_get_value(select time_to_usec(now(6)) as now, now, 1);
+
+ob1.oblog.gen_conf tb_white_list=obcdc_mysql.*.* log_level=TLOG.*:DEBUG skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+
+set autocommit='off';
+# 1. 回滚到中间
+begin;
+savepoint sp1;
+insert into test_sp values (0, 'a', 'a');
+savepoint sp2;
+let $cnt=1204;
+let $t_idx=1;
+--disable_query_log
+while ($cnt > 0)
+{
+  eval insert into test_sp values ($t_idx, repeat('c', $col_size), repeat('c', $col_size));
+  inc $t_idx;
+  dec $cnt;
+}
+--enable_query_log
+rollback to savepoint sp2;
+eval insert into test_sp values (1, 'b', 'b');
+commit;
+select * from test_sp;
+ob1.oblog.next_dml;
+ob1.oblog.stat_check_log_cnt "rollback_list add succ";
+ob1.oblog.check_log "rollback row by RollbackToSavepoint";
+# TODO 待DDL支持后放开注释
+#
+# # 2. savepoint 嵌套：回滚到第一个savepoint
+# truncate table test_sp;
+# begin;
+# insert into test_sp values (0, 'a', 'a');
+# savepoint sp1;
+# let $cnt=120;
+# let $t_idx=1;
+# --disable_query_log
+# while ($cnt > 0)
+# {
+#   eval insert into test_sp values ($t_idx, repeat('c', $col_size), repeat('c', $col_size));
+#   inc $t_idx;
+#   dec $cnt;
+# }
+# --enable_query_log
+# savepoint sp2;
+# let $cnt=120;
+# let $t_idx=200;
+# --disable_query_log
+# while ($cnt > 0)
+# {
+#   eval insert into test_sp values ($t_idx, repeat('c', $col_size), repeat('c', $col_size));
+#   inc $t_idx;
+#   dec $cnt;
+# }
+# --enable_query_log
+# rollback to sp1;
+# commit;
+#
+# select * from test_sp;
+# ob1.oblog.next_dml;
+#
+# # 3. savepoint 嵌套：
+# truncate table test_sp;
+# begin;
+# savepoint sp1;
+# insert into test_sp values (0, 'a', 'a');
+# savepoint sp2;
+# insert into test_sp values (1, 'a', 'a');
+# rollback to sp1;
+#
+# insert into test_sp values (2, 'c', 'c');
+# --error 1305
+# rollback to sp2;
+# insert into test_sp values (1, 'b', 'b');
+# commit;
+# select * from test_sp;
+# ob1.oblog.next_dml;
+#
+# # 4. release savepoint
+# truncate table test_sp;
+# begin;
+# savepoint sp1;
+# insert into test_sp values (0, 'a', 'a');
+# savepoint sp2;
+# insert into test_sp values (1, 'a', 'a');
+# release savepoint sp1;
+# --error 1305;
+# rollback to sp1;
+#
+# insert into test_sp values (2, 'c', 'c');
+#
+# rollback to sp2;
+# insert into test_sp values (1, 'b', 'b');
+# commit;
+# select * from test_sp;
+#
+# ob1.oblog.next_dml;
+
+set autocommit='on';
+
+ob1.oblog.stop;
+
+# 回拉
+ob1.oblog.set_start_tstamp_usec $start_tstamp_usec;
+ob1.oblog.gen_conf tb_white_list=obcdc_mysql.*.* log_level=TLOG.*:DEBUG skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+ob1.oblog.next_dml;
+ob1.oblog.stat_check_log_cnt "rollback_list add succ";
+ob1.oblog.check_log "rollback row by RollbackToSavepoint";
+ob1.oblog.stop;

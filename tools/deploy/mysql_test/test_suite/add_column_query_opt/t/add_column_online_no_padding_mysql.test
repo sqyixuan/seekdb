@@ -1,0 +1,184 @@
+# owner: maijianhua.mjh
+# owner group: STORAGE
+# description:
+
+--disable_query_log
+--disable_warnings
+connect (obsys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection obsys;
+alter system set_tp tp_name = "EN_COMPACTION_DISABLE_ROW_COL_SWITCH", error_code = 4016, frequency = 1;
+connection default;
+set @@recyclebin = off;
+drop table if exists t1,t2,t3;
+set sql_mode = '';
+--enable_warnings
+--enable_query_log
+
+create table t1(a int, b varchar(3048), primary key (a), c int, d char(35) default 't1t1t1t1t1t1') row_format = compact with column group (all columns);
+create table t2(a int, b varchar(3048), primary key (a), c int, d char(35) default 't2t2t2t2t2t2') row_format = dynamic with column group (all columns);
+create table t3(a int, b varchar(3048), primary key (a), c int, d char(35) default 't3t3t3t3t3t3') row_format = compressed with column group (all columns);
+sleep 3;
+
+--disable_query_log
+--disable_warnings
+--let $count=999100
+while ($count < 999200)
+{
+  eval INSERT INTO t1 VALUES($count, repeat($count * 10, 2), $count * 10, 'chinachinachinachinachinachina');
+  eval INSERT INTO t2 VALUES($count, repeat($count * 10, 2), $count * 10, 'chinachinachinachinachinachina');
+  eval INSERT INTO t3 VALUES($count, repeat($count * 10, 2), $count * 10, 'chinachinachinachinachinachina');
+  inc $count;
+}
+while ($count < 999300)
+{
+  eval INSERT INTO t1 VALUES($count, repeat($count * 10, 2), $count * 10, 'obobobobobobobobobob');
+  eval INSERT INTO t2 VALUES($count, repeat($count * 10, 2), $count * 10, 'obobobobobobobobobob');
+  eval INSERT INTO t3 VALUES($count, repeat($count * 10, 2), $count * 10, 'obobobobobobobobobob');
+  inc $count;
+}
+--enable_warnings
+--enable_query_log
+
+alter system major freeze;
+--source mysql_test/include/wait_daily_merge.inc
+
+alter table t1 add column c1 int default 601, add column c2 varchar(100);
+alter table t1 add column c3 char(50) as(substr(b, 1, 10));
+alter table t1 add column c4 tinytext as(substr(b, 1, 20)) virtual;
+alter table t1 add column c5 longblob as(repeat('C', 10000000));
+alter table t1 add column c6 char(10) default 'aaaaaaaa';
+alter table t2 add column c1 int default 602, add column c2 varchar(100);
+alter table t2 add column c3 char(50) as(substr(b, 1, 10));
+alter table t2 add column c4 tinytext as(substr(b, 1, 20)) virtual;
+alter table t2 add column c5 longblob as(repeat('C', 10000000));
+alter table t2 add column c6 char(10) default 'aaaaaaaa';
+alter table t3 add column c1 int default 603, add column c2 varchar(100);
+alter table t3 add column c3 char(50) as(substr(b, 1, 10));
+alter table t3 add column c4 tinytext as(substr(b, 1, 20)) virtual;
+alter table t3 add column c5 longblob as(repeat('C', 10000000));
+alter table t3 add column c6 char(10) default 'aaaaaaaa';
+
+
+--let $case_seq=1
+--let $count=0
+--let $level=0
+--let $enabled=false
+--let $riched=false
+while ($count < 20)
+{
+  if ($count == 5)
+  {
+    let $level=0;
+    let $enabled=true;
+    let $riched=false;
+  }
+
+  if ($count == 10)
+  {
+    let $level=0;
+    let $enabled=false;
+    let $riched=true;
+  }
+
+  if ($count == 15)
+  {
+    let $level=0;
+    let $enabled=true;
+    let $riched=true;
+  }
+
+  --echo case $case_seq count $count level $level enabled $enabled riched $riched
+  eval alter system set _pushdown_storage_level = $level;
+  eval alter system set _rowsets_enabled = $enabled;
+  connection obsys;
+  eval alter system set _global_enable_rich_vector_format = $riched;
+  connection default;
+  eval alter system flush plan cache;
+  eval set sql_mode = '';
+
+  --let $table_seq=1
+  while ($table_seq < 4)
+  {
+    eval select a, b, c, d, c1, c2, c3, c6 from t$table_seq where a > 999298 and c6 = 'aaaaaaaa';
+    eval select a, b, c, d, c1, c2, c3, c6 from t$table_seq where a > 999298 and c6 like 'aaaaaaaa';
+    eval select count(*) from t$table_seq;
+    eval select count(c1) from t$table_seq;
+    eval select count(c2) from t$table_seq;
+    eval select count(c1) from t$table_seq where c1 > 300;
+    eval select count(c1) from t$table_seq where c1 < 30;
+    eval select a, c2, count(c1) from t$table_seq where c1 > 480;
+    eval select c1, c2 from t$table_seq where c1 > 480 and a < 999101 limit 1;
+    eval select b, c2, count(c1) from t$table_seq where c1 < 490 and a < 999150;
+    eval select a, c1, count(c1) from t$table_seq where a < 999110 and c1 != 80 and c1 != 6 and c1 + 10 < 30;
+    eval select count(c3), min(c3), max(c3), sum_opnsize(c3), approx_count_distinct(c3) from t$table_seq where a < 999201 and d = 'obobobobobobobobobob';
+    eval select count(*),count(a),min(a),max(a),sum(a),count(b),min(b),max(b),count(c),min(c),max(c),sum(c) from t$table_seq;
+    eval select count(*),count(c1),min(c1),max(c1),sum(c1),count(c2),min(c2),max(c2),sum(c2) from t$table_seq;
+    eval select count(*),count(c3),min(c3),max(c3),sum(length(c3)),count(c4),min(c4),max(c4),sum(length(c4)) from t$table_seq;
+    eval select length(c5),count(*),count(c5),length(min(c5)),length(max(c5)),sum(length(c5)),sum_opnsize(c5), approx_count_distinct(c5) from t$table_seq;
+    eval select distinct(c1) from t$table_seq;
+    eval select distinct(c2) from t$table_seq;
+    eval select distinct(c3) from t$table_seq where a < 999110;
+    eval select distinct(c4) from t$table_seq where a < 999110;
+    inc $table_seq;
+  }
+
+  --disable_query_log
+  connection obsys;
+  eval alter system set_tp tp_name = "EN_FORCE_GBY_PUSHDOWN_STORAGE", error_code = 4016, frequency = 1;
+  connection default;
+  eval alter system flush plan cache;
+  --enable_query_log
+  --echo enable group by pushdown
+  --let $table_seq=1
+  while ($table_seq < 4)
+  {
+    eval select distinct(c1) from t$table_seq;
+    eval select a,c1,count(*),count(c1),min(c1),max(c1),sum(c1),count(c3),min(c3),max(c3),sum(c3) from t$table_seq where c1 > 490 and a < 999102 group by a;
+    eval select c,c1,count(*),count(c1),min(c1),max(c1),sum(c1),count(c3),min(c3),max(c3),sum(c3) from t$table_seq where c1 > 490 and a > 999298 group by c;
+    eval select d,c1,count(*),count(c1),min(c1),max(c1),sum(c1),count(c3),min(c3),max(c3),sum(c3) from t$table_seq where c1 > 490 and a > 999194 group by d;
+    eval select c1,count(*),count(c1),min(c1),max(c1),sum(c1),count(c3),min(c3),max(c3),sum(c3) from t$table_seq where c1 > 490 and a > 999194 group by c1;
+    eval select c3,c1,count(*),count(c1),min(c1),max(c1),sum(c1),count(c3),min(c3),max(c3),sum(c3) from t$table_seq where c1 > 490 and a > 999298 group by c3;
+    eval select count(c6), min(c6), max(c6), sum_opnsize(c6), approx_count_distinct(c6) from t$table_seq group by d;
+    eval select count(c1) from t$table_seq group by d;
+    inc $table_seq;
+  }
+
+  --disable_query_log
+  connection obsys;
+  eval alter system set_tp tp_name = "EN_FORCE_GBY_PUSHDOWN_STORAGE", error_code = 4016, frequency = 0;
+  connection default;
+  eval alter system flush plan cache;
+  --enable_query_log
+  --echo disable group by pushdown
+  --let $table_seq=1
+  while ($table_seq < 4)
+  {
+    eval select distinct(c1) from t$table_seq;
+    eval select a,c1,count(*),count(c1),min(c1),max(c1),sum(c1),count(c3),min(c3),max(c3),sum(c3) from t$table_seq where c1 > 490 and a < 999102 group by a;
+    eval select c,c1,count(*),count(c1),min(c1),max(c1),sum(c1),count(c3),min(c3),max(c3),sum(c3) from t$table_seq where c1 > 490 and a > 999298 group by c;
+    eval select d,c1,count(*),count(c1),min(c1),max(c1),sum(c1),count(c3),min(c3),max(c3),sum(c3) from t$table_seq where c1 > 490 and a > 999194 group by d;
+    eval select c1,count(*),count(c1),min(c1),max(c1),sum(c1),count(c3),min(c3),max(c3),sum(c3) from t$table_seq where c1 > 490 and a > 999194 group by c1;
+    eval select c3,c1,count(*),count(c1),min(c1),max(c1),sum(c1),count(c3),min(c3),max(c3),sum(c3) from t$table_seq where c1 > 490 and a > 999298 group by c3;
+    eval select count(c6), min(c6), max(c6), sum_opnsize(c6), approx_count_distinct(c6) from t$table_seq group by d;
+    eval select count(c1) from t$table_seq group by d;
+    inc $table_seq;
+  }
+
+  inc $case_seq;
+  inc $count;
+  inc $level;
+}
+
+
+--disable_query_log
+connection obsys;
+alter system set _global_enable_rich_vector_format = true;
+alter system set_tp tp_name = "EN_COMPACTION_DISABLE_ROW_COL_SWITCH", error_code = 4016, frequency = 0;
+alter system set_tp tp_name = "EN_FORCE_GBY_PUSHDOWN_STORAGE", error_code = 4016, frequency = 0;
+connection default;
+set @@recyclebin = on;
+alter system set _pushdown_storage_level = 4;
+alter system set _rowsets_enabled = true;
+alter system flush plan cache;
+--enable_query_log
+drop table t1,t2,t3;

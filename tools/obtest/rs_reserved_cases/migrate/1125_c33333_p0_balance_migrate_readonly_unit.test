@@ -1,0 +1,141 @@
+###33333
+### 迁移过程中遭遇目的端被block；带readonly副本
+
+ob1=OBI(cluster=3:3:3:3:3, init_unit_cpu=2);
+ob1.reboot;
+let $case_index=1;
+
+ob1.mysql alter system set resource_hard_limit=900;
+ob1.mysql alter system set resource_soft_limit=800;
+ob1.mysql alter system set enable_rebalance = 'false';
+ob1.mysql alter system set enable_rereplication = 'false';
+ob1.mysql alter system set debug_sync_timeout = '100s';
+ob1.mysql alter system set enable_auto_leader_switch = 'False';
+ob1.mysql alter system set server_data_copy_out_concurrency = 10;
+ob1.mysql alter system set server_data_copy_in_concurrency = 10;
+sleep 4;
+
+let $cpu = 1;
+let $memory = 1073741824;
+let $min_memory = 1073741824;
+let $disk = 536870912;
+let $iops = 100000;
+let $session = 64;
+
+ob1.mysql CREATE RESOURCE UNIT block_unit MAX_CPU $cpu, MAX_MEMORY $memory, MAX_IOPS $iops, MAX_DISK_SIZE $disk, MAX_SESSION_NUM $session, MIN_CPU=1, MIN_MEMORY=$min_memory, MIN_IOPS=128;
+ob1.mysql CREATE RESOURCE POOL block_unit_pool1 UNIT = 'block_unit', UNIT_NUM = 2, ZONE_LIST = ('z1', 'z2','z3', 'z4', 'z5');
+ob1.mysql CREATE TENANT block_unit_tenant RESOURCE_POOL_LIST = ('block_unit_pool1'), locality='F@z1,F@z2,F@z3,F@z4,R@z4,F@z5,R@z5' set ob_tcp_invited_nodes='%';
+
+# login as new tenant and create a table
+let $obs=deploy_get_value(ob1.z1.obs0.ip);
+let $port =deploy_get_value(ob1.z1.obs0.mysql_port);
+sleep 10;
+connect(conn1,$obs,root@block_unit_tenant,,,$port);
+connection conn1;
+CREATE DATABASE obtest;
+use obtest;
+create table test_table (pk int primary key);
+
+##正常迁移z4上面的readonly unit;
+##查询z4上面unit在哪个机器上；
+
+let $table_id = deploy_get_value(ob1.select select table_id from __all_virtual_table where table_name = "test_table", table_id, 1);
+let $unit_ip= deploy_get_value(ob1.select (select svr_ip from __all_server where zone='z4') except  (select svr_ip from __all_virtual_partition_table where zone='z4' and table_id = $table_id), svr_ip, 1);
+let $unit_port=deploy_get_value(ob1.select (select svr_port from __all_server where zone='z4') except (select svr_port from __all_virtual_partition_table where zone='z4' and table_id = $table_id), svr_port, 1);
+
+let $migrate_from_ip= deploy_get_value(ob1.select select svr_ip from oceanbase.__all_virtual_partition_table  where zone='z4' and replica_type=16 and table_id = $table_id, svr_ip, 1);
+let $migrate_from_port= deploy_get_value(ob1.select select svr_port from oceanbase.__all_virtual_partition_table  where zone='z4' and replica_type=16 and table_id = $table_id, svr_port, 1);
+
+# means use sys tenant execute sql
+let $pool_id = deploy_get_value(ob1.select select resource_pool_id from  oceanbase.__all_resource_pool where name = 'block_unit_pool1', resource_pool_id, 1);
+let $unit_id = deploy_get_value(ob1.select select unit_id from oceanbase.__all_unit where zone ='z4' and resource_pool_id = $pool_id and svr_ip='$migrate_from_ip' and svr_port=$migrate_from_port, unit_id, 1);
+
+# migrate unit from obs0 to obs1
+ob1.mysql alter system migrate unit $unit_id destination="$unit_ip:$unit_port";
+
+ob1.mysql alter system set enable_rebalance = 'true';
+#ob1.mysql alter system set enable_rereplication = 'true';
+ob1.mysql alter system set balancer_idle_time = '10s';
+##等待迁移完成；
+ob1.check_until_timeout select count(*) c from oceanbase.__all_unit where unit_id=$unit_id and migrate_from_svr_port =$migrate_from_port, 0, 360; 
+###验证结果
+let $result = deploy_get_value(ob1.select select count(*) c from oceanbase.__all_unit where unit_id = $unit_id and svr_ip='$unit_ip' and svr_port=$unit_port, c, 1);
+if ($result == 1)
+{
+  echo "migrate unit with readonly success;";
+}
+###验证partition表；
+#迁移后的行存在；
+let $result = deploy_get_value(ob1.select select count(*) c from oceanbase.__all_virtual_partition_table where  unit_id = $unit_id and svr_ip='$unit_ip' and svr_port=$unit_port and replica_type=16 and table_id = $table_id, c, 1);
+if ($result == 1)
+{
+  echo "migrate readonly replica success;";
+}
+#迁移前的旧行删除；
+let $result = deploy_get_value(ob1.select select count(*) c from oceanbase.__all_virtual_partition_table where unit_id = $unit_id and svr_ip='$migrate_from_ip' and svr_port='migrate_from_port' and table_id = $table_id, c, 1);
+if ($result == 0)
+{
+  echo "migrate remove old row success;";
+}
+
+
+###对z5上的unit迁移后，考虑block掉签回来
+
+#let $unit_ip= deploy_get_value(ob1.select (select svr_ip from __all_server where zone='z5') except (select svr_ip from __all_virtual_meta_table where zone='z5' and table_id = $table_id), svr_ip, 1);
+#let $unit_port=deploy_get_value(ob1.select (select svr_port from __all_server where zone='z5') except (select svr_port from __all_virtual_meta_table where zone='z5' and table_id = $table_id), svr_port, 1);
+#
+#let $migrate_from_ip= deploy_get_value(ob1.select select svr_ip from oceanbase.__all_virtual_meta_table  where zone='z5' and replica_type=16 and table_id = $table_id, svr_ip, 1);
+#let $migrate_from_port= deploy_get_value(ob1.select select svr_port from oceanbase.__all_virtual_meta_table  where zone='z5' and replica_type=16 and table_id = $table_id, svr_port, 1);
+#
+## means use sys tenant execute sql
+#let $pool_id = deploy_get_value(ob1.select select resource_pool_id from  oceanbase.__all_resource_pool where name = 'block_unit_pool1', resource_pool_id, 1);
+#let $unit_id = deploy_get_value(ob1.select select unit_id from oceanbase.__all_unit where zone ='z5' and resource_pool_id = $pool_id and svr_ip='$migrate_from_ip' and svr_port=$migrate_from_port, unit_id, 1);
+#ob1.mysql alter system set server_data_copy_out_concurrency = 1;
+#ob1.mysql alter system set server_data_copy_in_concurrency = 1;
+#
+#ob1.mysql alter system migrate unit $unit_id destination = '$unit_ip:$unit_port';
+#
+###等待迁移开始,至少迁移过去一个
+#ob1.check_until_timeout select count(*) c from oceanbase.__all_virtual_meta_table where unit_id='$unit_id' and svr_ip='unit_ip' and svr_port=$unit_port and table_id = $table_id, 1, 100;
+#
+## set obs1 blocked
+#let $block_migrate_in_time = deploy_get_value(ob1.select select time_to_usec(gmt_modified) as time from oceanbase.__all_server where svr_ip = '$unit_ip' and svr_port = $unit_port, time, 1);
+#ob1.mysql UPDATE oceanbase.__all_server set block_migrate_in_time=$block_migrate_in_time where svr_ip = '$unit_ip' and svr_port = $unit_port;
+#
+## check result
+#let $got_unit_ip = deploy_get_value(ob1.select select svr_ip from oceanbase.__all_unit where unit_id = $unit_id, svr_ip, 1);
+#let $got_unit_port = deploy_get_value(ob1.select select svr_port from oceanbase.__all_unit where unit_id = $unit_id, svr_port, 1);
+#let $got_migrate_from_ip = deploy_get_value(ob1.select select migrate_from_svr_ip from oceanbase.__all_unit where unit_id = $unit_id, migrate_from_svr_ip, 1);
+#let $got_migrate_from_port = deploy_get_value(ob1.select select migrate_from_svr_port from oceanbase.__all_unit where unit_id = $unit_id, migrate_from_svr_port, 1);
+#if ($got_unit_ip == $migrate_from_ip)
+#{
+#  echo pass;
+#}
+#if ($got_unit_port == $migrate_from_port)
+#{
+#  echo pass;
+#}
+#if ($got_migrate_from_ip == $unit_ip)
+#{
+#  echo pass;
+#}
+#if ($got_migrate_from_port == $unit_port)
+#{
+#  echo pass;
+#}
+#
+###等待迁移结束
+#ob1.check_until_timeout select count(*) c from oceanbase.__all_unit where migrate_from_svr_port !=0, 0, 120;
+#
+###检查partition表；
+#let $result = deploy_get_value(ob1.select select count(*) c from __all_virtual_meta_table where  unit_id=$unit_id and svr_ip='$migrate_from_ip' and svr_port=$migrate_from_port and replica_type=16 and table_id = $table_id, c, 1);
+#if ($result == 1)
+#{
+#  echo "migrate back success;";
+#}
+#let $result = deploy_get_value(ob1.select select count(*) c from __all_virtual_meta_table where  unit_id=$unit_id and svr_ip='$unit_ip' and svr_port=$unit_port and replica_type=16 and table_id = $table_id, c, 1);
+#if ($result == 0)
+#{
+#  echo "migrate back success;";
+#}
+#

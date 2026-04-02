@@ -78,13 +78,8 @@
 #include <unistd.h>
 #include <alloca.h>
 
-#include <errno.h>
-#ifdef __linux__
+#include <errno.h>				
 #include <crypt.h>
-#elif defined(__APPLE__)
-// On macOS, crypt() is declared in unistd.h (already included above)
-// No need for separate crypt.h header
-#endif
 
 #include <assert.h>
 

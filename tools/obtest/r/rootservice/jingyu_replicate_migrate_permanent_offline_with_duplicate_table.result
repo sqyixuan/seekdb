@@ -1,0 +1,151 @@
+ob1=OBI(cluster=3:2:3,proxy_num=0,init_unit_cpu=0);
+ob1.set extra_config=$mini_ob_config;
+ob1.reboot;
+ob1.mysql alter system set debug_sync_timeout = '1000s';
+ob1.mysql alter system set enable_rereplication = true;
+ob1.mysql alter system set server_permanent_offline_time = '3600s';
+===================================================================
+create initial objects
+===================================================================
+set @@session.ob_query_timeout = 200000000;
+alter system set __min_full_resource_pool_memory=1073741824;
+use oceanbase;
+ob1.mysql CREATE RESOURCE POOL tenant_pool UNIT = "2c2g", UNIT_NUM = 2, ZONE_LIST = ('z1', 'z2', 'z3');
+ob1.mysql CREATE TENANT tenant_for_permanent RESOURCE_POOL_LIST=('tenant_pool'), LOCALITY = "F@z1, F@z2, F@z3", PRIMARY_ZONE = "z1" SET ob_tcp_invited_nodes='%';
+create table t1_no_pk (c1 int);
+create table t1_dup_no_pk (c1 int) duplicate_scope = 'CLUSTER';
+insert into t1_no_pk values (1), (2), (3);
+insert into t1_dup_no_pk values (1), (2), (3);
+select * from t1_no_pk;
+c1
+1
+2
+3
+select * from t1_dup_no_pk;
+c1
+1
+2
+3
+update t1_no_pk set c1=c1+10;
+update t1_dup_no_pk set c1=c1+10;
+select * from t1_no_pk;
+c1
+11
+12
+13
+select * from t1_dup_no_pk;
+c1
+11
+12
+13
+create table t1_pk (c1 int primary key);
+create table t1_dup_pk (c1 int primary key) duplicate_scope = 'CLUSTER';
+insert into t1_pk values (1), (2), (3);
+insert into t1_dup_pk values (1), (2), (3);
+select * from t1_pk order by c1 asc;
+c1
+1
+2
+3
+select * from t1_dup_pk order by c1 asc;
+c1
+1
+2
+3
+update t1_pk set c1=c1+10;
+update t1_dup_pk set c1=c1+10;
+select * from t1_pk order by c1 asc;
+c1
+11
+12
+13
+select * from t1_dup_pk order by c1 asc;
+c1
+11
+12
+13
+create table t1_part (c1 int primary key) partition by hash(c1) partitions 4;
+create table t1_dup_part (c1 int primary key) duplicate_scope = 'CLUSTER' partition by hash(c1) partitions 4;
+insert into t1_part values (1), (2), (3), (4);
+insert into t1_dup_part values (1), (2), (3), (4);
+select * from t1_part order by c1 asc;
+c1
+1
+2
+3
+4
+select * from t1_dup_part order by c1 asc;
+c1
+1
+2
+3
+4
+update t1_part set c1=c1+10;
+update t1_dup_part set c1=c1+10;
+select * from t1_part order by c1 asc;
+c1
+11
+12
+13
+14
+select * from t1_dup_part order by c1 asc;
+c1
+11
+12
+13
+14
+alter system minor freeze tenant tenant_for_permanent;
+ob1.z1.obs1.check_log_until_success -c "succeed to release head data memtable";
+ob1.z2.obs1.check_log_until_success -c "succeed to release head data memtable";
+ob1.z3.obs1.check_log_until_success -c "succeed to release head data memtable";
+insert into t1_no_pk values (4), (5), (6);
+insert into t1_no_pk values (7), (8), (9);
+insert into t1_no_pk values (10), (11), (12);
+insert into t1_dup_no_pk values (4), (5), (6);
+insert into t1_dup_no_pk values (7), (8), (9);
+insert into t1_dup_no_pk values (10), (11), (12);
+insert into t1_pk values (4), (5), (6);
+insert into t1_pk values (7), (8), (9);
+insert into t1_pk values (10);
+insert into t1_dup_pk values (4), (5), (6);
+insert into t1_dup_pk values (7), (8), (9);
+insert into t1_dup_pk values (10);
+insert into t1_part values (5), (6), (7), (8);
+insert into t1_part values (9), (10), (21), (22);
+insert into t1_dup_part values (5), (6), (7), (8);
+insert into t1_dup_part values (9), (10), (21), (22);
+alter system minor freeze tenant tenant_for_permanent;
+ob1.z1.obs1.check_log_until_success -c "succeed to release head data memtable";
+ob1.z2.obs1.check_log_until_success -c "succeed to release head data memtable";
+ob1.z3.obs1.check_log_until_success -c "succeed to release head data memtable";
+===================================================================
+operation in zone1
+===================================================================
+ob1.check_until_timeout select count(*) as ls_cnt from oceanbase.CDB_OB_LS where tenant_id = $tenant_id and flag like "%DUPLICATE%", 1, 5;
+ob1.check_until_timeout select ls_id from oceanbase.CDB_OB_LS where tenant_id = $tenant_id and flag like "%DUPLICATE%", $duplicate_ls_id, 5;
+ob1.mysql alter tenant tenant_for_permanent set primary_zone = "z2;z3;z1";
+ob1.check_until_timeout select count(*) c from oceanbase.CDB_OB_LS_LOCATIONS where role like "%LEADER%" and tenant_id in ($tenant_id, $meta_tenant_id) and zone = 'z1', 0, 60;
+ob1.check_until_timeout select count(*) as server_cnt from oceanbase.DBA_OB_SERVERS where status like "%INACTIVE%", 1, 30;
+ob1.check_until_timeout select count(*) > 0 from oceanbase.DBA_OB_UNITS where unit_id = $unit_id_with_duplicate_f_in_z1 and migrate_from_svr_ip is NULL, 1, 120;
+ob1.check_until_timeout select count(*) > 0 from oceanbase.DBA_OB_ROOTSERVICE_EVENT_HISTORY where module like "%disaster%" and value1 = $tenant_id and value2 = $duplicate_ls_id and event like "%finish_migrate_ls_replica%" and value5 like "%$z1_cur_free%" and value6 like "%ret:0%" and extra_info like "%replicate to unit task%", 1, 10;
+ob1.check_until_timeout select count(*) > 0 from oceanbase.CDB_OB_LS_LOCATIONS where tenant_id = $tenant_id and ls_id = $duplicate_ls_id and role like "%LEADER%" and member_list like "%$z1_cur_free%" and member_list not like "%$z1_full_dst%", 1, 10;
+===================================================================
+operation in zone2
+===================================================================
+ob1.mysql alter system set server_permanent_offline_time = '20s';
+ob1.mysql alter tenant tenant_for_permanent set primary_zone = "z1;z3;z2";
+ob1.check_until_timeout select count(*) c from oceanbase.CDB_OB_LS_LOCATIONS where role like "%LEADER%" and tenant_id in ($tenant_id, $meta_tenant_id) and zone = 'z2', 0, 60;
+ob1.check_until_timeout select count(*) as server_cnt from oceanbase.DBA_OB_SERVERS where status like "%INACTIVE%", 2, 30;
+ob1.check_until_timeout select count(*) > 0 from oceanbase.DBA_OB_ROOTSERVICE_EVENT_HISTORY where module like "%disaster%" and value1 = $tenant_id and value2 = $duplicate_ls_id and event like "%finish_remove_ls_paxos_replica%" and value5 like "%$z2_full_dst%" and value6 like "%ret:0%" and extra_info like "%remove permanent offline replica%", 1, 120;
+ob1.check_until_timeout select count(*) > 0 from oceanbase.DBA_OB_ROOTSERVICE_EVENT_HISTORY where module like "%disaster%" and value1 = $tenant_id and value2 = $duplicate_ls_id and event like "%finish_type_transform_ls_replica%" and value4 like "%$z2_cur_free%" and value6 like "%ret:0%" and extra_info like "%type transform according to locality%", 1, 120;
+ob1.check_until_timeout select count(*) > 0 from oceanbase.CDB_OB_LS_LOCATIONS where tenant_id = $tenant_id and ls_id = $duplicate_ls_id and role like "%LEADER%" and member_list like "%$z2_cur_free%" and member_list not like "%$z2_full_dst%" and learner_list not like "%$z2_cur_free%", 1, 10;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.DBA_OB_SERVERS where zone like "%z2%" and start_service_time > 0, 2, 200;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_OB_LS_LOCATIONS where tenant_id in ($tenant_id, $meta_tenant_id) and role like "%LEADER%" and (member_list like "%$z2_cur_free%" or member_list like "%$z2_full_dst%"), $ls_cnt, 120;
+===================================================================
+operation in zone3
+===================================================================
+ob1.mysql alter system set server_permanent_offline_time = '20s';
+ob1.mysql alter tenant tenant_for_permanent set primary_zone = "z1;z2;z3";
+ob1.check_until_timeout select count(*) c from oceanbase.CDB_OB_LS_LOCATIONS where role like "%LEADER%" and tenant_id in ($tenant_id, $meta_tenant_id) and zone = 'z3', 0, 60;
+ob1.check_until_timeout select count(*) as server_cnt from oceanbase.DBA_OB_SERVERS where zone like "%z3%" and status like "%INACTIVE%", 1, 30;
+ob1.check_until_timeout select count(*) > 0 from oceanbase.DBA_OB_ROOTSERVICE_EVENT_HISTORY where module like "%disaster%" and value1 = $tenant_id and value2 = $duplicate_ls_id and event like "%finish_type_transform_ls_replica%" and value5 like "%$z3_readonly_dst%" and value5 like "%replica_type:16%" and value6 like "%ret:0%" and extra_info like "%type transform according to locality%", 1, 120;

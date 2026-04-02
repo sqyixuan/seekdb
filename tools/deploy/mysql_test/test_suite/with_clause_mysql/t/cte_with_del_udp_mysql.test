@@ -1,0 +1,409 @@
+# owner: yibo.tyf
+--echo # owner group: sql1
+--echo # tags: optimizer
+
+--result_format 4
+--disable_warnings
+drop database if exists cte_st;
+--enable_warnings
+create database cte_st;
+use cte_st;
+
+--disable_warnings
+drop table if exists t1,t1_part;
+drop procedure if exists cte_test;
+--enable_warnings
+
+create table t1 (c1 int, c2 int);
+insert into t1 values(1,1),(2,2),(3,3);
+
+create table t1_part(c1 int primary key, c2 int) partition by hash(c1) partitions 2;
+insert into t1_part values(1, 2);
+insert into t1_part values(4, 5);
+insert into t1_part values(5, 8);
+insert into t1_part values(20, 11);
+insert into t1_part values(40, 14);
+insert into t1_part values(30, 17);
+
+
+--echo #test with update
+##multi table update
+select * from t1;
+with cte AS (SELECT 1 AS col1,2 AS col2 UNION ALL SELECT 3, 4) update t1,cte set t1.c2=cte.col2 where t1.c1=cte.col1;
+select * from t1;
+##join table update
+with cte AS (SELECT 1 AS col1,1 AS col2 UNION ALL SELECT 3, 3) update t1 join cte set t1.c2=cte.col2 where t1.c1=cte.col1;
+select * from t1;
+##in subquery
+with cte AS (SELECT 1 AS col1 UNION ALL SELECT 3) update t1 set t1.c2=5 where t1.c1 in (select col1 from cte);
+--error 1288
+with cte AS (SELECT 1 AS col1 UNION ALL SELECT 3) update (select col1 as c1 from cte) k set k.c1 = 1;
+select * from t1;
+##with recursive
+with RECURSIVE cte(n) as (select 1 union all select n+1 from cte where n < 5) update t1,cte set t1.c2 = 1 where t1.c1=cte.n;
+select * from t1;
+##nested
+with cte2 as (with cte AS (SELECT 2 AS col1 UNION ALL SELECT 3) (select * from cte)) update t1 join cte2 set t1.c2=cte2.col1 where t1.c1=cte2.col1;
+select * from t1;
+--error 1064
+with cte2 as (with cte AS (SELECT 1 AS col1,2 AS col2 UNION ALL SELECT 3, 4) update t1 join cte set t1.c2=cte.col2 where t1.c1=cte.col1) update t1 join cte2 set t1.c2=cte2.col1 where t1.c1=cte2.col1;
+--error 1064
+with cte2 as (with cte AS (SELECT 1 AS col1,2 AS col2 UNION ALL SELECT 3, 4) update t1 join cte set t1.c2=cte.col2 where t1.c1=cte.col1) select * from cte2;
+--error 1146
+with cte2 as (with RECURSIVE cte(n) as (select 1 union all select n+1 from cte where n < 5) select * from cte) update t1,cte set t1.c1=1;
+##duplicate table name
+--error 1288
+with t1 as (select 1) update t1 set t1.c1=1;
+##duplicate column name
+with cte as (select 1 as c1) update t1 set c1 = c1;
+--error 1052
+with cte as (select 1 as c1) update t1,cte set c1 = 1;
+##pl
+delimiter //;
+CREATE PROCEDURE cte_test(IN x INTEGER)
+	BEGIN
+		WITH RECURSIVE temp as 
+		(
+			select c1,c1+1 as c2 from t1
+			UNION ALL
+			select c1+1, c2+1 from temp where c1 < x
+		) 
+		update t1,temp set t1.c2 = temp.c2 where t1.c1=temp.c1;
+END//
+delimiter ;//
+call cte_test(3);
+drop procedure cte_test;
+select * from t1;
+
+##discte
+explain basic with cte0 as (select 1 as c1,1 as c2 union all select * from t1_part) update t1_part,cte0 set t1_part.c2 = t1_part.c1 where t1_part.c1 in (select c1 from cte0);
+with cte0 as (select 1 as c1,1 as c2 union all select * from t1_part) update t1_part,cte0 set t1_part.c2 = t1_part.c1 where t1_part.c1 in (select c1 from cte0);
+select * from t1_part;
+
+explain basic with RECURSIVE cte0(a) as (select 1 union all select a+1 from cte0 where cte0.a < 50) update t1_part, cte0 set t1_part.c2 = cte0.a+1 where t1_part.c1 = cte0.a;
+with RECURSIVE cte0(a) as (select 1 union all select a+1 from cte0 where cte0.a < 50) update t1_part, cte0 set t1_part.c2 = cte0.a+1 where t1_part.c1 = cte0.a;
+select * from t1_part;
+
+explain basic with RECURSIVE cte0(a,b) as (select * from t1_part union all select a+1,b+1 from cte0 where a < 10) update t1_part, cte0 set t1_part.c2 = 200 where t1_part.c1 = cte0.a;
+with RECURSIVE cte0(a,b) as (select * from t1_part union all select a+1,b+1 from cte0 where a < 10) update t1_part, cte0 set t1_part.c2 = 200 where t1_part.c1 = cte0.a;
+select * from t1_part;
+
+explain basic with RECURSIVE cte (a,b) AS
+(
+    SELECT c1,c2
+    FROM t1_part e
+    WHERE c1 < 20
+    UNION ALL
+    SELECT /*+ USE_NL(r e) */  e.c1+1, e.c2+1
+    FROM cte r, t1_part e
+    WHERE e.c1 = r.a
+) update t1_part set t1_part.c2 = 100 where t1_part.c1 in (select a from cte);
+
+with RECURSIVE cte (a,b) AS
+(
+    SELECT c1,c2
+    FROM t1_part e
+    WHERE c1 < 20
+    UNION ALL
+    SELECT /*+ USE_NL(r e) */  e.c1+1, e.c2+1
+    FROM cte r, t1_part e
+    WHERE e.c1 = r.a
+) update t1_part set t1_part.c2 = 100 where t1_part.c1 in (select a from cte);
+select * from t1_part;
+
+explain basic with RECURSIVE cte (a,b) AS
+(
+    SELECT c1,c2
+    FROM t1_part e
+    WHERE c1 < 20
+    UNION ALL
+    SELECT /*+ USE_MERGE(r e) */  e.c1+1, e.c2+1
+    FROM cte r, t1_part e
+    WHERE e.c1 = r.a
+) update t1_part set t1_part.c2 = 200 where t1_part.c1 in (select a from cte);
+
+with RECURSIVE cte (a,b) AS
+(
+    SELECT c1,c2
+    FROM t1_part e
+    WHERE c1 < 20
+    UNION ALL
+    SELECT /*+ USE_MERGE(r e) */  e.c1+1, e.c2+1
+    FROM cte r, t1_part e
+    WHERE e.c1 = r.a
+) update t1_part set t1_part.c2 = 200 where t1_part.c1 in (select a from cte);
+select * from t1_part;
+
+explain basic with RECURSIVE cte (a,b) AS
+(
+    SELECT c1,c2
+    FROM t1_part e
+    WHERE c1 < 20
+    UNION ALL
+    SELECT /*+ USE_HASH(r e) */  e.c1+1, e.c2+1
+    FROM cte r, t1_part e
+    WHERE e.c1 = r.a
+) update t1_part set t1_part.c2 = t1_part.c1 where t1_part.c1 in (select a from cte);
+
+with RECURSIVE cte (a,b) AS
+(
+    SELECT c1,c2
+    FROM t1_part e
+    WHERE c1 < 20
+    UNION ALL
+    SELECT /*+ USE_HASH(r e) */  e.c1+1, e.c2+1
+    FROM cte r, t1_part e
+    WHERE e.c1 = r.a
+) update t1_part set t1_part.c2 = t1_part.c1 where t1_part.c1 in (select a from cte);
+select * from t1_part;
+
+##errno
+--error 1054
+with RECURSIVE cte(n) as (select 1 union all select n+1 from cte where n < 5) update t1 set t1.c1 = 1 where t1.c1=cte.n;
+--error 1288
+explain with RECURSIVE cte(n) as (select 1 union all select n+1 from cte where n < 5) update cte set n = 1;
+--error 1288
+explain with RECURSIVE cte(n) as (select 1 union all select n+1 from cte where n < 5) update cte set a = 1;
+--error 1288
+explain with RECURSIVE cte(n) as (select 1 union all select n+1 from cte where n < 5) update cte t1 set a = 1;
+--error 1288
+explain with RECURSIVE cte(n) as (select 1 union all select n+1 from cte where n < 5) update cte t1 set n = 1;
+--error 1054
+explain with RECURSIVE cte(n) as (select 1 union all select n+1 from cte where n < 5) update cte,t1 set a = 1;
+--error 1288
+explain with RECURSIVE cte(n) as (select 1 union all select n+1 from cte where n < 5) update cte,t1 set n = 1;
+--error 1054
+with RECURSIVE cte(n) as (select 1 union all select n+1 from cte where n < 5) update cte,cte t2 set t2.a = 1;
+--error 1288
+with RECURSIVE cte(n) as (select 1 union all select n+1 from cte where n < 5) update cte,cte t2 set t2.n = 1;
+--error 1054
+with RECURSIVE cte(n) as (select 1 union all select n+1 from cte where n < 5) update cte,cte t2 set cte.a = 1;
+--error 1288
+with RECURSIVE cte(n) as (select 1 union all select n+1 from cte where n < 5) update cte,cte t2 set cte.n = 1;
+
+--echo #test with delete
+insert into t1 values(4,4),(5,5);
+##in from list
+with cte AS (SELECT 1 AS col1) delete t1 from t1, cte where t1.c1=cte.col1;
+select * from t1;
+##join format
+with cte AS (SELECT 2 AS col1) delete t1 from t1 join cte where t1.c1=cte.col1;
+select * from t1;
+##multi table delete
+--error 1288
+with cte AS (SELECT 3 AS col1) delete t1,cte from t1 join cte where t1.c1=cte.col1;
+##delete data in cte
+--error 1288
+with cte AS (SELECT 1 AS col1 UNION ALL SELECT 3) delete from cte where cte.col1=1;
+##with recursive
+with RECURSIVE cte(n) as (select 1 union all select n+1 from cte where n < 3) delete t1 from t1,cte where t1.c1=cte.n;
+select * from t1;
+##nested
+with cte2 as (with RECURSIVE cte(n) as (select 1 union all select n+1 from cte where n < 5) select * from cte where n > 4) delete t1 from t1,cte2 where t1.c1=cte2.n;
+select * from t1;
+--error 1064
+with cte2 as (with RECURSIVE cte(n) as (select 1 union all select n+1 from cte where n < 5) delete t1 from t1,cte where t1.c1=cte.n) select * from cte2;
+--error 1146
+with cte2 as (with RECURSIVE cte(n) as (select 1 union all select n+1 from cte where n < 5) select * from cte) delete t1 from t1,cte where t1.c1=cte.n;
+##duplicate table name
+--error 1288
+with t1 as (select 1) delete from t1;
+
+##pl
+delimiter //;
+CREATE PROCEDURE cte_test(IN x INTEGER)
+	BEGIN
+		WITH RECURSIVE temp as 
+		(
+			select c1,c1+1 as c2 from t1
+			UNION ALL
+			select c1+1, c2+1 from temp where c1 < x
+		) 
+		delete t1 from t1,temp where t1.c1=temp.c1;
+END//
+delimiter ;//
+call cte_test(5);
+drop procedure cte_test;
+select * from t1;
+
+##discte
+explain basic with cte0 as (select 1 as c1,1 as c2 union all select * from t1_part) delete from t1_part where t1_part.c1 in (select c1 from cte0) and t1_part.c1 > 40;
+with cte0 as (select 1 as c1,1 as c2 union all select * from t1_part) delete from t1_part where t1_part.c1 in (select c1 from cte0) and t1_part.c1 > 40;
+select * from t1_part;
+
+explain basic with RECURSIVE cte0(a) as (select 1 union all select a+1 from cte0 where cte0.a < 20) delete t1_part from t1_part where t1_part.c1 not in (select a from cte0);
+with RECURSIVE cte0(a) as (select 1 union all select a+1 from cte0 where cte0.a < 20) delete t1_part from t1_part where t1_part.c1 not in (select a from cte0);
+select * from t1_part;
+
+explain basic with RECURSIVE cte0(a,b) as (select * from t1_part union all select a+1,b+1 from cte0 where a < 20) delete t1_part from t1_part where t1_part.c1 not in (select a from cte0);
+with RECURSIVE cte0(a,b) as (select * from t1_part union all select a+1,b+1 from cte0 where a < 20) delete t1_part from t1_part where t1_part.c1 not in (select a from cte0);
+select * from t1_part;
+
+insert into t1_part values(18,2),(22,3),(11,4),(21,5),(31,5);
+explain basic with RECURSIVE cte (a,b) AS
+(
+    SELECT c1,c2
+    FROM t1_part e
+    WHERE c1 < 20
+    UNION ALL
+    SELECT /*+ USE_NL(r e) */  e.c1+1, e.c2+1
+    FROM cte r, t1_part e
+    WHERE e.c1 = r.a
+) delete t1_part from t1_part,cte where t1_part.c1 = cte.a and t1_part.c1 < 20;
+
+with RECURSIVE cte (a,b) AS
+(
+    SELECT c1,c2
+    FROM t1_part e
+    WHERE c1 < 20
+    UNION ALL
+    SELECT /*+ USE_NL(r e) */  e.c1+1, e.c2+1
+    FROM cte r, t1_part e
+    WHERE e.c1 = r.a
+) delete t1_part from t1_part,cte where t1_part.c1 = cte.a and t1_part.c1 < 20;
+select * from t1_part;
+
+explain basic with RECURSIVE cte (a,b) AS
+(
+    SELECT c1,c2
+    FROM t1_part e
+    WHERE c1 < 20
+    UNION ALL
+    SELECT /*+ USE_MERGE(r e) */  e.c1+1, e.c2+1
+    FROM cte r, t1_part e
+    WHERE e.c1 = r.a
+) delete t1_part from t1_part,cte where t1_part.c1 = cte.a and t1_part.c1 < 30;
+
+with RECURSIVE cte (a,b) AS
+(
+    SELECT c1,c2
+    FROM t1_part e
+    WHERE c1 < 20
+    UNION ALL
+    SELECT /*+ USE_MERGE(r e) */  e.c1+1, e.c2+1
+    FROM cte r, t1_part e
+    WHERE e.c1 = r.a
+) delete t1_part from t1_part,cte where t1_part.c1 = cte.a and t1_part.c1 < 30;
+select * from t1_part;
+
+explain basic with RECURSIVE cte (a,b) AS
+(
+    SELECT c1,c2
+    FROM t1_part e
+    WHERE c1 < 20
+    UNION ALL
+    SELECT /*+ USE_HASH(r e) */  e.c1+1, e.c2+1
+    FROM cte r, t1_part e
+    WHERE e.c1 = r.a
+) delete t1_part from t1_part,cte where t1_part.c1 = cte.a and t1_part.c1 < 40;
+
+with RECURSIVE cte (a,b) AS
+(
+    SELECT c1,c2
+    FROM t1_part e
+    WHERE c1 < 20
+    UNION ALL
+    SELECT /*+ USE_HASH(r e) */  e.c1+1, e.c2+1
+    FROM cte r, t1_part e
+    WHERE e.c1 = r.a
+) delete t1_part from t1_part,cte where t1_part.c1 = cte.a and t1_part.c1 < 40;
+select * from t1_part;
+
+--echo #test cte_max_recursion_depth
+set cte_max_recursion_depth = default;
+select @@cte_max_recursion_depth;
+select @@session.cte_max_recursion_depth;
+select @@global.cte_max_recursion_depth;
+set cte_max_recursion_depth = 20;
+select @@cte_max_recursion_depth;
+select @@session.cte_max_recursion_depth;
+select @@global.cte_max_recursion_depth;
+
+##single cte table
+--error 3636
+with RECURSIVE cte(n) as (select 1 union all select n+1 from cte) select * from cte;
+--error 3636
+with RECURSIVE cte(n) as (select 1 union all select n+1 from cte where n < 21) select * from cte;
+with RECURSIVE cte(n) as (select 1 union all select n+1 from cte where n < 20) select * from cte;
+set cte_max_recursion_depth = default;
+--error 3636
+with RECURSIVE cte(n) as (select 1 union all select n+1 from cte) select count(*) from cte;
+with RECURSIVE cte(n) as (select 1 union all select n+1 from cte where n < 999) select count(*) from cte;
+with RECURSIVE cte(n) as (select 1 union all select n+1 from cte where n < 1000) select count(*) from cte;
+--error 3636
+with RECURSIVE cte(n) as (select 1 union all select n+1 from cte where n < 1001) select count(*) from cte;
+
+##multi cte table
+set cte_max_recursion_depth=0;
+--error 3636
+with RECURSIVE 
+  cte1 (a,b,c) as (select 1,1,1 from dual union all select a+1,b+1,c+1 from cte1 where cte1.a < 0),
+  cte2 (a,b,c) as (select a,b,c from cte1 union all select a+1,b+1,c+1 from cte2 where cte2.a < 0)
+select * from cte2;
+set cte_max_recursion_depth=1;
+with RECURSIVE 
+  cte1 (a,b,c) as (select 1,1,1 from dual union all select a+1,b+1,c+1 from cte1 where cte1.a < 0),
+  cte2 (a,b,c) as (select a,b,c from cte1 union all select a+1,b+1,c+1 from cte2 where cte2.a < 0)
+select * from cte2;
+with RECURSIVE 
+  cte1 (a,b,c) as (select 1,1,1 from dual union all select a+1,b+1,c+1 from cte1 where cte1.a < 1),
+  cte2 (a,b,c) as (select a,b,c from cte1 union all select a+1,b+1,c+1 from cte2 where cte2.a < 1)
+select * from cte2;
+--error 3636
+with RECURSIVE 
+  cte1 (a,b,c) as (select 1,1,1 from dual union all select a+1,b+1,c+1 from cte1 where cte1.a < 2),
+  cte2 (a,b,c) as (select a,b,c from cte1 union all select a+1,b+1,c+1 from cte2 where cte2.a < 2)
+select * from cte2;
+set cte_max_recursion_depth=10;
+with RECURSIVE 
+  cte1 (a,b,c) as (select 1,1,1 from dual union all select a+1,b+1,c+1 from cte1 where cte1.a < 10),
+  cte2 (a,b,c) as (select a,b,c from cte1 union all select a+1,b+1,c+1 from cte2 where cte2.a < 10),
+  cte3 (a,b,c) as (select a,b,c from cte2 union all select a+1,b+1,c+1 from cte3 where cte3.a < 10)
+select * from cte2;
+--error 3636
+with RECURSIVE 
+  cte1 (a,b,c) as (select 1,1,1 from dual union all select a+1,b+1,c+1 from cte1 where cte1.a < 10),
+  cte2 (a,b,c) as (select a,b,c from cte1 union all select a+1,b+1,c+1 from cte2 where cte2.a < 11),
+  cte3 (a,b,c) as (select a,b,c from cte2 union all select a+1,b+1,c+1 from cte3 where cte3.a < 10)
+select * from cte3;
+
+with RECURSIVE 
+  cte1 (a,b,c) as (select 1,1,1 from dual union all select a+1,b+1,c+1 from cte1 where cte1.a < 10),
+  cte2 (a,b,c) as (select a,b,c from cte1 union all select a+1,b+1,c+1 from cte2 where cte2.a < 11),
+  cte3 (a,b,c) as (select a,b,c from cte2 union all select a+1,b+1,c+1 from cte3 where cte3.a < 10)
+select * from cte3, t1 where t1.c1 = cte3.a;
+
+##discte
+insert into t1_part values(1,1),(2,2);
+--error 3636
+with RECURSIVE cte1 (a,b,c) as (select 1,1,1 from dual union all select a+1,b+1,c+1 from cte1) select * from cte1,t1_part where cte1.a=t1_part.c1;
+with RECURSIVE cte1 (a,b,c) as (select 1,1,1 from dual union all select a+1,b+1,c+1 from cte1 where cte1.a < 10) select * from cte1,t1_part where cte1.a=t1_part.c1;
+--error 3636
+with RECURSIVE cte1 (a,b,c) as (select c1,c2,c1+1 from t1_part union all select a+1,b+1,c+1 from cte1 where cte1.a < 11) select * from cte1;
+with RECURSIVE cte1 (a,b,c) as (select c1,c2,c1+1 from t1_part union all select a+1,b+1,c+1 from cte1 where cte1.a < 10) select * from cte1;
+
+set cte_max_recursion_depth = default;
+
+drop table if exists t1,t1_part;
+
+#Bugfix46553550:
+--disable_warnings
+DROP TABLE IF EXISTS t1;
+--enable_warnings
+CREATE TABLE t1(DEPTNO NUMERIC(2) PRIMARY KEY,DNAME VARCHAR(14),LOC VARCHAR(13)) ;
+INSERT INTO t1 VALUES(1,'AccounTing','New York');
+INSERT INTO t1 VALUES (2,'ReSeaRch','DallAs');
+INSERT INTO t1 VALUES(3,'SaLeS','ChiCaGo');
+INSERT INTO t1 VALUES(4,'OperaTions','BoSton');
+SELECT * FROM t1;
+WITH cte1 AS(SELECT DEPTNO,DNAME FROM t1 WHERE t1.DEPTNO = 1)
+     UPDATE t1,cte1 SET t1.DNAME = 'Bruce' WHERE t1.DEPTNO IN (SELECT cte1.DEPTNO FROM cte1);
+SELECT * FROM t1;
+
+WITH cte1 AS(SELECT DEPTNO,DNAME FROM t1 WHERE t1.DEPTNO NOT IN (2,5,7) ORDER BY t1.DEPTNO),
+     cte2 AS(SELECT * FROM cte1) UPDATE t1,cte1,cte2 SET t1.DNAME = 'Bruce' WHERE t1.DEPTNO IN (SELECT cte1.DEPTNO FROM cte1);
+SELECT * FROM t1;
+WITH cte1 AS(SELECT DEPTNO,DNAME FROM t1 WHERE t1.DEPTNO = 2)
+     delete from t1 where t1.DNAME = 'ReSeaRch' and t1.DEPTNO IN (SELECT cte1.DEPTNO FROM cte1);
+SELECT * FROM t1;
+DROP TABLE IF EXISTS t1;

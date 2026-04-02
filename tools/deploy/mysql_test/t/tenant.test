@@ -1,0 +1,137 @@
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+# owner: bin.lb
+# owner group: SQL2
+# tags: tenant
+# description:
+#
+# author : jingqian
+# test case abount resource unit, resource pool, tenant
+# TODO(jingqian): move it to obtest
+let $cpu = 0.1;
+let $memory = '768M';
+let $min_memory = '768M';
+let $disk = 536870912;
+let $iops = 100000;
+let $session = 64;
+let $zone_count = 1;
+let $unit_num = 1;
+
+connect (sysc,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection sysc;
+
+let $zone = query_get_value(select zone from oceanbase.dba_ob_zones, zone, 1);
+--disable_warnings
+drop tenant if exists y1 force;
+--enable_warnings
+
+# create resource unit alread exist
+--error 4649
+eval CREATE RESOURCE UNIT 1c1g MAX_CPU=1, MEMORY_SIZE='1G';
+
+# create resource pool
+--disable_warnings
+eval DROP RESOURCE POOL IF EXISTS pool___1;
+eval CREATE RESOURCE POOL pool___1 UNIT='1c1g', UNIT_NUM=$unit_num, ZONE_LIST=('$zone');
+--enable_warnings
+
+# create resource pool already exist
+--disable_query_log
+--echo CREATE RESOURCE POOL pool_for_tenant_mysql UNIT='1c1g', UNIT_NUM=$unit_num, ZONE_LIST=('test');
+--error 4651
+eval CREATE RESOURCE POOL pool_for_tenant_mysql UNIT='1c1g', UNIT_NUM=$unit_num, ZONE_LIST=('$zone');
+
+# create resource pool with not exist resource unit
+--echo CREATE RESOURCE POOL pool_not_exist UNIT='config_not_exist', UNIT_NUM=$unit_num, ZONE_LIST = ('test');
+--error 4648
+eval CREATE RESOURCE POOL pool_not_exist UNIT='config_not_exist', UNIT_NUM=$unit_num, ZONE_LIST = ('$zone');
+--enable_query_log
+
+# create tenant, test tenant option lower_case_table_names
+eval CREATE TENANT y1 REPLICA_NUM = $zone_count, RESOURCE_POOL_LIST = ('pool___1') set lower_case_table_names = 0, ob_tcp_invited_nodes='%';
+--source mysql_test/include/check_tenant_sync.inc
+# create tenant already exist
+--error 5156
+eval CREATE TENANT mysql REPLICA_NUM = $zone_count, RESOURCE_POOL_LIST = ('pool_for_tenant_mysql') set ob_tcp_invited_nodes='%';
+# create tenant with not_exist resource pool
+--error 4650
+eval CREATE TENANT ta REPLICA_NUM = $zone_count, RESOURCE_POOL_LIST = ('not_exist_pool') set ob_tcp_invited_nodes='%';
+# create tenant with pool already granted
+--error 4626
+eval CREATE TENANT tb REPLICA_NUM = $zone_count, RESOURCE_POOL_LIST = ('pool_for_tenant_mysql') set ob_tcp_invited_nodes='%';
+
+# try delete resource pool and resource unit still referenced
+--error 4650
+DROP RESOURCE POOL not_exist_pool;
+--error 4626
+DROP RESOURCE POOL pool_for_tenant_mysql;
+--error 4648
+DROP RESOURCE UNIT not_exit_unit_config;
+--error 4634
+DROP RESOURCE UNIT 1c1g;
+
+# try delete tenant not exist
+--error 5157
+DROP TENANT txx;
+
+let $__tenant_name__ = 'y1';
+--source mysql_test/include/get_tenant_server.inc
+let $TE_SERVER_IP1=$TE_SERVER_IP;
+let $TE_SERVER_PORT1=$TE_SERVER_PORT;
+let $__tenant_name__ = 'mysql';
+--source mysql_test/include/get_tenant_server.inc
+let $TE_SERVER_IP2=$TE_SERVER_IP;
+let $TE_SERVER_PORT2=$TE_SERVER_PORT;
+let $__tenant_name__ = 'sys';
+--source mysql_test/include/get_tenant_server.inc
+let $TE_SERVER_IP3=$TE_SERVER_IP;
+let $TE_SERVER_PORT3=$TE_SERVER_PORT;
+connect (conn1,$TE_SERVER_IP1,root@y1,,*NO-ONE*,$TE_SERVER_PORT1);
+connect (conn2,$TE_SERVER_IP2,root,,*NO-ONE*,$TE_SERVER_PORT2);
+connect (conn3,$TE_SERVER_IP3,root@sys,,*NO-ONE*,$TE_SERVER_PORT3);
+
+connection conn1;
+show variables like 'lower_case_table_names';
+show variables like 'lower_case_table_names';
+connection conn2;
+show variables like 'lower_case_table_names';
+show variables like 'lower_case_table_names';
+connection conn3;
+show variables like 'lower_case_table_names';
+show variables like 'lower_case_table_names';
+connection sysc;
+
+--error 1064
+alter tenant y1 set variables @lower_case_table_names = 0;
+--error 1064
+alter tenant y1 set variables @@lower_case_table_names = 0;
+--error 1238
+alter tenant y1 set variables lower_case_table_names = 1+1;
+--error 1193
+alter tenant y1 set variables unknown_sys_vr = 0;
+--error 1231
+alter tenant y1 set variables read_only = "adag";
+--error 1054
+alter tenant y1 set variables read_only = c1 + 1;
+alter tenant y1 set variables read_only = ON, ob_query_timeout= length("adggd") + 1 , ob_enable_plan_cache= OFF;
+
+let $tenant_id=query_get_value(select tenant_id from oceanbase.__all_tenant where tenant_name = 'y1' limit 1, tenant_id, 1);
+--disable_query_log
+eval select name, value from oceanbase.__all_virtual_sys_variable where tenant_id= $tenant_id and name in ('read_only', 'lower_case_table_names', 'ob_query_timeout', 'ob_enable_plan_cache') order by name;
+eval select name, value from oceanbase.__all_virtual_sys_variable_history where tenant_id= $tenant_id and name in ('read_only', 'lower_case_table_names', 'ob_query_timeout', 'ob_enable_plan_cache') order by name;
+--enable_query_log
+
+connection conn1;
+show variables like 'read_only';
+show variables like 'lower_case_table_names';
+show variables like 'ob_query_timeout';
+show variables like 'ob_enable_plan_cache';
+connection sysc;
+
+set @@ob_query_timeout=@@ob_query_timeout * 20;
+drop tenant y1 force;
+
+eval DROP RESOURCE POOL pool___1;
+
+set @@ob_query_timeout=@@ob_query_timeout / 20;

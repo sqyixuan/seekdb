@@ -1,0 +1,235 @@
+#owner: zhuhuashi.zhs
+#owner group: IMF
+# tags: das, optimizer
+
+--disable_abort_on_error
+--disable_query_log
+connect (conn_admin, $OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection conn_admin;
+alter system set _rowsets_max_rows = 2 tenant=sys;
+alter system set _rowsets_max_rows = 2 tenant=all_user;
+alter system set _rowsets_max_rows = 2 tenant=all_meta;
+alter system set_tp tp_no=554, error_code=1, frequency=1;
+alter system set_tp tp_no=311, error_code=2, frequency=1;
+alter system set_tp tp_no=400, error_code=4, frequency=1;
+alter system set_tp tp_no=315, error_code=1, frequency=1;
+connection default;
+--result_format 4
+--enable_query_log
+
+--disable_warnings
+drop table if exists t1,t2,t3;
+--enable_warnings
+create table t1(c1 int primary key, c2 int, c3 int) partition by hash(c1) partitions 3;
+create table t2(c1 int primary key, c2 int, c3 int) partition by hash(c1) partitions 4;
+create table t3(c1 int primary key, c2 int, c3 int) partition by hash(c1) partitions 5;
+create index g_i_1 on t1(c2) global partition by hash(c2) partitions 2;
+create index g_i_2 on t2(c2) global partition by hash(c2) partitions 2;
+create index g_i_3 on t3(c2) global partition by hash(c2) partitions 2;
+create index l_i_1 on t1(c3) local;
+create index l_i_2 on t2(c3) local;
+create index l_i_3 on t3(c3) local;
+
+--disable_query_log
+let i=0;
+while($i<30) {
+  eval INSERT INTO t1 VALUES($i, $i, $i);
+  eval INSERT INTO t2 VALUES($i, $i+1, $i+2);
+  eval INSERT INTO t3 VALUES($i, $i-1, $i-2);
+  inc $i;
+}
+--enable_query_log
+
+# NLJ/SPF group rescan正交TSC
+explain select /*+leading(t1 t2)*/ * from t1,t2 where t1.c1=t2.c1;
+select /*+leading(t1 t2)*/ * from t1,t2 where t1.c1=t2.c1;
+explain select /*+leading(t1 t2)*/ * from t1,t2 where t1.c1=t2.c2;
+select /*+leading(t1 t2)*/ * from t1,t2 where t1.c1=t2.c2;
+explain select /*+leading(t1 t2)*/ * from t1,t2 where t1.c1=t2.c3;
+select /*+leading(t1 t2)*/ * from t1,t2 where t1.c1=t2.c3;
+
+explain select /*+no_rewrite*/ * from t1 where exists (select 1 from t2 where t2.c1<t1.c1) and t1.c1<3;
+select /*+no_rewrite*/ * from t1 where exists (select 1 from t2 where t2.c1>t1.c1) and t1.c1<3;
+explain select /*+no_rewrite*/ max(c1) from t1 where exists (select 1 from t3 where t3.c2>t1.c1);
+select /*+no_rewrite*/ max(c1) from t1 where exists (select 1 from t3 where t3.c2>t1.c1);
+explain select /*+no_rewrite*/ c1 + (select c2 from t2 where t2.c2=t1.c1) + (select c3 from t3 where t3.c3=t1.c1) from t1;
+select /*+no_rewrite*/ c1 + (select c2 from t2 where t2.c2=t1.c1) + (select c3 from t3 where t3.c3=t1.c1) from t1;
+
+# NLJ/SPF group rescan正交set算子
+explain select * from t1 a join (select c1 from t2 union (select c2 from t3 where t3.c2>4)) b where a.c1>b.c1 and a.c2<5;
+select * from t1 a join (select c1 from t2 union (select c2 from t3 where t3.c2>4)) b where a.c1>b.c1 and a.c2<5;
+explain select * from t1 a join (select c1 from t2 except (select c2 from t3 where t3.c2>4)) b where a.c1>b.c1 and a.c2<6;
+select * from t1 a join (select c1 from t2 except (select c2 from t3 where t3.c2>4)) b where a.c1>b.c1 and a.c2<6;
+explain select * from t1 a join (select c1 from t2 intersect (select c2 from t3 where t3.c2<2)) b where a.c1<b.c1;
+select * from t1 a join (select c1 from t2 intersect (select c2 from t3 where t3.c2<2)) b where a.c1<b.c1;
+
+explain select c1 from t1 where exists ((select c1 from t2 where t2.c2>t1.c1) union (select c2 from t3 where t3.c3<t1.c1));
+select c1 from t1 where exists ((select c1 from t2 where t2.c2>t1.c1) union (select c2 from t3 where t3.c3<t1.c1));
+explain select c1 from t1 where exists ((select c1 from t2 where t2.c2>t1.c1) except (select c2 from t3 where t3.c3<t1.c1));
+select c1 from t1 where exists ((select c1 from t2 where t2.c2>t1.c1) except (select c2 from t3 where t3.c3<t1.c1));
+explain select c1 from t1 where exists ((select c1 from t2 where t2.c2>t1.c1) intersect (select c2 from t3 where t3.c3<t1.c1));
+select c1 from t1 where exists ((select c1 from t2 where t2.c2>t1.c1) intersect (select c2 from t3 where t3.c3<t1.c1));
+
+# NLJ group rescan正交GI
+explain select /*+use_px parallel(3) leading(t1 t2) no_use_das(t2)*/ * from t1, t2 where t1.c1=t2.c1 and t1.c1>10 order by t1.c1;
+select /*+use_px parallel(3) leading(t1 t2) no_use_das(t2)*/ * from t1, t2 where t1.c1=t2.c1 and t1.c1>10 order by t1.c1;
+
+# SPF group rescan正交GI
+
+# NLJ/SPF group rescan正交window function
+--disable_warnings
+drop table if exists t4,t5;
+--enable_warnings
+create table t4(c1 int primary key, c2 int, c3 varchar(10));
+create table t5(c1 int, c2 int, c3 varchar(10));
+create index c1 on t5(c1) local;
+insert into t4 values (1,1,'aaa'),(2,1,'aaa'),(3,2,'bbb'),(4,1,'ccc'),(5,3,'aaa');
+insert into t5 values (1,2,'aaa'),(1,1,'aaa'),(2,3,'bbb'),(2,2,'ccc'),(3,3,'aaa'),(4,1,'bbb');
+explain select /*+use_nl(a b) leading(a b)*/ * from t4 a join (SELECT *, ROW_NUMBER() OVER (PARTITION BY c1 ORDER BY c3) AS row_num FROM t5) b where a.c1=b.c1;
+select /*+use_nl(a b) leading(a b)*/ * from t4 a join (SELECT *, ROW_NUMBER() OVER (PARTITION BY c1 ORDER BY c3) AS row_num FROM t5) b where a.c1=b.c1;
+explain select /*+use_nl(a b) leading(a b)*/ * from t4 a join (SELECT *, SUM(c2) OVER (PARTITION BY c1 ORDER BY c3) AS sum FROM t5) b where a.c1=b.c1;
+select /*+use_nl(a b) leading(a b)*/ * from t4 a join (SELECT *, SUM(c2) OVER (PARTITION BY c1 ORDER BY c3) AS sum FROM t5) b where a.c1=b.c1;
+
+explain select /*+no_rewrite*/ c1 from t4 where exists (SELECT *, ROW_NUMBER() OVER (PARTITION BY c1 ORDER BY c3) AS row_num FROM t5 where t5.c1>t4.c1);
+select /*+no_rewrite*/ c1 from t4 where exists (SELECT *, ROW_NUMBER() OVER (PARTITION BY c1 ORDER BY c3) AS row_num FROM t5 where t5.c1>t4.c1);
+explain select /*+no_rewrite*/ c2 from t4 where exists (SELECT *, SUM(c2) OVER (PARTITION BY c1 ORDER BY c3) AS sum FROM t5 where t5.c1>t4.c1);
+select /*+no_rewrite*/ c2 from t4 where exists (SELECT *, SUM(c2) OVER (PARTITION BY c1 ORDER BY c3) AS sum FROM t5 where t5.c1>t4.c1);
+
+# NLJ/SPF group rescan正交DML算子
+explain delete /*+no_use_px leading((t1 t2) t3)*/ t1,t2,t3 from t1 join t2 on t1.c1>t2.c3 join t3 on t1.c2>t3.c1;
+begin;
+delete t1,t2,t3 from t1 join t2 on t1.c1>t2.c3 join t3 on t1.c2>t3.c1;
+select * from t1;
+select * from t2;
+select * from t3;
+rollback;
+explain delete /*+no_rewrite*/ t1 from t1 where exists(select 1 from t2 where t2.c3<t1.c1) and exists(select 1 from t3 where t3.c2>t1.c1);
+begin;
+delete /*+no_rewrite*/ t1 from t1 where exists(select 1 from t2 where t2.c3<t1.c1) and exists(select 1 from t3 where t3.c2>t1.c1);
+select * from t1;
+rollback;
+explain update /*+no_use_px leading((t1 t2) t3)*/ t1 join t2 on t1.c1>t2.c3 join t3 on t1.c2>t3.c1 set t1.c2=1, t2.c2=2, t3.c2=3;
+begin;
+update /*+no_use_px leading((t1 t2) t3)*/ t1 join t2 on t1.c1>t2.c3 join t3 on t1.c2>t3.c1 set t1.c2=1, t2.c2=2, t3.c2=3;
+select * from t1;
+select * from t2;
+select * from t3;
+rollback;
+explain update /*+no_rewrite*/ t1 set t1.c2=1 where exists(select 1 from t2 where t2.c3<t1.c1) and exists(select 1 from t3 where t3.c2>t1.c1);
+begin;
+update /*+no_rewrite*/ t1 set t1.c2=1 where exists(select 1 from t2 where t2.c3<t1.c1) and exists(select 1 from t3 where t3.c2>t1.c1);
+select * from t1;
+rollback;
+
+# NLJ/SPF group rescan正交limit,sort,distinct
+explain select /*+no_use_px leading((t1 t2) t3)*/ * from t1 join t2 on t1.c1>t2.c3 join t3 on t1.c2>t3.c1 limit 10;
+select /*+no_use_px leading((t1 t2) t3)*/ * from t1 join t2 on t1.c1>t2.c3 join t3 on t1.c2>t3.c1 limit 10;
+explain select /*+no_rewrite*/ c1 + (select c2 from t2 where t2.c2=t1.c1) + (select c3 from t3 where t3.c3=t1.c1) from t1 limit 10;
+select /*+no_rewrite*/ c1 + (select c2 from t2 where t2.c2=t1.c1) + (select c3 from t3 where t3.c3=t1.c1) from t1 limit 10;
+explain select /*+no_use_px leading((t1 t2) t3)*/ * from t1 join t2 on t1.c1>t2.c3 join t3 on t1.c2>t3.c1 order by t1.c2 limit 10;
+select /*+no_use_px leading((t1 t2) t3)*/ * from t1 join t2 on t1.c1>t2.c3 join t3 on t1.c2>t3.c1 order by t1.c2 limit 10;
+explain select /*+no_use_px leading((t1 t2) t3)*/ distinct(t1.c3) from t1 join t2 on t1.c1>t2.c3 join t3 on t1.c2>t3.c1;
+select /*+no_use_px leading((t1 t2) t3)*/ distinct(t1.c3) from t1 join t2 on t1.c1>t2.c3 join t3 on t1.c2>t3.c1;
+
+# SPF onetime expr contains subquery
+--disable_warnings
+drop table if exists t1,t2,t3;
+--enable_warnings
+create table t1(c1 int, c2 int, c3 int, key c2(c2) local);
+insert into t1 values (1,1,1),(2,2,2);
+create table t2(c1 int, c2 int, c3 int, key c2(c2) local);
+insert into t2 values (1,1,1);
+create table t3(c1 int, c2 int, c3 int, key c2(c2) local);
+insert into t3 values (2,2,2);
+explain select /*+use_nl(a, b)*/ a.c1, a.c2,b.c1,b.c2 from t1 a left join (select /*+no_rewrite*/ * from t1 where exists (select 1 from t2 where t2.c2=t1.c1 limit 1) or exists (select 1 from t3 where c2 > 1 limit 1)) b on a.c1=b.c2;
+select /*+use_nl(a, b)*/ a.c1, a.c2,b.c1,b.c2 from t1 a left join (select /*+no_rewrite*/ * from t1 where exists (select 1 from t2 where t2.c2=t1.c1 limit 1) or exists (select 1 from t3 where c2 > 1 limit 1)) b on a.c1=b.c2;
+
+# too many ranges for group rescan
+--disable_warnings
+drop table if exists t1,t2;
+--enable_warnings
+create table t1(c1 int, c2 int, c3 int);
+insert into t1 with recursive cte as (select 1 as c1 union all select c1+1 from cte where c1 < 1000) select c1,c1,c1 from cte;
+create table t2(c1 int, c2 int, c3 int, key c3(c3) local) partition by hash(c2) partitions 1001;
+insert into t2 values (1,1,1),(2,2,2),(3,3,3);
+explain select /*+no_rewrite*/ * from t1 where exists (select 1 from t2 where t2.c3=t1.c2);
+select /*+no_rewrite*/ * from t1 where exists (select 1 from t2 where t2.c3=t1.c2);
+
+# partition-wise rescan with no dynamic range
+--disable_warnings
+drop table if exists t1,t2;
+--enable_warnings
+create table t1 (c1 int, c2 varchar(10), c3 int) partition by hash(c1) partitions 4;
+create table t2 (c1 int, c2 varchar(10), c3 int) partition by hash(c1) partitions 4;
+insert into t1 values(1, 'dukaikai', 1), (2, 'dkz', 2), (3, 'dsr', 3), (4, 'dusisi', 4), (5, 'durong', 5),(6, 'dsr', 6);
+insert into t2 values(1, 'dukaikai', 1), (2, 'dkz', 2), (3, 'dsr', 3), (4, 'dusisi', 4), (5, 'durong', 5),(6, 'dsr', 6);
+explain select (select concat(c2, c2) from t1 where t1.c1 = t2.c1) from t2;
+select (select concat(c2, c2) from t1 where t1.c1 = t2.c1) from t2;
+
+# semi/anti join without vectorized, dynamic filter and limit
+alter system set _rowsets_enabled=false;
+alter system set _hash_join_enabled=false;
+--disable_warnings
+drop table if exists t1;
+--enable_warnings
+CREATE TABLE t1 (
+  `pk` int(11) DEFAULT NULL,
+  `col_datetime` datetime DEFAULT NULL,
+  `col_int` int(11) DEFAULT NULL,
+  `col_varchar_10` varchar(10) DEFAULT NULL,
+  `col_varchar_20` varchar(20) DEFAULT NULL,
+  `col_datetime_key` datetime DEFAULT NULL,
+  `col_varchar_10_key` varchar(10) DEFAULT NULL,
+  `col_varchar_20_key` varchar(20) DEFAULT NULL,
+  `col_date` date DEFAULT NULL,
+  `col_date_key` date DEFAULT NULL,
+  `col_int_key` int(11) DEFAULT NULL,
+  KEY `idx8` (`col_datetime_key`) BLOCK_SIZE 16384 LOCAL,
+  KEY `idx2` (`col_varchar_10_key`) BLOCK_SIZE 16384 LOCAL,
+  KEY `idx4` (`col_varchar_20_key`) BLOCK_SIZE 16384 LOCAL,
+  KEY `idx6` (`col_date_key`) BLOCK_SIZE 16384 LOCAL,
+  KEY `idx0` (`col_int_key`) BLOCK_SIZE 16384 LOCAL);
+insert into t1 values
+(NULL, '2006-03-11 00:27:12', NULL, 'o', 'kirufh', '2009-03-27 17:07:56', 'english', 'english', '2008-03-16', '2005-09-05', NULL),
+(5, '2000-02-02 01:22:38', NULL, 'q', 'english', '2006-02-19 23:08:43', 'lvik', 'english', '2000-11-03', '2004-03-01', 2),
+(NULL, '2009-11-06 14:25:20', 5, 'tlulsid', 'UBACF', '2007-01-14 09:59:58', 'ktlulsidvp', 'english', '2006-04-03', '2005-06-21', -1795686400);
+explain SELECT OUTR.col_int AS X , 1 AS Y FROM t1 AS OUTR WHERE (
+  ( OUTR.col_varchar_20 , OUTR.col_varchar_20_key ) IN ( SELECT INNR.col_varchar_20 AS X, INNR.col_varchar_20_key AS Y FROM t1 INNR) 
+    AND 
+  ( OUTR.col_varchar_20, OUTR.col_varchar_20_key ) NOT IN ( SELECT DISTINCT INNR.col_varchar_20 AS X , INNR.col_varchar_20_key AS Y FROM t1 INNR WHERE INNR.col_varchar_20_key <= INNR.col_varchar_20));
+SELECT OUTR.col_int AS X , 1 AS Y FROM t1 AS OUTR WHERE (
+  ( OUTR.col_varchar_20 , OUTR.col_varchar_20_key ) IN ( SELECT INNR.col_varchar_20 AS X, INNR.col_varchar_20_key AS Y FROM t1 INNR) 
+    AND 
+  ( OUTR.col_varchar_20, OUTR.col_varchar_20_key ) NOT IN ( SELECT DISTINCT INNR.col_varchar_20 AS X , INNR.col_varchar_20_key AS Y FROM t1 INNR WHERE INNR.col_varchar_20_key <= INNR.col_varchar_20));
+alter system set _rowsets_enabled=true;
+alter system set _hash_join_enabled=true;
+
+# init plan with batch rescan
+--disable_warnings
+drop table if exists tnn1, tnn2, tnn3, tnn8;
+--enable_warnings
+create table tnn1(c1 int primary key, c2 int, c3 int, c4 int, c5 int);
+create table tnn2(c1 int primary key, c2 int, c3 int, c4 int, c5 int);
+create table tnn3(c1 int primary key, c2 int, c3 int, c4 int, c5 int);
+create table tnn8(c1 int primary key, c2 int, c3 int, c4 int, c5 int) partition by hash(c1) partitions 2;
+create index i2 on tnn8(c2, c3, c4) global partition by hash(c2) partitions 2;
+insert into tnn1 values (1,2,3,4,3),(2,3,4,5,4),(3,4,5,6,5);
+insert into tnn2 values (1,2,3,4,3),(2,3,4,5,4),(3,4,5,6,5);
+insert into tnn3 values (1,2,3,4,3),(2,3,4,5,4),(3,4,5,6,5);
+insert into tnn8 values (1,2,3,4,3),(2,3,4,5,4),(3,4,5,6,5);
+explain select /*+no_rewrite*/ c1 from tnn1 where exists (select /*+index(tnn8 i2) use_das(tnn8)*/ * from tnn8 where tnn8.c1 > tnn1.c1 and tnn8.c1 > 1  and NOT EXISTS (select /*+no_rewrite*/ c1 from tnn1 where tnn1.c1 in (select /*+use_das(tnn2)*/ c1 from tnn2 where tnn2.c1 > 1 order by 1) and exists (select /*+use_das(tnn3)*/ * from tnn3 where tnn3.c1 > tnn1.c1 order by 1)) order by 1);
+select /*+no_rewrite*/ c1 from tnn1 where exists (select /*+index(tnn8 i2) use_das(tnn8)*/ * from tnn8 where tnn8.c1 > tnn1.c1 and tnn8.c1 > 1  and NOT EXISTS (select /*+no_rewrite*/ c1 from tnn1 where tnn1.c1 in (select /*+use_das(tnn2)*/ c1 from tnn2 where tnn2.c1 > 1 order by 1) and exists (select /*+use_das(tnn3)*/ * from tnn3 where tnn3.c1 > tnn1.c1 order by 1)) order by 1);
+
+--disable_warnings
+drop table if exists t1,t2,t3,t4,t5,tnn1,tnn2,tnn3,tnn8;
+--enable_warnings
+
+connection conn_admin;
+alter system set _rowsets_max_rows = 256 tenant=sys;
+alter system set _rowsets_max_rows = 256 tenant=all_user;
+alter system set _rowsets_max_rows = 256 tenant=all_meta;
+alter system set_tp tp_no=554, error_code=1, frequency=0;
+alter system set_tp tp_no=311, error_code=2, frequency=0;
+alter system set_tp tp_no=400, error_code=4, frequency=0;
+alter system set_tp tp_no=315, error_code=1, frequency=0;
+connection default;

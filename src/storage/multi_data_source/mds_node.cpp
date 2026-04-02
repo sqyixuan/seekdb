@@ -130,12 +130,7 @@ void MdsNode::remove_self_if_in_mds_ctx_()
   }
 }
 
-MdsNode::~MdsNode()
-{
-#ifndef __APPLE__
-  ListNode<MdsNode>::~ListNode();
-#endif
-}
+MdsNode::~MdsNode() { ListNode<MdsNode>::~ListNode(); }
 
 MdsWriter MdsNode::get_writer_() const
 {

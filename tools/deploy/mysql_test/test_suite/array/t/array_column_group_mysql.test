@@ -1,0 +1,84 @@
+# owner: ht353245
+# owner group: shenzhen
+
+connect (conn1,$OBMYSQL_MS0,$OBMYSQL_USR,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connect (obsys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection obsys;
+alter system set_tp tp_name = "EN_COMPACTION_DISABLE_ROW_COL_SWITCH", error_code = 4016, frequency = 1;
+
+connection conn1;
+
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+set @@recyclebin = off;
+--enable_query_log
+
+--disable_warnings
+drop table if exists ct1,ct2,ct3,ct4;
+--enable_warnings
+set session ob_trx_timeout=100000000000;
+set ob_query_timeout = 1000000000;
+create table ct1(c1 int, id int, c2 array(int), c3 array(varchar(16)), c4 vector(1536)) with column group (all columns, each column);
+create table ct2(c1 int, id int, c2 array(int), c3 array(varchar(16)), c4 vector(1536)) partition by hash (c1) partitions 5 with column group (all columns, each column);
+create table ct3(c1 int, id int, c2 map(int,float), c3 map(varchar(100),varchar(100)), c4 map(int,array(int))) with column group (all columns, each column);
+create table ct4(c1 int, id int, c2 map(int,float), c3 map(varchar(100),varchar(100)), c4 map(int,array(int))) partition by hash (c1) partitions 5 with column group (all columns, each column);
+
+--disable_query_log
+--let $count = 0
+while($count < 100)
+{
+   eval insert into ct1 values($count * 10, $count * 10, concat('[', repeat('3,',800), '3]'), concat('[', repeat('\"a\",',3200), '\"a\"]'), concat('[', repeat('3,',1535), '3]')),
+                              ($count * 10+1, $count * 10+1, concat('[', repeat('4,',800), '4]'), concat('[', repeat('\"b\",',3200), '\"b\"]'), concat('[', repeat('4,',1535), '4]')),
+                              ($count * 10+2, $count * 10+2, concat('[', repeat('5,',800), '5]'), concat('[', repeat('\"c\",',3200), '\"c\"]'), concat('[', repeat('5,',1535), '5]')),
+                              ($count * 10+3, $count * 10+2, concat('[', repeat('6,',800), '6]'), concat('[', repeat('\"d\",',3200), '\"d\"]'), concat('[', repeat('6,',1535), '6]')),
+                              ($count * 10+4, $count * 10+3, concat('[', repeat('7,',800), '7]'), concat('[', repeat('\"e\",',3200), '\"e\"]'), concat('[', repeat('7,',1535), '7]')),
+                              ($count * 10+5, $count * 10+3, concat('[', repeat('8,',800), '8]'), concat('[', repeat('\"f\",',3200), '\"f\"]'), concat('[', repeat('8,',1535), '8]')),
+                              ($count * 10+6, $count * 10+4, concat('[', repeat('9,',800), '9]'), concat('[', repeat('\"g\",',3200), '\"g\"]'), concat('[', repeat('9,',1535), '9]')),
+                              ($count * 10+7, $count * 10+5, concat('[', repeat('0,',800), '0]'), concat('[', repeat('\"h\",',3200), '\"h\"]'), concat('[', repeat('0,',1535), '0]')),
+                              ($count * 10+8, $count * 10+6, concat('[', repeat('1,',800), '1]'), concat('[', ']'), concat('[', repeat('1,',1535), '1]')),
+                              ($count * 10+9, $count * 10+6, concat('[', repeat('2,',800), '2]'), concat('[', repeat('\"j\",',3200), '\"j\"]'), concat('[', repeat('2,',1535), '2]'));
+  --inc $count
+}
+insert into ct2 select * from ct1;
+
+--let $count = 0
+while($count < 1000)
+{
+   eval insert into ct3 values($count * 5, $count * 5, '{1:1,2:2,3:3}', '{"1":"1","2":"2","3":"3"}', '{1:[1],2:[2],3:[3]}'),
+                              ($count * 5+1, $count * 5+1, '{11:11,21:21,31:31}', '{"11":"11","21":"21","31":"31"}', '{11:[11],21:[21],31:[31]}'),
+                              ($count * 5+2, $count * 5+2, '{12:12,22:22,32:32}', '{"12":"12","22":"22","32":"32"}', '{12:[12],22:[22],32:[32]}'),
+                              ($count * 5+3, $count * 5+3, '{13:13,23:23,33:33}', '{"13":"13","23":"23","33":"33"}', '{13:[13],23:[23],33:[33]}');
+  --inc $count
+}
+insert into ct4 select * from ct3;
+--enable_query_log
+
+connection default;
+alter system minor freeze;
+--source mysql_test/include/wait_minor_merge.inc
+
+alter system major freeze;
+--source mysql_test/include/wait_daily_merge.inc
+
+connection conn1;
+
+select c1 from ct1 order by cardinality(c4) limit 100;
+select c1 from ct1 order by cardinality(c3) limit 100;
+select /*+ parallel(1) use_column_table(ct1) */ c1, c4 from ct1 limit 1000;
+select c1 from ct1 order by cosine_distance(c4, concat('[', repeat('5,',1535), '5]')) APPROXIMATE limit 100;
+select c1, c2, c3, cardinality(c2) from ct1 where c1 < 1;
+select c1, c2, c3, cardinality(c3) from ct1 where c1 < 10;
+select /*+  NO_USE_HASH_DISTINCT  */ UNIQUE sum(c1), count(c2), min(c1), cardinality(array_map((x)->(x), [18.35,21.93,86.7,11.13,89.96,7.85])) FROM ct2 group by id; 
+
+--disable_result_log
+(SELECT /*+  ENABLE_PARALLEL_DML parallel(65)  */  t1.c2, t1.c3, t1.c4 FROM ct2 AS t1 JOIN ct2 AS t2 ON t1.id = t2.id ORDER BY t1.id DESC LIMIT 2, 10) intersect (SELECT /*+  ENABLE_PARALLEL_DML parallel(65)  */ t1.c2, t1.c3, t1.c4 FROM ct2 AS t1 JOIN ct2 AS t2 ON t1.id = t2.id WHERE t1.c1 != -978142343  ORDER BY t1.id DESC LIMIT 2, 10);
+--enable_result_log
+
+select * from ct3 order by c1 limit 100;
+select /*+ parallel(1) use_column_table(ct2) */ c1, c4 from ct3 limit 1000;
+select * from ct3 where c1 < 10 order by c1;
+--error 5083
+select /*+  NO_USE_HASH_DISTINCT  */ UNIQUE sum(c1), count(c2), min(c1), c3, c4 FROM ct4 group by id; 
+
+drop table ct1,ct2,ct3,ct4;
+set ob_query_timeout = 10000000;

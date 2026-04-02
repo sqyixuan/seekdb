@@ -1,0 +1,63 @@
+# owner:yongle.xh
+# owner group:storage
+--disable_query_log
+ob1=OBI(cluster=2:2:2,proxy_num=1,init_unit_cpu=4);
+ob1.reboot;
+
+ob1.mysql alter system set merger_check_interval='10s';
+ob1.mysql alter system set enable_rebalance = 'false';
+ob1.mysql alter system set resource_hard_limit=500;
+ob1.mysql alter resource pool obtestpool unit_num 2;
+
+ob1.mysql alter system set debug_sync_timeout = '1000s';
+
+let $ip0=deploy_get_value(ob1.z1.obs0.ip);
+let $sql_port0=deploy_get_value(ob1.z1.obs0.mysql_port);
+connect(conn0,$ip0,root@obtest,,test,$sql_port0);
+connection conn0;
+
+create table test01 (pk1 int, pk2 int, pk3 int, f1 varchar(1024), f2 varchar(4096), primary key(pk1,pk2,pk3), index i1(f1));
+
+ob1.mysql alter system major freeze;
+ob1.check_version 2;
+
+let $table_id=deploy_get_value(ob1.select select table_id from oceanbase.__all_virtual_table where table_name='test01', table_id, 1);
+let $tenant_id=deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name='obtest', tenant_id, 1);
+let $src_host = deploy_get_value(ob1.select select concat(svr_ip,':',svr_port) host from __all_virtual_partition_location where tenant_id=$tenant_id and table_id=$table_id and role=1 and partition_id=0, host, 1);
+let $src_port = deploy_get_value(ob1.select select svr_port from __all_virtual_partition_location where tenant_id=$tenant_id and table_id=$table_id and role=1 and partition_id=0, svr_port, 1);
+let $src = deploy_get_value(ob1.get_obs_by_addr $src_host);
+let $src_ip = deploy_get_value($src.ip);
+let $src_mysql_port = deploy_get_value($src.mysql_port);
+let $src_zone = deploy_get_value(ob1.select select zone from oceanbase.__all_server where svr_ip='$src_ip' and svr_port = $src_port, zone, 1);
+let $dst_host = deploy_get_value(ob1.select select concat(svr_ip, ':', svr_port) host from oceanbase.__all_server where zone='$src_zone' and (svr_ip!='$src_ip' or svr_port != $src_port), host, 1);
+let $dst_port = deploy_get_value(ob1.select select svr_port from oceanbase.__all_server where zone='$src_zone' and (svr_ip!='$src_ip' or svr_port != $src_port), svr_port, 1);
+let $dst = deploy_get_value(ob1.get_obs_by_addr $dst_host);
+let $dst_ip = deploy_get_value($dst.ip);
+
+connect(conn1,$src_ip,root@obtest,,test,$src_mysql_port);
+connection conn1;
+
+$src.mysql set ob_global_debug_sync = 'DEFORE_FETCH_LOGIC_ROW_SRC wait_for begin execute 1000000';
+$src.migrate_to $dst,obtest:test:test01;
+sleep 10;
+insert into test01 values(1,1,1,"test", "test");
+ob1.mysql alter system minor freeze tenant = sys;
+ob1.mysql alter system minor freeze tenant = all_user;
+ob1.mysql alter system minor freeze tenant = all_meta;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_table_mgr where tenant_id=$tenant_id and table_type=0 and is_active = 0, 0, 160;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_sys_task_status, 0, 300;
+#等待迁移失败gc，没有好的办法，暂时先sleep 30+s
+sleep 35; 
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_partition_store_info where table_id=$table_id and svr_ip='$dst_ip' and svr_port=$dst_port, 0, 180;
+
+$src.mysql set ob_global_debug_sync = 'DEFORE_FETCH_LOGIC_ROW_SRC clear';
+
+$src.migrate_to $dst,obtest:test:test01;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_partition_location where tenant_id=$tenant_id and table_id=$table_id and partition_id=0 and role=1 and member_list like '%$dst_ip:$dst_port%', 1, 200;
+select * from test01;
+
+$dst.restart;
+
+ob1.mysql alter system major freeze;
+ob1.check_version 3;
+select * from test01;

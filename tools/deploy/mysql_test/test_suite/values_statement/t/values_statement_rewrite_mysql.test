@@ -1,0 +1,97 @@
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+#owner: zhuangyifeng.zyf
+#owner group: sql1
+#tags: optimizer
+## test values statement for rewrite rules
+
+--result_format 4
+--disable_warnings
+drop table if exists t1;
+drop view if exists values_view;
+drop table if exists t0;
+DROP TABLE if exists table100_key_pk_parts_2_int_not_null; 
+--enable_warnings
+
+alter system flush plan cache global;
+
+CREATE TABLE t1 (c1 int, c2 int, c3 int, pk int not null, primary key (pk) ) PARTITION BY range(pk)(partition p1 values less than(50),partition p2 values less than(maxvalue));
+insert into t1 (c1, c2, c3, pk) values (1, 1, 1, 1), (2, 2, 2, 2), (3, 3, 3, 3), (4, 4, 4, 4), (5, 5, 5, 5), (6, 6, 6, 6);
+select * from t1;
+values row(1, 2), row(4, 5);
+create view values_view as values row(3, 1, 5), row(2, 2, 4), row(1, 3, 3), row(2, 2, 2), row(3, 1, 1);
+show create view values_view;
+--explain_protocol 2
+select * from values_view;
+
+--echo 1. project prunning
+select t1.c1, t1.c2 from t1, (values row(3, 1, 5), row(2, 2, 4), row(1, 3, 3), row(2, 2, 2), row(3, 1, 1)) v where t1.c1 = v.column_0;
+select t1.c1, t1.c2 from t1, values_view where t1.c1 = values_view.column_0;
+select column_1 from (values row(3, 1, 5), row(2, 2, 4), row(1, 3, 3), row(2, 2, 2), row(3, 1, 1));
+
+--echo 2. view merge
+select t1.c1, vv.* from t1, (select * from (values row(1, 2), row(3, 4), row(5, 6)) v) vv where t1.c1 = vv.column_0;
+
+--echo 3. query push down
+select * from (values row(1, 2), row(3, 4), row(5, 6)) vv where vv.column_0 = 2;
+select * from (select column_0 from (values row(1, 2), row(3, 4), row(5, 6)) vv) group by column_0;
+select * from (select column_0 from (values row(1, 2), row(3, 4), row(5, 6)) vv) group by column_0 having column_0 > 5;
+select row_number() OVER() from (select * from (values row(1, 2), row(3, 4), row(5, 6)) vv);
+select sum(column_0) from (select * from (values row(1, 2), row(3, 4), row(5, 6)) vv) group by column_0;
+select distinct * from (select * from (values row(1, 2), row(3, 4), row(5, 6)) vv order by column_1);
+select * from (select * from (values row(1, 2), row(3, 4), row(5, 6)) vv order by column_1) order by column_0;
+select * from (select vv.column_0, sum(column_1) from (values row(1, 2), row(3, 4), row(5, 6)) vv group by vv.column_0) limit 5;
+
+--echo 4. or expansion
+select c1 from t1 where c1 in (values row(1), row(2), row(3)) or c1 in (values row(4), row(5), row(6));
+
+
+# 基表过滤谓词下压
+select * from (values row(1, 2, 3), row(4, 5, 6), row(7, 8, 9)) v1 where v1.column_0 = 1 or v1.column_1 = 5;
+select v1.column_0 from (values row(1, 2, 3), row(4, 5, 6), row(7, 8, 9)) v1 where v1.column_1 = 5;
+select * from t1 where t1.c1 in (values row(1), row(4)) or t1.c2 = 1;
+
+# 条件路径下推
+select column_0 + 1 from (values row(1, 2, 3), row(4, 5, 6), row(7, 8, 9)) v where column_1 >= 5;
+
+# output 和values 不一致
+select column_0 + column_1 from (values row('1', '2'), row('3', '4'));
+
+# bugs
+CREATE TABLE t0(c0 DOUBLE(16, 0) ZEROFILL  COMMENT 'asdf'  NULL, c1 FLOAT ZEROFILL )  PARTITION BY KEY (c0) SUBPARTITION BY KEY(c1)  subpartitions 18 partitions 11;
+INSERT /*+NO_GATHER_OPTIMIZER_STATISTICS parallel(4) enable_parallel_dml */ INTO t0(c0) select c0 from t0 ORDER BY RAND() limit 3;
+INSERT /*+parallel(1) enable_parallel_dml GATHER_OPTIMIZER_STATISTICS */ INTO t0(c1, c0) VALUES(880435905, 354563825292816) ON DUPLICATE KEY UPDATE c0=6.838604927166423E15;
+REPLACE INTO t0(c0) VALUES(4.677618397971986E15), (2.585682607411489E15);
+--sorted_result
+SELECT /*+  PARALLEL(2),enable_parallel_dml  */ ALL concat(t0.c0,'') FROM t0 ; 
+--sorted_result
+SELECT /*+  PARALLEL(2),enable_parallel_dml  */ ALL concat(t0.c0,'') FROM t0 WHERE ((( ((892950748,concat(t0.c1,''),concat(t0.c1,'')) IN (VALUES ROW(concat(t0.c1,''),12283751,169178762))) OR ((8.533674115118441E15,concat(t0.c1,'')) IN (VALUES ROW(892950748,1863819299), ROW(2.748440168301374E15,169178762)))) ) );
+--sorted_result
+SELECT /*+  PARALLEL(2),enable_parallel_dml  */ ALL concat(t0.c0,'') FROM t0 WHERE ((! ((( ((892950748,concat(t0.c1,''),concat(t0.c1,'')) IN (VALUES ROW(concat(t0.c1,''),12283751,169178762))) OR ((8.533674115118441E15,concat(t0.c1,'')) IN (VALUES ROW(892950748,1863819299), ROW(2.748440168301374E15,169178762)))) ) )));
+--sorted_result
+SELECT /*+  PARALLEL(2),enable_parallel_dml  */ ALL concat(t0.c0,'') FROM t0 WHERE ((((((892950748,concat(t0.c1,''),concat(t0.c1,'')) IN (VALUES ROW(concat(t0.c1,''),12283751,169178762))) OR ((8.533674115118441E15,concat(t0.c1,'')) IN (VALUES ROW(892950748,1863819299), ROW(2.748440168301374E15,169178762))))) ) IS UNKNOWN);
+drop table t0;
+ 
+# bugs
+select 1 from dual where exists (values row(2,3));
+
+CREATE TABLE table100_key_pk_parts_2_int_not_null (
+col_decimal_20_0 decimal(20,0),
+col_timestamp timestamp NULL DEFAULT NULL,
+col_double double,
+col_bigint bigint,
+pk int not null,
+col_varchar_20 varchar(20),
+/*Indices*/
+primary key (pk) )    PARTITION BY key (pk) partitions 2 ;
+INSERT INTO table100_key_pk_parts_2_int_not_null VALUES  (9, '2005-10-04 03:41:26.016241', 0, NULL, 1, 'mean') ,  (0, '2001-12-18 13:46:21.034002', NULL, 55, 2, 'were') ,  (0, '2008-06-02 16:01:51.005018', 70, 115, 3, NULL) ,  (-10, NULL, 0, 8, 4, NULL) ,  (NULL, NULL, 26016, 0, 5, 'ccgqmfwthhufpx') ,  (0, NULL, NULL, 12366, 6, 'xccgqmfwthh') ,  (5, '2004-04-09 01:27:26.037427', 0, 0, 7, 'i') ,  (0, NULL, 0, -2015079358271586304, 8, NULL) ,  (4260, NULL, 1015, 111, 9, NULL) ,  (0, '2006-02-12 14:52:19.042849', NULL, NULL, 10, '') ,  (4, NULL, -115, 0, 11, 'there') ,  (0, NULL, 0, -19341, 12, '') ,  (0, '2008-12-07 09:38:16.013917', 21332, 0, 13, '') ,  (0, '2007-04-04 01:03:12.004894', 0, 0, 14, 'sxccgqmfwthhu') ,  (0, '2002-02-23 11:56:39.018332', 50, -29, 15, 'd') ,  (NULL, NULL, 5, 0, 16, 'z') ,  (75, '2006-01-14 11:04:39.044105', 0, 0, 17, NULL) ,  (0, NULL, 15284, -8521091969961689088, 18, 'good') ,  (NULL, NULL, NULL, 111, 19, NULL) ,  (NULL, NULL, NULL, 1, 20, 'udsxccgqmfwth') ,  (69, NULL, 24248, 0, 21, 'u') ,  (0, '2001-09-26 12:59:43.051659', 7, -32148, 22, 'xudsxcc') ,  (4, NULL, 1, 0, 23, '') ,  (NULL, '2008-04-07 07:16:16.039162', NULL, 824158731808800768, 24, 'txudsxccgqmfwthhuf') ,  (-5437, NULL, NULL, 9, 25, NULL) ,  (0, NULL, 5, -12196, 26, '') ,  (NULL, '2000-05-20 13:07:26.017460', NULL, 32098, 27, '') ,  (0, '2006-05-17 18:44:49.031380', 0, NULL, 28, NULL) ,  (39, NULL, 0, -1098, 29, NULL) ,  (0, NULL, -24350, 9, 30, 'ftxudsxccgqmfwt') ,  (0, '2007-08-26 21:51:45.059001', 0, -19804, 31, 'so') ,  (52, NULL, NULL, 1, 32, 'k') ,  (0, '2000-06-04 21:31:57.024648', 90, 85, 33, 'w') ,  (532, NULL, NULL, 5742, 34, NULL) ,  (NULL, NULL, 0, 6733162917895602176, 35, NULL) ,  (0, '2000-09-22 08:33:19.037824', 11233, 0, 36, 'm') ,  (6, NULL, NULL, 0, 37, NULL) ,  (0, '2006-11-02 00:24:04.054859', 0, 17633, 38, 'o') ,  (NULL, NULL, 12032, 0, 39, 'l') ,  (NULL, '2000-11-07 13:03:56.011476', NULL, 0, 40, '') ,  (0, NULL, 0, 3744, 41, 'gkftxudsx') ,  (120, '2006-08-16 08:47:24.026131', 10503, NULL, 42, '') ,  (0, '2001-12-06 16:36:27.030352', 0, NULL, 43, 'ugkftxudsxccgqm') ,  (0, '2003-12-12 13:58:32.061496', 0, 5683, 44, NULL) ,  (28676, '2001-10-12 11:26:46.029928', 0, -8667, 45, 'b') ,  (0, NULL, 0, -1878845469543628800, 46, 'uu') ,  (-6863, '2000-02-01 03:26:24.004594', 8, 20985, 47, 'o') ,  (57, '2000-07-16 06:17:20.062256', 21577, 1, 48, 'm') ,  (28276, '2001-08-01 00:59:39.006884', 8, NULL, 49, NULL) ,  (0, NULL, 0, 2387189277483073536, 50, 'what') ;
+INSERT INTO table100_key_pk_parts_2_int_not_null VALUES  (NULL, NULL, 0, -24589, 51, 'could') ,  (9, NULL, -6038, NULL, 52, NULL) ,  (NULL, NULL, 0, -31711, 53, '') ,  (0, '2000-04-20 06:36:12.031906', 7, 5, 54, 'what') ,  (0, '2009-02-04 11:52:45.035803', 0, NULL, 55, '') ,  (NULL, '2001-06-14 09:35:53.013173', 0, NULL, 56, 'duugkftx') ,  (0, NULL, 0, 755478837491400704, 57, 'v') ,  (21648, '2000-01-12 08:50:51.012501', -16092, NULL, 58, '') ,  (NULL, NULL, 0, 0, 59, 'aduugkftxudsxccgqm') ,  (7, NULL, 9, 302304124987244544, 60, 'e') ,  (4, '2008-12-28 11:08:03.061493', 2185, 0, 61, 'g') ,  (-10332, NULL, 0, -2884274086354092032, 62, 'kaduugkftxudsx') ,  (0, NULL, 0, -2257429313219461120, 63, 'r') ,  (15083, NULL, 0, 2, 64, '') ,  (12, '2001-12-08 21:35:19.065206', NULL, 4016366442684350464, 65, 't') ,  (5, '2007-10-17 01:23:11.014485', 1, 0, 66, 'hey') ,  (NULL, NULL, 14907, -11, 67, 'ukaduu') ,  (-17, NULL, 0, NULL, 68, '') ,  (NULL, '2006-01-07 02:07:06.039591', 0, -6006957477982109696, 69, '') ,  (0, NULL, 0, 8, 70, 'r') ,  (0, NULL, -2, -8290, 71, 'rukadu') ,  (0, '2003-08-10 20:44:49.009936', -73, 7945475642588397568, 72, 's') ,  (NULL, NULL, 0, 0, 73, NULL) ,  (NULL, NULL, 0, 27125, 74, 'l') ,  (107, '2003-03-04 02:23:51.034224', 0, 4912864243507789824, 75, '') ,  (0, '2003-01-26 15:26:38.058156', 100, 8871809790943166464, 76, '') ,  (26648, '2002-06-16 04:35:02.009941', -21568, -86, 77, NULL) ,  (-5958, NULL, -80, NULL, 78, 'd') ,  (0, NULL, 4, NULL, 79, '') ,  (23638, '2002-04-28 03:00:22.000164', NULL, NULL, 80, 'a') ,  (0, '2002-03-14 03:10:21.045194', 110, 86, 81, 'g') ,  (-44, '2001-03-17 07:00:13.062320', NULL, -6369778722962145280, 82, '') ,  (0, NULL, 89, NULL, 83, 's') ,  (63, NULL, 0, NULL, 84, 'o') ,  (17, '2007-06-28 00:07:29.044398', 0, 0, 85, 'truk') ,  (0, '2000-10-02 00:35:26.000666', 103, 4, 86, '') ,  (-15500, '2000-10-17 00:17:00.026018', 8, 3, 87, '') ,  (-23, '2009-12-14 22:36:29.022523', 65, NULL, 88, 'ltrukad') ,  (88, '2002-01-07 03:11:02.035708', 0, 7398288287862882304, 89, 'oltrukad') ,  (0, NULL, 6, 3134, 90, NULL) ,  (0, '2007-06-19 01:01:45.063037', NULL, 1, 91, 'o') ,  (7, '2005-08-19 19:29:23.037780', 2, 0, 92, 'was') ,  (0, '2008-02-12 11:10:19.012514', -19182, 4680084437768077312, 93, 'xoltrukaduug') ,  (8, NULL, NULL, 0, 94, '') ,  (-76, NULL, 3, 0, 95, 'vxo') ,  (1, NULL, 0, NULL, 96, 'cvxoltrukaduugkftxud') ,  (NULL, '2009-05-24 16:01:38.019214', 0, -23042, 97, NULL) ,  (9, NULL, -73, 23556, 98, 'really') ,  (NULL, '2002-11-03 15:54:06.030475', 4, NULL, 99, 'ycvxoltr') ,  (0, NULL, 0, 52, 100, 'wycvxoltrukaduu') ;
+COMMIT;
+
+SELECT * FROM table100_key_pk_parts_2_int_not_null WHERE ('2004-11-16 23:56:45','2000-11-13 03:38:14',col_timestamp) > ('2004-02-03 02:25:57.061110','2005-07-06 01:35:37.037818','2003-03-09 06:42:16.062615') OR col_double NOT IN (values row(NULL),row(-377290752),row(22206)) order by 1,2,3,4,5,6;
+
+# bug: 子查询的field name容易出错
+SELECT * FROM table100_key_pk_parts_2_int_not_null WHERE (floor(PK /2 + 9),col_bigint,floor(PK /2 * 6)) <= (-2592768,59392,27000832) AND ('t','wtg') IN (values row('a4','a5'),row('a5','a6')) OR 6 < ALL (select floor(-891879424 / 930611200) from dual) order by 1,2,3,4,5,6;
+
+drop table table100_key_pk_parts_2_int_not_null;

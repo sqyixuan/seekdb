@@ -1,0 +1,192 @@
+#owner: msy164651
+#owner group: RS
+#tags: rs
+#description:
+# DBA_OB_TABLE_LOCATIONS / CDB_OB_TABLE_LOCATIONS
+
+connect (sys,$OBMYSQL_MS0,root,,oceanbase,$OBMYSQL_PORT);
+#connect (mysql,$OBMYSQL_MS0,root,,oceanbase,$OBMYSQL_PORT);
+
+connection sys;
+let $mysql_tenant_id = query_get_value(select tenant_id from oceanbase.DBA_OB_TENANTS where tenant_name = 'sys', tenant_id, 1);
+
+# cleanup
+--disable_result_log
+--disable_abort_on_error
+connection sys;
+set @@session.recyclebin = off;
+eval drop materialized view log on test.tb;
+eval drop materialized view log on test.tb_part;
+eval drop materialized view log on test.tb_subpart;
+eval drop table test.tb;
+eval drop table test.tb_part;
+eval drop table test.tb_subpart;
+eval drop tablegroup tg_none;
+eval drop tablegroup tg_partition;
+eval drop tablegroup tg_adaptive;
+
+connection sys;
+set @@session.recyclebin = off;
+eval drop materialized view log on test.tb;
+eval drop materialized view log on test.tb_part;
+eval drop materialized view log on test.tb_subpart;
+eval drop table test.tb;
+eval drop table test.tb_part;
+eval drop table test.tb_subpart;
+--enable_result_log
+--enable_abort_on_error
+
+# case 1: mysql tenant
+connection sys;
+
+################## 表的结构
+desc oceanbase.DBA_OB_TABLE_LOCATIONS;
+
+################### 验证不能查询CDB视图
+#--error 1146
+#desc oceanbase.CDB_OB_TABLE_LOCATIONS;
+
+use test;
+
+################### 非分区表，带有索引和LOB列
+create table tb (c1 int primary key, c2 int, c3 longtext, unique key tb_uk (c2));
+create materialized view log on tb with primary key including new values;
+
+# 验证表的schema信息
+select distinct DATABASE_NAME, TABLE_NAME, TABLE_TYPE, PARTITION_NAME, SUBPARTITION_NAME, INDEX_NAME, DATA_TABLE_ID, TABLEGROUP_NAME, SHARDING from oceanbase.DBA_OB_TABLE_LOCATIONS where table_name = "tb";
+
+# 验证索引表的schema信息，要求能够联合查询出来主表信息
+select distinct c1.DATABASE_NAME, c1.TABLE_TYPE, c1.PARTITION_NAME, c1.SUBPARTITION_NAME, c1.INDEX_NAME, c2.table_name as data_table_name from oceanbase.DBA_OB_TABLE_LOCATIONS c1, oceanbase.DBA_OB_TABLE_LOCATIONS c2 where c1.index_name = "tb_uk" and c1.data_table_id = c2.table_id;
+
+# 验证LOB辅助表
+# 下面的SQL会对 oceanbase.DBA_OB_TABLE_LOCATIONS self Join
+# 视图里面访问了__all_virtual_core_all_table，相当于 __all_virtual_core_all_table的self join
+# __all_virtual_core_all_table 的统计信息打开后，在init.sql里面进行了收集，统计出来后是16行，认为应该走NESTED-LOOP-JOIN, 但是实际上涉及到的行数有1000行，这样实际上是1000*1000的结果集，应该走HASH-JOIN
+#
+# 因此，需要再执行之前先删除__all_virtual_core_all_table的统计信息，执行完之后再收集就可以了
+call dbms_stats.delete_table_stats('oceanbase','__all_virtual_core_all_table');
+select /*+use_hash() */ distinct c2.DATABASE_NAME, substr(c2.TABLE_NAME, 1, 15) TABLE_NAME, c2.TABLE_TYPE, c2.PARTITION_NAME, c2.SUBPARTITION_NAME, c2.INDEX_NAME, c1.table_name as data_table_name from oceanbase.DBA_OB_TABLE_LOCATIONS c1, oceanbase.DBA_OB_TABLE_LOCATIONS c2 where c1.table_name = 'tb' and c1.table_id = c2.data_table_id and c2.table_type = 'LOB AUX TABLE' order by 2;
+call dbms_stats.gather_table_stats('oceanbase','__all_virtual_core_all_table');
+
+# verify mlog
+# mlog's data_table_id records its base table's table_id
+select distinct c1.DATABASE_NAME, c1.TABLE_NAME, c1.TABLE_TYPE, c1.PARTITION_NAME, c1.SUBPARTITION_NAME, c2.table_name as data_table_name from oceanbase.DBA_OB_TABLE_LOCATIONS c1, oceanbase.DBA_OB_TABLE_LOCATIONS c2 where c1.table_type = "MATERIALIZED VIEW LOG" and c1.data_table_id = c2.table_id;
+
+#################### 一级分区表
+create table tb_part (c1 int primary key) partition by hash(c1) partitions 2;
+create materialized view log on tb_part with primary key including new values;
+
+# 验证表的schema信息，展示每个一级分区信息
+select distinct DATABASE_NAME, TABLE_NAME, TABLE_TYPE, PARTITION_NAME, SUBPARTITION_NAME, INDEX_NAME, DATA_TABLE_ID, TABLEGROUP_NAME, SHARDING from oceanbase.DBA_OB_TABLE_LOCATIONS where table_name = "tb_part" order by partition_name;
+
+#for mlog
+select distinct DATABASE_NAME, TABLE_NAME, TABLE_TYPE, PARTITION_NAME, SUBPARTITION_NAME, INDEX_NAME, TABLEGROUP_NAME, SHARDING from oceanbase.DBA_OB_TABLE_LOCATIONS where table_name = "mlog$_tb_part" order by partition_name;
+
+#################### 二级分区表
+create table tb_subpart (c1 int, c2 int, primary key(c1,c2)) partition by hash(c1) subpartition by hash(c2) subpartitions 1 partitions 2;
+create materialized view log on tb_subpart with primary key including new values;
+# 验证表的schema信息，展示每个一级分区和二级分区信息
+select distinct DATABASE_NAME, TABLE_NAME, TABLE_TYPE, PARTITION_NAME, SUBPARTITION_NAME, INDEX_NAME, DATA_TABLE_ID, TABLEGROUP_NAME, SHARDING from oceanbase.DBA_OB_TABLE_LOCATIONS where table_name = "tb_subpart" order by partition_name, subpartition_name;
+#for mlog
+select distinct DATABASE_NAME, TABLE_NAME, TABLE_TYPE, PARTITION_NAME, SUBPARTITION_NAME, INDEX_NAME, TABLEGROUP_NAME, SHARDING from oceanbase.DBA_OB_TABLE_LOCATIONS where table_name = "mlog$_tb_subpart" order by partition_name, subpartition_name;
+
+#################### tablegroup
+create tablegroup tg_none sharding = 'NONE';
+create tablegroup tg_partition sharding = 'PARTITION';
+create tablegroup tg_adaptive sharding = 'ADAPTIVE';
+#alter tablegroup of table with mlog is not supported
+--error 1235
+alter tablegroup tg_none add tb;
+--error 1235
+alter tablegroup tg_partition add tb_part;
+--error 1235
+alter tablegroup tg_adaptive add tb_subpart;
+drop materialized view log on tb;
+drop materialized view log on tb_part;
+drop materialized view log on tb_subpart;
+alter tablegroup tg_none add tb;
+alter tablegroup tg_partition add tb_part;
+alter tablegroup tg_adaptive add tb_subpart;
+select distinct DATABASE_NAME, TABLE_NAME, TABLE_TYPE, PARTITION_NAME, SUBPARTITION_NAME, INDEX_NAME, DATA_TABLE_ID, TABLEGROUP_NAME, SHARDING from oceanbase.DBA_OB_TABLE_LOCATIONS where table_name = "tb";
+select distinct DATABASE_NAME, TABLE_NAME, TABLE_TYPE, PARTITION_NAME, SUBPARTITION_NAME, INDEX_NAME, DATA_TABLE_ID, TABLEGROUP_NAME, SHARDING from oceanbase.DBA_OB_TABLE_LOCATIONS where table_name = "tb_part" order by partition_name;
+select distinct DATABASE_NAME, TABLE_NAME, TABLE_TYPE, PARTITION_NAME, SUBPARTITION_NAME, INDEX_NAME, DATA_TABLE_ID, TABLEGROUP_NAME, SHARDING from oceanbase.DBA_OB_TABLE_LOCATIONS where table_name = "tb_subpart" order by partition_name, subpartition_name;
+select count(*) from oceanbase.DBA_OB_TABLE_LOCATIONS A join oceanbase.DBA_OBJECTS B on A.TABLEGROUP_NAME = B.OBJECT_NAME and B.OBJECT_TYPE = 'TABLEGROUP' and A.TABLEGROUP_ID = B.OBJECT_ID where A.TABLE_NAME in ("tb", "tb_part", "tb_subpart");
+select count(*) from oceanbase.DBA_OB_TABLE_LOCATIONS A join oceanbase.DBA_OBJECTS B on A.DATABASE_NAME = B.OWNER and A.TABLE_NAME = B.OBJECT_NAME and A.OBJECT_ID = B.OBJECT_ID where A.TABLE_NAME = "tb";
+select count(*) from oceanbase.DBA_OB_TABLE_LOCATIONS A join oceanbase.DBA_OBJECTS B on A.DATABASE_NAME = B.OWNER and A.TABLE_NAME = B.OBJECT_NAME and A.PARTITION_NAME = B.SUBOBJECT_NAME and A.OBJECT_ID = B.OBJECT_ID where A.TABLE_NAME = "tb_part";
+select count(*) from oceanbase.DBA_OB_TABLE_LOCATIONS A join oceanbase.DBA_OBJECTS B on A.DATABASE_NAME = B.OWNER and A.TABLE_NAME = B.OBJECT_NAME and A.SUBPARTITION_NAME = B.SUBOBJECT_NAME and A.OBJECT_ID = B.OBJECT_ID where A.TABLE_NAME = "tb_subpart";
+################### 验证系统表
+select distinct DATABASE_NAME,TABLE_NAME,TABLE_ID,TABLE_TYPE,PARTITION_NAME,SUBPARTITION_NAME,INDEX_NAME,DATA_TABLE_ID,TABLET_ID,LS_ID,TABLEGROUP_NAME,SHARDING from oceanbase.dba_ob_table_locations where table_name = '__all_core_table';
+
+
+# case 2: sys tenant
+connection sys;
+################## FIXME: 临时将超时时间改为20s，验证为啥oceanbase.CDB_OB_TABLE_LOCATIONS那么慢之后去掉
+set ob_query_timeout=20000000; # 20s
+
+################## 表的结构
+desc oceanbase.DBA_OB_TABLE_LOCATIONS;
+desc oceanbase.CDB_OB_TABLE_LOCATIONS;
+
+################# 验证CDB视图，可以查询到所有租户的信息
+use oceanbase;
+--disable_query_log
+call dbms_stats.gather_table_stats(null, '__ALL_VIRTUAL_CORE_ALL_TABLE');
+call dbms_stats.gather_table_stats(null, '__ALL_VIRTUAL_TABLE');
+call dbms_stats.gather_table_stats(null, '__ALL_VIRTUAL_TABLET_TO_LS');
+call dbms_stats.gather_table_stats(null, '__ALL_VIRTUAL_DATABASE');
+call dbms_stats.gather_table_stats(null, '__ALL_VIRTUAL_PART');
+call dbms_stats.gather_table_stats(null, '__ALL_VIRTUAL_SUB_PART');
+call dbms_stats.gather_table_stats(null, '__ALL_VIRTUAL_TABLEGROUP');
+--enable_query_log
+
+# 非分区表
+eval select distinct DATABASE_NAME, TABLE_NAME, TABLE_TYPE, PARTITION_NAME, SUBPARTITION_NAME, INDEX_NAME, DATA_TABLE_ID, TABLEGROUP_NAME, SHARDING  from oceanbase.CDB_OB_TABLE_LOCATIONS where table_name = "tb" and tenant_id = $mysql_tenant_id;
+
+# 验证索引表的schema信息，要求能够联合查询出来主表信息
+eval select distinct c1.DATABASE_NAME, c1.TABLE_TYPE, c1.PARTITION_NAME, c1.SUBPARTITION_NAME, c1.INDEX_NAME, c2.table_name as data_table_name from oceanbase.CDB_OB_TABLE_LOCATIONS c1, oceanbase.CDB_OB_TABLE_LOCATIONS c2 where c1.index_name = 'TB_UK' and c1.data_table_id = c2.table_id and c1.tenant_id = c2.tenant_id and c1.tenant_id = $mysql_tenant_id;
+
+# 验证LOB辅助表
+eval select distinct c2.DATABASE_NAME, substr(c2.TABLE_NAME, 1, 15) TABLE_NAME, c2.TABLE_TYPE, c2.PARTITION_NAME, c2.SUBPARTITION_NAME, c2.INDEX_NAME, c1.table_name as data_table_name from oceanbase.CDB_OB_TABLE_LOCATIONS c1, oceanbase.CDB_OB_TABLE_LOCATIONS c2 where c1.table_name = 'TB' and c1.table_id = c2.data_table_id and c2.table_type = 'LOB AUX TABLE' and c1.tenant_id = c2.tenant_id and c1.tenant_id in ($mysql_tenant_id) order by 1,2;
+
+# verify mlog
+eval select distinct c2.DATABASE_NAME, c2.TABLE_NAME, c2.TABLE_TYPE, c2.PARTITION_NAME, c2.SUBPARTITION_NAME, c1.table_name as data_table_name from oceanbase.CDB_OB_TABLE_LOCATIONS c1, oceanbase.CDB_OB_TABLE_LOCATIONS c2 where c1.table_name = 'TB' and c1.table_id = c2.data_table_id and c2.table_type = 'MATERIALIZED VIEW LOG' and c1.tenant_id = c2.tenant_id and c1.tenant_id in ($mysql_tenant_id) order by 1,2;
+
+# 验证表的schema信息，展示每个一级分区信息
+eval select distinct DATABASE_NAME, TABLE_NAME, TABLE_TYPE, PARTITION_NAME, SUBPARTITION_NAME, INDEX_NAME, DATA_TABLE_ID, TABLEGROUP_NAME, SHARDING  from oceanbase.CDB_OB_TABLE_LOCATIONS where table_name = 'TB_PART' and tenant_id in ($mysql_tenant_id) order by database_name, table_name, partition_name;
+#for mlog
+eval select distinct DATABASE_NAME, TABLE_NAME, TABLE_TYPE, PARTITION_NAME, SUBPARTITION_NAME, INDEX_NAME, DATA_TABLE_ID, TABLEGROUP_NAME, SHARDING  from oceanbase.CDB_OB_TABLE_LOCATIONS where table_name = 'MLOG\$_TB_PART' and tenant_id in ($mysql_tenant_id) order by database_name, table_name, partition_name;
+
+# 验证表的schema信息，展示每个一级分区和二级分区信息
+eval select distinct DATABASE_NAME, TABLE_NAME, TABLE_TYPE, PARTITION_NAME, SUBPARTITION_NAME, INDEX_NAME, DATA_TABLE_ID, TABLEGROUP_NAME, SHARDING  from OCEANBASE.CDB_OB_TABLE_LOCATIONS where table_name = 'TB_SUBPART' and tenant_id in ($mysql_tenant_id) order by database_name, table_name, partition_name, subpartition_name;
+#for mlog
+eval select distinct DATABASE_NAME, TABLE_NAME, TABLE_TYPE, PARTITION_NAME, SUBPARTITION_NAME, INDEX_NAME, DATA_TABLE_ID, TABLEGROUP_NAME, SHARDING  from OCEANBASE.CDB_OB_TABLE_LOCATIONS where table_name = 'MLOG\$_TB_SUBPART' and tenant_id in ($mysql_tenant_id) order by database_name, table_name, partition_name, subpartition_name;
+
+
+# 验证系统表
+eval select distinct DATABASE_NAME,TABLE_NAME,TABLE_ID,TABLE_TYPE,PARTITION_NAME,SUBPARTITION_NAME,INDEX_NAME,DATA_TABLE_ID,TABLET_ID,LS_ID,TABLEGROUP_NAME,SHARDING from oceanbase.cdb_ob_table_locations where table_name = '__all_core_table' and tenant_id in ($mysql_tenant_id);
+
+# cleanup
+--disable_result_log
+--disable_abort_on_error
+connection sys;
+set @@session.recyclebin = off;
+eval drop materialized view log on test.tb;
+eval drop materialized view log on test.tb_part;
+eval drop materialized view log on test.tb_subpart;
+eval drop table test.tb;
+eval drop table test.tb_part;
+eval drop table test.tb_subpart;
+eval drop tablegroup tg_none;
+eval drop tablegroup tg_partition;
+eval drop tablegroup tg_adaptive;
+
+connection sys;
+set @@session.recyclebin = off;
+eval drop materialized view log on test.tb;
+eval drop materialized view log on test.tb_part;
+eval drop materialized view log on test.tb_subpart;
+eval drop table test.tb;
+eval drop table test.tb_part;
+eval drop table test.tb_subpart;
+--enable_result_log
+--enable_abort_on_error

@@ -1,0 +1,328 @@
+# CASE_OWNER:
+#    @jinqian.zzy
+# CASE_DESC:
+#    测试unit迁移 locality变更
+#
+#    CASE 1: test migrate unit
+#    CASE 2: test alter locality 2F to 3F
+#    CASE 3: test alter locality 3F to 2F1R
+#    CASE 4: test alter locality 2F1R to 2F
+
+#######################################################################
+#                        create inital objects
+#######################################################################
+
+ob1=OBI(cluster=1:1:2,proxy_num=0,init_unit_cpu=0);
+source include/mini_ob_config.inc;
+ob1.set extra_config=$mini_ob_config;
+ob1.reboot;
+
+ob1.mysql alter system set debug_sync_timeout = '1000s';
+ob1.mysql ALTER SYSTEM SET enable_rebalance = 'false';
+ob1.mysql ALTER SYSTEM SET enable_rereplication = 'true';
+
+let $proxy_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $proxy_port = deploy_get_value(ob1.z1.obs0.mysql_port);
+connect(sys_conn, $proxy_ip, root@sys,,oceanbase, $proxy_port);
+connection sys_conn;
+# create new tenant mysql_tenant
+source include/create_unit_config.inc;
+ob1.mysql CREATE RESOURCE POOL tenant_pool UNIT = "2c2g", UNIT_NUM = 1, ZONE_LIST = ('z1', 'z2', 'z3');
+ob1.mysql CREATE TENANT mysql_tenant RESOURCE_POOL_LIST=('tenant_pool'), LOCALITY = "F@z1, F@z3", PRIMARY_ZONE = "z1" SET ob_tcp_invited_nodes='%';
+
+let $tenant_id = deploy_get_value(ob1.select SELECT tenant_id FROM oceanbase.DBA_OB_TENANTS WHERE tenant_name = "mysql_tenant", tenant_id, 1);
+let $meta_tenant_id = deploy_get_value(ob1.select select tenant_id - 1 as meta_tenant_id from oceanbase.DBA_OB_TENANTS where tenant_name = "mysql_tenant", meta_tenant_id, 1);
+let $resource_pool_id = deploy_get_value(ob1.select SELECT resource_pool_id FROM oceanbase.DBA_OB_RESOURCE_POOLS WHERE tenant_id = $tenant_id, resource_pool_id, 1);
+
+# get mysql_tenant's unit info in z3
+let $unit_id = deploy_get_value(ob1.select SELECT unit_id FROM oceanbase.DBA_OB_UNITS WHERE resource_pool_id = $resource_pool_id AND zone = 'z3', unit_id, 1);
+let $ip = deploy_get_value(ob1.select select svr_ip from oceanbase.DBA_OB_SERVERS where zone = 'z3' and CONCAT(svr_ip, ':', svr_port) not in (select CONCAT(svr_ip, ':', svr_port) from oceanbase.DBA_OB_UNITS where zone = 'z3' and unit_id >= 1001), svr_ip, 1);
+let $port = deploy_get_value(ob1.select select svr_port from oceanbase.DBA_OB_SERVERS where zone = 'z3' and CONCAT(svr_ip, ':', svr_port) not in (select CONCAT(svr_ip, ':', svr_port) from oceanbase.DBA_OB_UNITS where zone = 'z3' and unit_id >= 1001), svr_port, 1);
+let $dest_server = $ip:$port;
+
+let $z1_dst0_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $z1_dst0_port = deploy_get_value(ob1.z1.obs0.port);
+let $z1_dst0 = $z1_dst0_ip:$z1_dst0_port;
+
+let $z2_dst_ip0 = deploy_get_value(ob1.z2.obs0.ip);
+let $z2_dst_port0 = deploy_get_value(ob1.z2.obs0.port);
+let $z2_dst0 = $z2_dst_ip0:$z2_dst_port0;
+
+connect(mysql_tenant, $proxy_ip, root@mysql_tenant,,oceanbase, $proxy_port);
+
+--echo ========================================================================
+--echo ||                    [MILESTONE] prepare finished                    ||
+--echo ========================================================================
+ 
+--echo ========================================================================
+--echo ||                [MILESTONE] case 1: migrate unit                    ||
+--echo ========================================================================
+
+# 暂时只生成任务不调度任务
+ob1.mysql alter system set_tp tp_name = ERRSIM_DISASTER_RECOVERY_POP_AND_EXECUTE_TASK, error_code = 4016, frequency = 1;
+
+let $migrate_ls_cnt = deploy_get_value(ob1.select select count(distinct tenant_id, ls_id) as migrate_ls_cnt from oceanbase.__all_virtual_ls_meta_table where unit_id = $unit_id, migrate_ls_cnt, 1);
+
+--disable_query_log
+connection sys_conn;
+eval ALTER SYSTEM MIGRATE UNIT $unit_id DESTINATION "$dest_server";
+--enable_query_log
+
+# 打印task_plan视图确认worker生成正确性
+connection sys_conn;
+select tenant_id, ls_id, task_type, priority, target_paxos_replica_number, target_replica_type, source_paxos_replica_number, source_replica_type, comment from oceanbase.V$OB_LS_REPLICA_TASK_PLAN;
+connection mysql_tenant;
+select tenant_id, ls_id, task_type, priority, target_paxos_replica_number, target_replica_type, source_paxos_replica_number, source_replica_type, comment from oceanbase.V$OB_LS_REPLICA_TASK_PLAN;
+connection sys_conn;
+eval alter system change tenant tenant_id = $meta_tenant_id;
+select tenant_id, ls_id, task_type, priority, target_paxos_replica_number, target_replica_type, source_paxos_replica_number, source_replica_type, comment from oceanbase.V$OB_LS_REPLICA_TASK_PLAN;
+alter system change tenant tenant_id = 1;
+
+# 确认已经生成了对应个数的任务
+ob1.check_until_timeout SELECT COUNT(*) = 1 FROM oceanbase.DBA_OB_UNIT_JOBS WHERE unit_id = $unit_id AND job_type = "MIGRATE_UNIT" AND job_status = "INPROGRESS", 1, 20;
+ob1.check_until_timeout select count(*) = $migrate_ls_cnt from oceanbase.CDB_OB_LS_REPLICA_TASKS, 1, 20;
+
+# 打印task视图看生成了哪些任务
+connection sys_conn;
+select ls_id, task_type, priority, task_status, target_paxos_replica_number, target_replica_type, source_paxos_replica_number, source_replica_type, comment from oceanbase.DBA_OB_LS_REPLICA_TASKS;
+connection mysql_tenant;
+select ls_id, task_type, priority, task_status, target_paxos_replica_number, target_replica_type, source_paxos_replica_number, source_replica_type, comment from oceanbase.DBA_OB_LS_REPLICA_TASKS;
+connection sys_conn;
+eval alter system change tenant tenant_id = $meta_tenant_id;
+select ls_id, task_type, priority, task_status, target_paxos_replica_number, target_replica_type, source_paxos_replica_number, source_replica_type, comment from oceanbase.DBA_OB_LS_REPLICA_TASKS;
+alter system change tenant tenant_id = 1;
+
+# 开始调度任务
+connection sys_conn;
+ob1.mysql alter system set_tp tp_name = ERRSIM_DISASTER_RECOVERY_POP_AND_EXECUTE_TASK, error_code = 4016, frequency = 0;
+
+# 等待任务执行结束
+connection sys_conn;
+ob1.check_until_timeout SELECT COUNT(*) = 1 FROM oceanbase.DBA_OB_UNITS WHERE unit_id = $unit_id AND migrate_from_svr_ip is null, 1, 100;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $tenant_id AND role = "LEADER" AND member_list LIKE '%$dest_server%', 2, 20;
+ob1.check_until_timeout SELECT COUNT(*) = 1 FROM oceanbase.DBA_OB_UNIT_JOBS WHERE unit_id = $unit_id AND job_type = "MIGRATE_UNIT" AND job_status = "SUCCESS", 1, 20;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_LS_REPLICA_TASKS, 0, 40;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_LS_REPLICA_TASK_HISTORY, $migrate_ls_cnt, 40;
+
+
+--echo ========================================================================
+--echo ||              [MILESTONE] case 2: locality 2F to 3F                 ||
+--echo ========================================================================
+
+# 暂时只生成任务不调度任务
+ob1.mysql alter system set_tp tp_name = ERRSIM_DISASTER_RECOVERY_POP_AND_EXECUTE_TASK, error_code = 4016, frequency = 1;
+
+connection sys_conn;
+
+let $ls_cnt = deploy_get_value(ob1.select select count(distinct ls_id) as ls_cnt from oceanbase.CDB_OB_LS_LOCATIONS where TENANT_ID = $tenant_id, ls_cnt, 1);
+let $meta_ls_cnt = deploy_get_value(ob1.select select count(distinct ls_id) as meta_ls_cnt from oceanbase.CDB_OB_LS_LOCATIONS where TENANT_ID = $tenant_id - 1, meta_ls_cnt, 1);
+
+eval ALTER TENANT mysql_tenant LOCALITY = "F@z1,F@z2,F@z3";
+connection sys_conn;
+select tenant_id, ls_id, task_type, priority, target_paxos_replica_number, target_replica_type, source_paxos_replica_number, source_replica_type, comment from oceanbase.V$OB_LS_REPLICA_TASK_PLAN;
+connection mysql_tenant;
+select tenant_id, ls_id, task_type, priority, target_paxos_replica_number, target_replica_type, source_paxos_replica_number, source_replica_type, comment from oceanbase.V$OB_LS_REPLICA_TASK_PLAN;
+connection sys_conn;
+eval alter system change tenant tenant_id = $meta_tenant_id;
+select tenant_id, ls_id, task_type, priority, target_paxos_replica_number, target_replica_type, source_paxos_replica_number, source_replica_type, comment from oceanbase.V$OB_LS_REPLICA_TASK_PLAN;
+alter system change tenant tenant_id = 1;
+
+connection sys_conn;
+ob1.check_until_timeout SELECT COUNT(*) AS cnt FROM oceanbase.DBA_OB_TENANT_JOBS WHERE tenant_id = $tenant_id AND job_type = "ALTER_TENANT_LOCALITY" AND sql_text LIKE "%F@z1,F@z2,F@z3%" AND extra_info like "%FULL{1}@z1, FULL{1}@z3%" AND job_status = "INPROGRESS", 1, 20;
+ob1.check_until_timeout select count(*) = $ls_cnt + $meta_ls_cnt from oceanbase.CDB_OB_LS_REPLICA_TASKS, 1, 20;
+select ls_id, task_type, priority, task_status, target_paxos_replica_number, target_replica_type, source_paxos_replica_number, source_replica_type, comment from oceanbase.DBA_OB_LS_REPLICA_TASKS;
+connection mysql_tenant;
+select ls_id, task_type, priority, task_status, target_paxos_replica_number, target_replica_type, source_paxos_replica_number, source_replica_type, comment from oceanbase.DBA_OB_LS_REPLICA_TASKS;
+connection sys_conn;
+eval alter system change tenant tenant_id = $meta_tenant_id;
+select ls_id, task_type, priority, task_status, target_paxos_replica_number, target_replica_type, source_paxos_replica_number, source_replica_type, comment from oceanbase.DBA_OB_LS_REPLICA_TASKS;
+alter system change tenant tenant_id = 1;
+
+# 开始调度任务
+ob1.mysql alter system set_tp tp_name = ERRSIM_DISASTER_RECOVERY_POP_AND_EXECUTE_TASK, error_code = 4016, frequency = 0;
+
+# 等待任务执行结束
+connection sys_conn;
+ob1.check_until_timeout SELECT COUNT(*) = 1 FROM oceanbase.DBA_OB_TENANTS WHERE tenant_id = $tenant_id AND previous_locality is null, 1 ,100;
+ob1.check_until_timeout SELECT COUNT(*) = 1 FROM oceanbase.DBA_OB_TENANTS WHERE tenant_id = $meta_tenant_id AND previous_locality is null, 1 ,100;
+ob1.check_until_timeout SELECT COUNT(*) = 1 FROM oceanbase.DBA_OB_TENANTS WHERE tenant_id = $tenant_id AND primary_zone = (SELECT primary_zone FROM oceanbase.DBA_OB_TENANTS WHERE tenant_id = $meta_tenant_id), 1 ,50;
+ob1.check_until_timeout SELECT COUNT(*) = 1 FROM oceanbase.__all_tenant where tenant_id = $tenant_id AND zone_list = (SELECT zone_list FROM oceanbase.__all_tenant WHERE tenant_id = $meta_tenant_id), 1 ,50;
+ob1.check_until_timeout SELECT COUNT(*) = 1 FROM oceanbase.DBA_OB_TENANT_JOBS WHERE tenant_id = $tenant_id AND job_type = "ALTER_TENANT_LOCALITY" AND sql_text LIKE "%F@z1,F@z2,F@z3%" AND extra_info like "%FULL{1}@z1, FULL{1}@z3%" AND job_status = "SUCCESS", 1, 20;
+--disable_query_log
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $meta_tenant_id AND role = "LEADER" AND member_list LIKE "%$z2_dst0%", 1, 20;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $tenant_id AND role = "LEADER" AND member_list LIKE "%$z2_dst0%", 2, 20;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS, 0, 30;
+
+--echo ========================================================================
+--echo ||             [MILESTONE] case 3: locality 3F to 2F1R                ||
+--echo ========================================================================
+
+# 暂时只生成任务不调度任务
+ob1.mysql alter system set_tp tp_name = ERRSIM_DISASTER_RECOVERY_POP_AND_EXECUTE_TASK, error_code = 4016, frequency = 1;
+
+connection sys_conn;
+
+eval ALTER TENANT mysql_tenant LOCALITY = "F@z1,R@z2,F@z3";
+
+select tenant_id, ls_id, task_type, priority, target_paxos_replica_number, target_replica_type, source_paxos_replica_number, source_replica_type, comment from oceanbase.V$OB_LS_REPLICA_TASK_PLAN;
+connection mysql_tenant;
+select tenant_id, ls_id, task_type, priority, target_paxos_replica_number, target_replica_type, source_paxos_replica_number, source_replica_type, comment from oceanbase.V$OB_LS_REPLICA_TASK_PLAN;
+connection sys_conn;
+eval alter system change tenant tenant_id = $meta_tenant_id;
+select tenant_id, ls_id, task_type, priority, target_paxos_replica_number, target_replica_type, source_paxos_replica_number, source_replica_type, comment from oceanbase.V$OB_LS_REPLICA_TASK_PLAN;
+alter system change tenant tenant_id = 1;
+
+connection sys_conn;
+ob1.check_until_timeout SELECT COUNT(*) AS cnt FROM oceanbase.DBA_OB_TENANT_JOBS WHERE tenant_id = $tenant_id AND job_type = "ALTER_TENANT_LOCALITY" AND sql_text LIKE "%F@z1,R@z2,F@z3%" AND extra_info like "%FULL{1}@z1, FULL{1}@z2, FULL{1}@z3%" AND job_status = "INPROGRESS", 1, 20;
+ob1.check_until_timeout select count(*) = $ls_cnt + $meta_ls_cnt from oceanbase.CDB_OB_LS_REPLICA_TASKS, 1, 20;
+select ls_id, task_type, priority, task_status, target_paxos_replica_number, target_replica_type, source_paxos_replica_number, source_replica_type, comment from oceanbase.DBA_OB_LS_REPLICA_TASKS;
+connection mysql_tenant;
+select ls_id, task_type, priority, task_status, target_paxos_replica_number, target_replica_type, source_paxos_replica_number, source_replica_type, comment from oceanbase.DBA_OB_LS_REPLICA_TASKS;
+connection sys_conn;
+eval alter system change tenant tenant_id = $meta_tenant_id;
+select ls_id, task_type, priority, task_status, target_paxos_replica_number, target_replica_type, source_paxos_replica_number, source_replica_type, comment from oceanbase.DBA_OB_LS_REPLICA_TASKS;
+alter system change tenant tenant_id = 1;
+
+# 开始调度任务
+ob1.mysql alter system set_tp tp_name = ERRSIM_DISASTER_RECOVERY_POP_AND_EXECUTE_TASK, error_code = 4016, frequency = 0;
+
+# 等待任务执行结束
+connection sys_conn;
+ob1.check_until_timeout SELECT COUNT(*) = 1 FROM oceanbase.DBA_OB_TENANTS WHERE tenant_id = $tenant_id AND previous_locality is null, 1 ,100;
+ob1.check_until_timeout SELECT COUNT(*) = 1 FROM oceanbase.DBA_OB_TENANTS WHERE tenant_id = $meta_tenant_id AND previous_locality is null, 1 ,100;
+ob1.check_until_timeout SELECT COUNT(*) = 1 FROM oceanbase.DBA_OB_TENANTS WHERE tenant_id = $tenant_id AND primary_zone = (SELECT primary_zone FROM oceanbase.DBA_OB_TENANTS WHERE tenant_id = $meta_tenant_id), 1 ,50;
+ob1.check_until_timeout SELECT COUNT(*) = 1 FROM oceanbase.__all_tenant where tenant_id = $tenant_id AND zone_list = (SELECT zone_list FROM oceanbase.__all_tenant WHERE tenant_id = $meta_tenant_id), 1 ,50;
+ob1.check_until_timeout SELECT COUNT(*) = 1 FROM oceanbase.DBA_OB_TENANT_JOBS WHERE tenant_id = $tenant_id AND job_type = "ALTER_TENANT_LOCALITY" AND sql_text LIKE "%F@z1,R@z2,F@z3%" AND extra_info like "%FULL{1}@z1, FULL{1}@z2, FULL{1}@z3%" AND job_status = "SUCCESS", 1, 20;
+--disable_query_log
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $meta_tenant_id AND role = "LEADER" AND member_list LIKE "%$z2_dst0%", 0, 20;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $meta_tenant_id AND role = "LEADER" AND learner_list LIKE "%$z2_dst0%", 1, 20;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $tenant_id AND role = "LEADER" AND member_list LIKE "%$z2_dst0%", 0, 20;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $tenant_id AND role = "LEADER" AND learner_list LIKE "%$z2_dst0%", 2, 20;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS, 0, 30;
+
+--echo ========================================================================
+--echo ||             [MILESTONE] case 4: locality 2F1R to 2F                ||
+--echo ========================================================================
+
+# 暂时只生成任务不调度任务
+ob1.mysql alter system set_tp tp_name = ERRSIM_DISASTER_RECOVERY_POP_AND_EXECUTE_TASK, error_code = 4016, frequency = 1;
+
+connection sys_conn;
+eval ALTER TENANT mysql_tenant LOCALITY = "F@z1,F@z3";
+
+select tenant_id, ls_id, task_type, priority, target_paxos_replica_number, target_replica_type, source_paxos_replica_number, source_replica_type, comment from oceanbase.V$OB_LS_REPLICA_TASK_PLAN;
+connection mysql_tenant;
+select tenant_id, ls_id, task_type, priority, target_paxos_replica_number, target_replica_type, source_paxos_replica_number, source_replica_type, comment from oceanbase.V$OB_LS_REPLICA_TASK_PLAN;
+connection sys_conn;
+eval alter system change tenant tenant_id = $meta_tenant_id;
+select tenant_id, ls_id, task_type, priority, target_paxos_replica_number, target_replica_type, source_paxos_replica_number, source_replica_type, comment from oceanbase.V$OB_LS_REPLICA_TASK_PLAN;
+alter system change tenant tenant_id = 1;
+
+connection sys_conn;
+ob1.check_until_timeout SELECT COUNT(*) AS cnt FROM oceanbase.DBA_OB_TENANT_JOBS WHERE tenant_id = $tenant_id AND job_type = "ALTER_TENANT_LOCALITY" AND sql_text LIKE "%F@z1,F@z3%" AND extra_info like "%FULL{1}@z1, READONLY{1}@z2, FULL{1}@z3%" AND job_status = "INPROGRESS", 1, 20;
+ob1.check_until_timeout select count(*) = $ls_cnt + $meta_ls_cnt from oceanbase.CDB_OB_LS_REPLICA_TASKS, 1, 20;
+select ls_id, task_type, priority, task_status, target_paxos_replica_number, target_replica_type, source_paxos_replica_number, source_replica_type, comment from oceanbase.DBA_OB_LS_REPLICA_TASKS;
+connection mysql_tenant;
+select ls_id, task_type, priority, task_status, target_paxos_replica_number, target_replica_type, source_paxos_replica_number, source_replica_type, comment from oceanbase.DBA_OB_LS_REPLICA_TASKS;
+connection sys_conn;
+eval alter system change tenant tenant_id = $meta_tenant_id;
+select ls_id, task_type, priority, task_status, target_paxos_replica_number, target_replica_type, source_paxos_replica_number, source_replica_type, comment from oceanbase.DBA_OB_LS_REPLICA_TASKS;
+alter system change tenant tenant_id = 1;
+
+# 开始调度任务
+ob1.mysql alter system set_tp tp_name = ERRSIM_DISASTER_RECOVERY_POP_AND_EXECUTE_TASK, error_code = 4016, frequency = 0;
+
+# 等待任务执行结束
+connection sys_conn;
+ob1.check_until_timeout SELECT COUNT(*) = 1 FROM oceanbase.DBA_OB_TENANTS WHERE tenant_id = $tenant_id AND previous_locality is null, 1 ,100;
+ob1.check_until_timeout SELECT COUNT(*) = 1 FROM oceanbase.DBA_OB_TENANTS WHERE tenant_id = $meta_tenant_id AND previous_locality is null, 1 ,100;
+ob1.check_until_timeout SELECT COUNT(*) = 1 FROM oceanbase.DBA_OB_TENANTS WHERE tenant_id = $tenant_id AND primary_zone = (SELECT primary_zone FROM oceanbase.DBA_OB_TENANTS WHERE tenant_id = $meta_tenant_id), 1 ,50;
+ob1.check_until_timeout SELECT COUNT(*) = 1 FROM oceanbase.__all_tenant where tenant_id = $tenant_id AND zone_list = (SELECT zone_list FROM oceanbase.__all_tenant WHERE tenant_id = $meta_tenant_id), 1 ,50;
+ob1.check_until_timeout SELECT COUNT(*) = 1 FROM oceanbase.DBA_OB_TENANT_JOBS WHERE tenant_id = $tenant_id AND job_type = "ALTER_TENANT_LOCALITY" AND sql_text LIKE "%F@z1,F@z3%" AND extra_info like "%FULL{1}@z1, READONLY{1}@z2, FULL{1}@z3%" AND job_status = "SUCCESS", 1, 20;
+--disable_query_log
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $meta_tenant_id AND role = "LEADER" AND learner_list LIKE "%$z2_dst0%", 0, 20;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $tenant_id AND role = "LEADER" AND learner_list LIKE "%$z2_dst0%", 0, 20;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS, 0, 30;
+
+# 打印task_history视图记录任务执行结果
+select tenant_id, ls_id, task_type, priority, task_status, target_paxos_replica_number, target_replica_type, source_paxos_replica_number, source_replica_type, comment from oceanbase.CDB_OB_LS_REPLICA_TASK_HISTORY order by task_type;
+
+--echo ========================================================================
+--echo ||                [MILESTONE] case 5: locality 1F                     ||
+--echo ========================================================================
+# 测试在locality为F@z1, 但是只有1个副本在z2的情况, locality对齐是否能够处理
+# 构造场景
+ob1.mysql CREATE RESOURCE POOL tenant_pool2 UNIT = "2c2g", UNIT_NUM = 1, ZONE_LIST = ('z1', 'z2', 'z3');
+ob1.mysql CREATE TENANT mysql_tenant2 RESOURCE_POOL_LIST=('tenant_pool2'), LOCALITY = "F@z1", PRIMARY_ZONE = "z1" SET ob_tcp_invited_nodes='%';
+
+connection sys_conn;
+ob1.mysql ALTER SYSTEM SET enable_rereplication = 'false';
+
+eval alter system add replica ls = 1001 server='$z2_dst0' replica_type='F' paxos_replica_num = 2 tenant='mysql_tenant2';
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = 1004 AND ls_id = 1001 AND role = "LEADER" AND member_list LIKE '%$z2_dst0%', 1, 30;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = 1004 AND ls_id = 1001, 2, 30;
+
+eval alter system remove replica ls = 1001 server='$z1_dst0' paxos_replica_num = 1 tenant='mysql_tenant2';
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = 1004 AND ls_id = 1001 AND role = "LEADER" AND member_list LIKE '%$z1_dst0%', 0, 30;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = 1004 AND ls_id = 1001, 1, 30;
+
+# 测试是否可以恢复
+ob1.mysql ALTER SYSTEM SET enable_rereplication = 'true';
+
+# z2的副本应该被删除
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = 1004 AND ls_id = 1001 AND role = "LEADER" AND member_list LIKE '%$z2_dst0%', 0, 60;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = 1004 AND ls_id = 1001, 1, 30;
+
+# z1的副本应该是存在的
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = 1004 AND ls_id = 1001 AND role = "LEADER" AND member_list LIKE '%$z1_dst0%', 1, 30;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = 1004 AND ls_id = 1001, 1, 30;
+
+# 没有需要执行的容灾任务了
+ob1.check_until_timeout select count(*) from oceanbase.V\$OB_LS_REPLICA_TASK_PLAN, 0, 30;
+
+--echo ========================================================================
+--echo ||             [MILESTONE] case 6: locality 2F->1F                    ||
+--echo ========================================================================
+sleep 10;
+# 测试在locality为F@z1, 当前有两个副本分别在F@z2,F@z3, locality对齐是否能够处理
+# 构造场景
+# get mysql_tenant2's unit info in z3
+let $resource_pool_id2 = deploy_get_value(ob1.select SELECT resource_pool_id FROM oceanbase.DBA_OB_RESOURCE_POOLS WHERE tenant_id = 1004, resource_pool_id, 1);
+let $unit_id2 = deploy_get_value(ob1.select SELECT unit_id FROM oceanbase.DBA_OB_UNITS WHERE resource_pool_id = $resource_pool_id2 AND zone = 'z3', unit_id, 1);
+let $ip2 = deploy_get_value(ob1.select select svr_ip from oceanbase.DBA_OB_UNITS where unit_id = $unit_id2, svr_ip, 1);
+let $port2 = deploy_get_value(ob1.select select svr_port from oceanbase.DBA_OB_UNITS where unit_id =$unit_id2, svr_port, 1);
+let $dest_server2 = $ip2:$port2;
+
+ob1.mysql ALTER SYSTEM SET enable_rereplication = 'false';
+# 1. z2新增一个副本
+eval alter system add replica ls = 1001 server='$z2_dst0' replica_type='F' paxos_replica_num = 2 tenant='mysql_tenant2';
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = 1004 AND ls_id = 1001 AND role = "LEADER" AND member_list LIKE '%$z2_dst0%', 1, 30;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = 1004 AND ls_id = 1001, 2, 30;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = 1004 AND ls_id = 1001 AND ZONE = 'z2', 1, 30;
+# 2. z3新增一个副本
+eval alter system add replica ls = 1001 server='$dest_server2' replica_type='F' paxos_replica_num = 3 tenant='mysql_tenant2';
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = 1004 AND ls_id = 1001 AND role = "LEADER" AND member_list LIKE '%$dest_server2%', 1, 30;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = 1004 AND ls_id = 1001, 3, 30;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = 1004 AND ls_id = 1001 AND ZONE = 'z3', 1, 30;
+# 3. 删除z1的副本
+eval alter system remove replica ls = 1001 server='$z1_dst0' paxos_replica_num = 2 tenant='mysql_tenant2';
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = 1004 AND ls_id = 1001 AND role = "LEADER" AND member_list LIKE '%$z1_dst0%', 0, 30;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = 1004 AND ls_id = 1001, 2, 30;
+
+# 测试是否可以恢复
+ob1.mysql ALTER SYSTEM SET enable_rereplication = 'true';
+
+# 没有需要执行的容灾任务了
+ob1.check_until_timeout select count(*) from oceanbase.V\$OB_LS_REPLICA_TASK_PLAN, 0, 100;
+
+# z3的副本应该被删除
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = 1004 AND ls_id = 1001 AND role = "LEADER" AND member_list LIKE '%$dest_server2%', 0, 60;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = 1004 AND ls_id = 1001, 2, 30;
+
+# z2的副本应该被删除
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = 1004 AND ls_id = 1001 AND role = "LEADER" AND member_list LIKE '%$z2_dst0%', 0, 60;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = 1004 AND ls_id = 1001, 1, 30;
+
+# z1的副本应该是存在的
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = 1004 AND ls_id = 1001 AND role = "LEADER" AND member_list LIKE '%$z1_dst0%', 1, 30;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = 1004 AND ls_id = 1001, 1, 30;

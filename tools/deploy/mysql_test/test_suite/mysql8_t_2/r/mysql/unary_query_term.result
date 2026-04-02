@@ -1,0 +1,496 @@
+# WL#11350:
+# Query expressions with nested ORDER BY/LIMIT/OFFSET clauses,
+# but with no set operations inbetween.
+drop table if exists t1, t2, t3, t4, r, s, t;
+CREATE TABLE r(a INT);
+INSERT INTO r VALUES (1), (2), (-1), (-2);
+CREATE TABLE s(a INT);
+INSERT INTO s VALUES (1), (10), (20), (-10), (-20);
+CREATE TABLE t(a INT);
+INSERT INTO t VALUES (10), (100), (200), (-100), (-200);
+# Bug#32980249 MULTIPLE LIMIT CLAUSES MAYBE GET WRONG RESULT
+# is fixed: we should get two, not four rows
+# and no tmp table (collapsing outer unary level).
+(SELECT * FROM r ORDER BY a LIMIT 2) LIMIT 4;
+a
+-2
+-1
+PREPARE q FROM "(SELECT * FROM r ORDER BY a LIMIT 2) LIMIT 4";
+EXECUTE q;
+a
+-2
+-1
+EXECUTE q;
+a
+-2
+-1
+DROP PREPARE q;
+# Same behavior as before: effective limit is 1
+((SELECT 1 LIMIT 3) LIMIT 2) LIMIT 1;
+1
+1
+# New behavior, std compliant, effective limit is 1
+((SELECT 1 LIMIT 1) LIMIT 2) LIMIT 3;
+1
+1
+# From here on, we have mostly [NEW] tricks, stuff that was not
+# allowed prior to this WL, but also some WL coverage of old
+# behavior, not marked [NEW].
+( (((SELECT 1 LIMIT 1) LIMIT 2) LIMIT 3) UNION ALL
+(((SELECT 1 LIMIT 3) LIMIT 2) LIMIT 1)
+ORDER BY 1 LIMIT 5 )
+LIMIT 3;
+1
+1
+1
+PREPARE p FROM '(SELECT * FROM t LIMIT 3) LIMIT ?';
+SET @a = '2';
+EXECUTE p USING @a;
+a
+10
+100
+SET @a = 2;
+EXECUTE p USING @a;
+a
+10
+100
+PREPARE p FROM '(SELECT * FROM t LIMIT ?) LIMIT 3';
+EXECUTE p USING @a;
+a
+10
+100
+DROP PREPARE p;
+#
+# check push-down of ORDER BY + LIMIT
+#
+CREATE TABLE t1(a INT);
+INSERT INTO t1 VALUES (1), (2), (3), (4), (5), (6), (7), (8), (9), (10), (11);
+((SELECT a AS c FROM t1 LIMIT 10) LIMIT 6) ORDER BY c+1 LIMIT 5;
+c
+1
+2
+3
+4
+5
+DROP TABLE t1;
+#
+# The outer block is not collapsed, so binding of 'a' fails
+#
+((SELECT a AS c FROM r LIMIT 10) LIMIT 6) ORDER BY a+1 LIMIT 20;
+ERROR 42S22: Unknown column 'a' in 'order clause'
+( ( VALUES ROW(1,1), ROW(2,2), ROW(3,3), ROW(4,4), ROW(5,5)
+LIMIT 4)
+LIMIT 3)
+ORDER BY column_0, column_1;
+column_0	column_1
+1	1
+2	2
+3	3
+( ( VALUES ROW(1,1), ROW(2,2), ROW(3,3), ROW(4,4), ROW(5,5)
+ORDER BY column_0 LIMIT 4)
+LIMIT 3)
+ORDER BY (SELECT column_0), (SELECT column_1) LIMIT 2;
+column_0	column_1
+1	1
+2	2
+( ( (VALUES ROW(1,1), ROW(2,2), ROW(3,3), ROW(4,4), ROW(-1,-1))
+ORDER BY column_0 LIMIT 4)
+LIMIT 3)
+ORDER BY 1;
+column_0	column_1
+-1	-1
+1	1
+2	2
+(SELECT * FROM r ORDER BY a LIMIT 5) ORDER BY -a LIMIT 4;
+a
+2
+1
+-1
+-2
+PREPARE q FROM "(SELECT * FROM r ORDER BY a LIMIT 5) ORDER BY -a LIMIT 4";
+EXECUTE q;
+a
+2
+1
+-1
+-2
+EXECUTE q;
+a
+2
+1
+-1
+-2
+DROP PREPARE q;
+# [NEW]
+((SELECT * FROM r ORDER BY a LIMIT 5) ORDER BY -a LIMIT 4)
+ORDER BY a LIMIT 3;
+a
+-2
+-1
+1
+PREPARE q FROM "((SELECT * FROM r ORDER BY a LIMIT 5) ORDER BY -a LIMIT 4)
+ORDER BY a LIMIT 3";
+EXECUTE q;
+a
+-2
+-1
+1
+EXECUTE q;
+a
+-2
+-1
+1
+DROP PREPARE q;
+# [NEW]
+# Unknown column 'u' in 'order clause'
+((SELECT * FROM r ORDER BY u LIMIT 5) ORDER BY -a LIMIT 4) ORDER BY a LIMIT 3;
+ERROR 42S22: Unknown column 'u' in 'order clause'
+# [NEW] Three unary temporary tables. Since we have sort under, these could
+# probably be elided.
+( ((SELECT * FROM r ORDER BY a LIMIT 5) ORDER BY -a LIMIT 4)
+ORDER BY a LIMIT 3)
+ORDER BY -a LIMIT 2;
+a
+1
+-1
+PREPARE q FROM "( ((SELECT * FROM r ORDER BY a LIMIT 5) ORDER BY -a LIMIT 4)
+ORDER BY a LIMIT 3)
+ORDER BY -a LIMIT 2";
+EXECUTE q;
+a
+1
+-1
+EXECUTE q;
+a
+1
+-1
+DROP PREPARE q;
+# [NEW]
+( ( (SELECT a AS c FROM r ORDER BY a LIMIT 5) ORDER BY -c LIMIT 4)
+ORDER BY c LIMIT 3)
+ORDER BY -c LIMIT 2;
+c
+1
+-1
+PREPARE q FROM "( ( (SELECT a AS c FROM r ORDER BY a LIMIT 5) ORDER BY -c LIMIT 4)
+ORDER BY c LIMIT 3)
+ORDER BY -c LIMIT 2";
+EXECUTE q;
+c
+1
+-1
+EXECUTE q;
+c
+1
+-1
+DROP PREPARE q;
+# [NEW]
+( ( (SELECT a AS c FROM r ORDER BY a LIMIT 5) ORDER BY -a LIMIT 4)
+ORDER BY c LIMIT 3)
+ORDER BY -c LIMIT 2;
+ERROR 42S22: Unknown column 'a' in 'order clause'
+# [NEW]
+( ( (SELECT a AS c FROM r ORDER BY a LIMIT 5) ORDER BY -c LIMIT 4)
+ORDER BY a LIMIT 3)
+ORDER BY -c LIMIT 2;
+ERROR 42S22: Unknown column 'a' in 'order clause'
+# [NEW]
+( ( (SELECT a AS c FROM r ORDER BY a LIMIT 5) ORDER BY -c LIMIT 4)
+ORDER BY c LIMIT 3)
+ORDER BY -a LIMIT 2;
+ERROR 42S22: Unknown column 'a' in 'order clause'
+#
+# Check explicit table and table value constructor
+#
+(TABLE r ORDER BY a LIMIT 5) ORDER BY -a LIMIT 4;
+ERROR 42000: You have an error in your SQL syntax; check the manual that corresponds to your OceanBase version for the right syntax to use near 'TABLE r ORDER BY a LIMIT 5) ORDER BY -a LIMIT 4' at line 1
+VALUES ROW(1,2),ROW(3,4),ROW(-1,2) ORDER BY 1;
+column_0	column_1
+-1	2
+1	2
+3	4
+(VALUES ROW(1,2),ROW(3,4),ROW(-1,2) ORDER BY 1) ORDER BY 1 LIMIT 2;
+column_0	column_1
+-1	2
+1	2
+# [NEW]
+# Streaming with nested set operations.
+# Two union materialized tmp tables, non-dedup, sorted, limited and
+# streamed for UNION ALL.
+#
+(SELECT * FROM r UNION ALL SELECT * FROM s ORDER BY a LIMIT 10)
+UNION ALL
+(SELECT * FROM r UNION ALL SELECT * FROM s ORDER BY a LIMIT 5) LIMIT 7;
+a
+-20
+-10
+-2
+-1
+1
+1
+2
+# [NEW]
+# Two union materialized tmp tables, 2nd w/dedup, 1st is
+# sorted, limited and both streamed for UNION ALL
+#
+(SELECT * FROM r UNION ALL SELECT * FROM s ORDER BY a LIMIT 10)
+UNION ALL
+(SELECT * FROM r UNION DISTINCT SELECT * FROM s) LIMIT 7;
+a
+-20
+-10
+-2
+-1
+1
+1
+2
+#
+# Bug in contexualize: missing add of unary node
+#
+(((SELECT * from r UNION SELECT * FROM s UNION ALL SELECT * from t) LIMIT 3) LIMIT 5);
+a
+-20
+-10
+-2
+#
+# Check maximum depth 63
+#
+((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((SELECT * FROM r ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1);
+a
+-2
+(((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((SELECT * FROM r ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1)
+ORDER BY a LIMIT 1);
+a
+-2
+DROP TABLE r, s, t;
+#
+# Bug#33761181  Recursive CTE with UNION + LIMIT seed table gives wrong
+#               result
+# Now gives correct result.
+#
+CREATE TABLE t(a INT);
+INSERT INTO t VALUES (1), (2);
+WITH RECURSIVE cte (n) AS
+(  (SELECT a FROM t UNION DISTINCT SELECT a FROM t LIMIT 1)
+UNION ALL
+SELECT n + 1 FROM cte WHERE n < 5 )
+SELECT * FROM cte;
+n
+1
+2
+3
+4
+5
+WITH RECURSIVE cte (n) AS
+(  (SELECT a FROM t UNION DISTINCT SELECT a FROM t LIMIT 2)
+UNION ALL
+SELECT n + 1 FROM cte WHERE n < 5 )
+SELECT * FROM cte;
+n
+1
+2
+2
+3
+3
+4
+4
+5
+5
+WITH RECURSIVE cte (n) AS
+(  (SELECT a FROM t UNION SELECT a FROM t LIMIT 2)
+UNION ALL
+SELECT n + 1 FROM cte WHERE n < 5 LIMIT 7)
+SELECT * FROM cte;
+ERROR HY000: ORDER BY / LIMIT / SELECT DISTINCT / HAVING / WINDOW FUNCTION / GROUP BY in recursive query block of Common Table Expression not supported
+DROP TABLE t;
+WL bug in contexualize: pop stack on PT_subquery
+added for coverage
+CREATE TABLE t1 (a INT NOT NULL, b CHAR (10) NOT NULL);
+INSERT INTO t1 VALUES (1,'a'), (2,'b'), (3,'c'), (3,'c');
+CREATE TABLE t2 (a INT NOT NULL, b CHAR (10) NOT NULL);
+INSERT INTO t2 VALUES (3,'c'), (4,'d'), (5,'f'), (6,'e');
+SELECT * FROM t1 WHERE a IN
+( SELECT a FROM t1 UNION DISTINCT
+SELECT a FROM t1 ORDER BY (SELECT a) ) UNION DISTINCT
+SELECT * FROM t1
+ORDER BY (SELECT a);
+a	b
+1	a
+2	b
+3	c
+#
+# Add support for INSERT INTO set-op
+#
+CREATE TABLE t4 AS SELECT * from t1;
+DELETE FROM t4;
+INSERT INTO t4 SELECT a,b FROM t1 UNION DISTINCT SELECT a,b FROM t2;
+SELECT * FROM t4;
+a	b
+1	a
+2	b
+3	c
+4	d
+5	f
+6	e
+#
+# Bug fix: SQL_CALC_FOUND_ROWS
+#
+(SELECT SQL_CALC_FOUND_ROWS a,b FROM t1 LIMIT 2) UNION ALL
+(SELECT a,b FROM t2 ORDER BY a) LIMIT 2;
+a	b
+1	a
+2	b
+SELECT FOUND_ROWS();
+FOUND_ROWS()
+6
+DROP TABLE t1, t2, t4;
+#
+# CREATE AS SELECT
+#
+CREATE TABLE t1 (f1 INT);
+CREATE TABLE t2 (f1 INT, f2 INT ,f3 DATE);
+CREATE TABLE t3 (f1 INT, f2 CHAR(10));
+CREATE TABLE t4
+( SELECT t2.f3 AS sdate
+FROM t1
+LEFT OUTER JOIN t2 ON (t1.f1 = t2.f1)
+INNER JOIN t3 ON (t2.f2 = t3.f1)
+ORDER BY t1.f1, t3.f1, t2.f3 )
+UNION DISTINCT
+( SELECT CAST('2004-12-31' AS DATE) AS sdate
+FROM t1
+LEFT OUTER JOIN t2 ON (t1.f1 = t2.f1)
+INNER JOIN t3 ON (t2.f2 = t3.f1)
+GROUP BY t1.f1
+ORDER BY t1.f1, t3.f1, t2.f3 )
+ORDER BY sdate;
+SHOW COLUMNS FROM t4;
+Field	Type	Null	Key	Default	Extra
+sdate	date	YES		NULL	
+DROP TABLE t1, t2, t3, t4;

@@ -1,0 +1,73 @@
+# owner: chenqun
+# owner group: storage
+# description:this case is use for create index test
+#
+--disable_query_log
+ob1=OBI(cluster=1:1:1,proxy_num=0,init_unit_cpu=1);
+ob1.reboot;
+
+ob1.create_client;
+
+ob1.mysql alter system set merger_check_interval='10s';
+ob1.mysql alter system set enable_rebalance = 'false';
+ob1.mysql alter system set enable_auto_leader_switch='false';
+ob1.mysql alter system set resource_hard_limit=500;
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+ob1.create_client tenant=obtest,user=root,passwd=,database=test;
+
+create table test01 (pk1 int, pk2 int, pk3 int, f1 varchar(10), f2 varchar(10), primary key(pk1,pk2,pk3));
+let $cnt =1;
+while ($cnt < 10)
+{
+	eval insert into test01(pk1, pk2, pk3, f1) values($cnt, $cnt, $cnt, 'abc');
+	inc $cnt;
+}
+
+ob1.mysql alter system major freeze;
+ob1.check_version 2;
+
+while ($cnt < 20)
+{
+	eval insert into test01(pk1, pk2, pk3, f1) values($cnt, $cnt, $cnt, 'abc');
+	inc $cnt;
+}
+
+let $table_id = deploy_get_value(ob1.select select table_id from __all_virtual_table where table_name like '%test01%', table_id, 1);
+let $leader_host = deploy_get_value(ob1.select select concat(svr_ip,':',svr_port) host from __all_virtual_partition_table where table_id=1100611139453777 and role=1 and partition_id=0 and tenant_id =1001, host, 1);
+let $leader_ip = deploy_get_value(ob1.select select svr_ip host from __all_virtual_partition_table where table_id=1100611139453777 and role=1 and partition_id=0 and tenant_id =1001, host, 1);
+let $leader_port = deploy_get_value(ob1.select select svr_port host from __all_virtual_partition_table where table_id=1100611139453777 and role=1 and partition_id=0 and tenant_id =1001, host, 1);
+let $leader_obs = deploy_get_value(ob1.get_obs_by_addr $leader_host);
+let $leader_zone = deploy_get_value(ob1.select select zone from oceanbase.__all_server where svr_ip='$leader_ip' and svr_port='$leader_port', zone, 1);
+let $follower_ip = deploy_get_value(ob1.select select svr_ip host from __all_virtual_partition_table where table_id=1100611139453777 and role=2 and partition_id=0 and tenant_id =1001, host, 1);
+let $follower_port = deploy_get_value(ob1.select select svr_port host from __all_virtual_partition_table where table_id=1100611139453777 and role=2 and partition_id=0 and tenant_id =1001, host, 1);
+let $follower_zone = deploy_get_value(ob1.select select zone from oceanbase.__all_server where svr_ip='$follower_ip' and svr_port='$follower_port', zone, 1);
+
+ob1.mysql set ob_global_debug_sync = 'BEFORE_LOCAL_INDEX_COPY_BUILD_INDEX_DATA wait_for signal';
+create index idx01 on test01(f1, f2, pk1, pk2, pk3);
+create index idx02 on test01(f1);
+create index idx03 on test01(pk3);
+sleep 10;
+
+$leader_obs.stop;
+$leader_obs.nstart;
+sleep 60;
+
+ob1.create_client tenant=obtest,user=root,passwd=,database=test;
+
+ob1.check_until_timeout select index_status from oceanbase.__all_virtual_table where tenant_id=1001 and table_name like '%idx01%', 2, 30;
+ob1.check_until_timeout select index_status from oceanbase.__all_virtual_table where tenant_id=1001 and table_name like '%idx02%', 2, 30;
+ob1.check_until_timeout select index_status from oceanbase.__all_virtual_table where tenant_id=1001 and table_name like '%idx03%', 2, 30;
+
+select f1 from test01;
+select f1,f2 from test01;
+select pk3 from test01;
+
+ob1.mysql alter system major freeze;
+ob1.check_version 3;
+
+ob1.check_until_timeout select index_status from oceanbase.__all_virtual_table where tenant_id=1001 and table_name like '%idx01%', 2, 10;
+ob1.check_until_timeout select index_status from oceanbase.__all_virtual_table where tenant_id=1001 and table_name like '%idx02%', 2, 10;
+ob1.check_until_timeout select index_status from oceanbase.__all_virtual_table where tenant_id=1001 and table_name like '%idx03%', 2, 10;
+
+
+

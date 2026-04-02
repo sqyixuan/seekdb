@@ -1,0 +1,126 @@
+ob1=OBI(cluster=1:1,proxy_num=0,init_unit_cpu=0);
+ob1.reboot;
+===============================================================
+====================     bootstrap   ==========================
+===============================================================
+ob1.mysql alter system set enable_rebalance = 'false';
+ob1.mysql alter system set default_compress_func = 'none';
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+ob1.mysql alter system set _enable_adaptive_compaction = False tenant sys;
+ob1.mysql alter system set _enable_adaptive_compaction = False tenant all_user;
+ob1.mysql alter system set _enable_adaptive_compaction = False tenant all_meta;
+ob1.mysql alter system set minor_compact_trigger = 10 tenant sys;
+ob1.mysql alter system set minor_compact_trigger = 10 tenant all_user;
+ob1.mysql alter system set minor_compact_trigger = 10 tenant all_meta;
+===============================================================
+==================     create tenant   ========================
+===============================================================
+ob1.mysql CREATE RESOURCE UNIT mine_unit MAX_CPU=8, MEMORY_SIZE='8G';
+ob1.mysql CREATE RESOURCE POOL replica_pool UNIT = mine_unit, UNIT_NUM = 1, ZONE_LIST = ('z1', 'z2');
+ob1.mysql CREATE TENANT $tenant_name resource_pool_list=('replica_pool'), locality = "F@z1,F@z2", primary_zone = "z1" set ob_tcp_invited_nodes='%', ob_compatibility_mode='mysql';
+ob1.mysql alter system set ob_compaction_schedule_interval = '10s' tenant all;
+ob1.mysql alter system set undo_retention = '7200' tenant all;
+===============================================================
+===========    create tables and prepare data   ===============
+===============================================================
+create sequence seq_small INCREMENT BY 1 start with 1 minvalue 1 maxvalue 100000 nocycle noorder nocache;
+create sequence seq_large INCREMENT BY 1 start with 5001 minvalue 1 maxvalue 100000 nocycle noorder nocache;
+create table yiren_test(c1 bigint, c2 bigint, c3 varchar(100), c4 longtext, primary key(c1))
+partition by range(c1) (
+partition p0 values less than (1),
+partition p1 values less than (10000),
+partition p2 values less than MAXVALUE);
+insert /*+ query_timeout(100000000000) parallel(16) enable_parallel_dml */ into yiren_test select seq_small.nextval, random(3), randstr(100, random(3)), randstr(10000, random(3)) from table(generator(300));
+insert /*+ query_timeout(100000000000) parallel(16) enable_parallel_dml */ into yiren_test select seq_large.nextval, random(3), randstr(100, random(3)), randstr(10000, random(3)) from table(generator(300));
+ob1.mysql alter system major freeze tenant = 'split_and_rebuild';
+ob1.check_until_timeout select (frozen_scn - last_scn) as result from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$tenant_id, 0, 600;
+insert /*+ query_timeout(100000000000) parallel(16) enable_parallel_dml */ into yiren_test select seq_small.nextval, random(3), randstr(100, random(3)), randstr(10000, random(3)) from table(generator(100));
+insert /*+ query_timeout(100000000000) parallel(16) enable_parallel_dml */ into yiren_test select seq_large.nextval, random(3), randstr(100, random(3)), randstr(10000, random(3)) from table(generator(100));
+ob1.mysql alter system minor freeze tenant = 'split_and_rebuild';
+insert /*+ query_timeout(100000000000) parallel(16) enable_parallel_dml */ into yiren_test select seq_small.nextval, random(3), randstr(100, random(3)), randstr(10000, random(3)) from table(generator(100));
+insert /*+ query_timeout(100000000000) parallel(16) enable_parallel_dml */ into yiren_test select seq_large.nextval, random(3), randstr(100, random(3)), randstr(10000, random(3)) from table(generator(100));
+ob1.mysql alter system minor freeze tenant = 'split_and_rebuild';
+insert /*+ query_timeout(100000000000) parallel(16) enable_parallel_dml */ into yiren_test select seq_small.nextval, random(3), randstr(100, random(3)), randstr(10000, random(3)) from table(generator(100));
+insert /*+ query_timeout(100000000000) parallel(16) enable_parallel_dml */ into yiren_test select seq_large.nextval, random(3), randstr(100, random(3)), randstr(10000, random(3)) from table(generator(100));
+ob1.mysql alter system minor freeze tenant = 'split_and_rebuild';
+insert /*+ query_timeout(100000000000) parallel(16) enable_parallel_dml */ into yiren_test select seq_small.nextval, random(3), randstr(100, random(3)), randstr(10000, random(3)) from table(generator(100));
+insert /*+ query_timeout(100000000000) parallel(16) enable_parallel_dml */ into yiren_test select seq_large.nextval, random(3), randstr(100, random(3)), randstr(10000, random(3)) from table(generator(100));
+ob1.mysql alter system minor freeze tenant = 'split_and_rebuild';
+insert /*+ query_timeout(100000000000) parallel(16) enable_parallel_dml */ into yiren_test select seq_small.nextval, random(3), randstr(100, random(3)), randstr(10000, random(3)) from table(generator(100));
+insert /*+ query_timeout(100000000000) parallel(16) enable_parallel_dml */ into yiren_test select seq_large.nextval, random(3), randstr(100, random(3)), randstr(10000, random(3)) from table(generator(100));
+ob1.mysql alter system minor freeze tenant = 'split_and_rebuild';
+===============================================================
+===========    block z1 split and wait z2 finish   ============
+===============================================================
+ob1.mysql alter system set_tp tp_name = EN_BLOCK_LOB_SPLIT_BEFORE_SSTABLES_SPLIT, error_code = 4023, frequency = 1;
+alter table yiren_test reorganize partition p1 into ( partition p1_0 values less than (5000), partition p1_1 values less than (10000));
+ob1.check_until_timeout select count(1) > 0 from __alL_server_event_history where module = 'ddl' and event = 'replica_split_resp' and svr_port = "$z2_port" and value1 = 0, 1, 600;
+===============================================================
+====================    trigger rebuild    ====================
+===============================================================
+ob1.mysql alter system set errsim_rebuild_ls_id = 1001;
+ob1.mysql alter system set errsim_rebuild_addr = "$z2_addr";
+ob1.mysql alter system set_tp tp_name = EN_MANUAL_REBUILD , error_code = 4016, frequency = 1;
+ob1.check_until_timeout select count(*) > 0 from oceanbase.__all_server_event_history where svr_ip = "$z2_ip" and svr_port = "$z2_port" and event = "mannual_rebuild", 1, 300;
+ob1.check_until_timeout select count(*) > 0 from oceanbase.__all_server_event_history where svr_ip = "$z2_ip" and svr_port = "$z2_port" and module = 'storage_ha' and event = 'ls_ha_start' and value1 = '$tenant_id' and value2 = '1001' and extra_info = 'REBUILD_LS_OP', 1, 600;
+ob1.mysql alter system set_tp tp_name = EN_MANUAL_REBUILD , error_code = 0, frequency = 1;
+===============================================================
+=======    z1 continue split and write split log.     =========
+===============================================================
+ob1.mysql alter system set_tp tp_name = EN_BLOCK_LOB_SPLIT_BEFORE_SSTABLES_SPLIT, error_code = 0, frequency = 1;
+===============================================================
+===============    check rebuild status.     ==================
+===============================================================
+ob1.check_until_timeout select count(*) > 0 from oceanbase.__all_server_event_history where module = 'storage_ha' and event = 'ls_ha_finish' and value1 = '$tenant_id' AND value2 = '1001' and value6 = '0' and extra_info = 'REBUILD_LS_OP', 1, 300;
+ob1.check_until_timeout select count(*) > 0 from oceanbase.__all_virtual_ls_meta_table where rebuild > 0, 0, 120;
+select count(1) from yiren_test;
+count(1)
+1600
+select c1, c2, md5(c3), md5(c4) from yiren_test partition(p1_0) order by c1 asc limit 10;
+c1	c2	md5(c3)	md5(c4)
+1	1084041170817055659	cea6e6df6cf81c0e6c3d222fe5669e20	af166f8cb9cf479541ca1baf212c9f26
+2	-5612168153867183641	5283186f9cbf88c1e4a5cf457d5b9b4e	dee5e64de030cd9a7b2c2d5ef02d048a
+3	1664657641377715667	d4f1a90c8842798da40e484e838ebb1d	d9f91148483521eb7c4a98627f928926
+4	-2833993413536137579	76325a0bf710c99263d1ead0686082d2	9d107ba17baa6140b4f7d8f858e4f0db
+5	1103034804049852293	e8dd455ffab850869d8800f4abc8ef41	48cb853b85aec98e5bd38463931e147b
+6	-2558513787582595740	1c637f6e063165e1df45cd61ea0ae0b8	4c4e412372b1b5cb1bef954b9bd25610
+7	4376380862814081111	f44ac19371056e7b0e4c984230bc4dc6	8318fea4f6e4f8a3e61a46ef75394130
+8	-1426722524934308120	a3db35d9c731373c432d4232a38d982f	e7d8ddb44383fba0c4490c9ad861fe1d
+9	3776508982995411530	ecf8e52a51d21bfe99558bf3b1a72bcd	b2c3ee3d4c0376beb7fac8d352d22217
+10	-6158710767394100221	b18204024a091f473915f40e287959f5	f649f8d8b86fd197e881bae2b97dd9f3
+select c1, c2, md5(c3), md5(c4) from yiren_test partition(p1_0) order by c1 desc limit 10;
+c1	c2	md5(c3)	md5(c4)
+800	-8187561890582402813	6935130e3e2d3f70a36a2c2f85101436	28adc6e26c30de4c61c34bb68f482954
+799	6848873271105669414	c4249c7e1ad326ba23ee3dc10c3b6cfa	a5d1724210700fa5ca916618ecde51fc
+798	2190069045241929597	1128a80fe300bd91a121bebcc4f9e62f	5e097c919ff893bfe6e90b42e133af1c
+797	-2163746934000677964	2eee2f399a3f532d446730120ef2f3a1	5a8ac97ad97457641366b233e7a090c3
+796	2217483876012254202	d639247284efb8df419bf437a4b645ba	478f77fa2b348216e7d826120e81d0b5
+795	-3425429488629827311	cb4a2c95642f54f466657ac12affda5d	e632fcbc1d713bc936c2fd8309155594
+794	4234664700863713397	dee745b9b7a4d5c0b0e02cf4e876fd66	87c359143b73a3fb627bacd9776fe1d6
+793	8727009936817664791	97e2c1a96bcb57357d97fb11787d72cb	d586a27515f180152e2da9622d3157d1
+792	8948975131975313293	a0c61b07f4efbda3ebab41f374f46e4f	d6f5ec27f11223ad0fef36fba5eeae8f
+791	6872030655998639147	490dd30dc321c2b74c1b662c282de6ea	7abcc556411f3e2640839faa4b9bbf47
+select c1, c2, md5(c3), md5(c4) from yiren_test partition(p1_1) order by c1 asc limit 10;
+c1	c2	md5(c3)	md5(c4)
+5001	1084041170817055659	cea6e6df6cf81c0e6c3d222fe5669e20	af166f8cb9cf479541ca1baf212c9f26
+5002	-5612168153867183641	5283186f9cbf88c1e4a5cf457d5b9b4e	dee5e64de030cd9a7b2c2d5ef02d048a
+5003	1664657641377715667	d4f1a90c8842798da40e484e838ebb1d	d9f91148483521eb7c4a98627f928926
+5004	-2833993413536137579	76325a0bf710c99263d1ead0686082d2	9d107ba17baa6140b4f7d8f858e4f0db
+5005	1103034804049852293	e8dd455ffab850869d8800f4abc8ef41	48cb853b85aec98e5bd38463931e147b
+5006	-2558513787582595740	1c637f6e063165e1df45cd61ea0ae0b8	4c4e412372b1b5cb1bef954b9bd25610
+5007	4376380862814081111	f44ac19371056e7b0e4c984230bc4dc6	8318fea4f6e4f8a3e61a46ef75394130
+5008	-1426722524934308120	a3db35d9c731373c432d4232a38d982f	e7d8ddb44383fba0c4490c9ad861fe1d
+5009	3776508982995411530	ecf8e52a51d21bfe99558bf3b1a72bcd	b2c3ee3d4c0376beb7fac8d352d22217
+5010	-6158710767394100221	b18204024a091f473915f40e287959f5	f649f8d8b86fd197e881bae2b97dd9f3
+select c1, c2, md5(c3), md5(c4)  from yiren_test partition(p1_1) order by c1 desc limit 10;
+c1	c2	md5(c3)	md5(c4)
+5800	-8187561890582402813	6935130e3e2d3f70a36a2c2f85101436	28adc6e26c30de4c61c34bb68f482954
+5799	6848873271105669414	c4249c7e1ad326ba23ee3dc10c3b6cfa	a5d1724210700fa5ca916618ecde51fc
+5798	2190069045241929597	1128a80fe300bd91a121bebcc4f9e62f	5e097c919ff893bfe6e90b42e133af1c
+5797	-2163746934000677964	2eee2f399a3f532d446730120ef2f3a1	5a8ac97ad97457641366b233e7a090c3
+5796	2217483876012254202	d639247284efb8df419bf437a4b645ba	478f77fa2b348216e7d826120e81d0b5
+5795	-3425429488629827311	cb4a2c95642f54f466657ac12affda5d	e632fcbc1d713bc936c2fd8309155594
+5794	4234664700863713397	dee745b9b7a4d5c0b0e02cf4e876fd66	87c359143b73a3fb627bacd9776fe1d6
+5793	8727009936817664791	97e2c1a96bcb57357d97fb11787d72cb	d586a27515f180152e2da9622d3157d1
+5792	8948975131975313293	a0c61b07f4efbda3ebab41f374f46e4f	d6f5ec27f11223ad0fef36fba5eeae8f
+5791	6872030655998639147	490dd30dc321c2b74c1b662c282de6ea	7abcc556411f3e2640839faa4b9bbf47

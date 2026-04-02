@@ -72,9 +72,8 @@ public:
   static ObVectorIndexRecordType index_type_to_record_type(schema::ObIndexType type);
 
   static ObAdapterCreateType index_type_to_create_type(schema::ObIndexType type);
-  static int get_vector_index_prefix_inner(const ObTableSchema &index_schema, const ObString index_name, ObString &prefix);
+  
   static int get_vector_index_prefix(const ObTableSchema &index_schema, ObString &prefix);
-  static int get_vector_index_name_prefix(const ObTableSchema &index_schema, ObString &prefix);
   static int split_snapshot_prefix(const ObString &src, const ObString &item, ObString &dst);
   static int get_split_snapshot_prefix(const ObVectorIndexAlgorithmType index_type, 
                                        const ObString &src, 
@@ -110,12 +109,12 @@ public:
                                               int64_t extra_info_count,
                                               ObVecExtraInfoObj *output_extra_objs,
                                               bool &get_data);
-  static int read_object_from_embedded_table_iter(ObObj *&input_obj,
+  static int read_object_from_embedded_table_iter(ObObj *&input_obj, 
                                                   int32_t data_table_rowkey_count,
-                                                  uint64_t table_id,
-                                                  storage::ObTableScanParam &scan_param,
+                                                  uint64_t table_id, 
+                                                  storage::ObTableScanParam &scan_param, 
                                                   common::ObNewRowIterator *iter,
-                                                  ObIAllocator &allocator,
+                                                  ObIAllocator &allocator, 
                                                   ObObj &output_vec_obj,
                                                   int64_t extra_column_count,
                                                   ObVecExtraInfoObj *output_extra_info_objs,
@@ -157,7 +156,6 @@ public:
                                          ObIArray<ObLSTabletPair> &partial_tablet_ids,
                                          ObIArray<ObLSTabletPair> &cache_tablet_ids,
                                          char *buf, int64_t buf_len, int64_t &pos);
-  static int get_tenant_vector_index_ids(const uint64_t tenant_id, bool &has_ivf_index, common::ObIArray<uint64_t> &table_id_array);
 
 private:
   static const int EMBEDDED_TABLE_BASE_COLUMN_CNT = 2;

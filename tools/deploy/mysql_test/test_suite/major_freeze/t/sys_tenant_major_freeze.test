@@ -1,0 +1,71 @@
+#owner: quanwei.wqw
+#owner group: rootserver
+#tags: tenant major freeze
+
+connect (sys_conn,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,oceanbase,$OBMYSQL_PORT);
+connection sys_conn;
+
+--disable_warnings
+--disable_query_log
+call oceanbase.drop_tenant_force('tt1');
+#call oceanbase.create_mysql_tenant_1c2g('tt1');
+--source mysql_test/include/check_tenant_sync.inc
+--enable_query_log
+--enable_warnings
+
+alter system set ob_compaction_schedule_interval='10s' tenant sys;
+alter system set ob_compaction_schedule_interval='10s' tenant all_user;
+alter system set ob_compaction_schedule_interval='10s' tenant all_meta;
+
+let $tenant_tt1_id = query_get_value(select tenant_id from __all_tenant where tenant_name ='sys', tenant_id, 1);
+let $resource_id = query_get_value(select resource_pool_id from __all_resource_pool where tenant_id = $tenant_tt1_id, resource_pool_id, 1);
+let $tt1ip= query_get_value(select svr_ip from __all_unit where zone='zone1' and resource_pool_id = $resource_id limit 1, svr_ip, 1);
+let $svr_port= query_get_value(select svr_port from __all_unit where zone='zone1' and resource_pool_id = $resource_id limit 1, svr_port, 1);
+let $tt1port = query_get_value(select inner_port from __all_server where svr_ip='$tt1ip' and svr_port=$svr_port, inner_port, 1);
+
+connect(tt1_conn, $tt1ip, root,,test, $tt1port);
+
+connection tt1_conn;
+--disable_warnings
+drop table if exists test;
+--enable_warnings
+create table test(c1 int primary key, c2 int);
+insert into test values(0, 2);
+insert into test values(1, 2);
+insert into test values(2, 2);
+
+connection sys_conn;
+# Note: there may be unfinished major_merge, which are launched according to major_freeze_duty_time.
+# Therefore, we need to disable daily_merge and wait the launched major_merge to finish here.
+alter system set major_freeze_duty_time = 'Disable' tenant sys;
+alter system set major_freeze_duty_time = 'Disable' tenant all_user;
+alter system set major_freeze_duty_time = 'Disable' tenant all_meta;
+--source mysql_test/include/wait_daily_merge.inc
+
+############################################################
+--disable_abort_on_error
+connection sys_conn;
+let $tt1_ori_frozen_scn = query_get_value(select frozen_scn as value from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = '$tenant_tt1_id', value, 1);
+
+alter system major freeze tenant = sys;
+alter system major freeze tenant = all_user;
+alter system major freeze tenant = all_meta;
+--source mysql_test/include/check_frozen_version.inc
+--source mysql_test/include/wait_daily_merge.inc
+
+############################################################
+connection sys_conn;
+let $tt1_ori_frozen_scn = query_get_value(select frozen_scn as value from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = '$tenant_tt1_id', value, 1);
+
+alter system major freeze tenant = sys;
+--source mysql_test/include/check_frozen_version.inc
+--source mysql_test/include/wait_daily_merge.inc
+
+############################################################
+connection sys_conn;
+--disable_warnings
+--disable_query_log
+call oceanbase.drop_tenant_force('tt1');
+--enable_query_log
+--enable_warnings
+

@@ -1,0 +1,168 @@
+# CASE_OWNER:
+#    @msy164651
+# CASE_DESC:
+#    Net Standby
+
+ob1=OBI(cluster=2:2, proxy_num=0);
+source include/mini_ob_config.inc;
+ob1.set extra_config=$mini_ob_config;
+ob1.reboot;
+
+# 固定sys租户规格
+ob1.mysql alter resource unit sys_unit_config memory_size='2G';
+
+ob_connect(sys_conn, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+CREATE RESOURCE UNIT large_unit MAX_CPU=2, MEMORY_SIZE='2G';
+CREATE RESOURCE POOL pool UNIT large_unit, UNIT_NUM 2;
+CREATE RESOURCE POOL pool_1 UNIT large_unit, UNIT_NUM 2;
+
+ob1.mysql alter system set _backup_idle_time = '10s';
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+ob1.mysql alter system set merger_check_interval = '10s';
+ob1.mysql alter system set enable_async_syslog=false;
+
+# create oracle tenant, test create tenant before major freeze
+ob1.mysql CREATE TENANT oracle RESOURCE_POOL_LIST = ('pool'), primary_zone = "z1" set ob_tcp_invited_nodes='%', ob_compatibility_mode='oracle';
+let $oracle_id = query_get_value(select tenant_id from oceanbase.__all_tenant where tenant_name='oracle', tenant_id, 1);
+
+ob_connect(sys_conn, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+# create log restore source user
+ob_connect(primary_tenant_conn, ob1.z1.obs0,SYS@oracle,,SYS,,USE_OB_CONNECTOR);
+connection primary_tenant_conn;
+create user mytest identified by "test";
+grant connect to mytest;
+GRANT SELECT on SYS.DBA_OB_ACCESS_POINT to mytest;
+GRANT SELECT on SYS.GV$OB_UNITS to mytest;
+GRANT SELECT on SYS.DBA_OB_TENANTS to mytest;
+GRANT SELECT on SYS.GV$OB_PARAMETERS to mytest;
+GRANT SELECT on SYS.GV$OB_LOG_STAT to mytest;
+GRANT SELECT on SYS.DBA_OB_LS to mytest;
+GRANT SELECT on SYS.DBA_OB_LS_HISTORY to mytest;
+let $count = 0;
+--disable_all_result_log
+while ($count < 50) 
+{
+eval create table non_partition_$count(pk int primary key, c3 int, c4 int);
+eval insert into non_partition_$count values(1, 1, 1);
+eval create index il_$count on non_partition_$count(c3) local;
+eval create index il1_$count on non_partition_$count(c4) global;
+
+inc $count;
+}
+--enable_all_result_log
+# get primary tenant access point
+let $server_ip_port_1=deploy_get_value(ob1.select select concat(svr_ip,':',sql_port) as host from CDB_OB_LS_LOCATIONS where tenant_id = $oracle_id and ls_id = 1 and role = 'LEADER' order by svr_ip, sql_port limit 1;, host, 1);
+let $server_ip_port_2=deploy_get_value(ob1.select select concat(svr_ip,':',sql_port) as host from CDB_OB_LS_LOCATIONS where tenant_id = $oracle_id and ls_id = 1 and role = 'FOLLOWER' order by svr_ip, sql_port limit 1, host, 1);
+
+--disable_all_result_log
+ob1.mysql CREATE STANDBY TENANT IF NOT EXISTS standby_oracle_tenant LOG_RESTORE_SOURCE = 'service=$server_ip_port_1;$server_ip_port_2 USER=mytest@oracle PASSWORD=test' PRIMARY_ZONE='z1', RESOURCE_POOL_LIST=('pool_1'),locality='F@z1,F@z2', comment='aaaaaaaa';
+--enable_all_result_log
+ob1.check_until_timeout SELECT count(*) FROM oceanbase.__all_tenant WHERE tenant_name='standby_oracle_tenant', 1, 100;
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name='standby_oracle_tenant', tenant_id, 1);
+ob1.check_until_timeout SELECT count(*) FROM oceanbase.__all_virtual_ls_status WHERE tenant_id=$tenant_id and status = 'NORMAL', 3, 50;
+#卡主日志流的创建
+ob1.mysql set ob_global_debug_sync = 'BEFORE_SET_LS_MEMBER_LIST wait_for continue_signal_1 execute 10000';
+sleep 2;
+ob1.mysql alter tenant oracle set primary_zone = 'z1, z2';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_ls_status where tenant_id = $tenant_id and status = 'CREATING', 2, 50;
+# 避免非creating状态日志流readable scn偏小影响case稳定性
+let $smallest_readable_scn = deploy_get_value(ob1.select SELECT MIN(a.create_scn) AS scn FROM __all_virtual_ls_recovery_stat a JOIN __all_virtual_ls_status b ON a.tenant_id = b.tenant_id and a.ls_id = b.ls_id WHERE a.tenant_id = $tenant_id AND b.status = 'CREATING', scn, 1);
+ob1.check_until_timeout select count(*) from DBA_OB_TENANTS where tenant_id = $tenant_id and readable_scn >= $smallest_readable_scn, 1, 10;
+# 确认租户readable scn不会因为CREATING状态日志流被卡住，old_scn 是修复前的统计方法算出来的租户readable scn
+let $old_scn = deploy_get_value(ob1.select select min(greatest(create_scn, readable_scn)) as old_scn from __all_virtual_ls_recovery_stat where tenant_id = $tenant_id and (drop_scn = 1 or drop_scn > readable_scn), old_scn, 1);
+ob1.check_until_timeout select count(*) from DBA_OB_TENANTS where tenant_id = $tenant_id and readable_scn > $old_scn, 1, 10;
+ob1.check_until_timeout select $old_scn = (select min(greatest(create_scn, readable_scn)) as old_scn from __all_virtual_ls_recovery_stat where tenant_id = $tenant_id and (drop_scn = 1 or drop_scn > readable_scn)), 1, 3;
+
+#切换
+ob1.mysql alter system switchover to standby tenant 'oracle';
+ob1.mysql alter system switchover to primary tenant 'standby_oracle_tenant';
+ob1.mysql drop tenant oracle force;
+# get primary tenant access point
+let $server_ip_port_1=deploy_get_value(ob1.select select concat(svr_ip,':',sql_port) as host from CDB_OB_LS_LOCATIONS where tenant_id = $tenant_id and ls_id = 1 and role = 'LEADER' order by svr_ip, sql_port limit 1;, host, 1);
+let $server_ip_port_2=deploy_get_value(ob1.select select concat(svr_ip,':',sql_port) as host from CDB_OB_LS_LOCATIONS where tenant_id = $tenant_id and ls_id = 1 and role = 'FOLLOWER' order by svr_ip, sql_port limit 1, host, 1);
+--disable_all_result_log
+ob1.mysql set ob_global_debug_sync = 'now broadcast continue_signal_1';
+ob1.mysql set ob_global_debug_sync = 'BEFORE_SET_LS_MEMBER_LIST clear';
+ob1.mysql set ob_global_debug_sync = 'now broadcast continue_signal_1';
+
+#保证日志流不会重复创建
+ob1.mysql CREATE STANDBY TENANT IF NOT EXISTS oracle LOG_RESTORE_SOURCE = 'service=$server_ip_port_1;$server_ip_port_2 USER=mytest@standby_oracle_tenant PASSWORD=test' PRIMARY_ZONE='z1', RESOURCE_POOL_LIST=('pool'),locality='F@z1,F@z2', comment='aaaaaaaa';
+--enable_all_result_log
+ob1.check_until_timeout SELECT count(*) FROM oceanbase.__all_tenant WHERE tenant_name='oracle', 1, 100;
+
+let $gts = deploy_get_value(ob1.select select ts_value from oceanbase.V\$OB_TIMESTAMP_SERVICE where tenant_id = $tenant_id, ts_value, 1);
+ob1.check_until_timeout select count(*) from oceanbase.DBA_OB_TENANTS where READABLE_SCN > $gts and tenant_name = 'oracle', 1, 100;
+
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name='oracle', tenant_id, 1);
+ob1.mysql set ob_global_debug_sync = 'BEFORE_SET_LS_MEMBER_LIST wait_for continue_signal_1 execute 2';
+sleep 2;
+ob1.mysql alter tenant standby_oracle_tenant set primary_zone = 'z1, z2';
+
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_ls_status where tenant_id = $tenant_id and status = 'CREATING', 2, 50;
+ob1.mysql drop tenant standby_oracle_tenant force;
+ob1.mysql set ob_global_debug_sync = 'now broadcast continue_signal_1';
+ob1.mysql set ob_global_debug_sync = 'BEFORE_SET_LS_MEMBER_LIST clear';
+ob1.mysql set ob_global_debug_sync = 'now broadcast continue_signal_1';
+ob1.mysql alter system set ls_gc_delay_time = '1h' tenant = all;
+sleep 3;
+
+#保证日志流不会重复创建
+ob1.mysql_p select max_ls_id from oceanbase.__all_virtual_tenant_info where tenant_id = $tenant_id;
+ob1.mysql alter system activate standby tenant = 'oracle';
+ob1.mysql_p select max(ls_id) from oceanbase.__all_virtual_ls where tenant_id = $tenant_id;
+ob1.mysql alter tenant oracle set primary_zone = 'z1, z2';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_job, 1, 50;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_job, 0, 150;
+ob1.mysql_p select distinct access_mode from oceanbase.__all_virtual_log_stat where tenant_id =  $tenant_id;
+
+let $oracle_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name='oracle', tenant_id, 1);
+
+ob1.mysql alter tenant oracle set primary_zone = 'z1';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_ls_status where tenant_id = $oracle_id and status = 'NORMAL', 3, 60;
+let $sync_scn = deploy_get_value(ob1.select select sync_scn from DBA_OB_TENANTS where tenant_id = $oracle_id, sync_scn, 1);
+
+ob_connect(primary_tenant_conn_2, ob1.z1.obs0,SYS@oracle,,SYS,,USE_OB_CONNECTOR);
+# get primary tenant access point
+let $server_ip_port_1=deploy_get_value(ob1.select select concat(svr_ip,':',sql_port) as host from CDB_OB_LS_LOCATIONS where tenant_id = $oracle_id and ls_id = 1 and role = 'LEADER' order by svr_ip, sql_port limit 1;, host, 1);
+let $server_ip_port_2=deploy_get_value(ob1.select select concat(svr_ip,':',sql_port) as host from CDB_OB_LS_LOCATIONS where tenant_id = $oracle_id and ls_id = 1 and role = 'FOLLOWER' order by svr_ip, sql_port limit 1, host, 1);
+--disable_all_result_log
+ob1.mysql CREATE STANDBY TENANT IF NOT EXISTS standby_oracle_tenant LOG_RESTORE_SOURCE = 'service=$server_ip_port_1;$server_ip_port_2 USER=mytest@oracle PASSWORD=test' PRIMARY_ZONE='z1', RESOURCE_POOL_LIST=('pool_1'),locality='F@z1,F@z2', comment='aaaaaaaa';
+--enable_all_result_log
+ob1.check_until_timeout SELECT count(*) FROM oceanbase.__all_tenant WHERE tenant_name='standby_oracle_tenant', 1, 100;
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name='standby_oracle_tenant', tenant_id, 1);
+ob1.check_until_timeout select count(*) from oceanbase.DBA_OB_TENANTS where sync_scn >= $sync_scn and tenant_name = 'standby_oracle_tenant', 1, 200;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_ls_status where tenant_id = $tenant_id and status = 'NORMAL', 3, 3;
+#卡主日志流的创建
+ob_connect(sys_conn, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+alter system set_tp tp_name = ERRSIM_BEFORE_LS_STATUS_NORMAL, error_code = 4016, frequency = 1;
+# 禁止即将创建的1009日志流回报位点，否则1009日志流创建出来后可能写日志，导致租户readable_scn上涨， case不稳定
+alter system set_tp tp_name = ERRSIM_LS_NO_REPORT, error_code = 1009, frequency = 1;
+ob1.mysql alter tenant oracle set primary_zone = 'z1, z2';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_ls_status where tenant_id = $tenant_id and status = 'CREATED', 2, 50;
+# 确认卡住的是1009日志流，ERRSIM设置有效
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_ls_status where tenant_id = $tenant_id and ls_id = 1009 and status = 'CREATED', 1, 3;
+# 避免非created状态日志流readable scn偏小影响case稳定性
+let $smallest_readable_scn = deploy_get_value(ob1.select SELECT MIN(a.create_scn) AS scn FROM __all_virtual_ls_recovery_stat a JOIN __all_virtual_ls_status b ON a.tenant_id = b.tenant_id and a.ls_id = b.ls_id WHERE a.tenant_id = $tenant_id AND b.status = 'CREATED', scn, 1);
+ob1.check_until_timeout select count(*) from DBA_OB_TENANTS where tenant_id = $tenant_id and readable_scn >= $smallest_readable_scn, 1, 10;
+# 确认租户readable scn不会因为CREATED状态日志流被卡住，old_scn 是修复前的统计方法算出来的租户readable scn
+let $old_scn = deploy_get_value(ob1.select select min(greatest(create_scn, readable_scn)) as old_scn from __all_virtual_ls_recovery_stat where tenant_id = $tenant_id and (drop_scn = 1 or drop_scn > readable_scn), old_scn, 1);
+ob1.check_until_timeout select count(*) from DBA_OB_TENANTS where tenant_id = $tenant_id and readable_scn > $old_scn, 1, 10;
+ob1.check_until_timeout select $old_scn = (select min(greatest(create_scn, readable_scn)) as old_scn from __all_virtual_ls_recovery_stat where tenant_id = $tenant_id and (drop_scn = 1 or drop_scn > readable_scn)), 1, 3;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_ls_status where tenant_id = $tenant_id and status = 'CREATED', 2, 3;
+
+ob1.mysql alter system switchover to standby tenant 'oracle';
+
+# ERRSIM导致so失败，保证过了create_abort日志流逻辑但是还没启动primary ls service线程
+# 否则create_abort的日志流在__all_ls_status表中会被线程删掉
+alter system set_tp tp_name = ERRSIM_TENANT_ROLE_TRANS_WAIT_SYNC_ERROR, error_code = 9089, frequency = 1;
+--error 9089
+alter system switchover to primary tenant 'standby_oracle_tenant';
+alter system set_tp tp_name = ERRSIM_TENANT_ROLE_TRANS_WAIT_SYNC_ERROR, error_code = 9089, frequency = 0;
+# 验证租户可读位点不统计CREATE ABORT日志流
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_ls_status where tenant_id = $tenant_id and status = 'CREATE_ABORT', 2, 3;
+let $old_scn = deploy_get_value(ob1.select select min(greatest(create_scn, readable_scn)) as old_scn from __all_virtual_ls_recovery_stat where tenant_id = $tenant_id and (drop_scn = 1 or drop_scn > readable_scn), old_scn, 1);
+ob1.check_until_timeout select count(*) from DBA_OB_TENANTS where tenant_id = $tenant_id and readable_scn > $old_scn, 1, 10;
+ob1.check_until_timeout select $old_scn = (select min(greatest(create_scn, readable_scn)) as old_scn from __all_virtual_ls_recovery_stat where tenant_id = $tenant_id and (drop_scn = 1 or drop_scn > readable_scn)), 1, 3;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_ls_status where tenant_id = $tenant_id and status = 'CREATE_ABORT', 2, 3;
+alter system set_tp tp_name = ERRSIM_BEFORE_LS_STATUS_NORMAL, error_code = 4016, frequency = 0;
+alter system set_tp tp_name = ERRSIM_LS_NO_REPORT, error_code = 1009, frequency = 0;

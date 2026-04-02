@@ -1,0 +1,456 @@
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+#owner: sean.yyj
+#owner group: sql
+#tags: privilege, column_privilege
+
+--disable_warnings
+set @@recyclebin = off;
+--enable_warnings
+purge recyclebin;
+
+--result_format 4
+
+DESCRIBE          information_schema.column_privileges;
+SHOW CREATE TABLE information_schema.column_privileges;
+SHOW COLUMNS FROM information_schema.column_privileges;
+
+SELECT table_catalog, table_schema, table_name, column_name, privilege_type
+FROM information_schema.column_privileges WHERE table_catalog IS NOT NULL;
+
+
+--disable_warnings
+DROP DATABASE IF EXISTS db_datadict;
+--enable_warnings
+purge recyclebin;
+CREATE DATABASE db_datadict;
+CREATE TABLE db_datadict.t1 (f1 INT, f2 DECIMAL, f3 TEXT);
+
+USE db_datadict;
+--error 0,ER_CANNOT_USER
+DROP   USER 'testuser1'@'%';
+CREATE USER 'testuser1'@'%';
+--error 0,ER_CANNOT_USER
+DROP   USER 'testuser2'@'%';
+CREATE USER 'testuser2'@'%';
+--error 0,ER_CANNOT_USER
+DROP   USER 'testuser3'@'%';
+CREATE USER 'testuser3'@'%';
+
+GRANT SELECT(f1, f3) ON db_datadict.t1 TO 'testuser1'@'%';
+GRANT INSERT(f1)     ON db_datadict.t1 TO 'testuser1'@'%';
+GRANT UPDATE(f2)     ON db_datadict.t1 TO 'testuser1'@'%';
+GRANT SELECT(f2)     ON db_datadict.t1 TO 'testuser2'@'%';
+GRANT INSERT, SELECT ON db_datadict.t1 TO 'testuser3'@'%';
+GRANT SELECT(f3)     ON db_datadict.t1 TO 'testuser3'@'%';
+
+GRANT INSERT, SELECT ON db_datadict.t1 TO 'testuser3'@'%'
+WITH GRANT OPTION;
+GRANT ALL            ON db_datadict.*  TO 'testuser3'@'%';
+
+let $select= SELECT * FROM information_schema.column_privileges
+WHERE grantee LIKE '%testuser%'
+ORDER BY grantee, table_schema,table_name,column_name,privilege_type;
+eval $select;
+
+# Note: WITH GRANT OPTION applies to all privileges on this table
+#       and not to the columns mentioned only.
+GRANT UPDATE(f3)     ON db_datadict.t1 TO 'testuser1'@'%'
+WITH GRANT OPTION;
+
+eval $select;
+
+--echo # Establish connection testuser1 (user=testuser1)
+connect (testuser1,$OBMYSQL_MS0, testuser1, , db_datadict,$OBMYSQL_PORT);
+connection testuser1;
+eval $select;
+
+--echo # Establish connection testuser2 (user=testuser2)
+
+connect (testuser2,$OBMYSQL_MS0, testuser2, , db_datadict,$OBMYSQL_PORT);
+connection testuser2;
+eval $select;
+
+--echo # Establish connection testuser3 (user=testuser3)
+connect (testuser3,$OBMYSQL_MS0, testuser3, , db_datadict,$OBMYSQL_PORT);
+connection testuser3;
+
+--echo # FIXME: Is it correct that granted TABLES do not occur in COLUMN_PRIVILEGES?
+SELECT * FROM information_schema.table_privileges
+WHERE grantee LIKE '%testuser%'
+ORDER BY grantee,table_schema,table_name,privilege_type;
+SELECT * FROM information_schema.schema_privileges
+WHERE grantee LIKE '%testuser%'
+ORDER BY grantee,table_schema,privilege_type;
+eval $select;
+GRANT SELECT(f1, f3) ON db_datadict.t1 TO 'testuser2'@'%';
+
+--echo # FIXME: Is it intended that *my* grants to others are *NOT* shown here?
+eval $select;
+
+--echo # Switch to connection testuser2 (user=testuser2)
+connection testuser2;
+eval $select;
+
+# Cleanup
+--echo # Switch to connection default and close connections testuser1,testuser2,testuser3
+connection default;
+disconnect testuser1;
+disconnect testuser2;
+disconnect testuser3;
+DROP DATABASE db_datadict;
+DROP USER 'testuser1'@'%';
+DROP USER 'testuser2'@'%';
+DROP USER 'testuser3'@'%';
+purge recyclebin;
+
+
+--echo ################################################################################
+--echo # 3.2.1.13+3.2.1.14+3.2.1.15: INFORMATION_SCHEMA.COLUMN_PRIVILEGES modifications
+--echo ################################################################################
+# 3.2.1.13: Ensure that the creation of any new database object (e.g. table or
+#           column) automatically inserts all relevant information on that
+#           object into every appropriate INFORMATION_SCHEMA table.
+# 3.2.1.14: Ensure that the alteration of any existing database object
+#           automatically updates all relevant information on that object in
+#           every appropriate INFORMATION_SCHEMA table.
+# 3.2.1.15: Ensure that the dropping of any existing database object
+#           automatically deletes all relevant information on that object from
+#           every appropriate INFORMATION_SCHEMA table.
+#
+# Note (mleich):
+#    The MySQL privilege system allows to GRANT objects before they exist.
+#    (Exception: Grant privileges for columns of not existing tables/views.)
+#    There is also no migration of privileges if objects (tables, views, columns)
+#    are moved to other databases (tables only), renamed or dropped.
+#
+--disable_warnings
+DROP DATABASE IF EXISTS db_datadict;
+--enable_warnings
+purge recyclebin;
+CREATE DATABASE db_datadict;
+CREATE TABLE db_datadict.my_table (f1 BIGINT, f2 CHAR(10), f3 DATE);
+
+--error 0,ER_CANNOT_USER
+DROP   USER 'testuser1'@'%';
+CREATE USER 'testuser1'@'%';
+GRANT ALL ON test.* TO 'testuser1'@'%';
+
+let $my_select = SELECT * FROM information_schema.column_privileges
+WHERE table_name = 'my_table'
+ORDER BY grantee, table_schema,table_name,column_name,privilege_type;
+let $my_show = SHOW GRANTS FOR 'testuser1'@'%';
+eval $my_select;
+eval $my_show;
+
+--echo # Establish connection testuser1 (user=testuser1)
+connect (testuser1,$OBMYSQL_MS0, testuser1, , test,$OBMYSQL_PORT);
+connection testuser1;
+eval $my_select;
+eval $my_show;
+
+--echo # Switch to connection default
+connection default;
+GRANT SELECT (f1,f3) ON db_datadict.my_table TO 'testuser1'@'%';
+eval $my_select;
+eval $my_show;
+
+--echo # Switch to connection testuser1
+connection testuser1;
+eval $my_select;
+eval $my_show;
+
+--echo # Switch to connection default
+connection default;
+ALTER TABLE db_datadict.my_table DROP COLUMN f3;
+GRANT UPDATE (f1) ON db_datadict.my_table TO 'testuser1'@'%';
+eval $my_select;
+eval $my_show;
+
+--echo # Switch to connection testuser1
+connection testuser1;
+eval $my_select;
+eval $my_show;
+--error ER_BAD_FIELD_ERROR
+SELECT f1, f3 FROM db_datadict.my_table;
+
+--echo # Switch to connection default
+connection default;
+ALTER TABLE db_datadict.my_table CHANGE COLUMN f1 my_col BIGINT;
+eval $my_select;
+eval $my_show;
+
+--echo # Switch to connection testuser1
+connection testuser1;
+eval $my_select;
+eval $my_show;
+
+--echo # Switch to connection default
+connection default;
+DROP TABLE db_datadict.my_table;
+eval $my_select;
+eval $my_show;
+
+--echo # Switch to connection testuser1
+connection testuser1;
+eval $my_select;
+eval $my_show;
+
+--echo # Switch to connection default
+connection default;
+REVOKE ALL ON db_datadict.my_table FROM 'testuser1'@'%';
+eval $my_select;
+eval $my_show;
+
+--echo # Switch to connection testuser1
+connection testuser1;
+eval $my_select;
+eval $my_show;
+
+--echo # Switch to connection default and close connection testuser1
+connection default;
+disconnect testuser1;
+DROP USER 'testuser1'@'%';
+DROP DATABASE db_datadict;
+purge recyclebin;
+
+--echo ########################################################################
+--echo # Testcases 3.2.1.3-3.2.1.5 + 3.2.1.8-3.2.1.12: INSERT/UPDATE/DELETE and
+--echo #           DDL on INFORMATION_SCHEMA table are not supported
+--echo ########################################################################
+# 3.2.1.3:  Ensure that no user may execute an INSERT statement on any
+#           INFORMATION_SCHEMA table.
+# 3.2.1.4:  Ensure that no user may execute an UPDATE statement on any
+#           INFORMATION_SCHEMA table.
+# 3.2.1.5:  Ensure that no user may execute a DELETE statement on any
+#           INFORMATION_SCHEMA table.
+# 3.2.1.8:  Ensure that no user may create an index on an
+#           INFORMATION_SCHEMA table.
+# 3.2.1.9:  Ensure that no user may alter the definition of an
+#           INFORMATION_SCHEMA table.
+# 3.2.1.10: Ensure that no user may drop an INFORMATION_SCHEMA table.
+# 3.2.1.11: Ensure that no user may move an INFORMATION_SCHEMA table to any
+#           other database.
+# 3.2.1.12: Ensure that no user may directly add to, alter, or delete any data
+#           in an INFORMATION_SCHEMA table.
+#
+--disable_warnings
+DROP DATABASE IF EXISTS db_datadict;
+--enable_warnings
+purge recyclebin;
+CREATE DATABASE db_datadict;
+CREATE TABLE db_datadict.t1 (f1 BIGINT, f2 BIGINT);
+--error 0,ER_CANNOT_USER
+DROP   USER 'testuser1'@'%';
+CREATE USER 'testuser1'@'%';
+GRANT SELECT (f1) ON db_datadict.t1 TO 'testuser1'@'%';
+
+--error ER_DBACCESS_DENIED_ERROR, 5723
+INSERT INTO information_schema.column_privileges
+SELECT * FROM information_schema.column_privileges;
+
+# Cleanup
+DROP DATABASE db_datadict;
+DROP USER 'testuser1'@'%';
+purge recyclebin;
+
+connection default;
+select current_user() from dual;
+--disable_warnings
+drop database if exists column_priv_db;
+--enable_warnings 
+purge recyclebin;
+
+--error 0,ER_CANNOT_USER
+drop user column_priv_user;
+create user column_priv_user;
+create database column_priv_db;
+
+use column_priv_db;
+
+create table t1(c1 int default 0, c2 int, c3 int as(c1 + c2), c4 int, key idx(c4), primary key(c1));
+create index i1 on t1(c3);
+create table t2(c1 int, c2 int, c3 int as(c1 + c2) stored);
+grant select(c3) on t1 to column_priv_user;
+grant select(c3) on t2 to column_priv_user;
+
+--disable_warnings
+drop view if exists v1;
+--enable_warnings
+create view v1 as(select * from t1);
+
+connect (conn_priv_user,$OBMYSQL_MS0, column_priv_user, , column_priv_db,$OBMYSQL_PORT);
+connection conn_priv_user;
+--error 1143
+select /*+index(t1 i1)*/ 1 from t1 where c1+c2 = 1;
+--error 1143
+explain select /*+index(t1 i1)*/ 1 from t1 where c1+c2 = 1;
+--error 1143
+select /*+index(t1 i1)*/ c1+c2 from t1;
+--error 1143
+explain select /*+index(t1 i1)*/ c1+c2 from t1;
+
+select c3 from t1;
+
+--error 1143 
+select c1+c2 from t2;
+--error 1143 
+select 1 from t2 where c1+c2=1;
+select c3 from t2;
+
+select case when 1 < 0 then c3 else 0 end from t1;
+--error 1143 
+select case when 1 < 0 then c2 else 0 end from t1;
+
+select c3/0 from t1;
+--error 1143
+select c2/0 from t1;
+
+connection default;
+use column_priv_db;
+grant insert(c1,c2) on t1 to column_priv_user;
+grant insert(c1) on t2 to column_priv_user;
+
+connection conn_priv_user;
+use column_priv_db;
+insert into t1(c1) values(10);
+insert into t1(c1,c2) values(1,2);
+
+insert into t2(c1) values(1);
+insert into t1(c1, c2) values(2, 2);
+
+##enhance test
+show full columns from t1;
+show columns from t1;
+desc t1;
+show indexes from t1;
+--error 1142
+show create table t1;
+
+connection default;
+revoke all on column_priv_db.t1 from column_priv_user;
+show grants for column_priv_user;
+
+connection conn_priv_user;
+use column_priv_db;
+--error 1142
+show full columns from t1;
+--error 1142
+show  columns from t1;
+--error 1142
+desc t1;
+--error 1142
+show indexes from t1;
+--error 1142
+show create view v1;
+
+connection default;
+grant update(c1) on t1 to column_priv_user;
+
+connection conn_priv_user;
+use column_priv_db;
+show full columns from t1;
+show  columns from t1;
+desc t1;
+show indexes from t1;
+
+
+connection default;
+use column_priv_db;
+grant select(c1), update(c2) on v1 to column_priv_user;
+connection conn_priv_user;
+use column_priv_db;
+
+--error 1143
+select c2 from v1;
+update v1 set c2=c1;
+--error 1142
+insert into v1(c4) values(1);
+
+show full columns from v1;
+show columns from v1;
+desc v1;
+show indexes from v1;
+--error 1142
+show create view v1;
+
+--error 1142
+insert into t1(c1) values(1) on duplicate key update c2=c4;
+--error 1142
+replace into t1(c1) values(3);
+
+connection default;
+create table t3(c1 int);
+use column_priv_db;
+
+connection conn_priv_user;
+use column_priv_db;
+
+--error 1142
+select 1 from t3;
+
+--error 1142
+select count(*) from t1;
+--error 1142
+select 1 from t1;
+--error 1142
+select sum(1) from t1;
+--error 1142
+select max(1) from t1;
+--error 1142
+select 1 from t1 where 2>1 group by 1 having 1>0 order by 1;
+--error 1142
+insert into t1(c1) values(1) on duplicate key update c2=c4;
+
+--error 1142
+insert into t1(c1) values(0);
+
+--error 1142
+insert into t1() values();
+
+connection default;
+use column_priv_db;
+grant select(c2), update(c2) on t1 to column_priv_user;
+grant insert(c1) on t1 to column_priv_user;
+
+connection conn_priv_user;
+use column_priv_db;
+select count(*) from t1;
+select 1 from t1;
+select sum(1) from t1;
+select max(1) from t1;
+select 1 from t1 where 2>1 group by 1 having 1>0 order by 1;
+insert into t1(c1) values(-1);
+--error 1143
+insert into t1() values();
+--error 1143
+insert into t1(c1) values(1) on duplicate key update c2=c4;
+
+connection default;
+use column_priv_db;
+grant select(c4) on t1 to column_priv_user;
+connection conn_priv_user;
+use column_priv_db;
+insert into t1(c1) values(1) on duplicate key update c2=c4;
+--error 1142
+replace into t1(c1) values(0);
+
+connection default;
+use column_priv_db;
+grant DELETE on t1 to column_priv_user;
+
+connection conn_priv_user;
+use column_priv_db;
+replace into t1(c1) values(0);
+
+connection default;
+drop table t1;
+show grants for column_priv_user;
+revoke select(c4) on t1 from column_priv_user;
+show grants for column_priv_user;
+revoke all on t1 from column_priv_user;
+show grants for column_priv_user;
+drop database column_priv_db;
+drop user column_priv_user;
+purge recyclebin;

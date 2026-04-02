@@ -1,0 +1,154 @@
+# owner:shanyan.g
+# owner group:transaction
+# description:
+# 测试点：redo log因为内存问题回放失败，重试回放场景下的正确性验证
+##
+ob1=OBI(cluster=1:1,proxy_num=0,init_unit_cpu=5);
+ob1.reboot;
+sleep 10;
+
+#在zone1上建立连接
+let $l_ip=deploy_get_value(ob1.z1.obs0.ip);
+let $l_port=deploy_get_value(ob1.z1.obs0.mysql_port);
+connect (conn1,$l_ip,root@obtest,,test,$l_port);
+connect (conn2,$l_ip,root@sys,,oceanbase,$l_port);
+
+connection conn1;
+use test;
+drop table if exists t1;
+drop table if exists t2;
+create table t1(a longtext, b longblob, c longtext);
+create table t2(a longtext, b longblob, c longtext, d longtext, e longtext);
+sleep 5;
+
+#case1 : 多个普通行的写入，产生多条redo log
+connection conn2;
+alter system set_tp tp_no = 41, error_code = 4013, frequency = 1;
+connection conn1;
+begin;
+let $i=0;
+--disable_query_log
+while($i < 20)
+{
+  insert into t1 values(repeat('a', 524288), repeat('a', 524288), repeat('a', 524288));
+  inc $i;
+}
+--enable_query_log
+commit;
+sleep 10;
+connection conn2;
+alter system set_tp tp_no = 41, error_code = 4013, frequency = 0;
+ob1.mysql alter system major freeze tenant=sys;
+ob1.mysql alter system major freeze tenant=all_user;
+ob1.mysql alter system major freeze tenant=all_meta;
+let $__i__= 600;
+while($__i__ > 0)
+{
+    sleep 1;
+    dec $__i__;
+    let $__frozen_scn__ = query_get_value(select sum(frozen_scn/1000) as sum_value from oceanbase.CDB_OB_MAJOR_COMPACTION, sum_value, 1);
+    let $__merged_version__ = query_get_value(select sum(last_scn/1000) as sum_value from oceanbase.CDB_OB_MAJOR_COMPACTION, sum_value, 1);
+    if($__frozen_scn__ == $__merged_version__)
+    {
+        let $__i__ = -5;
+    }
+}
+if($__i__ != -5)
+{
+    --echo major freeze failed
+    select * from oceanbase.CDB_OB_MAJOR_COMPACTION;
+    let $__tenant_id__ = query_get_value(select tenant_id from oceanbase.CDB_OB_MAJOR_COMPACTION where last_scn != frozen_scn, tenant_id, 1);
+    let $__frozen_scn__ = query_get_value(select frozen_scn from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $__tenant_id__, frozen_scn, 1);
+    eval select * from oceanbase.__all_virtual_server_compaction_event_history where tenant_id = $__tenant_id__ and compaction_scn = $__frozen_scn__;
+    select * from oceanbase.__all_virtual_compaction_diagnose_info;
+    --exit
+}
+
+
+#case2 : 多个big row的写入，产生多条redo log
+alter system set_tp tp_no = 41, error_code = 4013, frequency = 1;
+connection conn1;
+begin;
+let $i=0;
+--disable_query_log
+while($i < 20)
+{
+  insert into t2 values(repeat('a', 3242880), repeat('b', 3242880), repeat('c', 3242880), repeat('d', 3242880), repeat('e', 3242880));
+  inc $i;
+}
+--enable_query_log
+commit;
+sleep 10;
+connection conn2;
+alter system set_tp tp_no = 41, error_code = 4013, frequency = 0;
+
+ob1.mysql alter system major freeze tenant=sys;
+ob1.mysql alter system major freeze tenant=all_user;
+ob1.mysql alter system major freeze tenant=all_meta;
+let $__i__= 600;
+while($__i__ > 0)
+{
+    sleep 1;
+    dec $__i__;
+    let $__frozen_scn__ = query_get_value(select sum(frozen_scn/1000) as sum_value from oceanbase.CDB_OB_MAJOR_COMPACTION, sum_value, 1);
+    let $__merged_version__ = query_get_value(select sum(last_scn/1000) as sum_value from oceanbase.CDB_OB_MAJOR_COMPACTION, sum_value, 1);
+    if($__frozen_scn__ == $__merged_version__)
+    {
+        let $__i__ = -5;
+    }
+}
+if($__i__ != -5)
+{
+    --echo major freeze failed
+    select * from oceanbase.CDB_OB_MAJOR_COMPACTION;
+    let $__tenant_id__ = query_get_value(select tenant_id from oceanbase.CDB_OB_MAJOR_COMPACTION where last_scn != frozen_scn, tenant_id, 1);
+    let $__frozen_scn__ = query_get_value(select frozen_scn from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $__tenant_id__, frozen_scn, 1);
+    eval select * from oceanbase.__all_virtual_server_compaction_event_history where tenant_id = $__tenant_id__ and compaction_scn = $__frozen_scn__;
+    select * from oceanbase.__all_virtual_compaction_diagnose_info;
+    --exit
+}
+
+
+#case3 : 部分写入普通行，部分写入big row
+alter system set_tp tp_no = 41, error_code = 4013, frequency = 1;
+connection conn1;
+begin;
+let $i=0;
+--disable_query_log
+while($i < 10)
+{
+  insert into t1 values(repeat('a', 524288), repeat('a', 524288), repeat('a', 524288));
+  insert into t2 values(repeat('a', 3242880), repeat('b', 3242880), repeat('c', 3242880), repeat('d', 3242880), repeat('e', 3242880));
+  inc $i;
+}
+--enable_query_log
+commit;
+sleep 10;
+connection conn2;
+alter system set_tp tp_no = 41, error_code = 4013, frequency = 0;
+
+ob1.mysql alter system major freeze tenant=sys;
+ob1.mysql alter system major freeze tenant=all_user;
+ob1.mysql alter system major freeze tenant=all_meta;
+let $__i__= 600;
+while($__i__ > 0)
+{
+    sleep 1;
+    dec $__i__;
+    let $__frozen_scn__ = query_get_value(select sum(frozen_scn/1000) as sum_value from oceanbase.CDB_OB_MAJOR_COMPACTION, sum_value, 1);
+    let $__merged_version__ = query_get_value(select sum(last_scn/1000) as sum_value from oceanbase.CDB_OB_MAJOR_COMPACTION, sum_value, 1);
+    if($__frozen_scn__ == $__merged_version__)
+    {
+        let $__i__ = -5;
+    }
+}
+if($__i__ != -5)
+{
+    --echo major freeze failed
+    select * from oceanbase.CDB_OB_MAJOR_COMPACTION;
+    let $__tenant_id__ = query_get_value(select tenant_id from oceanbase.CDB_OB_MAJOR_COMPACTION where last_scn != frozen_scn, tenant_id, 1);
+    let $__frozen_scn__ = query_get_value(select frozen_scn from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $__tenant_id__, frozen_scn, 1);
+    eval select * from oceanbase.__all_virtual_server_compaction_event_history where tenant_id = $__tenant_id__ and compaction_scn = $__frozen_scn__;
+    select * from oceanbase.__all_virtual_compaction_diagnose_info;
+    --exit
+}

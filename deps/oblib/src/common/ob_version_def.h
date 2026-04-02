@@ -76,10 +76,9 @@ cal_version(const uint64_t major, const uint64_t minor, const uint64_t major_pat
 #define CLUSTER_VERSION_1_0_0_0 (oceanbase::common::cal_version(1, 0, 0, 0))
 #define CLUSTER_VERSION_1_0_1_0 (oceanbase::common::cal_version(1, 0, 1, 0))
 #define CLUSTER_VERSION_1_1_0_0 (oceanbase::common::cal_version(1, 1, 0, 0))
-#define CLUSTER_VERSION_1_2_0_0 (oceanbase::common::cal_version(1, 2, 0, 0))
 //!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 //TODO: If you update the above version, please update CLUSTER_CURRENT_VERSION.
-#define CLUSTER_CURRENT_VERSION CLUSTER_VERSION_1_2_0_0
+#define CLUSTER_CURRENT_VERSION CLUSTER_VERSION_1_1_0_0
 
 // ATTENSION !!!!!!!!!!!!!!!!!!!!!!!!!!!
 // 1. each cluster_version is corresponed to a data version.

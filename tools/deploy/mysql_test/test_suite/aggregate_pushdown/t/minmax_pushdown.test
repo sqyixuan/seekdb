@@ -1,0 +1,192 @@
+# owner: yht146439
+#tags: storage
+# description: pushdown aggregation(min) to storage layer
+
+--disable_query_log
+set global max_allowed_packet=60000000;
+set global ob_sql_work_area_percentage=80;
+sleep 1;
+connect (obsys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection default;
+set @@recyclebin = off;
+set ob_query_timeout=1000000000;
+set ob_trx_timeout=1000000000;
+
+--disable_warnings
+drop table if exists t_types,t_empty,t_null1,t_null2,t_default1,t_default2,t_padding,t1,t2,pt1,pt2,pt3;
+--enable_warnings
+--enable_query_log
+
+# all types
+create table t_types(c0 bool, c1 tinyint, c2 smallint, c3 mediumint, c4 int, c5 bigint, c6 decimal(16,4), c7 float, c8 double, c10 date, c11 time, c12 datetime, c13 timestamp, c14 year, c15 char, c16 char(10), c17 varchar(10));
+insert into t_types values(0,1,2,3,4,5,6.0,7.0,8.0,'2022-05-16','16:52:10','2022-05-16 16:52:10','2022-05-16 16:52:10','2022','a','ab','abc');
+insert into t_types values(1,2,3,4,5,6,7.0,8.0,9.0,'2022-05-17','17:52:10','2022-05-17 16:52:10','2022-05-17 16:52:10','2023','b','bc','bcd');
+select min(c0),min(c1),min(c2),min(c3),min(c4),min(c5),min(c6),min(c7),min(c8),min(c10),min(c11),min(c12),min(c13),min(c14),min(c15),min(c16),min(c17) from t_types;
+select max(c0),max(c1),max(c2),max(c3),max(c4),max(c5),max(c6),max(c7),max(c8),max(c10),max(c11),max(c12),max(c13),max(c14),max(c15),max(c16),max(c17) from t_types;
+
+# empty table
+create table t_empty(a int);
+select a,min(a),max(a) from t_empty;
+
+# null values
+create table t_null1(a int);
+insert into t_null1 values(null),(null),(null);
+select min(a),max(a) from t_null1;
+
+create table t_null2(a int);
+insert into t_null2 values(null),(1),(2);
+select a,min(a),max(a) from t_null2;
+delete from t_null2 where 1=1;
+insert into t_null2 values(1),(null),(2);
+select a,min(a),max(a) from t_null2;
+
+# default values
+create table t_default1(pk int primary key, a char(5)) row_format = compact;
+insert into t_default1 values(1,'a');
+insert into t_default1(pk) values(2),(3);
+select min(a),max(a) from t_default1;
+
+--disable_query_log
+--let $loop=4
+while($loop < 1000)
+{
+  eval insert into t_default1(pk) values($loop);
+  inc $loop;
+}
+--enable_query_log
+
+create table t_default2(pk int primary key, a int default 10) row_format = compact;
+insert into t_default2 values(1,9);
+select min(a),max(a) from t_default2;
+
+--disable_query_log
+--let $loop=2
+while($loop < 1000)
+{
+  eval insert into t_default2(pk) values($loop);
+  inc $loop;
+}
+--enable_query_log
+select a,min(a),max(a) from t_default1;
+select a,min(a),max(a) from t_default2;
+
+# padding
+create table t_padding(pk int primary key, a int, b char(10) default 'b');
+select b, min(b), max(b) from t_padding;
+select count(a), min(b), max(b) from t_padding;
+insert into t_padding values(1, 2, 'bb');
+SET sql_mode = 'PAD_CHAR_TO_FULL_LENGTH';
+select char_length(b) from t_padding;
+select b, min(b), max(b) from t_padding;
+select count(a), min(b), max(b) from t_padding;
+SET sql_mode = '';
+
+# minor&major freeze
+create table t1 (a bigint auto_increment primary key, b bigint, c char(100), d varchar(100), e bigint not null) row_format = compressed block_size = 2048;
+insert into t1 (a, b, c, d, e) values(1, 9, "a", repeat('a', 10),1);
+insert into t1 (a, b, c, d, e) values(2, 2, "ab", repeat("ab", 10),1);
+insert into t1 (a, b, c, d, e) values(3, 5, "abcd", repeat("ab", 10),1);
+insert into t1 (a, b, c, d, e) values(4, 7, NULL, repeat("abcd", 10),1);
+insert into t1 (a, b, c, d, e) values(5, NULL, "ab c ", repeat("a", 10),1);
+insert into t1 (a, b, c, d, e) values(6, 9, NULL, repeat("abbb", 10),1);
+insert into t1 (a, b, c, d, e) values(7, 1, "abc ", repeat("abcd", 10),1);
+insert into t1 (a, b, c, d, e) values(8, 3, "abcde", NULL,1);
+insert into t1 (a, b, c, d, e) values(9, 100, "abd", repeat("abc", 10),1);
+
+--let $loop=6
+while($loop > 0)
+{
+  eval insert into t1 (a, b, c, d, e) select a * 10 + $loop, b + 1, c, d, e from t1;
+  dec $loop;
+}
+insert into t1 (a, b, c, d, e) values(123456, 100, "abd", repeat("abc", 10),1);
+
+create table t2(a int);
+--disable_query_log
+--let $loop=10000
+while($loop > 0)
+{
+  eval insert into t2(a) select $loop;
+  dec $loop;
+}
+--enable_query_log
+alter table t2 add column b int default 11;
+
+# minor freeze
+connection obsys;
+alter system minor freeze tenant = sys;
+alter system minor freeze tenant = all_user;
+alter system minor freeze tenant = all_meta;
+--source mysql_test/include/wait_minor_merge.inc
+
+connection default;
+select max(b),min(a) from t1;
+select min(a),max(a),min(b),max(b),min(c),max(c),min(d),max(d) from t1;
+select min(a),max(a),min(b),max(b),min(c),max(c),min(d),max(d) from t1 where a > 5 and b is not null;
+select min(a),max(a),min(b),max(b),min(c),max(c),min(d),max(d) from t1 where a < 1;
+select min(a),max(a),min(b),max(b),min(c),max(c),min(d),max(d) from t1 where a = 123456;
+
+select min(b),max(b) from t2;
+insert into t2(a,b) select a,a from t2;
+select min(b),max(b) from t2;
+select a,min(a),max(a) from t_default1;
+select a,min(a),max(a) from t_default2;
+
+# minor freeze
+connection obsys;
+alter system minor freeze tenant = sys;
+alter system minor freeze tenant = all_user;
+alter system minor freeze tenant = all_meta;
+--source mysql_test/include/wait_minor_merge.inc
+
+select min(b),max(b) from t2;
+
+# major freeze
+connection obsys;
+alter system major freeze tenant = sys;
+alter system major freeze tenant = all_user;
+alter system major freeze tenant = all_meta;
+--source mysql_test/include/wait_daily_merge.inc
+
+connection default;
+select max(b),min(a) from t1;
+select min(a),max(a),min(b),max(b),min(c),max(c),min(d),max(d) from t1;
+select min(a),max(a),min(b),max(b),min(c),max(c),min(d),max(d) from t1 where a > 5 and b is not null;
+select min(a),max(a),min(b),max(b),min(c),max(c),min(d),max(d) from t1 where a < 1;
+select min(a),max(a),min(b),max(b),min(c),max(c),min(d),max(d) from t1 where a = 123456;
+select a,min(a),max(a) from t_default1;
+select a,min(a),max(a) from t_default2;
+
+# test padding
+SET sql_mode = 'PAD_CHAR_TO_FULL_LENGTH';
+select char_length(b) from t_padding;
+select b, min(b), max(b) from t_padding;
+select count(a), max(b) from t_padding;
+SET sql_mode = '';
+
+# memtable
+insert into t1 (a, b, c, d, e) values(10000, 0, "ab c", repeat('ab ', 10),1);
+insert into t1 (a, b, c, d, e) values(null, null, null, null,1);
+
+select max(b),min(a) from t1;
+select min(a),max(a),min(b),max(b),min(c),max(c),min(d),max(d) from t1;
+select min(a),max(a),min(b),max(b),min(c),max(c),min(d),max(d) from t1 where a > 5 and b is not null;
+select min(a),max(a),min(b),max(b),min(c),max(c),min(d),max(d) from t1 where a < 1;
+select min(a),max(a),min(b),max(b),min(c),max(c),min(d),max(d) from t1 where a = 123456;
+select min(a),max(a),min(b),max(b),min(c),max(c),min(d),max(d) from t1 where a is null;
+
+# partitioned table
+create table pt1(a int);
+create table pt2(a int, b int, c int) partition by hash(a) partitions 4;
+create table pt3(a int, b int, c int) partition by hash(a) partitions 4;
+insert into pt1 values(1),(2),(3);
+insert into pt2 values(1,1,1),(2,2,2),(3,3,3);
+insert into pt3 values (null,null,null),(1,1,1),(2,2,2),(3,3,3);
+select a,min(a),max(a),min(b),max(b),min(c),max(c) from pt2;
+select a,min(a),max(a),min(b),max(b),min(c),max(c) from pt3;
+select/*+ leading(pt1,tt) use_nl(pt1,tt) NO_USE_NL_MATERIALIZATION(tt) */ * from pt1,(select a,min(a),max(a),min(b),max(b),min(c),max(c) from pt2) as tt where pt1.a=tt.a;
+select/*+ leading(pt1,tt) use_nl(pt1,tt) NO_USE_NL_MATERIALIZATION(tt) */ * from pt1,(select a,min(a),max(a),min(b),max(b),min(c),max(c) from pt3) as tt where pt1.a=tt.a;
+
+--disable_warnings
+drop table if exists t_types,t_empty,t_null1,t_null2,t_default1,t_default2,t_padding,t1,t2,pt1,pt2,pt3;
+--enable_warnings

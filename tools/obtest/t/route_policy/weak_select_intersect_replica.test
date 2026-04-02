@@ -1,0 +1,59 @@
+# owner: hanting
+# description: 本case用来测试有intersection需求时的路由选择策略
+
+####unit中带有readonly的副本
+#(1)手动迁移unit;
+#(2)宕机迁移；
+
+ob1=OBI(cluster=2:2:2:2:2, proxy_num=0, init_unit_cpu=4,locality=HZ:HZ:SH:SH:SZ);
+ob1.reboot;
+
+##新建租户
+ob1.mysql create resource pool rp1 unit = 'sys_unit_config', unit_num = 1, zone_list = ('z1', 'z2', 'z3', 'z4', 'z5');
+ob1.mysql create tenant tt1 replica_num 5, primary_zone 'z2', resource_pool_list ('rp1'), locality="F@z1,F@z2,F@z3,R@z4,R@z5" set ob_tcp_invited_nodes='%';
+ob1.mysql alter system set balancer_idle_time = '10s';
+ob1.mysql alter system set server_data_copy_in_concurrency = 10;
+ob1.mysql alter system set server_data_copy_out_concurrency = 10;
+ob1.mysql alter system set server_permanent_offline_time='20s';
+ob1.mysql alter system set server_temporary_offline_time='15s';
+ob1.mysql alter system modify zone 'z1' idc 'idc1';
+ob1.mysql alter system modify zone 'z2' idc 'idc2';
+ob1.mysql alter system modify zone 'z3' idc 'idc3';
+ob1.mysql alter system modify zone 'z4' idc 'idc4';
+ob1.mysql alter system modify zone 'z5' idc 'idc5';
+
+sleep 2;
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from __all_tenant where tenant_name = "tt1", tenant_id, 1);
+let $tt1ip= deploy_get_value(ob1.select select svr_ip from __all_unit where zone='z1' and resource_pool_id = $tenant_id limit 1, svr_ip, 1);
+let $port= deploy_get_value(ob1.select select svr_port from __all_unit where zone='z1' and resource_pool_id = $tenant_id limit 1, svr_port, 1);
+let $tt1port = deploy_get_value(ob1.select select inner_port from __all_server where svr_ip='$tt1ip' and svr_port = $port, inner_port, 1);
+
+##########################################################
+## CASE 0 : create materialized view
+connect(tt1_conn, $tt1ip, root@tt1,,test, $tt1port);
+connect tt1_conn
+
+create table l (lk1 int, lk2 int, lv1 int, lv2 varchar(128), primary key(lk1, lk2)) partition by key (lk1) partitions 2;
+create table r (rk int, rv1 int, rv2 varchar(128), primary key(rk)) locality = 'F@z1, F@z2, F@z3, R{all_server}@z1, R{all_server}@z2, R{all_server}@z3, R{all_server}@z4, R{all_server}@z5';
+
+insert into l values (1, 1, 10, 'aaaaaaa');
+insert into l values (1, 2, 20, 'bbbbbbb');
+insert into r values (1, 100, 'right value1');
+
+create materialized view mv as select lk1, lk2, lv1, lv2, rk, rv1, rv2 from l, r where lk2 = rk order by lk1, lv1;
+
+ob1.mysql alter system major freeze;
+ob1.check_version 2;
+ob1.check_until_timeout select index_status from oceanbase.__all_virtual_table where tenant_id=1 and table_name = 'mv', 2, 20;
+
+##########################################################
+## CASE 1 : test for materialized view
+
+connect tt1_conn
+select lk1, lk2, lv1, lv2, rk, rv1, rv2 from l, r where lk2 = rk order by lk1, lv1;
+explain select lk1, lk2, lv1, lv2, rk, rv1, rv2 from l, r where lk2 = rk order by lk1, lv1;
+
+##########################################################
+## CASE 2 : test for drop replica
+
+eval alter system drop replica partition_id = "$partition_id%$partition_cnt@$table_id" server = "$dest_addr";

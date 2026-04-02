@@ -1,0 +1,40 @@
+ob1=OBI(cluster=1:1:1,proxy_num=0);
+ob1.force_stop;
+ob1.clean_backup_dest;
+ob1.reboot;
+ob1.mysql alter resource unit sys_unit_config memory_size='2G';
+ob1.mysql CREATE RESOURCE UNIT unit_1 MAX_CPU 2, MEMORY_SIZE '2G';
+ob1.mysql CREATE RESOURCE POOL pool_1 UNIT = 'unit_1', UNIT_NUM = 1, ZONE_LIST=('z1');
+ob1.mysql CREATE RESOURCE POOL pool_2 UNIT = 'unit_1', UNIT_NUM = 1, ZONE_LIST=('z2');
+ob1.mysql CREATE TENANT $backup_mysql_tenant RESOURCE_POOL_LIST = ('pool_1'), primary_zone = "z1" set ob_tcp_invited_nodes='%', ob_compatibility_mode='mysql';
+create user mytest identified by "test";
+grant SELECT on OCEANBASE.* to mytest;
+ob1.mysql CREATE STANDBY TENANT IF NOT EXISTS standby_mysql_tenant LOG_RESTORE_SOURCE = 'service=$backup_ip:$backup_port USER=mytest@backup_mysql_tenant PASSWORD=test' PRIMARY_ZONE='z2', RESOURCE_POOL_LIST=('pool_2');
+ob1.check_until_timeout select count(*) from DBA_OB_TENANTS where TENANT_ID = $standby_mysql_tenant_id and TENANT_ROLE = 'STANDBY' and SWITCHOVER_STATUS = 'NORMAL',1,30;
+create tablegroup tg1 sharding='PARTITION';
+create table t1(c1 int,c2 int,c3 int,gm_create timestamp(6),gm_modify timestamp(6), primary key(c1,c2,c3)) tablegroup='tg1' partition by hash(c1) partitions 8;
+create table t2(c1 int,c2 int, count int,gm_create timestamp(6),gm_modify timestamp(6), primary key(c1,c2)) duplicate_scope = 'cluster' duplicate_read_consistency='weak';
+create /*+ parallel(8) */ materialized view mv1 (primary key(t1_c1,t1_c2,t1_c3)) tablegroup='tg1' partition by hash(t1_c1) partitions 8 WITH COLUMN GROUP(all columns) REFRESH FAST ON DEMAND  ENABLE QUERY REWRITE ENABLE ON QUERY COMPUTATION as select /*+read_consistency(wAeak) use_nl(t1 t2) leading(t1 t2) use_das(t2) no_use_nl_materialization(t2)*/ t1.c1 t1_c1,t1.c2 t1_c2,t1.c3 t1_c3,t1.gm_create t1_gm_create,t1.gm_modify t1_gm_modify,t2.c1 t2_c1,t2.c2 t2_c2,t2.count t2_count,t2.gm_create t2_gm_create,t2.gm_modify t2_gm_modify from t1 join t2 on t1.c1=t2.c1 and t1.c2=t2.c2;
+ob1.mysql alter system major freeze tenant = '$backup_mysql_tenant';
+ob1.check_until_timeout select (frozen_scn - last_scn) as result from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$backup_mysql_tenant_id, 0, 600;
+$dst.check_rs_log_until_success -c "new mview has been create in primary tenant, stop";
+select tenant_role, switchover_status from __all_virtual_tenant_info where tenant_id = 1004;
+tenant_role	switchover_status
+STANDBY	NORMAL
+select status from __all_tenant where tenant_id = 1004;
+status
+NORMAL
+ALTER SYSTEM ACTIVATE STANDBY TENANT standby_mysql_tenant;
+select tenant_role, switchover_status from __all_virtual_tenant_info where tenant_id = 1004;
+tenant_role	switchover_status
+PRIMARY	NORMAL
+select status from __all_tenant where tenant_id = 1004;
+status
+NORMAL
+ALTER SYSTEM SWITCHOVER TO STANDBY TENANT standby_mysql_tenant;
+select tenant_role, switchover_status from __all_virtual_tenant_info where tenant_id = 1004;
+tenant_role	switchover_status
+STANDBY	NORMAL
+select status from __all_tenant where tenant_id = 1004;
+status
+NORMAL

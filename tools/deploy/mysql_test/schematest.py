@@ -1,0 +1,14 @@
+schema_test=[
+'inner_table.inner_table_overall',
+'information_schema',
+'information_schema.information_schema_select',
+'inner_table.inner_table_overall',
+'inner_table.views',
+'inner_table.dict_and_dictionary_oracle',
+'pl.pl_views_oracle',
+'resource_manager.pl_syntax_oracle',
+'inner_table.all_virtual_sql_audit_mysql',
+'system_variable',
+'view',
+'view_2'
+]

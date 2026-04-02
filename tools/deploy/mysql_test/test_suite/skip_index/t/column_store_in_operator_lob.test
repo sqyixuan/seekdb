@@ -1,0 +1,83 @@
+# owner: liquanhong.lqh
+# owner group: storage
+# description: check lob in skip index in_operator
+
+--disable_query_log
+connect (conn1, $OBMYSQL_MS0,$OBMYSQL_USR,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connect (syscon, $OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection syscon;
+set @@session.explicit_defaults_for_timestamp=off;
+set session ob_trx_timeout=100000000000;
+alter system set_tp tp_name = "EN_COMPACTION_DISABLE_ROW_COL_SWITCH", error_code = 4016, frequency = 1;
+sleep 2;
+set @@recyclebin = off;
+--enable_query_log
+
+connection conn1;
+--disable_warnings
+drop table if exists t1;
+--enable_warnings
+
+CREATE TABLE t1 (
+  id int(11) DEFAULT NULL,
+  c1 varchar(20) COLLATE utf8mb4_bin DEFAULT NULL,
+  c2 int(11) DEFAULT NULL,
+  c3 char(20) COLLATE utf8mb4_bin DEFAULT NULL,
+  c4 datetime DEFAULT NULL,
+  c5 text COLLATE utf8mb4_bin DEFAULT NULL
+) DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_bin ROW_FORMAT = DYNAMIC COMPRESSION = 'zstd_1.3.8' REPLICA_NUM = 1 BLOCK_SIZE = 16384 USE_BLOOM_FILTER = FALSE TABLET_SIZE = 134217728 PCTFREE = 0 WITH COLUMN GROUP(all columns, each column);
+
+--disable_query_log
+
+let $cnt1 = 1;
+while($cnt1 <= 1000)
+{
+    eval insert into t1 values
+        (NULL, NULL, NULL, NULL, NULL, NULL);
+    inc $cnt1;
+}
+
+let $cnt2 = 1;
+while($cnt2 <= 1000)
+{
+    eval insert into t1 values
+        (100000 + $cnt2,
+        concat('abcd efg', $cnt2),
+        0 - $cnt2,
+        concat(100000 + $cnt2, 'abcd efg'),
+        '2024-10-01 12:00:00',
+        concat('abc', $cnt2));
+    inc $cnt2;
+}
+
+let $cnt3 = 501;
+while($cnt3 <= 1500)
+{
+    eval insert into t1 values
+        (100000 + $cnt3,
+        concat('abcd efg', $cnt3 - 500),
+        1000 - $cnt3,
+        concat(100000 + $cnt3, 'abcd efg'),
+        '2024-10-02 12:00:00',
+        concat('abc', $cnt3));
+    inc $cnt3;
+}
+
+--enable_query_log
+
+connection default;
+alter system major freeze;
+alter system flush plan cache;
+--source mysql_test/include/wait_daily_merge.inc
+
+connection conn1;
+
+set ob_query_timeout=1000000000;
+select * from t1 where c5 in ('abc', 'def') order by c1;
+
+drop table t1;
+--disable_query_log
+connection syscon;
+alter system set_tp tp_name = "EN_COMPACTION_DISABLE_ROW_COL_SWITCH", error_code = 4016, frequency = 0;
+set @@recyclebin = on;
+--enable_query_log

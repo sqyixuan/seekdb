@@ -1,0 +1,42 @@
+ob1=OBI(cluster=1:1:1,init_unit_cpu=0,proxy_num=0);
+ob1.z1.obs0.set extra_config=$extra_conf;
+ob1.z2.obs0.set extra_config=$extra_conf;
+ob1.z3.obs0.set extra_config=$extra_conf;
+ob1.reboot;
+ob1.mysql alter system set enable_rebalance='false';
+ob1.mysql alter system set _transfer_start_trans_timeout = '60s';
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+# create mysql tenant
+set @@session.ob_query_timeout = 1000000000;
+CREATE RESOURCE UNIT if not exists unit_1 MAX_CPU 2, MEMORY_SIZE='3G';
+CREATE RESOURCE POOL if not exists pool_1 UNIT = 'unit_1', UNIT_NUM = 1;
+CREATE TENANT mysql RESOURCE_POOL_LIST = ('pool_1'), primary_zone='z1' set ob_tcp_invited_nodes='%';
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_server_schema_info as a join oceanbase.__all_virtual_server_schema_info as b on a.tenant_id = b.tenant_id  where a.refreshed_schema_version != b.refreshed_schema_version, 0, 60;
+# create table with lob and idx
+create table t1 (c1 int primary key, c2 longtext) partition by hash(c1) partitions 6;
+create index idx_t1 on t1(c1);
+############################
+# 1. test check member list comment by errsim
+# errsim member_list not same
+ob1.mysql alter system set_tp tp_name = EN_TENANT_TRANSFER_CHECK_LS_MEMBER_LIST_NOT_SAME, error_code = 4109, frequency = 1;
+# primary zone 1->2
+ob1.mysql alter tenant mysql set primary_zone = 'z1,z2';
+# update comment when member_list is not same
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_task, 1, 30;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_transfer_task, 1, 30;
+ob1.check_until_timeout select count(*) = 1 from oceanbase.__all_virtual_transfer_task where comment = 'Wait for member list to be same', 1, 30;
+# update comment when inactive server in member_list
+ob1.mysql alter system set_tp tp_name = EN_TENANT_TRANSFER_CHECK_LS_MEMBER_LIST_NOT_SAME, error_code = 4114, frequency = 1;
+ob1.check_until_timeout select count(*) = 0 from oceanbase.__all_virtual_transfer_task where comment = 'Unable to process task due to inactive server in member list', 0, 30;
+ob1.check_until_timeout select count(*) = 1 from oceanbase.__all_virtual_transfer_task where comment = 'Unable to process task due to inactive server in member list', 1, 30;
+# cancel errsim
+ob1.mysql alter system set_tp tp_name = EN_TENANT_TRANSFER_CHECK_LS_MEMBER_LIST_NOT_SAME, error_code = 4114, frequency = 0;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_transfer_task, 0, 120;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_transfer_task_history where status = 'COMPLETED', 1, 120;
+#############################
+# 2. test check member list with server inactive
+# primary zone 2->1
+ob1.z3.obs0.force_stop;
+ob1.check_until_timeout select count(*) from __all_server where status = 'INACTIVE', 1, 10;
+ob1.mysql alter tenant mysql set primary_zone = 'z1';
+ob1.check_until_timeout select count(*) from __all_virtual_transfer_task where comment = 'Unable to process task due to inactive server in member list', 1, 120;

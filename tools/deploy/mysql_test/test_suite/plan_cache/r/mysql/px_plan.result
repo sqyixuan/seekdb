@@ -1,0 +1,712 @@
+result_format: 4
+
+alter system set enable_auto_leader_switch=false;
+alter system flush plan cache global;
+
+set _ob_use_parallel_execution = false;
+
+// CASE#1 hit different plan after changing session variable
+select * from t1;
++------+
+| a    |
++------+
+|    1 |
+|    2 |
+|    3 |
++------+
+
+explain select * from t1;
+Query Plan
+====================================================
+|ID|OPERATOR               |NAME    |EST. ROWS|COST|
+----------------------------------------------------
+|0 |PX COORDINATOR         |        |1        |92  |
+|1 | EXCHANGE OUT DISTR    |:EX10000|1        |92  |
+|2 |  PX PARTITION ITERATOR|        |1        |92  |
+|3 |   TABLE SCAN          |t1      |1        |92  |
+====================================================
+
+Outputs & filters: 
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t1.a)]), filter(nil)
+  1 - output([INTERNAL_FUNCTION(t1.a)]), filter(nil), dop=1
+  2 - output([t1.a]), filter(nil)
+  3 - output([t1.a]), filter(nil), 
+      access([t1.a]), partitions(p[0-1])
+
+
+set _ob_use_parallel_execution = true;
+select * from t1;
++------+
+| a    |
++------+
+|    1 |
+|    2 |
+|    3 |
++------+
+explain select * from t1;
+Query Plan
+====================================================
+|ID|OPERATOR               |NAME    |EST. ROWS|COST|
+----------------------------------------------------
+|0 |PX COORDINATOR         |        |1        |92  |
+|1 | EXCHANGE OUT DISTR    |:EX10000|1        |92  |
+|2 |  PX PARTITION ITERATOR|        |1        |92  |
+|3 |   TABLE SCAN          |t1      |1        |92  |
+====================================================
+
+Outputs & filters: 
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t1.a)]), filter(nil)
+  1 - output([INTERNAL_FUNCTION(t1.a)]), filter(nil), dop=1
+  2 - output([t1.a]), filter(nil)
+  3 - output([t1.a]), filter(nil), 
+      access([t1.a]), partitions(p[0-1])
+
+
+// expect hit_count = 0, 0
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'select * from t1';
++-----------+
+| hit_count |
++-----------+
+|         0 |
+|         0 |
++-----------+
+
+// CASE#2 hit different plan using different parallel
+set _ob_use_parallel_execution = false;
+
+select /*+ use_px parallel(1)*/* from t1;
++------+
+| a    |
++------+
+|    1 |
+|    2 |
+|    3 |
++------+
+
+explain select /*+ use_px parallel(1)*/* from t1;
+Query Plan
+====================================================
+|ID|OPERATOR               |NAME    |EST. ROWS|COST|
+----------------------------------------------------
+|0 |PX COORDINATOR         |        |1        |92  |
+|1 | EXCHANGE OUT DISTR    |:EX10000|1        |92  |
+|2 |  PX PARTITION ITERATOR|        |1        |92  |
+|3 |   TABLE SCAN          |t1      |1        |92  |
+====================================================
+
+Outputs & filters: 
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t1.a)]), filter(nil)
+  1 - output([INTERNAL_FUNCTION(t1.a)]), filter(nil), dop=1
+  2 - output([t1.a]), filter(nil)
+  3 - output([t1.a]), filter(nil), 
+      access([t1.a]), partitions(p[0-1])
+
+
+select /*+ use_px parallel(2)*/* from t1;
++------+
+| a    |
++------+
+|    1 |
+|    2 |
+|    3 |
++------+
+
+explain select /*+ use_px parallel(2)*/* from t1;
+Query Plan
+================================================
+|ID|OPERATOR           |NAME    |EST. ROWS|COST|
+------------------------------------------------
+|0 |PX COORDINATOR     |        |1        |46  |
+|1 | EXCHANGE OUT DISTR|:EX10000|1        |46  |
+|2 |  PX BLOCK ITERATOR|        |1        |46  |
+|3 |   TABLE SCAN      |t1      |1        |46  |
+================================================
+
+Outputs & filters: 
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t1.a)]), filter(nil)
+  1 - output([INTERNAL_FUNCTION(t1.a)]), filter(nil), dop=2
+  2 - output([t1.a]), filter(nil)
+  3 - output([t1.a]), filter(nil), 
+      access([t1.a]), partitions(p[0-1])
+
+
+// hit_count = 0
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'select /*+ use_px parallel(1)*/* from t1';
++-----------+
+| hit_count |
++-----------+
+|         0 |
++-----------+
+
+// hit_count = 0
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'select /*+ use_px parallel(2)*/* from t1';
++-----------+
+| hit_count |
++-----------+
+|         0 |
++-----------+
+// CASE#3 Partition Wise Join
+
+
+
+
+
+
+
+
+set _ob_use_parallel_execution = true;
+
+select t1.a as a1, t2.a as a2 from t1 join t2 on t1.a = t2.a;
++------+------+
+| a1   | a2   |
++------+------+
+|    1 |    1 |
+|    2 |    2 |
+|    3 |    3 |
++------+------+
+explain select t1.a as a1, t2.a as a2 from t1 join t2 on t1.a = t2.a;
+Query Plan
+====================================================
+|ID|OPERATOR               |NAME    |EST. ROWS|COST|
+----------------------------------------------------
+|0 |PX COORDINATOR         |        |1        |100 |
+|1 | EXCHANGE OUT DISTR    |:EX10000|1        |100 |
+|2 |  PX PARTITION ITERATOR|        |1        |100 |
+|3 |   NESTED-LOOP JOIN    |        |1        |100 |
+|4 |    TABLE SCAN         |t1      |1        |92  |
+|5 |    TABLE SCAN         |t2      |1        |14  |
+====================================================
+
+Outputs & filters: 
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t1.a, t2.a)]), filter(nil)
+  1 - output([INTERNAL_FUNCTION(t1.a, t2.a)]), filter(nil), dop=1
+  2 - output([t1.a], [t2.a]), filter(nil)
+  3 - output([t1.a], [t2.a]), filter(nil), 
+      conds(nil), nl_params_([t1.a])
+  4 - output([t1.a]), filter(nil), 
+      access([t1.a]), partitions(p[0-1])
+  5 - output([t2.a]), filter(nil), 
+      access([t2.a]), partitions(p[0-1])
+
+
+
+// switch t1's part1 to backup, t2's part1 to backup
+select t1.a as a1, t2.a as a2 from t1 join t2 on t1.a = t2.a;
++------+------+
+| a1   | a2   |
++------+------+
+|    1 |    1 |
+|    2 |    2 |
+|    3 |    3 |
++------+------+
+explain select t1.a as a1, t2.a as a2 from t1 join t2 on t1.a = t2.a;
+Query Plan
+====================================================
+|ID|OPERATOR               |NAME    |EST. ROWS|COST|
+----------------------------------------------------
+|0 |PX COORDINATOR         |        |1        |100 |
+|1 | EXCHANGE OUT DISTR    |:EX10000|1        |100 |
+|2 |  PX PARTITION ITERATOR|        |1        |100 |
+|3 |   NESTED-LOOP JOIN    |        |1        |100 |
+|4 |    TABLE SCAN         |t1      |1        |92  |
+|5 |    TABLE SCAN         |t2      |1        |14  |
+====================================================
+
+Outputs & filters: 
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t1.a, t2.a)]), filter(nil)
+  1 - output([INTERNAL_FUNCTION(t1.a, t2.a)]), filter(nil), dop=1
+  2 - output([t1.a], [t2.a]), filter(nil)
+  3 - output([t1.a], [t2.a]), filter(nil), 
+      conds(nil), nl_params_([t1.a])
+  4 - output([t1.a]), filter(nil), 
+      access([t1.a]), partitions(p[0-1])
+  5 - output([t2.a]), filter(nil), 
+      access([t2.a]), partitions(p[0-1])
+
+
+// expect hit_count = 1
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'select t1.a as a1, t2.a as a2 from t1 join t2 on t1.a = t2.a';
++-----------+
+| hit_count |
++-----------+
+|         1 |
++-----------+
+
+// switch t1's part1 to main
+select t1.a as a1, t2.a as a2 from t1 join t2 on t1.a = t2.a;
++------+------+
+| a1   | a2   |
++------+------+
+|    1 |    1 |
+|    2 |    2 |
+|    3 |    3 |
++------+------+
+explain select t1.a as a1, t2.a as a2 from t1 join t2 on t1.a = t2.a;
+Query Plan
+==========================================================
+|ID|OPERATOR                     |NAME    |EST. ROWS|COST|
+----------------------------------------------------------
+|0 |PX COORDINATOR               |        |1        |100 |
+|1 | EXCHANGE OUT DISTR          |:EX10001|1        |100 |
+|2 |  NESTED-LOOP JOIN           |        |1        |100 |
+|3 |   EXCHANGE IN DISTR         |        |1        |92  |
+|4 |    EXCHANGE OUT DISTR (PKEY)|:EX10000|1        |92  |
+|5 |     PX PARTITION ITERATOR   |        |1        |92  |
+|6 |      TABLE SCAN             |t1      |1        |92  |
+|7 |   PX PARTITION ITERATOR     |        |1        |14  |
+|8 |    TABLE SCAN               |t2      |1        |14  |
+==========================================================
+
+Outputs & filters: 
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t1.a, t2.a)]), filter(nil)
+  1 - output([INTERNAL_FUNCTION(t1.a, t2.a)]), filter(nil), dop=1
+  2 - output([t1.a], [t2.a]), filter(nil), 
+      conds(nil), nl_params_([t1.a])
+  3 - output([t1.a], [PARTITION_ID]), filter(nil)
+  4 - (#keys=1, [t1.a]), output([t1.a], [PARTITION_ID]), filter(nil), dop=1
+  5 - output([t1.a]), filter(nil)
+  6 - output([t1.a]), filter(nil), 
+      access([t1.a]), partitions(p[0-1])
+  7 - output([t2.a]), filter(nil)
+  8 - output([t2.a]), filter(nil), 
+      access([t2.a]), partitions(p[0-1])
+
+
+// expect hit_count = 0, 1
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'select t1.a as a1, t2.a as a2 from t1 join t2 on t1.a = t2.a';
++-----------+
+| hit_count |
++-----------+
+|         0 |
+|         1 |
++-----------+
+
+// CASE#4 local, remote plan using px, change to dist plan
+// local
+set _ob_use_parallel_execution = false;
+select * from t1 where a = 1;
++------+
+| a    |
++------+
+|    1 |
++------+
+explain select * from t1 where a = 1;
+Query Plan
+===================================
+|ID|OPERATOR  |NAME|EST. ROWS|COST|
+-----------------------------------
+|0 |TABLE SCAN|t1  |1        |46  |
+===================================
+
+Outputs & filters: 
+-------------------------------------
+  0 - output([t1.a]), filter(nil), 
+      access([t1.a]), partitions(p1)
+
+
+select t1.a as a1, t2.a as a2 from t1 join t2 where t1.a = t2.a and t1.a = 1;
++------+------+
+| a1   | a2   |
++------+------+
+|    1 |    1 |
++------+------+
+explain select t1.a as a1, t2.a as a2 from t1 join t2 where t1.a = t2.a and t1.a = 1;
+Query Plan
+===================================================
+|ID|OPERATOR                  |NAME|EST. ROWS|COST|
+---------------------------------------------------
+|0 |NESTED-LOOP JOIN CARTESIAN|    |1        |91  |
+|1 | TABLE SCAN               |t1  |1        |46  |
+|2 | MATERIAL                 |    |1        |46  |
+|3 |  TABLE SCAN              |t2  |1        |46  |
+===================================================
+
+Outputs & filters: 
+-------------------------------------
+  0 - output([t1.a], [t2.a]), filter(nil), 
+      conds(nil), nl_params_(nil)
+  1 - output([t1.a]), filter(nil), 
+      access([t1.a]), partitions(p1)
+  2 - output([t2.a]), filter(nil)
+  3 - output([t2.a]), filter(nil), 
+      access([t2.a]), partitions(p1)
+
+
+select /*+ use_px parallel(2)*/* from t1 where a = 1;
++------+
+| a    |
++------+
+|    1 |
++------+
+select /*+ use_px parallel(2)*/* from t1 where a = 1;
++------+
+| a    |
++------+
+|    1 |
++------+
+explain select /*+ use_px parallel(2)*/* from t1 where a = 1;
+Query Plan
+================================================
+|ID|OPERATOR           |NAME    |EST. ROWS|COST|
+------------------------------------------------
+|0 |PX COORDINATOR     |        |1        |23  |
+|1 | EXCHANGE OUT DISTR|:EX10000|1        |23  |
+|2 |  PX BLOCK ITERATOR|        |1        |23  |
+|3 |   TABLE SCAN      |t1      |1        |23  |
+================================================
+
+Outputs & filters: 
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t1.a)]), filter(nil)
+  1 - output([INTERNAL_FUNCTION(t1.a)]), filter(nil), dop=2
+  2 - output([t1.a]), filter(nil)
+  3 - output([t1.a]), filter(nil), 
+      access([t1.a]), partitions(p1)
+
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'select /*+ use_px parallel(2)*/* from t1 where a = ?';
++-----------+
+| hit_count |
++-----------+
+|         1 |
++-----------+
+
+select /*+ use_px parallel(2)*/t1.a as a1, t2.a as a2 from t1 join t2 where t1.a = t2.a and t1.a = 1;
++------+------+
+| a1   | a2   |
++------+------+
+|    1 |    1 |
++------+------+
+select /*+ use_px parallel(2)*/t1.a as a1, t2.a as a2 from t1 join t2 where t1.a = t2.a and t1.a = 1;
++------+------+
+| a1   | a2   |
++------+------+
+|    1 |    1 |
++------+------+
+explain select /*+ use_px parallel(2)*/t1.a as a1, t2.a as a2 from t1 join t2 where t1.a = t2.a and t1.a = 1;
+Query Plan
+===============================================================
+|ID|OPERATOR                          |NAME    |EST. ROWS|COST|
+---------------------------------------------------------------
+|0 |PX COORDINATOR                    |        |1        |46  |
+|1 | EXCHANGE OUT DISTR               |:EX10001|1        |46  |
+|2 |  NESTED-LOOP JOIN CARTESIAN      |        |1        |46  |
+|3 |   EXCHANGE IN DISTR              |        |1        |23  |
+|4 |    EXCHANGE OUT DISTR (BROADCAST)|:EX10000|1        |23  |
+|5 |     PX BLOCK ITERATOR            |        |1        |23  |
+|6 |      TABLE SCAN                  |t1      |1        |23  |
+|7 |   MATERIAL                       |        |1        |23  |
+|8 |    PX BLOCK ITERATOR             |        |1        |23  |
+|9 |     TABLE SCAN                   |t2      |1        |23  |
+===============================================================
+
+Outputs & filters: 
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t1.a, t2.a)]), filter(nil)
+  1 - output([INTERNAL_FUNCTION(t1.a, t2.a)]), filter(nil), dop=2
+  2 - output([t1.a], [t2.a]), filter(nil), 
+      conds(nil), nl_params_(nil)
+  3 - output([t1.a]), filter(nil)
+  4 - output([t1.a]), filter(nil), dop=2
+  5 - output([t1.a]), filter(nil)
+  6 - output([t1.a]), filter(nil), 
+      access([t1.a]), partitions(p1)
+  7 - output([t2.a]), filter(nil)
+  8 - output([t2.a]), filter(nil)
+  9 - output([t2.a]), filter(nil), 
+      access([t2.a]), partitions(p1)
+
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'select /*+ use_px parallel(2)*/t1.a as a1, t2.a as a2 from t1 join t2 where t1.a = t2.a and t1.a = ?';
++-----------+
+| hit_count |
++-----------+
+|         1 |
++-----------+
+
+// remote
+select * from t1 where a = 2;
++------+
+| a    |
++------+
+|    2 |
++------+
+explain select * from t1 where a = 2;
+Query Plan
+=============================================
+|ID|OPERATOR            |NAME|EST. ROWS|COST|
+---------------------------------------------
+|0 |EXCHANGE IN REMOTE  |    |1        |46  |
+|1 | EXCHANGE OUT REMOTE|    |1        |46  |
+|2 |  TABLE SCAN        |t1  |1        |46  |
+=============================================
+
+Outputs & filters: 
+-------------------------------------
+  0 - output([t1.a]), filter(nil)
+  1 - output([t1.a]), filter(nil)
+  2 - output([t1.a]), filter(nil), 
+      access([t1.a]), partitions(p0)
+
+
+select /*+ use_px parallel(2)*/* from t1 where a = 2;
++------+
+| a    |
++------+
+|    2 |
++------+
+select /*+ use_px parallel(2)*/* from t1 where a = 2;
++------+
+| a    |
++------+
+|    2 |
++------+
+explain select /*+ use_px parallel(2)*/* from t1 where a = 2;
+Query Plan
+================================================
+|ID|OPERATOR           |NAME    |EST. ROWS|COST|
+------------------------------------------------
+|0 |PX COORDINATOR     |        |1        |23  |
+|1 | EXCHANGE OUT DISTR|:EX10000|1        |23  |
+|2 |  PX BLOCK ITERATOR|        |1        |23  |
+|3 |   TABLE SCAN      |t1      |1        |23  |
+================================================
+
+Outputs & filters: 
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t1.a)]), filter(nil)
+  1 - output([INTERNAL_FUNCTION(t1.a)]), filter(nil), dop=2
+  2 - output([t1.a]), filter(nil)
+  3 - output([t1.a]), filter(nil), 
+      access([t1.a]), partitions(p0)
+
+// expect hit_count = 3, hit plan before
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'select /*+ use_px parallel(2)*/* from t1 where a = ?';
++-----------+
+| hit_count |
++-----------+
+|         3 |
++-----------+
+
+select t1.a as a1, t2.a as a2 from t1 join t2 where t1.a = t2.a and t1.a = 2;
++------+------+
+| a1   | a2   |
++------+------+
+|    2 |    2 |
++------+------+
+explain select t1.a as a1, t2.a as a2 from t1 join t2 where t1.a = t2.a and t1.a = 2;
+Query Plan
+=====================================================
+|ID|OPERATOR                    |NAME|EST. ROWS|COST|
+-----------------------------------------------------
+|0 |EXCHANGE IN REMOTE          |    |1        |92  |
+|1 | EXCHANGE OUT REMOTE        |    |1        |91  |
+|2 |  NESTED-LOOP JOIN CARTESIAN|    |1        |91  |
+|3 |   TABLE SCAN               |t1  |1        |46  |
+|4 |   MATERIAL                 |    |1        |46  |
+|5 |    TABLE SCAN              |t2  |1        |46  |
+=====================================================
+
+Outputs & filters: 
+-------------------------------------
+  0 - output([t1.a], [t2.a]), filter(nil)
+  1 - output([t1.a], [t2.a]), filter(nil)
+  2 - output([t1.a], [t2.a]), filter(nil), 
+      conds(nil), nl_params_(nil)
+  3 - output([t1.a]), filter(nil), 
+      access([t1.a]), partitions(p0)
+  4 - output([t2.a]), filter(nil)
+  5 - output([t2.a]), filter(nil), 
+      access([t2.a]), partitions(p0)
+
+
+select /*+ use_px parallel(2)*/t1.a as a1, t2.a as a2 from t1 join t2 where t1.a = t2.a and t1.a = 2;
++------+------+
+| a1   | a2   |
++------+------+
+|    2 |    2 |
++------+------+
+select /*+ use_px parallel(2)*/t1.a as a1, t2.a as a2 from t1 join t2 where t1.a = t2.a and t1.a = 2;
++------+------+
+| a1   | a2   |
++------+------+
+|    2 |    2 |
++------+------+
+explain select /*+ use_px parallel(2)*/t1.a as a1, t2.a as a2 from t1 join t2 where t1.a = t2.a and t1.a = 2;
+Query Plan
+===============================================================
+|ID|OPERATOR                          |NAME    |EST. ROWS|COST|
+---------------------------------------------------------------
+|0 |PX COORDINATOR                    |        |1        |46  |
+|1 | EXCHANGE OUT DISTR               |:EX10001|1        |46  |
+|2 |  NESTED-LOOP JOIN CARTESIAN      |        |1        |46  |
+|3 |   EXCHANGE IN DISTR              |        |1        |23  |
+|4 |    EXCHANGE OUT DISTR (BROADCAST)|:EX10000|1        |23  |
+|5 |     PX BLOCK ITERATOR            |        |1        |23  |
+|6 |      TABLE SCAN                  |t1      |1        |23  |
+|7 |   MATERIAL                       |        |1        |23  |
+|8 |    PX BLOCK ITERATOR             |        |1        |23  |
+|9 |     TABLE SCAN                   |t2      |1        |23  |
+===============================================================
+
+Outputs & filters: 
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t1.a, t2.a)]), filter(nil)
+  1 - output([INTERNAL_FUNCTION(t1.a, t2.a)]), filter(nil), dop=2
+  2 - output([t1.a], [t2.a]), filter(nil), 
+      conds(nil), nl_params_(nil)
+  3 - output([t1.a]), filter(nil)
+  4 - output([t1.a]), filter(nil), dop=2
+  5 - output([t1.a]), filter(nil)
+  6 - output([t1.a]), filter(nil), 
+      access([t1.a]), partitions(p0)
+  7 - output([t2.a]), filter(nil)
+  8 - output([t2.a]), filter(nil)
+  9 - output([t2.a]), filter(nil), 
+      access([t2.a]), partitions(p0)
+
+
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'select /*+ use_px parallel(2)*/t1.a as a1, t2.a as a2 from t1 join t2 where t1.a = t2.a and t1.a = ?';
++-----------+
+| hit_count |
++-----------+
+|         1 |
++-----------+
+
+// Simple Misc Case
+drop table if exists tt1;
+create table tt1 (pk int primary key, a int) partition by hash(pk) partitions 2;
+
+insert into tt1 values (1, 1), (2, 2);
+
+select * from tt1 where pk in (1, 1);
++----+------+
+| pk | a    |
++----+------+
+|  1 |    1 |
++----+------+
+select * from tt1 where pk in (1, 1);
++----+------+
+| pk | a    |
++----+------+
+|  1 |    1 |
++----+------+
+select * from tt1 where pk in (1, 2);
++----+------+
+| pk | a    |
++----+------+
+|  1 |    1 |
+|  2 |    2 |
++----+------+
+
+// expect (0, 3), (1, 1)
+select hit_count, type from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'select * from tt1 where pk in (?, ?)';
++-----------+------+
+| hit_count | type |
++-----------+------+
+|         0 |    3 |
+|         1 |    1 |
++-----------+------+
+
+// CASE#5 px with 'try plan'
+drop table if exists t5;
+create table t5 (pk int primary key, a int, b int);
+create index idx_t5_a on t5(a) global partition by hash(a) partitions 2;
+insert into t5 values (1, 1, 1), (2, 2, 2);
+
+alter system flush plan cache global;
+
+
+// switch idx_t5_a part0 to backup
+// local plan with parallel = 2
+select /*+ index(t5 idx_t5_a), parallel(2)*/* from t5 where a = 1;
++----+------+------+
+| pk | a    | b    |
++----+------+------+
+|  1 |    1 |    1 |
++----+------+------+
+select /*+ index(t5 idx_t5_a), parallel(2)*/* from t5 where a = 1;
++----+------+------+
+| pk | a    | b    |
++----+------+------+
+|  1 |    1 |    1 |
++----+------+------+
+explain select /*+ index(t5 idx_t5_a), parallel(2)*/* from t5 where a = 1;
+Query Plan
+=====================================================
+|ID|OPERATOR            |NAME        |EST. ROWS|COST|
+-----------------------------------------------------
+|0 |PX COORDINATOR      |            |1        |58  |
+|1 | EXCHANGE OUT DISTR |:EX10000    |1        |58  |
+|2 |  TABLE LOOKUP      |t5          |1        |58  |
+|3 |   PX BLOCK ITERATOR|            |1        |23  |
+|4 |    TABLE SCAN      |t5(idx_t5_a)|1        |23  |
+=====================================================
+
+Outputs & filters: 
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t5.pk, t5.a, t5.b)]), filter(nil)
+  1 - output([INTERNAL_FUNCTION(t5.pk, t5.a, t5.b)]), filter(nil), dop=2
+  2 - output([t5.pk], [t5.a], [t5.b]), filter(nil), 
+      partitions(p0)
+  3 - output([t5.pk]), filter(nil)
+  4 - output([t5.pk]), filter(nil), 
+      access([t5.pk]), partitions(p1)
+
+
+select hit_count, type from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'select /*+ index(t5 idx_t5_a), parallel(2)*/* from t5 where a = ?';
++-----------+------+
+| hit_count | type |
++-----------+------+
+|         1 |    3 |
++-----------+------+
+
+// remote plan with paralllel = 2
+select /*+ index(t5 idx_t5_a), parallel(2)*/* from t5 where a = 2;
++----+------+------+
+| pk | a    | b    |
++----+------+------+
+|  2 |    2 |    2 |
++----+------+------+
+select /*+ index(t5 idx_t5_a), parallel(2)*/* from t5 where a = 2;
++----+------+------+
+| pk | a    | b    |
++----+------+------+
+|  2 |    2 |    2 |
++----+------+------+
+explain select /*+ index(t5 idx_t5_a), parallel(2)*/* from t5 where a = 2;
+Query Plan
+=====================================================
+|ID|OPERATOR            |NAME        |EST. ROWS|COST|
+-----------------------------------------------------
+|0 |PX COORDINATOR      |            |1        |58  |
+|1 | EXCHANGE OUT DISTR |:EX10000    |1        |58  |
+|2 |  TABLE LOOKUP      |t5          |1        |58  |
+|3 |   PX BLOCK ITERATOR|            |1        |23  |
+|4 |    TABLE SCAN      |t5(idx_t5_a)|1        |23  |
+=====================================================
+
+Outputs & filters: 
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t5.pk, t5.a, t5.b)]), filter(nil)
+  1 - output([INTERNAL_FUNCTION(t5.pk, t5.a, t5.b)]), filter(nil), dop=2
+  2 - output([t5.pk], [t5.a], [t5.b]), filter(nil), 
+      partitions(p0)
+  3 - output([t5.pk]), filter(nil)
+  4 - output([t5.pk]), filter(nil), 
+      access([t5.pk]), partitions(p0)
+
+
+select hit_count, type from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'select /*+ index(t5 idx_t5_a), parallel(2)*/* from t5 where a = ?';
++-----------+------+
+| hit_count | type |
++-----------+------+
+|         3 |    3 |
++-----------+------+
+>>>>>>>>>>>>>>>>>>>>cleanup<<<<<<<<<<<<<<<<<<<<<<<<<<
+alter system set enable_auto_leader_switch=true;

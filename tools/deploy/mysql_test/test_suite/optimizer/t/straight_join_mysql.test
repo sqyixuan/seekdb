@@ -1,0 +1,86 @@
+# owner: lijinmao.ljm
+# owner group: sql1
+# tags: optimizer
+
+--disable_warnings
+drop table if exists t1,t2,t3,t4,t5;
+drop view if exists v1, v2;
+drop sequence if exists s1;
+--enable_warnings
+
+create table t1 (c1 int primary key, c2 int);
+create sequence s1 cache 1000 noorder;
+create table t2 (c1 int, c2 int, index id2_1 (c1));
+create table t3 (c1 int, c2 int);
+create index id3_1 on t3(c1,c2);
+create table t4 (c1 int, c2 int, index id4_1 (c2));
+create table t5 (c1 int, c2 int);
+
+insert into t1 select s1.nextval, uniform(1,10000,random(1)) from table(generator(10));
+insert into t2 select uniform(1,10000,random(1)), uniform(1,10000,random(1)) from table(generator(100));
+insert into t3 select uniform(1,10000,random(1)), uniform(1,10000,random(1)) from table(generator(1000));
+insert into t4 select uniform(1,10000,random(1)), uniform(1,10000,random(1)) from table(generator(10000));
+insert into t5 select uniform(1,10000,random(1)), uniform(1,10000,random(1)) from table(generator(10000));
+
+--result_format 4
+--explain_protocol 2
+
+--echo 不加 straight_join 的 join order 选择
+explain basic select t1.c1 from t5,t2,t3,t4,t1;
+
+--echo 预期按照 from 的顺序按左结合规则进行连接
+explain basic select straight_join t1.c1 from t5,t2,t3,t4,t1;
+explain basic select straight_join t1.c1 from t5,t4,t3,t2,t1;
+explain basic select straight_join t1.c1 from t1,t4,t3,t5,t2;
+
+--echo 不加 straight_join 的 join order 选择
+explain basic select t1.c1 from t1,t3,t2,t5,t4 where t5.c1 = t1.c1 and t4.c1 = t2.c1 and t3.c1 = t5.c1 and t3.c2 = t4.c1;
+
+--echo 预期按照 from 的顺序按左结合规则进行连接
+explain basic select straight_join t1.c1 from t1,t3,t2,t5,t4 where t5.c1 = t1.c1 and t4.c1 = t2.c1 and t3.c1 = t5.c1 and t3.c2 = t4.c1;
+explain basic select straight_join t1.c1 from t5,t4,t3,t2,t1 where t5.c1 = t1.c1 and t4.c1 = t2.c1 and t3.c1 = t5.c1 and t3.c2 = t4.c1;
+explain basic select straight_join t1.c1 from t1,t2,t3,t4,t5 where t5.c1 = t1.c1 and t4.c1 = t2.c1 and t3.c1 = t5.c1 and t3.c2 = t4.c1;
+
+--echo 添加 ordered hint，尽可能维持连接次序，视图中表的连接次序不保证
+explain basic select straight_join t1.c1 from t1,t4,(t3 left join t5 on (t3.c1 = t5.c1)),t2 where t5.c1 = t1.c1 and t4.c1 = t2.c1 and t3.c2 = t4.c1;
+explain basic select straight_join t1.c1 from t1,t4,(select t3.c1, t3.c2 from t3, t5 where t3.c1 = t5.c1) as v,t2 where v.c1 = t1.c1 and t4.c1 = t2.c1 and v.c2 = t4.c1;
+
+--echo 连续对基表的 straight_join，预期连接顺序是展平后按左结合规则连接
+explain basic select t1.c1 from t1 straight_join t2 straight_join t3 straight_join t4 straight_join t5;
+explain basic select t1.c1 from t1 straight_join (t2 straight_join t3) straight_join t4 straight_join t5;
+explain basic select t1.c1 from t1 straight_join ((t2 straight_join t3) straight_join t4) straight_join t5;
+explain basic select t1.c1 from (t1 straight_join ((t2 straight_join t3) straight_join t4)) straight_join t5;
+explain basic select t1.c1 from t1 straight_join ((t2 straight_join t3 on (t3.c1 = t2.c1)) straight_join t4) straight_join t5 where t5.c1 = t1.c1;
+
+--echo update 语句在 from 子句中使用 straight_join
+explain basic update t5 join t1 set t1.c2 = null, t5.c2 = null where t1.c1 = t5.c1;
+explain basic update t5 straight_join t1 set t1.c2 = null, t5.c2 = null where t1.c1 = t5.c1;
+
+--echo delete 语句在 from 子句中使用 straight_join
+explain basic delete t5 from t5 join t1 where t1.c1 = t5.c1;
+explain basic delete t5 from t5 straight_join t1 where t1.c1 = t5.c1;
+
+--echo 指定 leading hint 后 straight_join 控制无效
+explain basic select /*+leading(t5,t4,t3,t2,t1)*/ t1.c1 from t1 straight_join t2 straight_join t3 straight_join t4 straight_join t5;
+explain basic select /*+leading(t5,t4,t3,t2,t1)*/ straight_join t1.c1 from t1,t4,t3,t5,t2 where t5.c1 = t1.c1 and t4.c1 = t2.c1 and t3.c1 = t5.c1 and t3.c2 = t4.c1;
+explain basic update /*+leading(t1,t5)*/ t5 straight_join t1 set t1.c2 = null, t5.c2 = null where t1.c1 = t5.c1;
+explain basic delete /*+leading(t1,t5)*/ t5 from t5 straight_join t1 where t1.c1 = t5.c1;
+
+--echo straight_join 出现在视图中
+explain basic select t1.c1 from t1, (select t2.c1 from t5,t4,t3,t2 where t5.c1 = t2.c1) as v where t1.c1 = v.c1;
+explain basic select t1.c1 from t1, (select straight_join t2.c1 from t5,t4,t3,t2 where t5.c1 = t2.c1) as v where t1.c1 = v.c1;
+explain basic select t1.c1 from t1, (select t2.c1 from t5 straight_join t4 straight_join t3 straight_join t2 where t5.c1 = t2.c1) as v where t1.c1 = v.c1;
+explain extended_noaddr select t1.c1 from t1, (select straight_join t2.c1 from t5,t4,t3,t2 where t5.c1 = t2.c1) as v where t1.c1 = v.c1;
+
+--echo 测试反拼
+create view v1 as select t1.c1 from t1 straight_join t2 straight_join t3 straight_join t4 straight_join t5;
+create view v2 as select distinct straight_join t1.c1 from t1,t2,t3,t4,t5;
+show create view v1;
+show create view v2;
+
+--echo 生成 partial leading Hint
+explain extended_noaddr select t1.c1 from t1 straight_join t2, t3, t4 straight_join t5 where t5.c1 = t1.c1;
+explain extended_noaddr select t1.c1 from t1 straight_join t2 straight_join t3, t5 left join t4 on (1=1) where t5.c1 = t1.c1;
+
+drop table t1,t2,t3,t4,t5;
+drop view v1,v2;

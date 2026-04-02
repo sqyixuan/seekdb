@@ -1,0 +1,248 @@
+#owner: luofan.zp
+#owner group: sql1
+# tags: optimizer
+##
+## Test Name: plan_cache_generated_column
+##
+## Scope: Test plan cache for sql with generated columns
+##
+## INFO:  if you want to add case; you should read ../README.md;
+#         don't use sys tenant, because when parallel run on obfarm, the hit_count can't be expected;
+#         so we use new tenant, new plan cache will be  used for this case only;
+##
+##
+## Date: 2018-9-08
+##
+connect (conn_admin, $OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection conn_admin;
+
+--disable_info
+--disable_metadata
+--disable_abort_on_error
+
+--enable_query_log
+--sleep 3
+
+alter system flush plan cache global;
+alter system set large_query_threshold = '1s';
+
+--sleep 3
+--enable_query_log
+--enable_result_log
+connection default;
+select effective_tenant();
+--disable_query_log
+--disable_result_log
+
+--disable_warnings
+drop database if exists xy_db;
+--enable_warnings
+create database xy_db;
+use xy_db;
+
+--disable_warnings
+drop table if exits test_gen;
+
+--enable_query_log
+create table test_gen (a bigint, b bigint, c bigint,
+                       d bigint as (a + 1), e bigint as (a + 2 + b + 3), f bigint as (4 + 5 + 6 + 7),
+		       index idx_d(d), index idx_e(e), index idx_f(f));
+
+--echo ************************************ Case 1 Single const param *****************************************
+
+--disable_result_log
+--enable_query_log
+--echo
+select a from test_gen where a + 1 > 0;
+
+--echo
+--enable_result_log
+explain select a from test_gen where a + 1 > 0;
+
+--echo
+--echo // expect 0
+--disable_warnings
+select hit_count from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'select a from test_gen where a + ? > ?';
+
+--echo
+--disable_result_log
+select a from test_gen where a + 2 > 0;
+--echo
+--enable_result_log
+explain select a from test_gen where a + 2 > 0;
+
+--echo
+--echo // should generate a new plan, expect 0, 0
+select hit_count from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'select a from test_gen where a + ? > ?';
+
+--echo
+--disable_result_log
+select a from test_gen where a + 3 > 0;
+--echo
+--enable_result_log
+explain select a from test_gen where a + 3 > 0;
+--echo
+--echo // should hit the second plan, expect 0, 1
+select hit_count from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'select a from test_gen where a + ? > ?';
+
+--echo
+--disable_result_log
+select a from test_gen where a + 1 > 0;
+--echo
+--enable_result_log
+explain select a from test_gen where a + 1 > 0;
+--echo
+--echo // should hit the first plan, expect 1, 1
+select hit_count from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'select a from test_gen where a + ? > ?';
+
+--echo
+--echo ************************************ Case 2 Multi const params *****************************************
+
+--echo
+--disable_result_log
+select * from test_gen where a + 2 + b + 3 < 10;
+--echo
+--enable_result_log
+explain select * from test_gen where a + 2 + b + 3 < 10;
+
+--echo
+--echo // epxect 0
+select hit_count from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'select * from test_gen where a + ? + b + ? < ?';
+
+--echo
+--disable_result_log
+select * from test_gen where a + 2 + b + 4 < 10;
+--echo
+--enable_result_log
+explain select * from test_gen where a + 2 + b + 4 < 10;
+
+--echo
+--echo // new plan should be genetated, expect 0, 0
+select hit_count from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'select * from test_gen where a + ? + b + ? < ?';
+
+--echo
+--disable_result_log
+select * from test_gen where a + 3 + b + 3 < 10;
+--echo
+--enable_result_log
+explain select * from test_gen where a + 3 + b + 3 < 10;
+
+--echo
+--echo // hit the second plan, expect 0, 1
+select hit_count from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'select * from test_gen where a + ? + b + ? < ?';
+
+--echo
+--disable_result_log
+select * from test_gen where a + 2 + b + 3 < 10;
+
+--enable_result_log
+--echo
+--echo // hit the first plan, expect 1, 1
+select hit_count from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'select * from test_gen where a + ? + b + ? < ?';
+
+--echo
+--echo ************************************ Case 3 Just const params *****************************************
+
+--echo
+--disable_result_log
+select * from test_gen where 4 + 5 + 6 + 7 > 0;
+
+--enable_result_log
+--echo
+--echo // new plan, expect 0,0
+select hit_count from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'select * from test_gen where ? + ? + ? + ? > ?';
+
+--echo
+--disable_result_log
+select * from test_gen where 4 + 5 + 6 + 8 > 0;
+
+--enable_result_log
+--echo
+--echo // hit plan, expect 1,1
+select hit_count from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'select * from test_gen where ? + ? + ? + ? > ?';
+
+--echo
+--disable_result_log
+select * from test_gen where 4 + 5 + 7 + 7 > 0;
+
+--enable_result_log
+--echo
+--echo // hit plan, expect 2,2
+select hit_count from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'select * from test_gen where ? + ? + ? + ? > ?';
+
+--echo
+--disable_result_log
+select * from test_gen where 4 + 5 + 6 + 7 > 100;
+
+--enable_result_log
+--echo
+--echo // new plan, expect 2, 0,2,0
+select hit_count from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'select * from test_gen where ? + ? + ? + ? > ?';
+
+--echo
+--disable_result_log
+select * from test_gen where 4 + 5 + 6 + 7 > 120;
+
+--enable_result_log
+--echo
+--echo // hit second plan, expect 2, 1, 2,1
+select hit_count from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'select * from test_gen where ? + ? + ? + ? > ?';
+
+--echo
+--echo ************************************ Case 4 Complicated Case *****************************************
+
+--echo
+--disable_result_log
+select * from test_gen where (a + 1 > 0 and a + 1 < 10) or (a + 2 > 0 and a + 1 < 10) or (a + 2 + b + 3 > 0) or (a + 3 + b + 3 < 10);
+
+--echo
+--enable_result_log
+--echo // expect 0
+select hit_count from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'select * from test_gen where (a + ? > ? and a + ? < ?) or (a + ? > ? and a + ? < ?) or (a + ? + b + ? > ?) or (a + ? + b + ? < ?)';
+
+--echo
+--disable_result_log
+select * from test_gen where (a + 1 > 0 and a + 2 < 10) or (a + 2 > 0 and a + 1 < 10) or (a + 2 + b + 3 > 0) or (a + 3 + b + 3 < 10);
+
+--echo
+--enable_result_log
+--echo // new plan should be generated, expect 0, 0
+select hit_count from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'select * from test_gen where (a + ? > ? and a + ? < ?) or (a + ? > ? and a + ? < ?) or (a + ? + b + ? > ?) or (a + ? + b + ? < ?)';
+
+--echo
+--disable_result_log
+select * from test_gen where (a + 1 > 0 and a + 1 < 10) or (a + 2 > 0 and a + 1 < 10) or (a + 2 + b + 3 > 0) or (a + 3 + b + 4 < 10);
+
+--echo
+--enable_result_log
+--echo // the changed const param is not in generated column, should hit the first plan, expect 1, 0
+select hit_count from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'select * from test_gen where (a + ? > ? and a + ? < ?) or (a + ? > ? and a + ? < ?) or (a + ? + b + ? > ?) or (a + ? + b + ? < ?)';
+
+--echo
+--disable_result_log
+select * from test_gen where (a + 1 > 0 and a + 3 < 10) or (a + 2 > 0 and a + 1 < 10) or (a + 2 + b + 3 > 0) or (a + 3 + b + 4 < 10);
+
+--echo
+--enable_result_log
+--echo // should hit the second plan, expect 1, 1
+select hit_count from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'select * from test_gen where (a + ? > ? and a + ? < ?) or (a + ? > ? and a + ? < ?) or (a + ? + b + ? > ?) or (a + ? + b + ? < ?)';
+
+--echo
+--disable_result_log
+select * from test_gen where (a + 1 > 0 and a + 3 < 10) or (a + 2 > 0 and a + 2 < 10) or (a + 2 + b + 3 > 0) or (a + 3 + b + 4 < 10);
+
+--echo
+--enable_result_log
+--echo // new plan should be generated, expect 1, 1, 0
+select hit_count from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'select * from test_gen where (a + ? > ? and a + ? < ?) or (a + ? > ? and a + ? < ?) or (a + ? + b + ? > ?) or (a + ? + b + ? < ?)';
+--enable_warnings
+
+--echo ****************************** cleanup ******************************
+--disable_result_log
+--disable_warnings
+drop database if exists xy_db;
+--enable_warnings
+# using admin acount
+connection conn_admin;
+
+alter system set large_query_threshold = '100ms';

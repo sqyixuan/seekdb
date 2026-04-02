@@ -46,7 +46,7 @@ void ObScheduleBatchSizeMgr::get_rs_check_batch_size(
 
 int64_t ObScheduleBatchSizeMgr::get_inner_table_scan_batch_size() const
 {
-  return std::max(static_cast<int64_t>(1), (tablet_batch_size_ / DEFAULT_TABLET_BATCH_CNT)) * DEFAULT_INNER_TABLE_SCAN_BATCH_SIZE;
+  return std::max(1L, (tablet_batch_size_ / DEFAULT_TABLET_BATCH_CNT)) * DEFAULT_INNER_TABLE_SCAN_BATCH_SIZE;
 }
 
 bool ObScheduleBatchSizeMgr::need_rebuild_map(
@@ -59,8 +59,8 @@ bool ObScheduleBatchSizeMgr::need_rebuild_map(
   int64_t map_cnt = std::max(item_cnt / 3, default_map_bucket_cnt);
   recommend_map_bucked_cnt = std::min(map_cnt, default_map_bucket_cnt * 30);
   if ((cur_bucket_cnt == 0)
-    || (cur_bucket_cnt < recommend_map_bucked_cnt / 2)
-    || (cur_bucket_cnt > recommend_map_bucked_cnt * 3)) {
+    || (recommend_map_bucked_cnt < map_cnt / 2)
+    || (recommend_map_bucked_cnt > map_cnt * 3)) {
     rebuild_map_flag = true;
   }
   return rebuild_map_flag;

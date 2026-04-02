@@ -1,0 +1,41 @@
+# owner: rongxuan.lc
+# description:
+# 本case是为了验证在locality变更过程中，readonly@all的变更是否会因为宕机导致误判变更完成；
+# project/81079/issue/11706441
+#
+ob1=OBI(cluster=2:2:2, proxy_num=0, ct_num=0);
+ob1.reboot;
+ob1.mysql alter system set enable_auto_leader_switch = 'False';
+ob1.mysql alter system set server_data_copy_out_concurrency = 500;
+ob1.mysql alter system set enable_rebalance = 'false';
+ob1.mysql alter system set server_data_copy_in_concurrency = 500;
+ob1.mysql alter system set data_copy_concurrency = 500;
+ob1.mysql alter system set balancer_idle_time = '10s';
+
+let $case_index = 1;
+let $unit_num = 1;
+let $locality= 'F@z1,F@z2,F@z3';
+source include/create_tenant.inc;
+ob1.create_client tenant=tenant_1,user=root,passwd=,database=test;
+create table test(c1 int primary key, c2 int) partition by hash(c1) partitions 3;
+
+#查找z3上面的unit;
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from __all_tenant where tenant_name = 'tenant_1', tenant_id, 1);
+let $resource_pool_id = deploy_get_value(ob1.select select resource_pool_id from __all_resource_pool where tenant_id = $tenant_id, resource_pool_id, 1);
+let $addr_unit = deploy_get_value(ob1.select select concat(svr_ip,":",svr_port) addr from __all_unit where resource_pool_id = $resource_pool_id and zone = 'z2', addr, 1);
+ob1.mysql alter resource pool pool_1 unit_num = 2;
+ob1.mysql alter tenant tenant_1 set locality='F@z1,F@z2,F@z3, R{all_server}@z3';
+ob1.check_until_timeout select count(*) c from __all_rootservice_job where job_status like 'SUCCESS' , 1, 240; 
+#当机一台obs;
+ob1.mysql alter tenant tenant_1 set locality='F@z1,F@z2, R{all_server}@z2,F@z3, R{all_server}@z3';
+let $addr = deploy_get_value(ob1.select select concat(svr_ip,":",svr_port) addr from __all_unit where resource_pool_id = $resource_pool_id and zone = 'z2'  and concat(svr_ip,":",svr_port) != '$addr_unit', addr, 1); 
+let $obi = deploy_get_value(ob1.get_obs_by_addr $addr);
+$obi.force_stop;
+sleep 90;
+ob1.check_until_timeout select count(*) c from __all_rootservice_job where job_status like 'SUCCESS' , 1, 240; 
+ob1.mysql alter system set server_permanent_offline_time = '20s';
+ob1.mysql alter system set balance_blacklist_failure_threshold =0;
+sleep 90;
+ob1.check_until_timeout select count(*) c from __all_rootservice_job where job_status like 'SUCCESS' , 1, 240; 
+$obi.start;
+ob1.check_until_timeout select count(*) c from __all_rootservice_job where job_status like 'SUCCESS' , 2, 240; 

@@ -1,0 +1,236 @@
+drop table t1;
+drop table t2;
+drop table t3;
+drop table t4;
+drop table t5;
+create table t1(c1 int, c2 int, c3 int);
+create table t2(c1 int primary key, c2 int, c3 int);
+create table t3(c1 int, c2 int, c3 int) partition by hash(c3) partitions 4;
+create table t4(c1 varchar(10) primary key, c2 varchar(10), c3 varchar(10));
+create index i4_1 on t4(c3);
+create table t5(c1 varchar(10), c2 varchar(10)) partition by range(c2) (partition p0 values less than('b'), partition p1 values less than(MAXVALUE));
+insert into t1 values (1,1,1),(2,2,2);
+insert into t4 values('a','a','a');
+insert into t4 values('b','b','b');
+insert into t5 values('a','a');
+insert into t5 values('c','c');
+explain_protocol: 0
+result_format: 4
+alter system flush plan cache global;
+
+**********test true/false constraint**********
+hit plan with true constraint
+select * from t1 where 1 = 1 and 2 = 2;
+select * from t1 where 0 = 0 and 2 = 2;
+hit plan with false constraint
+select * from t1 where 1 = 1 and 2 = 0;
+select * from t1 where 0 = 0 and 2 = 0;
+select * from t1 where 2 = 1 and 0 = 0;
+select * from t1 where 3 = 0 and 2 = 2;
+select * from t1 where 2 = 1 and 2 = 0;
+select * from t1 where 2 = 0 and 2 = 0;
+expect generate 2 plan
+select sql_id, hit_count, type, query_sql from GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'select * from t1 where ? = ? and ? = ?';
++----------------------------------+-----------+------+----------------------------------------+
+| SQL_ID                           | HIT_COUNT | TYPE | QUERY_SQL                              |
++----------------------------------+-----------+------+----------------------------------------+
+| D685DF52D9A01CF8193B45BED9D46B2F |         1 |    1 | select * from t1 where ? = ? and ? = ? |
+| D685DF52D9A01CF8193B45BED9D46B2F |         1 |    2 | select * from t1 where 1 = 1 and 2 = 2 |
+| D685DF52D9A01CF8193B45BED9D46B2F |         5 |    1 | select * from t1 where 1 = 1 and 2 = 0 |
++----------------------------------+-----------+------+----------------------------------------+
+
+
+**********test pre calculate error constraint**********
+query execute error expect timeout will not count in plancache hint count
+generate pre calculate error paln first
+select 100/0 from t1;
+select 100/1 from t1;
+select 200/0 from t1;
+select 200/0 from t1;
+select 200/1 from t1;
+select 200/1 from t1;
+## expect generate 1 plan
+select sql_id, hit_count, type, query_sql from GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'select ?/? from t1';
++----------------------------------+-----------+------+----------------------+
+| SQL_ID                           | HIT_COUNT | TYPE | QUERY_SQL            |
++----------------------------------+-----------+------+----------------------+
+| 74AE9A343D03DA7853F1320A76761E74 |         5 |    1 | select 100/0 from t1 |
+| 74AE9A343D03DA7853F1320A76761E74 |         5 |    2 | select 100/0 from t1 |
++----------------------------------+-----------+------+----------------------+
+
+generate pre calculate success paln first
+select 100/1 from t1 where c1 < 5;
+select 100/0 from t1 where c1 < 5;
+select 200/0 from t1 where c1 < 5;
+select 200/0 from t1 where c1 < 5;
+select 200/1 from t1 where c1 < 5;
+select 200/1 from t1 where c1 < 5;
+## expect generate 1 plan
+select sql_id, hit_count, type, query_sql from GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'select ?/? from t1 where c1 < ?';
++----------------------------------+-----------+------+-----------------------------------+
+| SQL_ID                           | HIT_COUNT | TYPE | QUERY_SQL                         |
++----------------------------------+-----------+------+-----------------------------------+
+| F47323FA01D6B6525BAD2CC74AB4FFEF |         5 |    1 | select 100/1 from t1 where c1 < 5 |
+| F47323FA01D6B6525BAD2CC74AB4FFEF |         5 |    2 | select 100/1 from t1 where c1 < 5 |
++----------------------------------+-----------+------+-----------------------------------+
+
+multi err constraint
+select 100/1, 50/1 from t1;
+select 100/0, 50/1 from t1;
+select 100/1, 50/0 from t1;
+select 100/0, 50/0 from t1;
+select 100/1, 50/1 from t1;
+select 100/1, 50/1 from t1;
+select 100/0, 50/1 from t1;
+select 100/0, 50/1 from t1;
+select 100/1, 50/0 from t1;
+select 100/1, 50/0 from t1;
+select 100/0, 50/0 from t1;
+select 100/0, 50/0 from t1;
+## expect generate 1 plan
+select sql_id, hit_count, type, query_sql from GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'select ?/?, ?/? from t1';
++----------------------------------+-----------+------+----------------------------+
+| SQL_ID                           | HIT_COUNT | TYPE | QUERY_SQL                  |
++----------------------------------+-----------+------+----------------------------+
+| 1E10635740240F1F2E5E95DED517B07E |        11 |    1 | select 100/1, 50/1 from t1 |
+| 1E10635740240F1F2E5E95DED517B07E |        11 |    2 | select 100/1, 50/1 from t1 |
++----------------------------------+-----------+------+----------------------------+
+
+pre calculate error when extract query range, add constraint
+select * from t2 where c1 > 100/0;
+select * from t2 where c1 > 100/1;
+select * from t2 where c1 > 200/0;
+select * from t2 where c1 > 200/1;
+select * from t2 where c1 > 300/0;
+## expect generate 2 plan
+select sql_id, hit_count, type, query_sql from GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'select * from t2 where c1 > ?/?';
++----------------------------------+-----------+------+-----------------------------------+
+| SQL_ID                           | HIT_COUNT | TYPE | QUERY_SQL                         |
++----------------------------------+-----------+------+-----------------------------------+
+| 1AFB26CC1DA5441115D00D57EC627EF5 |         1 |    1 | select * from t2 where c1 > ?/?   |
+| 1AFB26CC1DA5441115D00D57EC627EF5 |         1 |    2 | select * from t2 where c1 > 100/1 |
+| 1AFB26CC1DA5441115D00D57EC627EF5 |         2 |    1 | select * from t2 where c1 > ?/?   |
+| 1AFB26CC1DA5441115D00D57EC627EF5 |         2 |    2 | select * from t2 where c1 > 100/0 |
++----------------------------------+-----------+------+-----------------------------------+
+
+pre calculate error when rewrite or calc selectivity, do not add constraint
+select * from t2 where c2 > 100/0;
+select * from t2 where c2 > 100/1;
+select * from t2 where c2 > 200/0;
+select * from t2 where c2 > 200/1;
+select * from t2 where c2 > 300/0;
+## expect generate 1 plan
+select sql_id, hit_count, type, query_sql from GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'select * from t2 where c2 > ?/?';
++----------------------------------+-----------+------+-----------------------------------+
+| SQL_ID                           | HIT_COUNT | TYPE | QUERY_SQL                         |
++----------------------------------+-----------+------+-----------------------------------+
+| 9B01F94863239336BAC6BDEF1F512301 |         4 |    1 | select * from t2 where c2 > ?/?   |
+| 9B01F94863239336BAC6BDEF1F512301 |         4 |    2 | select * from t2 where c2 > 100/0 |
++----------------------------------+-----------+------+-----------------------------------+
+
+pre calculate error when calc table location, failed to generate plan
+select * from t3 where c3 = 100/1;
+select * from t3 where c3 = 100/0;
+select * from t3 where c3 = 200/1;
+select * from t3 where c3 = 200/0;
+select * from t3 where c3 = 300/1;
+## expect generate 1 plan
+select sql_id, hit_count, type, query_sql from GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'select * from t3 where c3 = ?/?';
++----------------------------------+-----------+------+-----------------------------------+
+| SQL_ID                           | HIT_COUNT | TYPE | QUERY_SQL                         |
++----------------------------------+-----------+------+-----------------------------------+
+| 3F036C101AB6E8639CA559B10EE8FAB8 |         2 |    1 | select * from t3 where c3 = ?/?   |
+| 3F036C101AB6E8639CA559B10EE8FAB8 |         2 |    2 | select * from t3 where c3 = 100/1 |
++----------------------------------+-----------+------+-----------------------------------+
+
+
+**********test precise constraint**********
+test like pattern precise constraint, only add constraint when the pattern is used to extract query range
+like pattern used to extract query range, non-precise plan first
+select * from t4 where c1 like '%a';
+select * from t4 where c1 like 'a%';
+select * from t4 where c1 like 'b%';
+select * from t4 where c1 like '%b';
+select * from t4 where c1 like 'c%';
+## expect generate 2 plan
+select sql_id, hit_count, type, query_sql from GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'select * from t4 where c1 like ?';
++----------------------------------+-----------+------+-------------------------------------+
+| SQL_ID                           | HIT_COUNT | TYPE | QUERY_SQL                           |
++----------------------------------+-----------+------+-------------------------------------+
+| C0D9C5DA8E84829D729E8C019229C63E |         1 |    1 | select * from t4 where c1 like ?    |
+| C0D9C5DA8E84829D729E8C019229C63E |         1 |    2 | select * from t4 where c1 like '%a' |
+| C0D9C5DA8E84829D729E8C019229C63E |         2 |    1 | select * from t4 where c1 like ?    |
+| C0D9C5DA8E84829D729E8C019229C63E |         2 |    2 | select * from t4 where c1 like 'a%' |
++----------------------------------+-----------+------+-------------------------------------+
+
+like pattern used to extract query range of final access path, precise plan first
+(%a,a%) will hit the (%a,%a) plan
+select * from t4 where c1 like 'a%' and c3 like 'b%';
+select * from t4 where c1 like '%a' and c3 like '%b';
+select * from t4 where c1 like 'a%' and c3 like '%b';
+select * from t4 where c1 like '%a' and c3 like 'b%';
+select * from t4 where c1 like '%b' and c3 like '%c';
+select * from t4 where c1 like '%b' and c3 like 'c%';
+## expect generate 2 plan
+select sql_id, hit_count, type, query_sql from GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'select * from t4 where c1 like ? and c3 like ?';
++----------------------------------+-----------+------+------------------------------------------------------+
+| SQL_ID                           | HIT_COUNT | TYPE | QUERY_SQL                                            |
++----------------------------------+-----------+------+------------------------------------------------------+
+| 621A0D7525B513BAF7D28ABF6144E51D |         1 |    1 | select * from t4 where c1 like ? and c3 like ?       |
+| 621A0D7525B513BAF7D28ABF6144E51D |         1 |    2 | select * from t4 where c1 like 'a%' and c3 like 'b%' |
+| 621A0D7525B513BAF7D28ABF6144E51D |         3 |    1 | select * from t4 where c1 like ? and c3 like ?       |
+| 621A0D7525B513BAF7D28ABF6144E51D |         3 |    2 | select * from t4 where c1 like '%a' and c3 like '%b' |
++----------------------------------+-----------+------+------------------------------------------------------+
+
+like pattern used to extract query range, add constraint
+select * from t4 where c1 like concat('a','%');
+select * from t4 where c1 like concat('%','a');
+select * from t4 where c1 like concat('b','%');
+select * from t4 where c1 like concat('%','b');
+select * from t4 where c1 like concat('c','%');
+## expect generate 2 plan
+select sql_id, hit_count, type, query_sql from GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'select * from t4 where c1 like concat(?,?)';
++----------------------------------+-----------+------+------------------------------------------------+
+| SQL_ID                           | HIT_COUNT | TYPE | QUERY_SQL                                      |
++----------------------------------+-----------+------+------------------------------------------------+
+| 350E1E079E329EA1FCFBF1F488718C65 |         1 |    1 | select * from t4 where c1 like concat(?,?)     |
+| 350E1E079E329EA1FCFBF1F488718C65 |         1 |    2 | select * from t4 where c1 like concat('%','a') |
+| 350E1E079E329EA1FCFBF1F488718C65 |         2 |    1 | select * from t4 where c1 like concat(?,?)     |
+| 350E1E079E329EA1FCFBF1F488718C65 |         2 |    2 | select * from t4 where c1 like concat('a','%') |
++----------------------------------+-----------+------+------------------------------------------------+
+
+like pattern in normal predicate, do not add constraint
+select * from t4 where c2 like concat('a','%');
+select * from t4 where c2 like concat('%','a');
+select * from t4 where c2 like concat('b','%');
+select * from t4 where c2 like concat('%','b');
+select * from t4 where c2 like concat('c','%');
+## expect generate 1 plan
+select sql_id, hit_count, type, query_sql from GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'select * from t4 where c2 like concat(?,?)';
++----------------------------------+-----------+------+------------------------------------------------+
+| SQL_ID                           | HIT_COUNT | TYPE | QUERY_SQL                                      |
++----------------------------------+-----------+------+------------------------------------------------+
+| B7B8FC10C24D787184CBB420847E9F60 |         4 |    1 | select * from t4 where c2 like concat(?,?)     |
+| B7B8FC10C24D787184CBB420847E9F60 |         4 |    2 | select * from t4 where c2 like concat('a','%') |
++----------------------------------+-----------+------+------------------------------------------------+
+
+like pattern used to calc table location, do not add constraint
+select * from t5 where c2 like concat('a','%');
+select * from t5 where c2 like concat('a','%a');
+select * from t5 where c2 like concat('c','%');
+select * from t5 where c2 like concat('c','%b');
+select * from t5 where c2 like concat('d','%');
+## expect generate 1 plan
+select sql_id, hit_count, type, query_sql from GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'select * from t5 where c2 like concat(?,?)';
++----------------------------------+-----------+------+------------------------------------------------+
+| SQL_ID                           | HIT_COUNT | TYPE | QUERY_SQL                                      |
++----------------------------------+-----------+------+------------------------------------------------+
+| 8693D0087FDDF1029713491DF5641984 |         4 |    1 | select * from t5 where c2 like concat(?,?)     |
+| 8693D0087FDDF1029713491DF5641984 |         4 |    2 | select * from t5 where c2 like concat('a','%') |
++----------------------------------+-----------+------+------------------------------------------------+
+
+drop table t1;
+drop table t2;
+drop table t3;
+drop table t4;
+drop table t5;

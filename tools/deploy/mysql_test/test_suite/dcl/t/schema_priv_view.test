@@ -1,0 +1,180 @@
+# owner: sean.yyj
+# owner group: sql3
+# tags: resolver
+# test schema privileges in mysql mode
+
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+
+--disable_warnings
+connect(grantuser,$OBMYSQL_MS0,admin,admin,*NO-ONE*,$OBMYSQL_PORT);
+
+--let $usernum=10
+--let $dbnum=5
+--let $tablenum=5
+
+################create user#################
+--let $count = 0
+while($count < $usernum)
+{
+  --let $stmt=drop user u$count
+  --error 0, 1396
+  eval $stmt;
+  --let $stmt=create user "u$count" identified by "passu$count"
+  eval $stmt;
+  inc $count;
+}
+
+################create db and table#################
+--let $countdb = 0
+while($countdb < $dbnum)
+{
+  --let $stmt=drop database if exists d$countdb
+  eval $stmt;
+  --let $stmt=create database d$countdb
+  eval $stmt;
+  --let $stmt=use d$countdb
+  eval $stmt;
+
+  --let $counttable=0
+  while($counttable < $tablenum)
+  {
+    --let $stmt=create table t$counttable(c1 int, c2 int)
+    eval $stmt;
+    inc $counttable;
+  }
+  inc $countdb;
+}
+
+--enable_query_log
+--enable_warnings
+
+################ grant privileges #################
+
+##### u0 具有部分权限， u1 具有部分权限， u2 具有所有权限， u3 只有mysql的部分权限， u4 有mysql的select权限，u5具有user level的select权限，u9做特殊场景测试
+
+--echo grant privileges
+grant alter, create, delete, drop, insert on d0.* to u0 with grant option;
+grant update, select, index, create view, show view on d1.* to u1;
+grant all privileges on d2.* to u2;
+grant alter, create, delete, drop, insert on mysql.* to u3;
+grant select on mysql.* to u4;
+grant select on *.* to u5;
+
+connect(u0,$OBMYSQL_MS0,u0,passu0,*NO-ONE*,$OBMYSQL_PORT);
+--sorted_result
+select * from information_schema.schema_privileges;
+connect(u1,$OBMYSQL_MS0,u1,passu1,*NO-ONE*,$OBMYSQL_PORT);
+--sorted_result
+select * from information_schema.schema_privileges;
+connect(u2,$OBMYSQL_MS0,u2,passu2,*NO-ONE*,$OBMYSQL_PORT);
+--sorted_result
+select * from information_schema.schema_privileges;
+connect(u3,$OBMYSQL_MS0,u3,passu3,*NO-ONE*,$OBMYSQL_PORT);
+--sorted_result
+select * from information_schema.schema_privileges;
+connect(u4,$OBMYSQL_MS0,u4,passu4,*NO-ONE*,$OBMYSQL_PORT);
+--sorted_result
+select * from information_schema.schema_privileges;
+connect(u5,$OBMYSQL_MS0,u5,passu5,*NO-ONE*,$OBMYSQL_PORT);
+--sorted_result
+select * from information_schema.schema_privileges;
+
+################ schema privileges column check ####################
+show columns from information_schema.schema_privileges;
+
+################test schema privileges#################
+--echo user no privilege, output nothing
+connect(u9,$OBMYSQL_MS0,u9,passu9,*NO-ONE*,$OBMYSQL_PORT);
+--sorted_result
+select * from information_schema.schema_privileges;
+
+--echo user has 'mysql' other privileges, output nothing
+connection grantuser;
+grant insert, alter, update on mysql.* to u9;
+connection u9;
+--sorted_result
+select * from information_schema.schema_privileges;
+
+--echo user has 'mysql' select privilege, output all schema privilege, 并且立即生效
+connection grantuser;
+grant select on mysql.* to u9;
+connection u9;
+--sorted_result
+select * from information_schema.schema_privileges;
+
+################ 断连接重连的原因是，session中user_level权限暂时不支持异步更新 ##########################
+
+--echo user has user level other privilege, output nothing
+
+connection grantuser;
+revoke select on mysql.* from u9;
+grant insert, alter, update on *.* to u9;
+connection u9;
+
+--echo !!! 此时 u9 的权限检查条件为false, 此时应该生成一个plan cache 1
+
+--sorted_result
+select * from information_schema.schema_privileges;
+disconnect u9;
+connect(u9,$OBMYSQL_MS0,u9,passu9,*NO-ONE*,$OBMYSQL_PORT);
+
+--echo !!! 此时 u9 的权限检查条件为false, 此时应该复用一个plan cache 1？？
+
+--sorted_result
+select * from information_schema.schema_privileges;
+
+--echo user has user level select privilege, output all table privilege
+connection grantuser;
+grant select on *.* to u9;
+connection u9;
+
+--echo !!! 此时 u9 的权限没有更新，理论上检查条件为false, 此时应该复用plan cache 1
+
+--sorted_result
+select * from information_schema.schema_privileges;
+disconnect u9;
+connect(u9,$OBMYSQL_MS0,u9,passu9,*NO-ONE*,$OBMYSQL_PORT);
+
+--echo !!! 此时 u9 的权限更新，理论上检查条件为true, 此时应该生成plan cache 2
+--sorted_result
+select * from information_schema.schema_privileges;
+
+--echo user has normal database privileges, 并且立即生效
+disconnect u9;
+connection grantuser;
+revoke select, insert, alter, update on *.* from u9;
+connect(u9,$OBMYSQL_MS0,u9,passu9,*NO-ONE*,$OBMYSQL_PORT);
+
+connection grantuser;
+grant alter, create, delete, drop on d1.* to u9 with grant option;
+connection u9;
+--sorted_result
+select * from information_schema.schema_privileges;
+
+connection grantuser;
+grant insert, update, select, index, create view, show view on d2.* to u4;
+connection u9;
+--sorted_result
+select * from information_schema.schema_privileges;
+
+--disable_query_log
+--disable_warnings
+
+connection grantuser;
+
+--let $countdb = 0
+while($countdb < $dbnum)
+{
+  --let $stmt=drop database if exists d$countdb
+  eval $stmt;
+  inc $countdb;
+}
+
+--let $count = 0
+while($count < $usernum)
+{
+  --let $stmt=drop user u$count
+  eval $stmt;
+  inc $count;
+}

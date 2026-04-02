@@ -566,12 +566,6 @@ public:
     return OB_NOT_SUPPORTED;
   }
 
-  virtual int table_advance_scan(ObVTableScanParam &param, ObNewRowIterator *result)
-  {
-    UNUSEDx(param, result);
-    return OB_NOT_SUPPORTED;
-  }
-
   virtual int reuse_scan_iter(const bool switch_param, ObNewRowIterator *iter)
   {
     UNUSEDx(switch_param, iter);

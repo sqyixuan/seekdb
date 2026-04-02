@@ -46,7 +46,7 @@ public:
   using PieceMsgListener = ObReportingWFPieceMsgListener;
   using PieceMsgCtx = ObReportingWFPieceMsgCtx;
 public:
-  ObReportingWFPieceMsg() : pby_hash_value_array_(){}
+  ObReportingWFPieceMsg() : pby_hash_value_array_(NULL){}
   ~ObReportingWFPieceMsg() = default;
   void reset()
   {

@@ -1,0 +1,235 @@
+# owner:shanyan.g
+# owner group:transaction
+# description:
+# 测试点：复制表的相关测试
+##
+ob1=OBI(cluster=1:1:1,proxy_num=0,init_unit_cpu=5);
+ob1.reboot;
+
+ob1.mysql create resource pool rp1 unit = 'sys_unit_config', unit_num = 1, zone_list = ('z1', 'z2', 'z3');
+ob1.mysql create tenant duplicate_tenant replica_num 3, primary_zone 'z1', resource_pool_list ('rp1'), locality = "F@z1,F@z2,F@z3" set ob_tcp_invited_nodes='%';
+
+sleep 10;
+
+ob1.mysql alter system set enable_auto_leader_switch = false;
+
+#在zone1上建立连接
+let $ip=deploy_get_value(ob1.z1.obs0.ip);
+let $port=deploy_get_value(ob1.z1.obs0.mysql_port);
+connect (conn1,$ip,root@duplicate_tenant,,test,$port);
+connect (conn_sys,$ip,root@sys,,oceanbase,$port);
+
+#在zone2上建立链接
+let $ip2=deploy_get_value(ob1.z2.obs0.ip);
+let $port2=deploy_get_value(ob1.z2.obs0.mysql_port);
+connect (conn2,$ip2,root@duplicate_tenant,,test,$port2);
+
+#在zone3上建立链接
+let $ip3=deploy_get_value(ob1.z3.obs0.ip);
+let $port3=deploy_get_value(ob1.z3.obs0.mysql_port);
+connect (conn3,$ip3,root@duplicate_tenant,,test,$port3);
+
+#创建table
+connection conn1;
+use test;
+
+###清理旧环境
+--disable_warnings
+drop table if exists t1;
+drop table if exists t2;
+drop table if exists t1_dup;
+drop table if exists t2_dup;
+--enable_warnings
+
+create table t1 (x int, y int);
+create table t2 (x int, y int);
+create table t1_dup (x int, y int) duplicate_scope = 'cluster';
+create table t2_dup (x int, y int) duplicate_scope = 'cluster';
+
+##  初始leader都在zone1
+ob1.z1.obs0.switch_partition duplicate_tenant:test:t1;
+ob1.z1.obs0.switch_partition duplicate_tenant:test:t2;
+ob1.z1.obs0.switch_partition duplicate_tenant:test:t1_dup;
+ob1.z1.obs0.switch_partition duplicate_tenant:test:t2_dup;
+sleep 5;
+ob1.z1.obs0.check_leader duplicate_tenant:test:t1;
+ob1.z1.obs0.check_leader duplicate_tenant:test:t2;
+ob1.z1.obs0.check_leader duplicate_tenant:test:t1_dup;
+ob1.z1.obs0.check_leader duplicate_tenant:test:t2_dup;
+
+insert into t1 values(1, 1), (2, 2), (3, 3), (4, 4);
+insert into t2 values(5, 5), (6, 6), (7, 7), (8, 8);
+insert into t1_dup select * from t1;
+insert into t2_dup select * from t2;
+
+select * from t1;
+select * from t2;
+select * from t1_dup;
+select * from t2_dup;
+select * from t1, t1_dup where t1.x = t1_dup.x;
+select * from t2, t2_dup where t2.x = t2_dup.x;
+
+connection conn2;
+select * from t1;
+select * from t2;
+select * from t1_dup;
+select * from t2_dup;
+select * from t1, t1_dup where t1.x = t1_dup.x;
+select * from t2, t2_dup where t2.x = t2_dup.x;
+
+## 1. 检验复制表的正确性
+## 场景：
+## 对于复制表的更新事务来说，执行写入事务，事务提交返回客户端成功后，
+## 在备机上的读取，要求必须能够读到最新的写入，如果没有读到就是正确性问题
+
+let $test_count = 100;
+
+while ($test_count > 0)
+{
+  ## 首先事务更新数据
+  eval connection conn1;
+  eval update t1_dup set y = y + 1 where x = 1;
+  ## 接着在备机上读取最新update
+  eval connection conn2;
+  eval select * from t1_dup where x = 1;
+  eval connection conn3;
+  eval select * from t1_dup where x = 1;
+  dec $test_count;
+}
+
+connection conn1;
+update t1_dup set y = 1 where x = 1;
+
+let $test_count = 100;
+let $update_count = 10;
+
+while ($test_count > 0)
+{
+  ## 首先事务更新数据，加1加10次
+  eval connection conn1;
+  eval begin;
+  while ($update_count > 0)
+  {
+    eval update t1_dup set y = y + 1 where x = 1;
+    dec $update_count;
+  }
+  let $update_count = 10;
+  eval commit;
+  ## 接着在备机上读取最新update
+  eval connection conn2;
+  eval select * from t1_dup where x = 1;
+  eval connection conn3;
+  eval select * from t1_dup where x = 1;
+  dec $test_count;
+}
+
+connection conn1;
+update t1_dup set y = 1 where x = 1;
+
+## 2。验证备机上复制表读取，在遇到leader切主时的服务能力
+## 在有主改选的情况下，复制表的leader出现切主后，备机上的location cache如果
+## 没有及时更新，会导致lease申请不成功，从而导致副本不可提供读服务。这里验证
+## 服务能力
+## 验证方法：
+## t1表切主到z3，join t1和t1_dup，读取请求执行正常
+## 复制表t1_dup切主，从z1 <-> z2，与此同时，join t1和t1_dup的读取不能受影响，默认语句超时是10s
+## 测试时，join t1和t1_dup的读取分两种场景，分别是本地执行和远程执行
+
+ob1.z3.obs0.switch_partition duplicate_tenant:test:t1;
+sleep 5;
+ob1.z3.obs0.check_leader duplicate_tenant:test:t1;
+
+# 测5次
+let $test_count = 5;
+
+while ($test_count > 0)
+{
+## 本地执行
+connection conn3;
+select * from t1, t1_dup where t1.x = t1_dup.x;
+ob1.z2.obs0.switch_partition duplicate_tenant:test:t1_dup;
+sleep 5;
+ob1.z2.obs0.check_leader duplicate_tenant:test:t1_dup;
+connection conn3;
+select * from t1, t1_dup where t1.x = t1_dup.x;
+
+## 远程执行
+connection conn2;
+select * from t1, t1_dup where t1.x = t1_dup.x;
+ob1.z1.obs0.switch_partition duplicate_tenant:test:t1_dup;
+sleep 5;
+ob1.z1.obs0.check_leader duplicate_tenant:test:t1_dup;
+connection conn2;
+select * from t1, t1_dup where t1.x = t1_dup.x;
+
+dec $test_count;
+}
+
+## leader复原
+ob1.z1.obs0.switch_partition duplicate_tenant:test:t1;
+ob1.z1.obs0.switch_partition duplicate_tenant:test:t2;
+ob1.z1.obs0.switch_partition duplicate_tenant:test:t1_dup;
+ob1.z1.obs0.switch_partition duplicate_tenant:test:t2_dup;
+sleep 5;
+ob1.z1.obs0.check_leader duplicate_tenant:test:t1;
+ob1.z1.obs0.check_leader duplicate_tenant:test:t2;
+ob1.z1.obs0.check_leader duplicate_tenant:test:t1_dup;
+ob1.z1.obs0.check_leader duplicate_tenant:test:t2_dup;
+
+
+## 3. 测试复制表leader切主后的写入服务恢复能力
+## 测试方式：
+## 做有主改选，然后在新主上执行写入
+ob1.z2.obs0.switch_partition duplicate_tenant:test:t1_dup;
+sleep 5;
+ob1.z2.obs0.check_leader duplicate_tenant:test:t1_dup;
+sleep 11;
+connection conn1;
+begin;
+update t1_dup set y = y + 1 where x = 1;
+update t1_dup set y = y + 1 where x = 1;
+commit;
+select * from t1_dup;
+
+connection conn2;
+begin;
+update t1_dup set y = y - 1 where x = 1;
+update t1_dup set y = y - 1 where x = 1;
+commit;
+select * from t1_dup;
+
+ob1.z1.obs0.switch_partition duplicate_tenant:test:t1_dup;
+sleep 5;
+ob1.z1.obs0.check_leader duplicate_tenant:test:t1_dup;
+sleep 11;
+connection conn1;
+begin;
+update t1_dup set y = y + 1 where x = 1;
+update t1_dup set y = y + 1 where x = 1;
+commit;
+select * from t1_dup;
+
+connection conn2;
+begin;
+update t1_dup set y = y - 1 where x = 1;
+update t1_dup set y = y - 1 where x = 1;
+commit;
+select * from t1_dup;
+
+## 4. 测试sql在做普通表和复制表的联合查询的时候的执行计划
+## 测试方法：
+## explain不同场景下的执行计划情况
+connection conn1;
+explain select * from t1, t1_dup where t1.x = t1_dup.x;
+ob1.z2.obs0.switch_partition duplicate_tenant:test:t2;
+sleep 5;
+ob1.z2.obs0.check_leader duplicate_tenant:test:t2;
+explain select * from t2, t2_dup where t2.x = t2_dup.x;
+
+### 清理环境
+--disable_warnings
+drop table if exists t1;
+drop table if exists t2;
+drop table if exists t1_dup;
+drop table if exists t2_dup;
+--enable_warnings

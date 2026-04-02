@@ -1,0 +1,109 @@
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+#owner : biaonian.wcx
+#owner group: storage
+#desc: test partitioned table for storage cache policy
+
+connect (ob_mysql,$OBMYSQL_MS0,root,,test,$OBMYSQL_PORT);
+connection ob_mysql;
+connect (ob_sys,$OBMYSQL_MS0,root@sys,,oceanbase,$OBMYSQL_PORT);
+connection ob_sys;
+let $server_count = query_get_value(SELECT COUNT(*) as server_count FROM oceanbase.__all_server, server_count, 1);
+connection ob_mysql;
+
+let $table_name = basic_sc_part;
+let $target_verified_partitions = 1;
+
+--disable_warnings
+eval drop table if exists $table_name;
+--enable_warnings
+
+eval create table $table_name (
+order_id int,
+order_date date,
+amount decimal(10,2),
+primary key (order_id, order_date)
+) 
+partition by range columns(order_date) (
+partition p2023 values less than ('2024-01-01'),
+partition p2024 values less than ('2025-01-01'),
+partition p2025 values less than ('2026-01-01'),
+partition p2026 values less than ('2027-01-01'),
+partition p_max values less than (MAXVALUE)
+);
+let $part_name = p2023;
+
+eval alter table $table_name alter partition $part_name storage_cache_policy='hot';
+--source mysql_test/include/storage_cache_check_task.inc
+--source mysql_test/include/storage_cache_check_verified_part.inc
+let $table_id = query_get_value(SELECT table_id FROM oceanbase.__all_virtual_table WHERE table_name = '$table_name', table_id, 1);
+if (!$table_id) {
+  --echo ERROR: Table $table_id: $table_name not found
+  exit;
+}
+# Get partition info
+
+let $tablet_id = query_get_value(SELECT tablet_id FROM oceanbase.__all_part WHERE part_name = '$part_name' and table_id = $table_id, tablet_id, 1);
+if (!$tablet_id) {
+  --echo ERROR: Tablet $tablet_id : $part_name in table $table_id: $table_name not found
+  exit;
+}
+let $start_time1 = query_get_value(select max(start_time) as start_time from oceanbase.__all_virtual_storage_cache_task where tablet_id = $tablet_id and status = "FINISHED", start_time, 1);
+
+--echo "=========== test partition step1 finish ==========="
+alter system trigger storage_cache_policy_executor;
+# Get table_id
+
+let $remain_time = 3000;
+while ($remain_time > 0) {
+  # Verify task exists
+  let $task_exist = query_get_value(SELECT COUNT(*) as count FROM oceanbase.__all_virtual_storage_cache_task WHERE tablet_id = $tablet_id AND start_time > '$start_time1', count, 1);
+  if ($task_exist != 0) {
+    let $remain_time = -5;
+  }
+  if ($remain_time > 0) {
+    sleep 1;
+    dec $remain_time;
+  }
+}
+
+if ($remain_time != -5) {
+  --echo ERROR: trigger storage cache policy is not verified, table_name=$table_name, tablet_id=$tablet_id, tablet_id=$tablet_id, start_time1=$start_time1, remain_time=$remain_time
+  exit;
+}
+let $start_time2 = query_get_value(SELECT max(start_time) as start_time FROM oceanbase.__all_virtual_storage_cache_task WHERE tablet_id = $tablet_id AND status = "FINISHED", start_time, 1);
+--echo "=========== test partition step2 finish ==========="
+
+connection ob_sys;
+alter system trigger storage_cache_policy_executor tenant='mysql';
+let $remain_time = 3000;
+while ($remain_time > 0) {
+  # Verify task exists
+  let $task_exist = query_get_value(SELECT COUNT(*) as count FROM oceanbase.__all_virtual_storage_cache_task WHERE tablet_id = $tablet_id AND start_time > '$start_time2', count, 1);
+  if ($task_exist != 0) {
+    let $remain_time = -5;
+  }
+  if ($remain_time > 0) {
+    sleep 1;
+    dec $remain_time;
+  }
+}
+
+if ($remain_time != -5) {
+  --echo ERROR: trigger storage cache policy is not verified, table_name=$table_name, tablet_id=$tablet_id, tablet_id=$tablet_id, start_time1=$start_time1, remain_time=$remain_time
+  exit;
+}
+
+--echo "=========== test partition step3 finish ==========="
+# check wrong ways to use trigger cmd
+connection ob_mysql;
+--error 1235
+alter system trigger storage_cache_policy_executor tenant='oracle';
+
+connection ob_sys;
+--error 1235
+alter system trigger storage_cache_policy_executor;
+
+--error 4179
+alter system trigger storage_cache_policy_executor tenant='sys';

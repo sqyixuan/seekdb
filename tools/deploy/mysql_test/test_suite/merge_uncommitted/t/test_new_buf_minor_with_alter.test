@@ -1,0 +1,206 @@
+# owner: chaser.ch
+# owner group: transaction
+# description: 本case是为了测试在含未提交事务的BufMerge(指定primary key)
+
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+
+set GLOBAL ob_query_timeout = 1000000000000;
+set GLOBAL ob_trx_timeout = 10000000000000;
+set GLOBAL ob_trx_idle_timeout = 10000000000;
+
+connect (conn2,$OBMYSQL_MS0,$OBMYSQL_USR,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connect (conn1,$OBMYSQL_MS0,$OBMYSQL_USR,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connect (conn0,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,oceanbase,$OBMYSQL_PORT);
+
+connection conn0;
+alter system set enable_auto_leader_switch = false;
+
+connection conn1;
+--disable_warnings
+drop table if exists t1;
+--enable_warnings
+
+#建表
+create table t1(num int primary key, str varchar(50), tag int) table_mode='queuing';
+
+connection conn0;
+let $__table_id__=query_get_value(select /*+QUERY_TIMEOUT(10000000)*/ table_id from oceanbase.__all_virtual_table where table_name= 't1', table_id, 1);
+let $__svr_cnt__=query_get_value(select /*+QUERY_TIMEOUT(10000000)*/ count(*) as c from oceanbase.__all_server, c, 1);
+
+connection conn1;
+#事务开始 插入数据10 rows
+#insert 10 rows
+--disable_query_log
+
+let $i=0;
+while($i < 10) 
+{
+    eval insert into t1 values($i + 90, 'Hello OceanBase & Happy New Year', 4);
+    inc $i;
+}
+--enable_query_log
+
+
+connection conn0;
+alter system minor freeze tenant = sys;
+alter system minor freeze tenant = all_user;
+alter system minor freeze tenant = all_meta;
+--source mysql_test/include/wait_minor_merge.inc
+
+# DELETE 5 rows
+connection conn1;
+delete from t1 where num >= 95;
+
+connection conn1;
+#insert 200 rows
+--disable_query_log
+
+begin;
+let $i=0;
+while($i < 200) 
+{
+    eval insert into t1 values($i + 1000, 'Hello OceanBase & Happy New Year', 4);
+    inc $i;
+}
+--enable_query_log
+
+#不同事务查询sstable未提交事务
+connection conn2;
+select count(*) from t1;
+
+connection conn1;
+select count(*) from t1;
+commit;
+
+# test buf minor merge
+connection conn0;
+alter system minor freeze tenant = sys;
+alter system minor freeze tenant = all_user;
+alter system minor freeze tenant = all_meta;
+--source mysql_test/include/wait_minor_merge.inc
+
+connection conn0;
+
+let $i=200;
+while ($i > 0)
+{
+  sleep 2;
+  dec $i;
+  let $minor_count = query_get_value(select count(1) as c from oceanbase.__all_virtual_table_mgr where table_type = 13 and table_id = $__table_id__, c, 1);
+  if ($minor_count == $__svr_cnt__) 
+  {
+    let $i = -5;
+  }
+}
+if ($i != -5)
+{
+  --echo buf minor failed 111
+  --echo $__table_id__
+  --echo $minor_count
+}
+
+connection conn1;
+select count(*) from t1;
+
+connection conn1;
+delete from t1 where num % 2 = 0;
+update t1 set tag = num * 10 + 10;
+
+select count(*) from t1;
+#commit;
+
+connection conn0;
+alter system minor freeze tenant = sys;
+alter system minor freeze tenant = all_user;
+alter system minor freeze tenant = all_meta;
+--source mysql_test/include/wait_minor_merge.inc
+connection conn0;
+let $i=200;
+while ($i > 0)
+{
+  sleep 1;
+  dec $i;
+  let $minor_count = query_get_value(select count(1) as c from oceanbase.__all_virtual_table_mgr where table_type = 13 and table_id = $__table_id__, c, 1);
+  if ($minor_count == $__svr_cnt__) 
+  {
+    let $i = -5;
+  }
+}
+
+if ($i != -5)
+{
+  --echo buf minor failed 222
+  --echo $__table_id__
+  --echo $minor_count
+}
+
+connection conn1;
+delete from t1 where num > 1000;
+
+connection conn0;
+alter system major freeze tenant = sys;
+alter system major freeze tenant = all_user;
+alter system major freeze tenant = all_meta;
+--source mysql_test/include/wait_daily_merge.inc
+
+connection conn0;
+let $i=200;
+while ($i > 0)
+{
+  sleep 1;
+  dec $i;
+  let $minor_count = query_get_value(select count(1) as c from oceanbase.__all_virtual_table_mgr where table_type = 13 and table_id = $__table_id__, c, 1);
+  if ($minor_count == $__svr_cnt__) 
+  {
+    let $i = -5;
+  }
+}
+
+if ($i != -5)
+{
+  --echo buf minor failed 333
+  --echo $__table_id__
+}
+
+connection conn1;
+select * from t1;
+
+connection conn2;
+select * from t1;
+
+connection conn1;
+alter table t1 table_mode='normal';
+
+connection conn1;
+delete from t1 where num % 3 = 0;
+
+connection conn0;
+alter system minor freeze tenant = sys;
+alter system minor freeze tenant = all_user;
+alter system minor freeze tenant = all_meta;
+--source mysql_test/include/wait_minor_merge.inc
+
+# recycle buf minor sstable
+connection conn0;
+let $i=200;
+while ($i > 0)
+{
+  sleep 1;
+  dec $i;
+  let $minor_count = query_get_value(select count(1) as c from oceanbase.__all_virtual_table_mgr where table_type = 13 and table_id = $__table_id__, c, 1);
+  if ($minor_count == 0) 
+  {
+    let $i = -5;
+  }
+}
+
+if ($i != -5)
+{
+  --echo buf minor failed 333
+  --echo $__table_id__
+}
+
+connection conn1;
+drop table t1;

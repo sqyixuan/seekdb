@@ -1,0 +1,181 @@
+# owner: zg410411
+# owner group: mv
+# tags: 
+# descriotion: materialized view diagnosis test
+#
+
+# 0. prepare
+connect (sys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection sys;
+alter system set debug_sync_timeout = '100000s';
+sleep 3;
+set ob_global_debug_sync = 'reset';
+connection default;
+set recyclebin = OFF;
+set ob_query_timeout = 10000000000;
+
+--disable_warnings
+drop database if exists test_mv_diagnose;
+--enable_warnings
+create database test_mv_diagnose;
+use test_mv_diagnose;
+
+# 1. test: behavior of data_sync_scn and data_sync_delay
+# 
+create table t1(c1 int primary key, c2 int);
+create table t2(c1 int primary key, c2 int);
+create table t3(c1 int primary key, c2 int);
+create table t4(c1 int primary key, c2 int);
+create materialized view log on t1 with primary key (c2);
+create materialized view log on t2 with primary key (c2);
+create materialized view log on t3 with primary key (c2);
+create materialized view log on t4 with primary key (c2);
+insert into t1 values(1, 1);
+insert into t2 values(1, 1);
+insert into t3 values(1, 1);
+insert into t4 values(1, 1);
+
+create materialized view mv1(c1, c2, primary key(c1)) refresh fast as select c1, count(*) c2 from t1 group by c1;
+create materialized view log on mv1 with primary key (c2);
+create materialized view mv2(c1, c2, primary key(c1)) refresh fast as select mv1.c1 c1, t2.c1 c2 from mv1, t2 where mv1.c1 = t2.c1;
+create materialized view log on mv2 with primary key (c2);
+create materialized view mv3(c1, c2, primary key(c1)) refresh fast as select t3.c1 c1, t4.c1 c2 from t3, t4 where t3.c1 = t4.c1;
+create materialized view log on mv3 with primary key (c2);
+create materialized view mv4(c1, c2, primary key(c1)) refresh fast as select mv2.c1 c1, mv3.c1 c2 from mv2, mv3 where mv2.c1 = mv3.c1;
+
+call dbms_mview.refresh('mv1', 'f');
+call dbms_mview.refresh('mv2', 'f');
+sleep 2;
+call dbms_mview.refresh('mv3', 'f');
+call dbms_mview.refresh('mv4', 'f');
+
+sleep 5;
+
+let $data_sync_delay1 = query_get_value(select data_sync_delay from oceanbase.DBA_MVIEWS where MVIEW_NAME = 'mv1' and OWNER = 'test_mv_diagnose', data_sync_delay, 1);
+let $data_sync_delay2 = query_get_value(select data_sync_delay from oceanbase.DBA_MVIEWS where MVIEW_NAME = 'mv2' and OWNER = 'test_mv_diagnose', data_sync_delay, 1);
+let $data_sync_delay3 = query_get_value(select data_sync_delay from oceanbase.DBA_MVIEWS where MVIEW_NAME = 'mv3' and OWNER = 'test_mv_diagnose', data_sync_delay, 1);
+let $data_sync_delay4 = query_get_value(select data_sync_delay from oceanbase.DBA_MVIEWS where MVIEW_NAME = 'mv4' and OWNER = 'test_mv_diagnose', data_sync_delay, 1);
+
+--disable_query_log
+eval select $data_sync_delay1 = $data_sync_delay2 as res;
+eval select $data_sync_delay1 = $data_sync_delay4 as res;
+
+# find the lowest mview that leads to the data_sync_delay
+WITH RECURSIVE cte AS (
+    SELECT 
+        m.owner, 
+        m.mview_name,
+        m.data_sync_delay
+    FROM oceanbase.DBA_MVIEWS m
+    WHERE m.owner = 'test_mv_diagnose'
+      AND m.mview_name = 'mv4'
+    
+    UNION ALL
+    
+    SELECT 
+        d.dep_owner,
+        d.dep_name,
+        m.data_sync_delay
+    FROM cte
+    JOIN oceanbase.DBA_MVIEW_DEPS d 
+      ON cte.owner = d.mview_owner 
+     AND cte.mview_name = d.mview_name
+    JOIN oceanbase.DBA_MVIEWS m 
+      ON d.dep_owner = m.owner 
+     AND d.dep_name = m.mview_name
+    WHERE m.data_sync_delay = cte.data_sync_delay
+)
+
+SELECT owner, mview_name
+FROM cte
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM oceanbase.DBA_MVIEW_DEPS d
+    WHERE d.dep_type = 'MV'
+      AND d.mview_owner = cte.owner
+      AND d.mview_name = cte.mview_name
+);
+
+--enable_query_log
+
+call dbms_mview.refresh('mv1', 'f');
+call dbms_mview.refresh('mv2', 'f');
+call dbms_mview.refresh('mv4', 'f');
+
+sleep 5;
+
+let $data_sync_delay1 = query_get_value(select data_sync_delay from oceanbase.DBA_MVIEWS where MVIEW_NAME = 'mv1' and OWNER = 'test_mv_diagnose', data_sync_delay, 1);
+let $data_sync_delay2 = query_get_value(select data_sync_delay from oceanbase.DBA_MVIEWS where MVIEW_NAME = 'mv2' and OWNER = 'test_mv_diagnose', data_sync_delay, 1);
+let $data_sync_delay3 = query_get_value(select data_sync_delay from oceanbase.DBA_MVIEWS where MVIEW_NAME = 'mv3' and OWNER = 'test_mv_diagnose', data_sync_delay, 1);
+let $data_sync_delay4 = query_get_value(select data_sync_delay from oceanbase.DBA_MVIEWS where MVIEW_NAME = 'mv4' and OWNER = 'test_mv_diagnose', data_sync_delay, 1);
+
+--disable_query_log
+eval select $data_sync_delay1 = $data_sync_delay2 as res;
+eval select $data_sync_delay3 = $data_sync_delay4 as res;
+eval select $data_sync_delay4 > $data_sync_delay1 as res;
+
+WITH RECURSIVE cte AS (
+    SELECT 
+        m.owner, 
+        m.mview_name,
+        m.data_sync_delay
+    FROM oceanbase.DBA_MVIEWS m
+    WHERE m.owner = 'test_mv_diagnose'
+      AND m.mview_name = 'mv4'
+    
+    UNION ALL
+    
+    SELECT 
+        d.dep_owner,
+        d.dep_name,
+        m.data_sync_delay
+    FROM cte
+    JOIN oceanbase.DBA_MVIEW_DEPS d 
+      ON cte.owner = d.mview_owner 
+     AND cte.mview_name = d.mview_name
+    JOIN oceanbase.DBA_MVIEWS m 
+      ON d.dep_owner = m.owner 
+     AND d.dep_name = m.mview_name
+    WHERE m.data_sync_delay = cte.data_sync_delay
+)
+
+SELECT owner, mview_name
+FROM cte
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM oceanbase.DBA_MVIEW_DEPS d
+    WHERE d.dep_type = 'MV'
+      AND d.mview_owner = cte.owner
+      AND d.mview_name = cte.mview_name
+);
+--enable_query_log
+
+# 2. test: diagnose the current running job
+connection sys;
+set ob_global_debug_sync = 'BEFORE_MV_FINISH_RUNNING_JOB wait_for signalxxx execute 10000';
+sleep 10;
+connection default;
+alter materialized view mv1 refresh start with sysdate() + interval 1 second;
+sleep 30;
+select TABLE_NAME, JOB_TYPE from oceanbase.DBA_MVIEW_RUNNING_JOBS;
+let $session_id = query_get_value(select SESSION_ID from oceanbase.DBA_MVIEW_RUNNING_JOBS, SESSION_ID, 1);
+--disable_query_log
+eval select INFO from oceanbase.__all_virtual_processlist where ID = $session_id;
+--enable_query_log
+connection sys;
+set ob_global_debug_sync = 'now signal signalxxx';
+set ob_global_debug_sync = 'reset';
+sleep 10;
+connection default;
+select TABLE_NAME, JOB_TYPE from oceanbase.DBA_MVIEW_RUNNING_JOBS;
+
+# 3. test: display the error code when the refresh operation fails
+create table tmp1(c1 int, c2 int);
+create materialized view tmp_mv1(c1, c2, primary key(c1)) as select * from tmp1;
+insert into tmp1 values(1,1),(1,2);
+--error 1062
+call dbms_mview.refresh('tmp_mv1', 'c');
+select result from oceanbase.DBA_MVREF_STATS where MV_OWNER = 'test_mv_diagnose' and MV_NAME = 'tmp_mv1';
+
+# 4. clean up
+drop database test_mv_diagnose;

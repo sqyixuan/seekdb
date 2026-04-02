@@ -1,0 +1,48 @@
+# CASE_OWNER:
+#    @zhaoziqian.zzq
+# CASE_DESC:
+#    schema history recycler should still work after creating a new tenant
+
+ob1=OBI(cluster=1,proxy_num=0);
+ob1.reboot;
+
+let $ip=deploy_get_value(ob1.z1.obs0.ip);
+let $port=deploy_get_value(ob1.z1.obs0.mysql_port);
+connect (conn_sys,$ip,root@sys,,oceanbase,$port);
+
+create resource unit if not exists 1c2g max_cpu 1, memory_size '2G';
+create resource pool pool_1 unit = '1c2g', unit_num = 1;
+create tenant tenant_1 resource_pool_list = ('pool_1');
+let $tenant_id_1 = query_get_value(select tenant_id from __all_tenant where tenant_name = 'tenant_1', tenant_id, 1);
+
+let $loop=3;
+while($loop > 0)
+{
+  alter system major freeze tenant = tenant_1;
+  sleep 10;
+  ob1.check_until_timeout select (frozen_scn - last_scn) as result from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$tenant_id_1, 0, 600;
+  dec $loop;
+}
+
+create resource pool pool_2 unit = '1c2g', unit_num = 1;
+create tenant tenant_2 resource_pool_list = ('pool_2');
+let $tenant_id_2 = query_get_value(select tenant_id from __all_tenant where tenant_name = 'tenant_2', tenant_id, 1);
+
+let $expire_time = query_get_value(select concat(round(unix_timestamp() - min(schema_version) / 1000000 + 60), 's') as expire_time from __all_virtual_ddl_operation where tenant_id = $tenant_id_2, expire_time, 1);
+
+# so tenant_1 is expired, and tenant_2 is not expired
+--disable_query_log
+eval alter system set schema_history_expire_time = '$expire_time';
+--enable_query_log
+
+alter system set schema_history_recycle_interval = '10s';
+
+sleep 15;
+
+eval select count(*) from __all_rootservice_event_history where value1 = '$tenant_id_1' and event like '%batch_recycle_by_tenant%';
+eval select count(*) from __all_rootservice_event_history where value1 = '$tenant_id_2' and event like '%batch_recycle_by_tenant%';
+
+sleep 10;
+
+eval select count(*) from __all_rootservice_event_history where value1 = '$tenant_id_1' and event like '%batch_recycle_by_tenant%';
+eval select count(*) from __all_rootservice_event_history where value1 = '$tenant_id_2' and event like '%batch_recycle_by_tenant%';

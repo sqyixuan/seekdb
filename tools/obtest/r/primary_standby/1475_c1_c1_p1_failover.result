@@ -1,0 +1,67 @@
+ob1=OBI(cluster=1,proxy_num=0);
+ob2=OBI(cluster=1:1,leaderob=ob1,proxy_num=0);
+ob1.reboot;
+ob2.reboot;
+ob1.mysql CREATE RESOURCE UNIT unit_1 MAX_CPU $cpu, MAX_MEMORY $memory, MAX_IOPS $iops, MAX_DISK_SIZE $disk, MAX_SESSION_NUM $session, MIN_CPU=1, MIN_MEMORY=$min_memory, MIN_IOPS=128;
+ob1.mysql CREATE RESOURCE POOL pool_1 UNIT = 'unit_1', UNIT_NUM = 1, ZONE_LIST = ('z1');
+ob1.mysql CREATE TENANT tenant_$case_index RESOURCE_POOL_LIST = ('pool_1'), primary_zone='z1' set ob_tcp_invited_nodes='%';
+ob1.mysql CREATE RESOURCE POOL pool_2 UNIT = 'unit_1', UNIT_NUM = 1, ZONE_LIST = ('z1');
+ob1.mysql CREATE TENANT tenant_2 RESOURCE_POOL_LIST = ('pool_2'), primary_zone='z1' set ob_tcp_invited_nodes='%';
+ob1.mysql CREATE RESOURCE POOL pool_3 UNIT = 'unit_1', UNIT_NUM = 1, ZONE_LIST = ('z1');
+ob1.mysql CREATE TENANT tenant_3 RESOURCE_POOL_LIST = ('pool_3'), primary_zone='z1' set ob_tcp_invited_nodes='%';
+ob1.mysql alter system major freeze;
+ob1.check_version 2;
+create table t(c1 int primary key, c2 int);
+insert into t values (1,2),(3,4),(5,6);
+select * from t;
+c1	c2
+1	2
+3	4
+5	6
+alter system set balancer_idle_time = '10s';
+alter system set server_data_copy_out_concurrency = 30;
+alter system set server_data_copy_in_concurrency = 30;
+alter system set data_copy_concurrency = 60;
+alter system set debug_sync_timeout = '1000s';
+ob2.check_until_timeout select count(*) c from __all_virtual_meta_table where tenant_id = 1001, $partition_cnt, 120;
+ob1.check_until_timeout select switchover_status from oceanbase.__all_virtual_cluster, TO STANDBY, 500;
+select /*+ read_consistency(weak)*/* from t;
+c1	c2
+1	2
+3	4
+5	6
+ob1.mysql alter system disable cluster synchronization '$cluster_name' cluster_id = $cluster_id;
+ob2.check_until_timeout select cluster_status from oceanbase.__all_virtual_cluster, DISABLED, 10;
+ob1.force_stop;
+set ob_query_timeout = 100000000;
+ob2.mysql_p select count(*) from oceanbase.__all_cluster where rs_list like "Type%PRIMARY%" and cluster_id = $cluster_id;
+count(*)
+0
+ob2.mysql set ob_global_debug_sync = 'BEFORE_DAILY_MERGE_RUN wait_for signal';
+ob2.mysql select *  from oceanbase.__all_cluster ;
+set ob_query_timeout = 600000000;
+alter system set _mini_merge_concurrency = 16;
+alter system set _ob_minor_merge_schedule_interval = '3s';
+alter system ACTIVATE PHYSICAL STANDBY CLUSTER;
+alter system set _mini_merge_concurrency = 3;
+alter system set _ob_minor_merge_schedule_interval = '20s';
+ob2.mysql_p select count(*) from oceanbase.__all_cluster where rs_list like "Type%PRIMARY%" and cluster_id != $cluster_id;
+count(*)
+0
+ob2.mysql select *  from oceanbase.__all_cluster ;
+insert into t values(6, 7);
+ob1.z1.obs0.nstart -m disabled_cluster;
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where status = 'active', 1, 200;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_core_meta_table, 1, 100;
+ob1.mysql_p select cluster_status, cluster_role from oceanbase.__all_virtual_cluster;
+cluster_status	cluster_role
+DISABLED	PRIMARY
+ob1.mysql alter system convert to physical standby;
+ERROR HY000: failover snapshot not recycled, enable standby cluster not allowed
+ERROR HY000: Add cluster not allowed. Actions: NEED WAIT MAJOR FREEZE FINISHED AFTER FAILOVER
+ob2.mysql_p select  count(*) from oceanbase.__all_acquired_snapshot where snapshot_type = 2;
+count(*)
+3
+ob2.mysql set ob_global_debug_sync = 'now signal signal';
+ob2.check_until_timeout select count(*) from oceanbase.__all_acquired_snapshot where snapshot_type = 2, 0, 300;
+ob2.mysql alter system enable cluster synchronization '$cluster_name' cluster_id = $cluster_id;

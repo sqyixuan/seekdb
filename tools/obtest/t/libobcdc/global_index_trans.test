@@ -1,0 +1,124 @@
+#
+# owner:千溪
+# owner group:liboblog
+# description:
+# 测试点:
+#   全局索引测试
+#   1. 分区添加测试:
+#      (1) 创建主表(携带普通/唯一索引)
+#      (2) 创建主表后, 再创建全局普通/唯一索引
+#   2. 启动时刻添加所有全局索引分区
+#   3. 分区删除测试:
+#      (1) 删除全局索引
+#      (2) 删除主表
+#      (3) 删除DB
+#      (4) 删除租户
+#
+#  本case测试：
+#  1. 分区添加
+#  2. 启动时刻添加所有全局索引分区
+#
+##
+
+ob1=OBI(cluster=1);
+ob1.reboot;
+ob1.create_client;
+
+# 准备环境
+let $ip=deploy_get_value(ob1.proxy0.ip);
+let $port=deploy_get_value(ob1.proxy0.port);
+connect (oblog_conn_sys,$ip,admin@sys,admin,oceanbase,$port);
+connection oblog_conn_sys;
+
+--disable_warnings
+drop tenant if exists oblog_tt;
+--disable_warnings
+drop resource pool if exists oblog_pool;
+--disable_warnings
+drop resource unit if exists oblog_box;
+
+source include/liboblog/create_tenant_with_gts.inc;
+
+--disable_warnings
+drop database if exists oblog_db1;
+
+#debug
+#ob1.oblog.gen_conf tb_white_list=oblog_tt.oblog_db1.* log_level=DEBUG skip_ob_version_compat_check=1;
+ob1.oblog.gen_conf tb_white_list=oblog_tt.oblog_db1.* sort_trans_participants=1 skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+
+# 创建database
+create database oblog_db1;
+ob1.oblog.next;
+use oblog_db1;
+
+# TODO
+# 创建无主键主表, 再创建全局索引，目前插入主表数据不支持, 会报错-4016, 因为隐藏主键不包含分区键信息,
+# 而全局索引依赖于分区键信息进行计算
+################################ 1, 分区添加测试
+#
+create table t1 (c1 int, c2 int, c3 int, c4 int, primary key (c1)) partition by hash(c1) partitions 4;
+ob1.oblog.next;
+create unique index g_unique_gkey_t1 on t1(c4) global;
+ob1.oblog.next;
+
+create table t2 (c1 int, c2 int, c3 int, c4 int, primary key (c1)) partition by hash(c1) partitions 4;
+ob1.oblog.next;
+create unique index g_unique_gkey_t2 on t2(c4) global;
+ob1.oblog.next;
+
+## 全局唯一索引依赖
+begin;
+insert into t1 values(1, 2, 3, 1);
+insert into t1 values(2, 2, 3, 2);
+update t1 set c3=30 where c4=1;
+commit;
+
+begin;
+insert into t2 values(1, 1, 1, 1);
+update t1 set c3=31 where c2=2;
+commit;
+
+ob1.oblog.next;
+ob1.oblog.next;
+
+## 2  2  2  2
+##          20
+let $DML_CNT=0;
+begin;
+insert into t2 values(2, 2, 2, 2);
+update t2 set c4=20 where c1=2;
+commit;
+inc $DML_CNT;
+
+begin;
+insert into t2 values(3, 2, 2, 2);
+insert into t2 values(4, 2, 2, 3);
+update t2 set c4=30 where c1=4;
+commit;
+inc $DML_CNT;
+
+begin;
+insert into t2 values(5, 2, 2, 3);
+insert into t2 values(6, 2, 2, 4);
+update t2 set c4=40 where c1=6;
+commit;
+inc $DML_CNT;
+
+begin;
+insert into t2 values(7, 2, 2, 4);
+commit;
+inc $DML_CNT;
+
+let $idx = 1;
+while ($idx <= $DML_CNT)
+{
+  ob1.oblog.next;
+  inc $idx;
+}
+
+ob1.oblog.stop;
+
+# 清理数据
+--disable_warnings
+drop database if exists oblog_db1;

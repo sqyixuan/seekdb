@@ -1,0 +1,78 @@
+# owner: jianyun.sjy
+# owner group: storage
+#
+
+# enable debug sync
+connect (sys_conn,$OBMYSQL_MS0,root@sys,,oceanbase,$OBMYSQL_PORT);
+connection sys_conn;
+alter system set debug_sync_timeout = '100000s';
+--sleep 5
+
+connect (mysql_conn,$OBMYSQL_MS0,root,,test,$OBMYSQL_PORT);
+connection mysql_conn;
+
+--disable_warnings
+drop table if exists t1;
+--enable_warnings
+create table t1 (c1 int primary key, c2 varchar(4096), c3 varchar(4096));
+
+--disable_query_log
+--let $loop=1
+while ($loop < 20000)
+{
+  eval insert into t1 values ($loop, md5(rand()), md5(rand())),
+  ($loop + 100000000, md5(rand()), md5(rand())),
+  ($loop + 200000000, md5(rand()), md5(rand())),
+  ($loop + 300000000, md5(rand()), md5(rand())),
+  ($loop + 400000000, md5(rand()), md5(rand())),
+  ($loop + 500000000, md5(rand()), md5(rand())),
+  ($loop + 600000000, md5(rand()), md5(rand())),
+  ($loop + 700000000, md5(rand()), md5(rand())),
+  ($loop + 800000000, md5(rand()), md5(rand())),
+  ($loop + 900000000, md5(rand()), md5(rand()));
+  inc $loop;
+}
+--enable_query_log
+select /*+ index(t1 primary)*/ count(*) from t1;
+
+# construct the replay sequence like this:
+# replay start | replay macro 2 | ddl kv freeze and dump | replay prepare | replay macro 1
+
+
+connection sys_conn;
+# trigger and hang the checkpoint of ddl kv
+set ob_global_debug_sync = 'BEFORE_DDL_CHECKPOINT wait_for signal_cp execute 100000';
+
+# hang the replay of prepare and commit
+set ob_global_debug_sync = 'BEFORE_REPLAY_DDL_PREPRARE wait_for signal_prepare execute 100000';
+set ob_global_debug_sync = 'BEFORE_REPLAY_DDL_COMMIT wait_for signal_commit execute 100000';
+
+# hang the replay of first macro block
+set ob_global_debug_sync = 'BEFORE_REPLAY_DDL_MACRO_BLOCK wait_for signal_macro execute 1';
+
+
+connection mysql_conn;
+# trigger the checkpoint of ddl kv
+alter system minor freeze;
+# trigger index building
+create index idx1 on t1 (c2);
+
+
+connection sys_conn;
+# continue the checkpoint of ddl kv
+set ob_global_debug_sync = 'now signal signal_cp';
+set ob_global_debug_sync = 'BEFORE_DDL_CHECKPOINT clear';
+--sleep 5
+
+# continue the replay of prepare
+set ob_global_debug_sync = 'now signal signal_prepare';
+set ob_global_debug_sync = 'now signal signal_commit';
+set ob_global_debug_sync = 'BEFORE_REPLAY_DDL_PREPRARE clear';
+set ob_global_debug_sync = 'BEFORE_REPLAY_DDL_COMMIT clear';
+
+# continue the replay of macro block
+set ob_global_debug_sync = 'now signal signal_macro';
+set ob_global_debug_sync = 'BEFORE_REPLAY_DDL_MACRO_BLOCK clear';
+
+connection mysql_conn;
+select /*+ read_consistency(weak) index(t1 idx1)*/ count(*) from t1;

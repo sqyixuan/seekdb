@@ -1,0 +1,250 @@
+#owner: lb446709
+#owner group: shenzhen
+#description:复合json多值索引
+#tags:json多值索引
+#author: miaozhuanghua.mzh
+
+connect (conadmin,$OBMYSQL_MS0,admin@sys,admin,,$OBMYSQL_PORT);
+connection conadmin;
+alter system set _enable_add_fulltext_index_to_existing_table = true;
+connection default;
+
+--disable_warnings
+drop table if exists t20;
+create table t20 (id int primary key , name varchar(50), age int ,js json);
+
+#insert
+insert into t20 values
+(1,'mary',12,'{"score":[123,345,567,90]}'),
+(2,'lili',13,'{"score":[100,23,456,678]}'),
+(3,'mali',11,'{"score":[678,89,90,789]}'),
+(4,'defu',14,'{"score":[123,90,45,99]}');
+
+#后建索引
+create index scores on t20(name,age,(CAST(js->'$.score' AS UNSIGNED ARRAY)));
+
+#查看索引
+show create table t20;
+#show index from t20;
+
+--echo explain
+#explainsql执行计划 select+member of 复合索引最左匹配原则，用不到索引
+select * from t20 where name='mary' and age =12 and 90 member of(js->>'$.score');
+--replace_regex /range_key.*/123/g
+explain select * from t20 where name='mary' and age =12 and 90 member of(js->>'$.score');
+--replace_regex /range_key.*/123/g
+explain select * from t20 where name='mary' and 90 member of(js->>'$.score') and age =12;
+--replace_regex /range_key.*/123/g
+explain select * from t20 where  90 member of(js->>'$.score') and age =12 and name='mary' ;
+
+#explainsql执行计划 select+json_contains
+select id,js from t20 where JSON_CONTAINS(js->'$.score',CAST('[90]' AS JSON)) and age =12 and name='mary';
+--replace_regex /range_key.*/123/g
+explain select id,js from t20 where JSON_CONTAINS(js->'$.score',CAST('[90]' AS JSON)) and age =12 and name='mary';
+
+#explainsql执行计划 select+JSON_OVERLAPS
+select id,js FROM t20 WHERE JSON_OVERLAPS(js->>'$.score', '[90, 345]') and age =12 and name='mary';
+--replace_regex /range_key.*/123/g
+explain select id,js FROM t20 WHERE JSON_OVERLAPS(js->>'$.score', '[90, 345]') and age =12 and name='mary';
+
+--echo insert into on duplicate
+#insert into on duplicate
+insert into t20 (id, js) values (4,'{"score":[1,2,34]}') on duplicate key update js = values(js);
+select * from t20;
+
+insert into t20 (id, js) values (5,'{"score":[1,2,34]}') on duplicate key update js = values(js);
+select * from t20;
+
+--echo replace into
+#重复
+replace into t20 set id=4,js='{"score": [555, 999]}';
+select * from t20;
+replace into t20 values(4,'mali',15,'{"score":[123,567]}');
+select * from t20;
+
+#不重复
+replace into t20 set id=7,js='{"score": [555, 999]}';
+select * from t20;
+replace into t20 values(9,'mali',15,'{"score":[123,567]}');
+select * from t20;
+
+--echo update join
+--disable_warnings
+drop table if exists t21;
+create table t21 (id int primary key ,name varchar(50),age int ,js json);
+#insert
+insert into t21 values
+(1,'mary',12,'{"score":[1234,3456,5678,900]}'),
+(2,'lili',13,'{"score":[1000,230,4560,6780]}'),
+(3,'mali',11,'{"score":[6780,890,900,7890]}'),
+(4,'defu',14,'{"score":[1203,900,450,990]}');
+
+update t20 join t21 on t20.id = t21.id set t20.js = t21.js;
+
+#ERROR 1064 语法不对
+#--echo delete join
+#delete t20 join t21 on t20.id = t21.id where t21.id = 1;
+
+
+
+--echo view
+drop view if exists v1_t20;
+drop view if exists v2_t20;
+drop view if exists v3_t20;
+
+create view v1_t20 as select * from t20;
+create view v2_t20 as select js from t20;
+create view v3_t20 as select json_value(js,'$.score') from t20;
+
+select * from v1_t20;
+select * from v2_t20;
+--error 0,1064
+select * from v3_t20;
+
+select * from t20;
+
+#更新视图dml
+update v1_t20 set js = '{"score":[1,999]}';
+
+#ERROR 1235 (42000): This version of MySQL doesn't yet support CAST-ing JSON OBJECT type to array
+--error 1235
+update v1_t20 set js = '{"score":{}}';
+update v1_t20 set js = '{"score":[]}';
+
+#ERROR 3903 (42000): Invalid JSON value for CAST for functional index.
+--error 3903
+update v1_t20 set js = '{"score":"ttt"}';
+
+#2024080800104076273
+#-error 1235
+update v1_t20 set js = '{"score":true}';
+
+update v2_t20 set js = '{"score":[1,999]}';
+--error 1235
+update v2_t20 set js = '{"score":{}}';
+
+#update v3_t20 set js = '{"score":[1,999]}';
+#update v3_t20 set js = '{"score":[1,999]}';
+
+--echo 索引ddl
+#修改索引名
+alter table t20 rename index scores to scores2;
+
+#添加重名索引
+create index scores on t20(name,age);
+
+#查看索引
+show create table t20;
+#show index from t20;
+
+#添加同条件索引
+#bug 不应该报错但是报 ERROR 1060 (42S21): Duplicate column name 'SYS_NC_mvi_21'
+create index score2 on t20(name,age,(cast(js->'$.score' as unsigned array)));
+
+#查看索引
+show create table t20;
+#show index from t20;
+
+#多值索引列添加其他多值索引
+#bug 多值索引列相同path创建其他多值索引失败
+create index score4 on t20((cast(js->'$.score' as unsigned array)));
+
+#查看索引
+show create table t20;
+#show index from t20;
+
+#删除索引 drop index scores on t20/alter table t20 drop index scores;
+alter table t20 drop index scores2;
+
+#查看索引
+show create table t20;
+#show index from t20;
+--replace_regex /range_key.*/123/g
+explain select id,js from t20 where JSON_CONTAINS(js->'$.score',CAST('[90]' AS JSON)) and age =12 and name='mary';
+
+#删除后创建同名索引
+#ERROR 1061 (42000): Duplicate key name 'scores'
+--error 1061
+create index scores on t20(name,age,(CAST(js->'$.score' AS UNSIGNED ARRAY)));
+
+create index scores2 on t20(name,age,(CAST(js->'$.score' AS UNSIGNED ARRAY)));
+
+#修改索引列名
+#2024103100104884258
+#--error 3837
+#alter table t20 change column js js2 json;
+#非BUG 受上面BUG影响暂时屏蔽
+##--error 3837
+#alter table t20 rename column js to js2;
+
+#修改索引列类型
+#2024110100104920162
+#mysql 报错RROR 3837 (HY000): Column 'js' has a functional index dependency and cannot be dropped or renamed.
+#--error 3837
+--error 1235
+alter table t20 change column js js varchar(100);
+
+
+#删除索引列
+#BUG mysql和ob码报错不一致
+#mysql报错 ERROR 3837 (HY000): Column 'js' has a functional index dependency and cannot be dropped or renamed.
+#ob报错 ERROR 1235 (0A000): Run this DDL operation on table with fulltext/multivalue/vector index. not supported
+--error 3837
+alter table t20 drop js;
+
+#DESCRIBE
+DESCRIBE t20;
+
+#truncate
+truncate table t20;
+
+#insert into
+insert into t20 values
+(11,'mary',12,'{"score":[1234,3452,5671,909]}'),
+(12,'lili',13,'{"score":[1001,234,4563,6786]}'),
+(13,'mali',11,'{"score":[67,894,930,7389]}'),
+(14,'defu',14,'{"score":[1223,920,415,919]}');
+
+#insert into on duplicate
+insert into t20 (id, js) values (14,'{"score":[1,2,34]}') on duplicate key update js = values(js);
+select * from t20;
+
+insert into t20 (id, js) values (15,'{"score":[1,2,34]}') on duplicate key update js = values(js);
+select * from t20;
+
+--echo replace into
+#重复
+replace into t20 set id=14,js='{"score": [555, 999]}';
+select * from t20;
+
+#不重复
+replace into t20 set id=17,js='{"score": [555, 999]}';
+select * from t20;
+
+#查看索引
+show create table t20;
+#show index from t20;
+
+#explain
+select * from t20 where name='mary' and age =12 and 909 member of(js->>'$.score');
+--replace_regex /range_key.*/123/g
+explain select * from t20 where name='mary' and age =12 and 909 member of(js->>'$.score');
+
+--disable_warnings
+drop table if exists t20;
+
+--error 1356
+select * from v1_t20;
+--error 1356
+select * from v2_t20;
+#BUG
+#ob报错 ERROR 1064 (42000): You have an error in your SQL syntax; check the manual that corresponds to your OceanBase version for the right syntax to use near 'on empty) AS `json_value(js,'$.score')` from `test`.`t20`' at line 1
+#2024081200104099107
+#--error 1064
+--error 1356
+select * from v3_t20;
+
+drop view v1_t20;
+drop view v2_t20;
+drop view v3_t20;
+

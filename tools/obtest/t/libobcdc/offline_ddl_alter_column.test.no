@@ -1,0 +1,200 @@
+#
+# owner: QianXi
+# owner group:liboblog
+# description:
+# Test alter column
+# 1. strict mode
+# 2. no-strict mode
+#
+##
+
+ob1=OBI(cluster=1, init_unit_cpu=5);
+ob1.reboot;
+ob1.create_client;
+
+source include/liboblog/create_tenant.inc;
+#alter system set syslog_level='debug';
+
+--disable_warnings
+drop database if exists oblog_db1;
+
+# create database
+create database oblog_db1;
+use oblog_db1;
+
+let $start_tstamp1 = query_get_value(select time_to_usec(now(6)) as now, now, 1);
+
+# start liboblog
+ob1.oblog.set_start_tstamp_usec $start_tstamp1;
+ob1.oblog.gen_conf tb_white_list=oblog_tt.oblog*.* log_level=DEBUG skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+
+let $t1_count = 0;
+let $t1_alter_dml_count = 0;
+let $t2_count = 0;
+let $t3_count = 0;
+let $t4_count = 0;
+
+#############################################
+#############################################
+# test strict mode success
+set sql_mode = 'STRICT_ALL_TABLES';
+create table t1(c1 int primary key, c2 varchar(20));
+ob1.oblog.next;
+inc $t1_count;
+insert into t1 values(1,'1');
+ob1.oblog.next;
+inc $t1_count;
+Insert into t1 values(2,'2');
+ob1.oblog.next;
+inc $t1_count;
+
+create table t2(c1 int primary key, c2 varchar(20));
+ob1.oblog.next;
+inc $t2_count;
+insert into t2 values(1,'a');
+ob1.oblog.next;
+inc $t2_count;
+insert into t2 values(2,'b');
+ob1.oblog.next;
+inc $t2_count;
+
+let $cur_max_schema_version = query_get_value(select max(schema_version) as ver from oceanbase.__all_ddl_operation, ver, 1);
+
+#### alter table t1 column c2: varchar->int
+alter table t1 change column c2 c2 int;
+ob1.oblog.next;
+inc $t1_count;
+let $start_tstamp2 = query_get_value(select schema_version from oceanbase.__all_ddl_operation where schema_version > $cur_max_schema_version and operation_type=1503 limit 1, ver, 1);
+
+insert into t1 values (3, 3);
+ob1.oblog.next;
+inc $t1_count;
+inc $t1_alter_dml_count;
+insert into t1 values (4, 4);
+ob1.oblog.next;
+inc $t1_count;
+inc $t1_alter_dml_count;
+
+#############################################
+#############################################
+#### test failure
+#Incorrect integer value
+--error 1366
+alter table t2 change column c2 c2 int;
+
+insert into t2 values(3,'c');
+ob1.oblog.next;
+inc $t2_count;
+
+insert into t2 values(4,'b');
+ob1.oblog.next;
+inc $t2_count;
+
+#############################################
+#############################################
+# test non-strict mode success
+set sql_mode='';
+
+create table t3(c1 int primary key, c2 varchar(20));
+ob1.oblog.next;
+inc $t3_count;
+insert into t3 values(1,'1');
+ob1.oblog.next;
+inc $t3_count;
+Insert into t3 values(2,'2');
+ob1.oblog.next;
+inc $t3_count;
+
+alter table t3 change column c2 c2 int;
+ob1.oblog.next;
+inc $t3_count;
+insert into t3 values(3,3);
+ob1.oblog.next;
+inc $t3_count;
+Insert into t3 values(4,4);
+ob1.oblog.next;
+inc $t3_count;
+
+create table t4(c1 int primary key, c2 varchar(20));
+ob1.oblog.next;
+inc $t4_count;
+insert into t4 values(1,'a');
+ob1.oblog.next;
+inc $t4_count;
+insert into t4 values(2,'b');
+ob1.oblog.next;
+inc $t4_count;
+
+alter table t4 change column c2 c2 int;
+ob1.oblog.next;
+inc $t4_count;
+insert into t4 values(3,3);
+ob1.oblog.next;
+inc $t4_count;
+Insert into t4 values(4,4);
+ob1.oblog.next;
+inc $t4_count;
+
+select * from t4;
+
+# stop liboblog
+ob1.oblog.stop;
+
+##############################################
+#######
+####### Fetch all table history
+ob1.oblog.set_start_tstamp_usec $start_tstamp1;
+ob1.oblog.gen_conf tb_white_list=oblog_tt.oblog*.* log_level=DEBUG test_mode_block_verify_participants_time_sec=1 skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+
+let $idx = 1;
+let $total_count = $t1_count + $t2_count + $t3_count + $t4_count;
+while ($idx <= $total_count)
+{
+  inc $idx;
+  ob1.oblog.next;
+}
+
+# stop liboblog
+ob1.oblog.stop;
+#
+###############################################
+########
+######## Fetch t2/t4 table history
+ob1.oblog.set_start_tstamp_usec $start_tstamp1;
+ob1.oblog.gen_conf tb_white_list=oblog_tt.oblog*.t2|oblog_tt.oblog*.t4 log_level=DEBUG test_mode_block_verify_participants_time_sec=1 skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+
+# output create table t1**
+# output alter table t1**
+# output create table t3**
+# output alter table t3**
+let $ddl_cnt = 4;
+let $idx = 1;
+let $cnt = $t2_count + $t4_count + $ddl_cnt;
+while ($idx <= $cnt)
+{
+  inc $idx;
+  ob1.oblog.next;
+}
+
+# stop liboblog
+ob1.oblog.stop;
+#
+###############################################
+########
+######## Fetch t1 table history, Test add hidden table when start-up
+ob1.oblog.set_start_tstamp_usec $start_tstamp2;
+ob1.oblog.gen_conf tb_white_list=oblog_tt.oblog*.t1 log_level=DEBUG test_mode_block_verify_participants_time_sec=1 skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+
+let $t1_idx = 1;
+while ($t1_idx <= $t1_alter_dml_count)
+{
+  inc $t1_idx;
+  ob1.oblog.next_dml;
+}
+
+# stop liboblog
+ob1.oblog.stop;

@@ -21,7 +21,6 @@
 #endif
 
 #include "storage/blocksstable/encoding/ob_raw_decoder.h"
-#include "storage/blocksstable/encoding/neon/ob_encoding_neon_util.h"
 
 namespace oceanbase {
 namespace blocksstable {

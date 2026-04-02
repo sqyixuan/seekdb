@@ -1,0 +1,131 @@
+alter system set _ob_enable_prepared_statement = true;
+
+// Case0: check desc, in sys tenant
+desc oceanbase.__all_virtual_ps_item_info;
+Field	Type	Null	Key	Default	Extra
+tenant_id	bigint(20)	NO		NULL	
+svr_ip	varchar(46)	NO		NULL	
+svr_port	bigint(20)	NO		NULL	
+stmt_id	bigint(20)	NO		NULL	
+db_id	bigint(20)	NO		NULL	
+ps_sql	varchar(65536)	NO		NULL	
+param_count	bigint(20)	NO		NULL	
+stmt_item_ref_count	bigint(20)	NO		NULL	
+stmt_info_ref_count	bigint(20)	NO		NULL	
+mem_hold	bigint(20)	NO		NULL	
+stmt_type	bigint(20)	NO		NULL	
+checksum	bigint(20)	NO		NULL	
+// in MySQL tenant
+desc oceanbase.GV$OB_PS_ITEM_INFO;
+Field	Type	Null	Key	Default	Extra
+tenant_id	bigint(20)	NO		NULL	
+svr_ip	varchar(46)	NO		NULL	
+svr_port	bigint(20)	NO		NULL	
+stmt_id	bigint(20)	NO		NULL	
+db_id	bigint(20)	NO		NULL	
+ps_sql	varchar(65536)	NO		NULL	
+param_count	bigint(20)	NO		NULL	
+stmt_item_ref_count	bigint(20)	NO		NULL	
+stmt_info_ref_count	bigint(20)	NO		NULL	
+mem_hold	bigint(20)	NO		NULL	
+stmt_type	bigint(20)	NO		NULL	
+checksum	bigint(20)	NO		NULL	
+desc oceanbase.V$OB_PS_ITEM_INFO;
+Field	Type	Null	Key	Default	Extra
+tenant_id	bigint(20)	NO			
+svr_ip	varchar(46)	NO			
+svr_port	bigint(20)	NO			
+stmt_id	bigint(20)	NO			
+db_id	bigint(20)	NO			
+ps_sql	varchar(65536)	NO			
+param_count	bigint(20)	NO			
+stmt_item_ref_count	bigint(20)	NO			
+stmt_info_ref_count	bigint(20)	NO			
+mem_hold	bigint(20)	NO			
+stmt_type	bigint(20)	NO			
+checksum	bigint(20)	NO			
+// virtual table can only be accessed by sys tenant
+desc oceanbase.__all_virtual_ps_item_info;
+ERROR 42S02: Table doesn't exist
+// conn_admin connected
+
+// Case1: test deallocate
+set @x = 1;
+prepare stmt1 from select substr('abc', 1, ?) from dual;
+// check here. before deallocate. should be only one record, ref_count should be 2(one for session, one for virtual table access)
+select tenant_id, ps_sql, param_count, stmt_item_ref_count, stmt_info_ref_count, stmt_type, checksum from oceanbase.__all_virtual_ps_item_info where ps_sql like 'select substr(''abc''%';
+tenant_id	ps_sql	param_count	stmt_item_ref_count	stmt_info_ref_count	stmt_type	checksum
+1	select substr('abc', 1, ?) from dual	1	2	2	1	1744137829
+execute stmt1 using @x;
+substr('abc', 1, ?)
+a
+// check here. should be same
+select tenant_id, ps_sql, param_count, stmt_item_ref_count, stmt_info_ref_count, stmt_type, checksum from oceanbase.__all_virtual_ps_item_info where ps_sql like 'select substr(''abc''%';
+tenant_id	ps_sql	param_count	stmt_item_ref_count	stmt_info_ref_count	stmt_type	checksum
+1	select substr('abc', 1, ?) from dual	1	2	2	1	1744137829
+
+// prepare again
+prepare stmt1 from select substr('abc', 1, ?) from dual;
+execute stmt1 using @x;
+substr('abc', 1, ?)
+a
+// check here. prepare again. should be only one record. ref_count should be same.
+// because ref count of ps_session_info inc, but ps_item_info/ps_stmt_id in ps cache do not change. but we cannot see ps_session_info in virtual table.
+select tenant_id, ps_sql, param_count, stmt_item_ref_count, stmt_info_ref_count, stmt_type, checksum from oceanbase.__all_virtual_ps_item_info where ps_sql like 'select substr(''abc''%';
+tenant_id	ps_sql	param_count	stmt_item_ref_count	stmt_info_ref_count	stmt_type	checksum
+1	select substr('abc', 1, ?) from dual	1	2	2	1	1744137829
+// deallocating
+deallocate prepare stmt1;
+// check here. after deallocate. ref_count should be same.
+// ref count of ps_session_info dec by one, and because we prepare twice, so ps_item_info/ps_stmt_id in ps cache do not change
+select tenant_id, ps_sql, param_count, stmt_item_ref_count, stmt_info_ref_count, stmt_type, checksum from oceanbase.__all_virtual_ps_item_info where ps_sql like 'select substr(''abc''%';
+tenant_id	ps_sql	param_count	stmt_item_ref_count	stmt_info_ref_count	stmt_type	checksum
+1	select substr('abc', 1, ?) from dual	1	2	2	1	1744137829
+
+// Case1.1 prepare once, and deallocate, check ref_count
+prepare stmt2 from select concat('abc', ?) from dual;
+execute stmt2 using @x;
+concat('abc', ?)
+abc1
+// check here. ref_count should be 2.
+select tenant_id, ps_sql, param_count, stmt_item_ref_count, stmt_info_ref_count, stmt_type, checksum from oceanbase.__all_virtual_ps_item_info where ps_sql like 'select concat(''abc''%';
+tenant_id	ps_sql	param_count	stmt_item_ref_count	stmt_info_ref_count	stmt_type	checksum
+1	select concat('abc', ?) from dual	1	2	2	1	2592305245
+deallocate prepare stmt2;
+// check here. deallocate done, res should be empty. ref_count of ps_session_info is dec to zero, so ps_stmt_id/ps_item_info of stmt2 is destroied
+select tenant_id, ps_sql, param_count, stmt_item_ref_count, stmt_info_ref_count, stmt_type, checksum from oceanbase.__all_virtual_ps_item_info where ps_sql like 'select concat(''abc''%';
+tenant_id	ps_sql	param_count	stmt_item_ref_count	stmt_info_ref_count	stmt_type	checksum
+
+// Case2: try Case1 again, but for testing disconnect
+drop table if exists t1;
+create table t1(c1 varchar(10));
+insert into t1 values('abc');
+set @x = 1;
+prepare stmt1 from select substr(c1, 1, ?) from t1;
+// check here. before disconnect. should be only one record, ref_count should be 2(one for session, one for virtual table access)
+select tenant_id, ps_sql, param_count, stmt_item_ref_count, stmt_info_ref_count, stmt_type, checksum from oceanbase.__all_virtual_ps_item_info where ps_sql like 'select substr(c1%';
+tenant_id	ps_sql	param_count	stmt_item_ref_count	stmt_info_ref_count	stmt_type	checksum
+1	select substr(c1, 1, ?) from t1	1	2	2	1	3867257614
+execute stmt1 using @x;
+substr(c1, 1, ?)
+a
+// check here. executed done. ref_count should be same
+select tenant_id, ps_sql, param_count, stmt_item_ref_count, stmt_info_ref_count, stmt_type, checksum from oceanbase.__all_virtual_ps_item_info where ps_sql like 'select substr(c1%';
+tenant_id	ps_sql	param_count	stmt_item_ref_count	stmt_info_ref_count	stmt_type	checksum
+1	select substr(c1, 1, ?) from t1	1	2	2	1	3867257614
+
+// prepare again
+prepare stmt1 from select substr(c1, 1, ?) from t1;
+execute stmt1 using @x;
+substr(c1, 1, ?)
+a
+// check here. prepare again. should be only one record. ref_count should be same.
+// because ref count of ps_session_info inc, ps_item_info/ps_stmt_id in ps cache do not change. but we cannot see ps_session_info in virtual table.
+select tenant_id, ps_sql, param_count, stmt_item_ref_count, stmt_info_ref_count, stmt_type, checksum from oceanbase.__all_virtual_ps_item_info where ps_sql like 'select substr(c1%';
+tenant_id	ps_sql	param_count	stmt_item_ref_count	stmt_info_ref_count	stmt_type	checksum
+1	select substr(c1, 1, ?) from t1	1	2	2	1	3867257614
+// disconnecting
+// check here. should be empty. because session is closed, so no one ref ps_item_info and ps_stmt_id of stmt1.
+select tenant_id, ps_sql, param_count, stmt_item_ref_count, stmt_info_ref_count, stmt_type, checksum from oceanbase.__all_virtual_ps_item_info where ps_sql like 'select substr(c1%';
+tenant_id	ps_sql	param_count	stmt_item_ref_count	stmt_info_ref_count	stmt_type	checksum
+alter system set _ob_enable_prepared_statement = false;

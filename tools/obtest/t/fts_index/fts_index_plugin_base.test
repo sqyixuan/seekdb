@@ -1,0 +1,121 @@
+# owner: wangyunlai.wyl
+# owner group: system
+#
+# fulltext parser with plugin
+#
+
+ob1=OBI(cluster=1,proxy_num=0);
+ob1.reboot;
+
+let $ip = deploy_get_value(ob1.z1.obs0.ip);
+let $port = deploy_get_value(ob1.z1.obs0.mysql_port);
+
+
+# 集群初始状态，没有动态库分词插件
+ob_connect(conn_sys, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+select name, status, type, library from oceanbase.GV$OB_PLUGINS where library is not null;
+
+# 安装分词器插件
+alter system set plugins_load='libexample_ftparser.so';
+## 睡眠一下让配置项生效
+sleep 5;
+ob1.restart;
+sleep 30;
+ob1.check_until_timeout select count(1) cnt from oceanbase.__all_server where status='active' and start_service_time>0,1,120;
+ob_connect(conn_sys, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+select name, status, type, library from oceanbase.GV$OB_PLUGINS where library is not null;
+SELECT TOKENIZE('OceanBase is a great database','example_ftparser');
+
+# 测试off选项
+alter system set plugins_load='libexample_ftparser.so:off';
+sleep 5;
+ob1.restart;
+sleep 30;
+ob1.check_until_timeout select count(1) cnt from oceanbase.__all_server where status='active' and start_service_time>0,1,120;
+ob_connect(conn_sys, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+select name, status, type, library from oceanbase.GV$OB_PLUGINS where library is not null;
+
+# 安装不存在的库
+alter system set plugins_load='libnot_exist.so';
+sleep 5;
+ob1.restart;
+sleep 30;
+ob1.check_until_timeout select count(1) cnt from oceanbase.__all_server where status='active' and start_service_time>0,1,120;
+ob_connect(conn_sys, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+select name, status, type, library from oceanbase.GV$OB_PLUGINS where library is not null;
+
+# 安装一个有问题的库（包含未定义符号）
+alter system set plugins_load='libundefined_symbol_ftparser.so';
+sleep 5;
+ob1.restart;
+sleep 30;
+ob1.check_until_timeout select count(1) cnt from oceanbase.__all_server where status='active' and start_service_time>0,1,120;
+ob_connect(conn_sys, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+select name, status, type, library from oceanbase.GV$OB_PLUGINS where library is not null;
+
+# 配置项解析失败需要报错
+--error 4147
+alter system set plugins_load='libob_not_exist_ftparser.so:hello';
+--error 4147
+alter system set plugins_load=':on';
+--error 4147
+alter system set plugins_load=':';
+alter system set plugins_load='    \t';
+sleep 5;
+
+# 普通用户可以看到安装的插件
+alter system set plugins_load='libexample_ftparser.so';
+sleep 5;
+ob1.restart;
+sleep 30;
+ob1.check_until_timeout select count(1) cnt from oceanbase.__all_server where status='active' and start_service_time>0,1,120;
+ob_connect(conn_sys, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+select name, status, type, library from oceanbase.GV$OB_PLUGINS where library is not null;
+# 系统租户使用插件
+SELECT TOKENIZE('OceanBase is a great database','example_ftparser');
+
+#   创建一个普通租户
+let $max_cpu = 4;
+let $min_cpu = 1;
+let $memory_size = 4294967296;
+let $log_disk_size = 4294967296;
+let $max_iops = 10240;
+let $min_iops = 1024;
+
+ob_connect(conn_sys, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+set @@session.ob_query_timeout = 1000000000;
+# create mysql tenant
+eval CREATE RESOURCE UNIT unit_1 MAX_CPU $max_cpu, MIN_CPU $min_cpu, MEMORY_SIZE $memory_size, LOG_DISK_SIZE $log_disk_size, MAX_IOPS $max_iops, MIN_IOPS $min_iops;
+eval CREATE RESOURCE POOL pool_1 UNIT = 'unit_1', UNIT_NUM = 1;
+eval CREATE TENANT mysql RESOURCE_POOL_LIST = ('pool_1'), primary_zone='z1' set ob_tcp_invited_nodes='%';
+
+source include/check_schema_sync.inc;
+
+let $mysql_tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = 'mysql', tenant_id, 1);
+
+ob_connect(conn_mysql, ob1.z1.obs0, root@mysql, , test, , USE_MYSQL_CONNECTOR);
+connection conn_mysql;
+select name, status, type, library from oceanbase.GV$OB_PLUGINS where library is not null;
+
+# 不建表使用分词插件
+SELECT TOKENIZE('OceanBase is a great database','example_ftparser');
+
+# 使用表测试
+create table t_example(c1 int, c2 varchar(200), c3 text, fulltext index (c2, c3) with parser example_ftparser);
+INSERT INTO t_example (c1, c2, c3) VALUES (1, 'quick brown fox', 'The quick brown fox jumps over the lazy dog. This sentence contains every letter of the English alphabet.'), (2, 'hello world', 'Hello world is a classic programming example. It is often the first program written when learning a new programming language.'), (3, 'lorem ipsum', 'Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.'), (4, 'phrase test', 'This phrase is used to test how the tokenizer handles English sentences of various lengths and complexities.'), (5, 'search indexing', 'Efficient search indexing requires understanding the underlying text structure. Tokenization and stemming are key parts of this process.');
+
+select count(*)>0 as result from t_example where match(c2, c3) against ('english parser test') > 0;
+
+# 卸载插件再使用，应该报错但不会有其他问题
+ob_connect(conn_sys, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+alter system set plugins_load='libexample_ftparser.so:off';
+sleep 5;
+ob1.restart;
+sleep 30;
+ob1.check_until_timeout select count(1) cnt from oceanbase.__all_server where status='active' and start_service_time>0,1,120;
+ob_connect(conn_mysql, ob1.z1.obs0, root@mysql, , test, , USE_MYSQL_CONNECTOR);
+select name, status, type, library from oceanbase.GV$OB_PLUGINS where library is not null;
+--error 1128
+SELECT TOKENIZE('no such fulltext parser','example_ftparser');
+--error 1128
+INSERT INTO t_example (c1, c2, c3) values(6, 'no example ftparser', 'This SQL should return an error');

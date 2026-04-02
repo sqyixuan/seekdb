@@ -1,0 +1,1381 @@
+drop table if exists t1;
+drop table if exists t2;
+drop table if exists t3;
+drop table if exists t4;
+drop table if exists t11;
+drop table if exists t12;
+drop view if exists v1;
+create table t1(a int, b int);
+insert into t1 (a) values(1),(2);
+create table t2 select * from t1;
+create table t3 (a int, b int);
+insert into t3 values(1, 10), (1, 11), (2, 10), (2, 11);
+CREATE TABLE t11 (t11a int, t11b int);
+INSERT INTO t11 VALUES (99, NULL),(99, 3),(99,0);
+CREATE TABLE t12 (t12a int, t12b int, KEY idx (t12b));
+INSERT INTO t12 VALUES (100,0),(150,200),(999, 0),(999, NULL);
+create table t4 (c1 int primary key, c2 int, c3 int, key t4c2 (c2));
+insert into t4 values (1,1,1),(2,2,2),(3,3,3),(4,4,4);
+explain_protocol: 2
+result_format: 4
+LATERAL
+# prevents join buffer if materialized (but not if merged)
+EXPLAIN select dt.a from t1, lateral (select t1.a from t2) dt;
+Query Plan
+===========================================================
+|ID|OPERATOR                   |NAME|EST.ROWS|EST.TIME(us)|
+-----------------------------------------------------------
+|0 |NESTED-LOOP JOIN CARTESIAN |    |4       |5           |
+|1 |├─TABLE FULL SCAN          |t1  |2       |3           |
+|2 |└─MATERIAL                 |    |2       |3           |
+|3 |  └─TABLE FULL SCAN        |t2  |2       |3           |
+===========================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([t1.a]), filter(nil), rowset=16
+      conds(nil), nl_params_(nil), use_batch=false
+  1 - output([t1.a]), filter(nil), rowset=16
+      access([t1.a]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+  2 - output(nil), filter(nil), rowset=16
+  3 - output(nil), filter(nil), rowset=16
+      access(nil), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+select dt.a from t1, lateral (select t1.a from t2) dt;
++------+
+| a    |
++------+
+|    1 |
+|    1 |
+|    2 |
+|    2 |
++------+
+
+# no right join
+select dt.a from t1 right join lateral (select t1.a from t2) dt on 1;
+ERROR 42S22: Unknown column 't1.a' in 'field list'
+
+# no bad left join either
+select dt.a from lateral (select t1.a from t2) dt left join t1 on 1;
+ERROR 42S22: Unknown column 't1.a' in 'field list'
+
+# more complex case
+SELECT * FROM t1
+LEFT JOIN
+lateral (select t1.a) as dt ON t1.a=dt.a
+RIGHT JOIN
+lateral (select dt.a) as dt1 ON dt.a=dt1.a;
+ERROR 42S22: Unknown column 'dt.a' in 'field list'
+
+# LATERAL DT depending on LATERAL DT
+EXPLAIN SELECT * FROM t1
+JOIN
+lateral (select t1.a) as dt ON t1.a=dt.a
+JOIN
+lateral (select dt.a) as dt1 ON dt.a=dt1.a;
+Query Plan
+===============================================
+|ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
+-----------------------------------------------
+|0 |TABLE FULL SCAN|t1  |2       |3           |
+===============================================
+Outputs & filters:
+-------------------------------------
+  0 - output([t1.a], [t1.b], [t1.a], [t1.a]), filter([t1.a = t1.a]), rowset=16
+      access([t1.a], [t1.b]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+SELECT * FROM t1
+JOIN
+lateral (select t1.a) as dt ON t1.a=dt.a
+JOIN
+lateral (select dt.a) as dt1 ON dt.a=dt1.a;
++------+------+------+------+
+| a    | b    | a    | a    |
++------+------+------+------+
+|    1 | NULL |    1 |    1 |
+|    2 | NULL |    2 |    2 |
++------+------+------+------+
+
+# Placing lateral outer ref in SELECT list then HAVING
+EXPLAIN select t1.a, dt.a from t1, lateral (select t1.a+t2.a as a from t2) dt;
+Query Plan
+===========================================================
+|ID|OPERATOR                   |NAME|EST.ROWS|EST.TIME(us)|
+-----------------------------------------------------------
+|0 |NESTED-LOOP JOIN CARTESIAN |    |4       |5           |
+|1 |├─TABLE FULL SCAN          |t2  |2       |3           |
+|2 |└─MATERIAL                 |    |2       |3           |
+|3 |  └─TABLE FULL SCAN        |t1  |2       |3           |
+===========================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([t1.a], [t1.a + t2.a]), filter(nil), rowset=16
+      conds(nil), nl_params_(nil), use_batch=false
+  1 - output([t2.a]), filter(nil), rowset=16
+      access([t2.a]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+  2 - output([t1.a]), filter(nil), rowset=16
+  3 - output([t1.a]), filter(nil), rowset=16
+      access([t1.a]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+select t1.a, dt.a from t1, lateral (select t1.a+t2.a as a from t2) dt;
++------+------+
+| a    | a    |
++------+------+
+|    1 |    2 |
+|    1 |    3 |
+|    2 |    3 |
+|    2 |    4 |
++------+------+
+
+EXPLAIN select t1.a, dt.a from t1, lateral (select t2.a as a from t2 having t1.a) dt;
+Query Plan
+===========================================================
+|ID|OPERATOR                   |NAME|EST.ROWS|EST.TIME(us)|
+-----------------------------------------------------------
+|0 |NESTED-LOOP JOIN CARTESIAN |    |2       |5           |
+|1 |├─TABLE FULL SCAN          |t2  |2       |3           |
+|2 |└─MATERIAL                 |    |1       |3           |
+|3 |  └─TABLE FULL SCAN        |t1  |1       |3           |
+===========================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([t1.a], [t2.a]), filter(nil), rowset=16
+      conds(nil), nl_params_(nil), use_batch=false
+  1 - output([t2.a]), filter(nil), rowset=16
+      access([t2.a]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+  2 - output([t1.a]), filter(nil), rowset=16
+  3 - output([t1.a]), filter([t1.a]), rowset=16
+      access([t1.a]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+select t1.a, dt.a from t1, lateral (select t2.a as a from t2 having t1.a) dt;
++------+------+
+| a    | a    |
++------+------+
+|    1 |    1 |
+|    1 |    2 |
+|    2 |    1 |
+|    2 |    2 |
++------+------+
+
+# Inside view
+create view v1 as
+ select t1.a as f1, dt.a as f2
+ from t1, lateral (select t1.a+t2.a as a from t2) dt;
+show create view v1;
+View	Create View	character_set_client	collation_connection
+v1	CREATE VIEW `v1` AS select `test`.`t1`.`a` AS `f1`,`dt`.`a` AS `f2` from `test`.`t1`,lateral (select (`test`.`t1`.`a` + `test`.`t2`.`a`) AS `a` from `test`.`t2`) `dt`	utf8mb4	utf8mb4_general_ci
+EXPLAIN select * from v1;
+Query Plan
+===========================================================
+|ID|OPERATOR                   |NAME|EST.ROWS|EST.TIME(us)|
+-----------------------------------------------------------
+|0 |NESTED-LOOP JOIN CARTESIAN |    |4       |5           |
+|1 |├─TABLE FULL SCAN          |t2  |2       |3           |
+|2 |└─MATERIAL                 |    |2       |3           |
+|3 |  └─TABLE FULL SCAN        |t1  |2       |3           |
+===========================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([t1.a], [t1.a + t2.a]), filter(nil), rowset=16
+      conds(nil), nl_params_(nil), use_batch=false
+  1 - output([t2.a]), filter(nil), rowset=16
+      access([t2.a]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+  2 - output([t1.a]), filter(nil), rowset=16
+  3 - output([t1.a]), filter(nil), rowset=16
+      access([t1.a]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+select * from v1;
++------+------+
+| f1   | f2   |
++------+------+
+|    1 |    2 |
+|    1 |    3 |
+|    2 |    3 |
+|    2 |    4 |
++------+------+
+drop view v1;
+
+EXPLAIN SELECT COUNT(*) FROM t1 GROUP BY t1.a  HAVING t1.a IN (SELECT t3.a
+FROM t1 AS t3 WHERE t3.b IN (SELECT b FROM t2, lateral (select t1.a) dt));
+Query Plan
+========================================================
+|ID|OPERATOR               |NAME |EST.ROWS|EST.TIME(us)|
+--------------------------------------------------------
+|0 |HASH GROUP BY          |     |1       |8           |
+|1 |└─HASH RIGHT SEMI JOIN |     |1       |8           |
+|2 |  ├─SUBPLAN SCAN       |VIEW2|1       |5           |
+|3 |  │ └─HASH JOIN        |     |1       |5           |
+|4 |  │   ├─TABLE FULL SCAN|t2   |2       |3           |
+|5 |  │   └─TABLE FULL SCAN|t3   |2       |3           |
+|6 |  └─TABLE FULL SCAN    |t1   |2       |3           |
+========================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([T_FUN_COUNT(*)]), filter(nil), rowset=16
+      group([t1.a]), agg_func([T_FUN_COUNT(*)])
+  1 - output([t1.a]), filter(nil), rowset=16
+      equal_conds([VIEW2.t3.a = t1.a]), other_conds(nil)
+  2 - output([VIEW2.t3.a]), filter(nil), rowset=16
+      access([VIEW2.t3.a])
+  3 - output([t3.a]), filter(nil), rowset=16
+      equal_conds([t3.b = t2.b]), other_conds(nil)
+  4 - output([t2.b]), filter(nil), rowset=16
+      access([t2.b]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+  5 - output([t3.b], [t3.a]), filter(nil), rowset=16
+      access([t3.b], [t3.a]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t3.__pk_increment]), range(MIN ; MAX)always true
+  6 - output([t1.a]), filter(nil), rowset=16
+      access([t1.a]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+SELECT COUNT(*) FROM t1 GROUP BY t1.a  HAVING t1.a IN (SELECT t3.a
+FROM t1 AS t3 WHERE t3.b IN (SELECT b FROM t2, lateral (select t1.a) dt));
++----------+
+| COUNT(*) |
++----------+
++----------+
+
+create view v1 as select a, b from t1;
+
+EXPLAIN select vq1.b,dt.b from v1 vq1, lateral (select vq1.b) dt;
+Query Plan
+===============================================
+|ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
+-----------------------------------------------
+|0 |TABLE FULL SCAN|t1  |2       |3           |
+===============================================
+Outputs & filters:
+-------------------------------------
+  0 - output([t1.b], [t1.b]), filter(nil), rowset=16
+      access([t1.b]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+select vq1.b,dt.b from v1 vq1, lateral (select vq1.b) dt;
++------+------+
+| b    | b    |
++------+------+
+| NULL | NULL |
+| NULL | NULL |
++------+------+
+
+EXPLAIN select b from v1 vq1, lateral (select count(*) from v1 vq2 having vq1.b = 3) dt;
+Query Plan
+===============================================
+|ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
+-----------------------------------------------
+|0 |TABLE FULL SCAN|t1  |1       |3           |
+===============================================
+Outputs & filters:
+-------------------------------------
+  0 - output([t1.b]), filter([t1.b = 3]), rowset=16
+      access([t1.b]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+select b from v1 vq1, lateral (select count(*) from v1 vq2 having vq1.b = 3) dt;
++------+
+| b    |
++------+
++------+
+
+drop view v1;
+
+EXPLAIN SELECT
+* FROM t1 AS ta, lateral (select 1 WHERE ta.a IN (SELECT b FROM t2 AS tb                WHERE tb.b >= SOME(SELECT SUM(tc.a) as sg FROM t1 as tc                                   GROUP BY tc.b                                   HAVING ta.a=tc.b))) dt;
+Query Plan
+==========================================================
+|ID|OPERATOR                 |NAME |EST.ROWS|EST.TIME(us)|
+----------------------------------------------------------
+|0 |SUBPLAN FILTER           |     |1       |76          |
+|1 |├─TABLE FULL SCAN        |ta   |2       |3           |
+|2 |└─LIMIT                  |     |1       |37          |
+|3 |  └─NESTED-LOOP JOIN     |     |1       |37          |
+|4 |    ├─SUBPLAN SCAN       |VIEW1|1       |19          |
+|5 |    │ └─MERGE GROUP BY   |     |1       |19          |
+|6 |    │   └─TABLE FULL SCAN|tc   |1       |18          |
+|7 |    └─TABLE FULL SCAN    |tb   |1       |18          |
+==========================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([ta.a], [ta.b], [1]), filter([(T_OP_EXISTS, subquery(1))]), rowset=16
+      exec_params_([ta.a(:0)]), onetime_exprs_(nil), init_plan_idxs_(nil), use_batch=false
+  1 - output([ta.a], [ta.b]), filter(nil), rowset=16
+      access([ta.a], [ta.b]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([ta.__pk_increment]), range(MIN ; MAX)always true
+  2 - output([1]), filter(nil), rowset=16
+      limit(1), offset(nil)
+  3 - output(nil), filter(nil), rowset=16
+      conds([cast(tb.b, DECIMAL_INT(33, 0)) >= VIEW1.sg]), nl_params_(nil), use_batch=false
+  4 - output([VIEW1.sg]), filter(nil), rowset=16
+      access([VIEW1.sg])
+  5 - output([T_FUN_SUM(tc.a)]), filter(nil), rowset=16
+      group(nil), agg_func([T_FUN_SUM(tc.a)])
+  6 - output([tc.a]), filter([:0 = tc.b]), rowset=16
+      access([tc.a], [tc.b]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([tc.__pk_increment]), range(MIN ; MAX)always true
+  7 - output([tb.b]), filter([tb.b = :0]), rowset=16
+      access([tb.b]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([tb.__pk_increment]), range(MIN ; MAX)always true
+SELECT
+* FROM t1 AS ta, lateral (select 1 WHERE ta.a IN (SELECT b FROM t2 AS tb                WHERE tb.b >= SOME(SELECT SUM(tc.a) as sg FROM t1 as tc                                   GROUP BY tc.b                                   HAVING ta.a=tc.b))) dt;
++------+------+---+
+| a    | b    | 1 |
++------+------+---+
++------+------+---+
+
+EXPLAIN select (select dt.a from   lateral (select 1 as a, 3 as b from t2 having t1.a)
+dt where dt.b=t1.a) as subq from t1;
+Query Plan
+=================================================
+|ID|OPERATOR         |NAME|EST.ROWS|EST.TIME(us)|
+-------------------------------------------------
+|0 |SUBPLAN FILTER   |    |2       |39          |
+|1 |├─TABLE FULL SCAN|t1  |2       |3           |
+|2 |└─TABLE FULL SCAN|t2  |2       |18          |
+=================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([subquery(1)]), filter(nil), rowset=16
+      exec_params_([t1.a(:0)]), onetime_exprs_(nil), init_plan_idxs_(nil), use_batch=false
+  1 - output([t1.a]), filter(nil), rowset=16
+      access([t1.a]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+  2 - output([1]), filter(nil), startup_filter([3 = :0], [:0]), rowset=16
+      access(nil), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+select (select dt.a from   lateral (select 1 as a, 3 as b from t2 having t1.a)
+dt where dt.b=t1.a) as subq from t1;
++------+
+| subq |
++------+
+| NULL |
+| NULL |
++------+
+
+# Aggregation in outer context
+EXPLAIN select (select f from lateral (select max(t1.a) as f) as dt) as g from t1;
+Query Plan
+=================================================
+|ID|OPERATOR         |NAME|EST.ROWS|EST.TIME(us)|
+-------------------------------------------------
+|0 |SCALAR GROUP BY  |    |1       |3           |
+|1 |└─TABLE FULL SCAN|t1  |2       |3           |
+=================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([T_FUN_MAX(T_FUN_MAX(t1.a))]), filter(nil), rowset=16
+      group(nil), agg_func([T_FUN_MAX(T_FUN_MAX(t1.a))])
+  1 - output([T_FUN_MAX(t1.a)]), filter(nil), rowset=16
+      access([t1.a]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true, 
+      pushdown_aggregation([T_FUN_MAX(t1.a)])
+select (select f from lateral (select max(t1.a) as f) as dt) as g from t1;
++------+
+| g    |
++------+
+|    2 |
++------+
+
+EXPLAIN select t1.a, f from t1, lateral (select max(t1.a) as f) as dt;
+Query Plan
+===================================================
+|ID|OPERATOR           |NAME|EST.ROWS|EST.TIME(us)|
+---------------------------------------------------
+|0 |NESTED-LOOP JOIN   |    |2       |4           |
+|1 |├─TABLE FULL SCAN  |t1  |2       |3           |
+|2 |└─SUBPLAN SCAN     |dt  |1       |1           |
+|3 |  └─SCALAR GROUP BY|    |1       |1           |
+|4 |    └─EXPRESSION   |    |1       |1           |
+===================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([t1.a], [dt.f]), filter(nil), rowset=16
+      conds(nil), nl_params_([t1.a(:0)]), use_batch=false
+  1 - output([t1.a]), filter(nil), rowset=16
+      access([t1.a]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+  2 - output([dt.f]), filter(nil), rowset=16
+      access([dt.f])
+  3 - output([T_FUN_MAX(:0)]), filter(nil), rowset=16
+      group(nil), agg_func([T_FUN_MAX(:0)])
+  4 - output([1]), filter(nil)
+      values({1})
+select t1.a, f from t1, lateral (select max(t1.a) as f) as dt;
++------+------+
+| a    | f    |
++------+------+
+|    1 |    1 |
+|    2 |    2 |
++------+------+
+
+# We support CTE inside derived table
+EXPLAIN select * from t1,
+lateral (with qn as (select t1.a) select (select max(a) from qn)) as dt;
+Query Plan
+===================================================
+|ID|OPERATOR           |NAME|EST.ROWS|EST.TIME(us)|
+---------------------------------------------------
+|0 |NESTED-LOOP JOIN   |    |2       |4           |
+|1 |├─TABLE FULL SCAN  |t1  |2       |3           |
+|2 |└─SUBPLAN SCAN     |dt  |1       |1           |
+|3 |  └─SCALAR GROUP BY|    |1       |1           |
+|4 |    └─EXPRESSION   |    |1       |1           |
+===================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([t1.a], [t1.b], [dt.(select max(a) from qn)]), filter(nil), rowset=16
+      conds(nil), nl_params_([t1.a(:0)]), use_batch=false
+  1 - output([t1.a], [t1.b]), filter(nil), rowset=16
+      access([t1.a], [t1.b]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+  2 - output([dt.(select max(a) from qn)]), filter(nil), rowset=16
+      access([dt.(select max(a) from qn)])
+  3 - output([T_FUN_MAX(:0)]), filter(nil), rowset=16
+      group(nil), agg_func([T_FUN_MAX(:0)])
+  4 - output([1]), filter(nil)
+      values({1})
+select * from t1,
+lateral (with qn as (select t1.a) select (select max(a) from qn)) as dt;
++------+------+-------------------------+
+| a    | b    | (select max(a) from qn) |
++------+------+-------------------------+
+|    1 | NULL |                       1 |
+|    2 | NULL |                       2 |
++------+------+-------------------------+
+
+EXPLAIN select * from t1, lateral (select * from (select * from (select t1.a from t2) as dt limit 1) dt2) dt3;
+Query Plan
+===================================================
+|ID|OPERATOR           |NAME|EST.ROWS|EST.TIME(us)|
+---------------------------------------------------
+|0 |NESTED-LOOP JOIN   |    |2       |40          |
+|1 |├─TABLE FULL SCAN  |t1  |2       |3           |
+|2 |└─SUBPLAN SCAN     |dt3 |1       |18          |
+|3 |  └─TABLE FULL SCAN|t2  |1       |18          |
+===================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([t1.a], [t1.b], [dt3.a]), filter(nil), rowset=16
+      conds(nil), nl_params_([t1.a(:0)]), use_batch=false
+  1 - output([t1.a], [t1.b]), filter(nil), rowset=16
+      access([t1.a], [t1.b]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+  2 - output([dt3.a]), filter(nil), rowset=16
+      access([dt3.a])
+  3 - output([:0]), filter(nil), rowset=16
+      access(nil), partitions(p0)
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+select * from t1, lateral (select * from (select * from (select t1.a from t2) as dt limit 1) dt2) dt3;
++------+------+------+
+| a    | b    | a    |
++------+------+------+
+|    1 | NULL |    1 |
+|    2 | NULL |    2 |
++------+------+------+
+
+EXPLAIN select * from t1 as t0,
+lateral
+(select dt3.* from t1, lateral (select * from (select * from (select t0.a
+from t2) as dt limit 1) dt2) dt3) dt4;
+Query Plan
+===============================================================
+|ID|OPERATOR                       |NAME|EST.ROWS|EST.TIME(us)|
+---------------------------------------------------------------
+|0 |NESTED-LOOP JOIN               |    |4       |76          |
+|1 |├─TABLE FULL SCAN              |t0  |2       |3           |
+|2 |└─SUBPLAN SCAN                 |dt4 |2       |36          |
+|3 |  └─NESTED-LOOP JOIN CARTESIAN |    |2       |36          |
+|4 |    ├─SUBPLAN SCAN             |dt2 |1       |18          |
+|5 |    │ └─TABLE FULL SCAN        |t2  |1       |18          |
+|6 |    └─MATERIAL                 |    |2       |18          |
+|7 |      └─TABLE FULL SCAN        |t1  |2       |18          |
+===============================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([t0.a], [t0.b], [dt4.a]), filter(nil), rowset=16
+      conds(nil), nl_params_([t0.a(:0)]), use_batch=false
+  1 - output([t0.a], [t0.b]), filter(nil), rowset=16
+      access([t0.a], [t0.b]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t0.__pk_increment]), range(MIN ; MAX)always true
+  2 - output([dt4.a]), filter(nil), rowset=16
+      access([dt4.a])
+  3 - output([dt2.a]), filter(nil), rowset=16
+      conds(nil), nl_params_(nil), use_batch=false
+  4 - output([dt2.a]), filter(nil), rowset=16
+      access([dt2.a])
+  5 - output([:0]), filter(nil), rowset=16
+      access(nil), partitions(p0)
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+  6 - output(nil), filter(nil), rowset=16
+  7 - output(nil), filter(nil), rowset=16
+      access(nil), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+select * from t1 as t0,
+lateral
+(select dt3.* from t1, lateral (select * from (select * from (select t0.a
+from t2) as dt limit 1) dt2) dt3) dt4;
++------+------+------+
+| a    | b    | a    |
++------+------+------+
+|    1 | NULL |    1 |
+|    1 | NULL |    1 |
+|    2 | NULL |    2 |
+|    2 | NULL |    2 |
++------+------+------+
+
+EXPLAIN select /*+ no_merge() */ * from t1 as t0,
+lateral
+(select dt3.* from t1, lateral (select * from (select * from (select t0.a
+from t2) as dt limit 1) dt2) dt3) dt4;
+Query Plan
+===============================================================
+|ID|OPERATOR                       |NAME|EST.ROWS|EST.TIME(us)|
+---------------------------------------------------------------
+|0 |NESTED-LOOP JOIN               |    |4       |76          |
+|1 |├─TABLE FULL SCAN              |t0  |2       |3           |
+|2 |└─SUBPLAN SCAN                 |dt4 |2       |36          |
+|3 |  └─NESTED-LOOP JOIN CARTESIAN |    |2       |36          |
+|4 |    ├─SUBPLAN SCAN             |dt2 |1       |18          |
+|5 |    │ └─TABLE FULL SCAN        |t2  |1       |18          |
+|6 |    └─MATERIAL                 |    |2       |18          |
+|7 |      └─TABLE FULL SCAN        |t1  |2       |18          |
+===============================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([t0.a], [t0.b], [dt4.a]), filter(nil), rowset=16
+      conds(nil), nl_params_([t0.a(:0)]), use_batch=false
+  1 - output([t0.a], [t0.b]), filter(nil), rowset=16
+      access([t0.a], [t0.b]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t0.__pk_increment]), range(MIN ; MAX)always true
+  2 - output([dt4.a]), filter(nil), rowset=16
+      access([dt4.a])
+  3 - output([dt2.a]), filter(nil), rowset=16
+      conds(nil), nl_params_(nil), use_batch=false
+  4 - output([dt2.a]), filter(nil), rowset=16
+      access([dt2.a])
+  5 - output([:0]), filter(nil), rowset=16
+      access(nil), partitions(p0)
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+  6 - output(nil), filter(nil), rowset=16
+  7 - output(nil), filter(nil), rowset=16
+      access(nil), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+select /*+ no_merge() */ * from t1 as t0,
+lateral
+(select dt3.* from t1, lateral (select * from (select * from (select t0.a
+from t2) as dt limit 1) dt2) dt3) dt4;
++------+------+------+
+| a    | b    | a    |
++------+------+------+
+|    1 | NULL |    1 |
+|    1 | NULL |    1 |
+|    2 | NULL |    2 |
+|    2 | NULL |    2 |
++------+------+------+
+
+EXPLAIN select * from t1, lateral (select * from (select 42) t1, (select t1.a) dt2) dt3;
+Query Plan
+===============================================
+|ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
+-----------------------------------------------
+|0 |TABLE FULL SCAN|t1  |2       |3           |
+===============================================
+Outputs & filters:
+-------------------------------------
+  0 - output([t1.a], [t1.b], [42], [t1.a]), filter(nil), rowset=16
+      access([t1.a], [t1.b]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+select * from t1, lateral (select * from (select 42) t1, (select t1.a) dt2) dt3;
++------+------+----+------+
+| a    | b    | 42 | a    |
++------+------+----+------+
+|    1 | NULL | 42 |    1 |
+|    2 | NULL | 42 |    2 |
++------+------+----+------+
+
+EXPLAIN select /*+ ordered */ * from t1, t2, lateral (select t1.a) as dt;
+Query Plan
+===========================================================
+|ID|OPERATOR                   |NAME|EST.ROWS|EST.TIME(us)|
+-----------------------------------------------------------
+|0 |NESTED-LOOP JOIN CARTESIAN |    |4       |5           |
+|1 |├─TABLE FULL SCAN          |t1  |2       |3           |
+|2 |└─MATERIAL                 |    |2       |3           |
+|3 |  └─TABLE FULL SCAN        |t2  |2       |3           |
+===========================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([t1.a], [t1.b], [t2.a], [t2.b], [t1.a]), filter(nil), rowset=16
+      conds(nil), nl_params_(nil), use_batch=false
+  1 - output([t1.a], [t1.b]), filter(nil), rowset=16
+      access([t1.a], [t1.b]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+  2 - output([t2.a], [t2.b]), filter(nil), rowset=16
+  3 - output([t2.a], [t2.b]), filter(nil), rowset=16
+      access([t2.a], [t2.b]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+select /*+ ordered */ * from t1, t2, lateral (select t1.a) as dt;
++------+------+------+------+------+
+| a    | b    | a    | b    | a    |
++------+------+------+------+------+
+|    1 | NULL |    1 | NULL |    1 |
+|    1 | NULL |    2 | NULL |    1 |
+|    2 | NULL |    1 | NULL |    2 |
+|    2 | NULL |    2 | NULL |    2 |
++------+------+------+------+------+
+
+EXPLAIN select /*+ ordered */ * from t1, lateral (select t1.a) as dt, t2;
+Query Plan
+===========================================================
+|ID|OPERATOR                   |NAME|EST.ROWS|EST.TIME(us)|
+-----------------------------------------------------------
+|0 |NESTED-LOOP JOIN CARTESIAN |    |4       |5           |
+|1 |├─TABLE FULL SCAN          |t1  |2       |3           |
+|2 |└─MATERIAL                 |    |2       |3           |
+|3 |  └─TABLE FULL SCAN        |t2  |2       |3           |
+===========================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([t1.a], [t1.b], [t1.a], [t2.a], [t2.b]), filter(nil), rowset=16
+      conds(nil), nl_params_(nil), use_batch=false
+  1 - output([t1.a], [t1.b]), filter(nil), rowset=16
+      access([t1.a], [t1.b]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+  2 - output([t2.a], [t2.b]), filter(nil), rowset=16
+  3 - output([t2.a], [t2.b]), filter(nil), rowset=16
+      access([t2.a], [t2.b]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+select /*+ ordered */ * from t1, lateral (select t1.a) as dt, t2;
++------+------+------+------+------+
+| a    | b    | a    | a    | b    |
++------+------+------+------+------+
+|    1 | NULL |    1 |    1 | NULL |
+|    1 | NULL |    1 |    2 | NULL |
+|    2 | NULL |    2 |    1 | NULL |
+|    2 | NULL |    2 |    2 | NULL |
++------+------+------+------+------+
+
+EXPLAIN select /*+ ordered */ * from t2, t1, lateral (select t1.a) as dt;
+Query Plan
+===========================================================
+|ID|OPERATOR                   |NAME|EST.ROWS|EST.TIME(us)|
+-----------------------------------------------------------
+|0 |NESTED-LOOP JOIN CARTESIAN |    |4       |5           |
+|1 |├─TABLE FULL SCAN          |t2  |2       |3           |
+|2 |└─MATERIAL                 |    |2       |3           |
+|3 |  └─TABLE FULL SCAN        |t1  |2       |3           |
+===========================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([t2.a], [t2.b], [t1.a], [t1.b], [t1.a]), filter(nil), rowset=16
+      conds(nil), nl_params_(nil), use_batch=false
+  1 - output([t2.a], [t2.b]), filter(nil), rowset=16
+      access([t2.a], [t2.b]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+  2 - output([t1.a], [t1.b]), filter(nil), rowset=16
+  3 - output([t1.a], [t1.b]), filter(nil), rowset=16
+      access([t1.a], [t1.b]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+select /*+ ordered */ * from t2, t1, lateral (select t1.a) as dt;
++------+------+------+------+------+
+| a    | b    | a    | b    | a    |
++------+------+------+------+------+
+|    1 | NULL |    1 | NULL |    1 |
+|    1 | NULL |    2 | NULL |    2 |
+|    2 | NULL |    1 | NULL |    1 |
+|    2 | NULL |    2 | NULL |    2 |
++------+------+------+------+------+
+
+EXPLAIN select * from t1, t2, lateral (select t1.a) as dt;
+Query Plan
+===========================================================
+|ID|OPERATOR                   |NAME|EST.ROWS|EST.TIME(us)|
+-----------------------------------------------------------
+|0 |NESTED-LOOP JOIN CARTESIAN |    |4       |5           |
+|1 |├─TABLE FULL SCAN          |t1  |2       |3           |
+|2 |└─MATERIAL                 |    |2       |3           |
+|3 |  └─TABLE FULL SCAN        |t2  |2       |3           |
+===========================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([t1.a], [t1.b], [t2.a], [t2.b], [t1.a]), filter(nil), rowset=16
+      conds(nil), nl_params_(nil), use_batch=false
+  1 - output([t1.a], [t1.b]), filter(nil), rowset=16
+      access([t1.a], [t1.b]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+  2 - output([t2.a], [t2.b]), filter(nil), rowset=16
+  3 - output([t2.a], [t2.b]), filter(nil), rowset=16
+      access([t2.a], [t2.b]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+select * from t1, t2, lateral (select t1.a) as dt;
++------+------+------+------+------+
+| a    | b    | a    | b    | a    |
++------+------+------+------+------+
+|    1 | NULL |    1 | NULL |    1 |
+|    1 | NULL |    2 | NULL |    1 |
+|    2 | NULL |    1 | NULL |    2 |
+|    2 | NULL |    2 | NULL |    2 |
++------+------+------+------+------+
+
+EXPLAIN select * from t1, lateral (select t1.a) as dt, t2;
+Query Plan
+===========================================================
+|ID|OPERATOR                   |NAME|EST.ROWS|EST.TIME(us)|
+-----------------------------------------------------------
+|0 |NESTED-LOOP JOIN CARTESIAN |    |4       |5           |
+|1 |├─TABLE FULL SCAN          |t1  |2       |3           |
+|2 |└─MATERIAL                 |    |2       |3           |
+|3 |  └─TABLE FULL SCAN        |t2  |2       |3           |
+===========================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([t1.a], [t1.b], [t1.a], [t2.a], [t2.b]), filter(nil), rowset=16
+      conds(nil), nl_params_(nil), use_batch=false
+  1 - output([t1.a], [t1.b]), filter(nil), rowset=16
+      access([t1.a], [t1.b]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+  2 - output([t2.a], [t2.b]), filter(nil), rowset=16
+  3 - output([t2.a], [t2.b]), filter(nil), rowset=16
+      access([t2.a], [t2.b]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+select * from t1, lateral (select t1.a) as dt, t2;
++------+------+------+------+------+
+| a    | b    | a    | a    | b    |
++------+------+------+------+------+
+|    1 | NULL |    1 |    1 | NULL |
+|    1 | NULL |    1 |    2 | NULL |
+|    2 | NULL |    2 |    1 | NULL |
+|    2 | NULL |    2 |    2 | NULL |
++------+------+------+------+------+
+
+EXPLAIN select * from t2, t1, lateral (select t1.a) as dt;
+Query Plan
+===========================================================
+|ID|OPERATOR                   |NAME|EST.ROWS|EST.TIME(us)|
+-----------------------------------------------------------
+|0 |NESTED-LOOP JOIN CARTESIAN |    |4       |5           |
+|1 |├─TABLE FULL SCAN          |t2  |2       |3           |
+|2 |└─MATERIAL                 |    |2       |3           |
+|3 |  └─TABLE FULL SCAN        |t1  |2       |3           |
+===========================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([t2.a], [t2.b], [t1.a], [t1.b], [t1.a]), filter(nil), rowset=16
+      conds(nil), nl_params_(nil), use_batch=false
+  1 - output([t2.a], [t2.b]), filter(nil), rowset=16
+      access([t2.a], [t2.b]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+  2 - output([t1.a], [t1.b]), filter(nil), rowset=16
+  3 - output([t1.a], [t1.b]), filter(nil), rowset=16
+      access([t1.a], [t1.b]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+select * from t2, t1, lateral (select t1.a) as dt;
++------+------+------+------+------+
+| a    | b    | a    | b    | a    |
++------+------+------+------+------+
+|    1 | NULL |    1 | NULL |    1 |
+|    1 | NULL |    2 | NULL |    2 |
+|    2 | NULL |    1 | NULL |    1 |
+|    2 | NULL |    2 | NULL |    2 |
++------+------+------+------+------+
+
+EXPLAIN select * from t1, lateral (select t1.a from t2 as t3, t2 as t4) as dt, t2;
+Query Plan
+===============================================================
+|ID|OPERATOR                       |NAME|EST.ROWS|EST.TIME(us)|
+---------------------------------------------------------------
+|0 |NESTED-LOOP JOIN CARTESIAN     |    |16      |10          |
+|1 |├─NESTED-LOOP JOIN CARTESIAN   |    |8       |7           |
+|2 |│ ├─NESTED-LOOP JOIN CARTESIAN |    |4       |5           |
+|3 |│ │ ├─TABLE FULL SCAN          |t1  |2       |3           |
+|4 |│ │ └─MATERIAL                 |    |2       |3           |
+|5 |│ │   └─TABLE FULL SCAN        |t2  |2       |3           |
+|6 |│ └─MATERIAL                   |    |2       |3           |
+|7 |│   └─TABLE FULL SCAN          |t3  |2       |3           |
+|8 |└─MATERIAL                     |    |2       |3           |
+|9 |  └─TABLE FULL SCAN            |t4  |2       |3           |
+===============================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([t1.a], [t1.b], [t1.a], [t2.a], [t2.b]), filter(nil), rowset=16
+      conds(nil), nl_params_(nil), use_batch=false
+  1 - output([t1.a], [t1.b], [t2.a], [t2.b]), filter(nil), rowset=16
+      conds(nil), nl_params_(nil), use_batch=false
+  2 - output([t1.a], [t1.b], [t2.a], [t2.b]), filter(nil), rowset=16
+      conds(nil), nl_params_(nil), use_batch=false
+  3 - output([t1.a], [t1.b]), filter(nil), rowset=16
+      access([t1.a], [t1.b]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+  4 - output([t2.a], [t2.b]), filter(nil), rowset=16
+  5 - output([t2.a], [t2.b]), filter(nil), rowset=16
+      access([t2.a], [t2.b]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+  6 - output(nil), filter(nil), rowset=16
+  7 - output(nil), filter(nil), rowset=16
+      access(nil), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t3.__pk_increment]), range(MIN ; MAX)always true
+  8 - output(nil), filter(nil), rowset=16
+  9 - output(nil), filter(nil), rowset=16
+      access(nil), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t4.__pk_increment]), range(MIN ; MAX)always true
+select * from t1, lateral (select t1.a from t2 as t3, t2 as t4) as dt, t2;
++------+------+------+------+------+
+| a    | b    | a    | a    | b    |
++------+------+------+------+------+
+|    1 | NULL |    1 |    1 | NULL |
+|    1 | NULL |    1 |    1 | NULL |
+|    1 | NULL |    1 |    1 | NULL |
+|    1 | NULL |    1 |    1 | NULL |
+|    1 | NULL |    1 |    2 | NULL |
+|    1 | NULL |    1 |    2 | NULL |
+|    1 | NULL |    1 |    2 | NULL |
+|    1 | NULL |    1 |    2 | NULL |
+|    2 | NULL |    2 |    1 | NULL |
+|    2 | NULL |    2 |    1 | NULL |
+|    2 | NULL |    2 |    1 | NULL |
+|    2 | NULL |    2 |    1 | NULL |
+|    2 | NULL |    2 |    2 | NULL |
+|    2 | NULL |    2 |    2 | NULL |
+|    2 | NULL |    2 |    2 | NULL |
+|    2 | NULL |    2 |    2 | NULL |
++------+------+------+------+------+
+
+EXPLAIN select * from t3, lateral (select t3.a+1) as dt;
+Query Plan
+===============================================
+|ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
+-----------------------------------------------
+|0 |TABLE FULL SCAN|t3  |4       |3           |
+===============================================
+Outputs & filters:
+-------------------------------------
+  0 - output([t3.a], [t3.b], [t3.a + 1]), filter(nil), rowset=16
+      access([t3.a], [t3.b]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t3.__pk_increment]), range(MIN ; MAX)always true
+select * from t3, lateral (select t3.a+1) as dt;
++------+------+--------+
+| a    | b    | t3.a+1 |
++------+------+--------+
+|    1 |   10 |      2 |
+|    1 |   11 |      2 |
+|    2 |   10 |      3 |
+|    2 |   11 |      3 |
++------+------+--------+
+
+EXPLAIN select * from t2, t1, lateral (select t1.a) as dt,
+                      lateral (select t2.a) as dt2;
+Query Plan
+===========================================================
+|ID|OPERATOR                   |NAME|EST.ROWS|EST.TIME(us)|
+-----------------------------------------------------------
+|0 |NESTED-LOOP JOIN CARTESIAN |    |4       |5           |
+|1 |├─TABLE FULL SCAN          |t2  |2       |3           |
+|2 |└─MATERIAL                 |    |2       |3           |
+|3 |  └─TABLE FULL SCAN        |t1  |2       |3           |
+===========================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([t2.a], [t2.b], [t1.a], [t1.b], [t1.a], [t2.a]), filter(nil), rowset=16
+      conds(nil), nl_params_(nil), use_batch=false
+  1 - output([t2.a], [t2.b]), filter(nil), rowset=16
+      access([t2.a], [t2.b]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+  2 - output([t1.a], [t1.b]), filter(nil), rowset=16
+  3 - output([t1.a], [t1.b]), filter(nil), rowset=16
+      access([t1.a], [t1.b]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+select * from t2, t1, lateral (select t1.a) as dt,
+                      lateral (select t2.a) as dt2;
++------+------+------+------+------+------+
+| a    | b    | a    | b    | a    | a    |
++------+------+------+------+------+------+
+|    1 | NULL |    1 | NULL |    1 |    1 |
+|    1 | NULL |    2 | NULL |    2 |    1 |
+|    2 | NULL |    1 | NULL |    1 |    2 |
+|    2 | NULL |    2 | NULL |    2 |    2 |
++------+------+------+------+------+------+
+
+EXPLAIN select * from t2, t1, lateral (select t1.a) as dt,
+                      lateral (select t1.a+1) as dt2;
+Query Plan
+===========================================================
+|ID|OPERATOR                   |NAME|EST.ROWS|EST.TIME(us)|
+-----------------------------------------------------------
+|0 |NESTED-LOOP JOIN CARTESIAN |    |4       |5           |
+|1 |├─TABLE FULL SCAN          |t2  |2       |3           |
+|2 |└─MATERIAL                 |    |2       |3           |
+|3 |  └─TABLE FULL SCAN        |t1  |2       |3           |
+===========================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([t2.a], [t2.b], [t1.a], [t1.b], [t1.a], [t1.a + 1]), filter(nil), rowset=16
+      conds(nil), nl_params_(nil), use_batch=false
+  1 - output([t2.a], [t2.b]), filter(nil), rowset=16
+      access([t2.a], [t2.b]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+  2 - output([t1.a], [t1.b]), filter(nil), rowset=16
+  3 - output([t1.a], [t1.b]), filter(nil), rowset=16
+      access([t1.a], [t1.b]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+select * from t2, t1, lateral (select t1.a) as dt,
+                      lateral (select t1.a+1) as dt2;
++------+------+------+------+------+--------+
+| a    | b    | a    | b    | a    | t1.a+1 |
++------+------+------+------+------+--------+
+|    1 | NULL |    1 | NULL |    1 |      2 |
+|    1 | NULL |    2 | NULL |    2 |      3 |
+|    2 | NULL |    1 | NULL |    1 |      2 |
+|    2 | NULL |    2 | NULL |    2 |      3 |
++------+------+------+------+------+--------+
+
+EXPLAIN select * from t2, t1, lateral (select t1.a+t2.a) as dt;
+Query Plan
+===========================================================
+|ID|OPERATOR                   |NAME|EST.ROWS|EST.TIME(us)|
+-----------------------------------------------------------
+|0 |NESTED-LOOP JOIN CARTESIAN |    |4       |5           |
+|1 |├─TABLE FULL SCAN          |t2  |2       |3           |
+|2 |└─MATERIAL                 |    |2       |3           |
+|3 |  └─TABLE FULL SCAN        |t1  |2       |3           |
+===========================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([t2.a], [t2.b], [t1.a], [t1.b], [t1.a + t2.a]), filter(nil), rowset=16
+      conds(nil), nl_params_(nil), use_batch=false
+  1 - output([t2.a], [t2.b]), filter(nil), rowset=16
+      access([t2.a], [t2.b]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+  2 - output([t1.a], [t1.b]), filter(nil), rowset=16
+  3 - output([t1.a], [t1.b]), filter(nil), rowset=16
+      access([t1.a], [t1.b]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+select * from t2, t1, lateral (select t1.a+t2.a) as dt;
++------+------+------+------+-----------+
+| a    | b    | a    | b    | t1.a+t2.a |
++------+------+------+------+-----------+
+|    1 | NULL |    1 | NULL |         2 |
+|    1 | NULL |    2 | NULL |         3 |
+|    2 | NULL |    1 | NULL |         3 |
+|    2 | NULL |    2 | NULL |         4 |
++------+------+------+------+-----------+
+
+EXPLAIN SELECT * FROM t11 LEFT JOIN t12 force index (idx) ON t12.t12b = t11.t11b
+JOIN LATERAL (SELECT t12a) dt;
+Query Plan
+===========================================================
+|ID|OPERATOR               |NAME    |EST.ROWS|EST.TIME(us)|
+-----------------------------------------------------------
+|0 |MERGE RIGHT OUTER JOIN |        |3       |18          |
+|1 |├─TABLE FULL SCAN      |t12(idx)|4       |15          |
+|2 |└─SORT                 |        |3       |3           |
+|3 |  └─TABLE FULL SCAN    |t11     |3       |3           |
+===========================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([t11.t11a], [t11.t11b], [t12.t12a], [t12.t12b], [t12.t12a]), filter(nil), rowset=16
+      equal_conds([t12.t12b = t11.t11b]), other_conds(nil)
+      merge_directions([ASC])
+  1 - output([t12.t12b], [t12.t12a]), filter(nil), rowset=16
+      access([t12.__pk_increment], [t12.t12b], [t12.t12a]), partitions(p0)
+      is_index_back=true, is_global_index=false, 
+      range_key([t12.t12b], [t12.__pk_increment]), range(MIN,MIN ; MAX,MAX)always true
+  2 - output([t11.t11a], [t11.t11b]), filter(nil), rowset=16
+      sort_keys([t11.t11b, ASC])
+  3 - output([t11.t11b], [t11.t11a]), filter(nil), rowset=16
+      access([t11.t11b], [t11.t11a]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t11.__pk_increment]), range(MIN ; MAX)always true
+SELECT * FROM t11 LEFT JOIN t12 force index (idx) ON t12.t12b = t11.t11b
+JOIN LATERAL (SELECT t12a) dt;
++------+------+------+------+------+
+| t11a | t11b | t12a | t12b | t12a |
++------+------+------+------+------+
+|   99 | NULL | NULL | NULL | NULL |
+|   99 |    0 |  100 |    0 |  100 |
+|   99 |    0 |  999 |    0 |  999 |
+|   99 |    3 | NULL | NULL | NULL |
++------+------+------+------+------+
+
+EXPLAIN select * from t1, lateral (select t3.b from t3 where t3.a=t1.a) dt
+ where dt.b=t1.a+9;
+Query Plan
+=================================================
+|ID|OPERATOR         |NAME|EST.ROWS|EST.TIME(us)|
+-------------------------------------------------
+|0 |HASH JOIN        |    |2       |6           |
+|1 |├─TABLE FULL SCAN|t1  |2       |3           |
+|2 |└─TABLE FULL SCAN|t3  |4       |3           |
+=================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([t1.a], [t1.b], [t3.b]), filter(nil), rowset=16
+      equal_conds([t3.b = t1.a + 9], [t3.a = t1.a]), other_conds(nil)
+  1 - output([t1.a], [t1.b]), filter(nil), rowset=16
+      access([t1.a], [t1.b]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+  2 - output([t3.a], [t3.b]), filter(nil), rowset=16
+      access([t3.a], [t3.b]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t3.__pk_increment]), range(MIN ; MAX)always true
+select * from t1, lateral (select t3.b from t3 where t3.a=t1.a) dt
+ where dt.b=t1.a+9;
++------+------+------+
+| a    | b    | b    |
++------+------+------+
+|    1 | NULL |   10 |
+|    2 | NULL |   11 |
++------+------+------+
+
+EXPLAIN SELECT * FROM t1 JOIN LATERAL (   SELECT GROUP_CONCAT(t.a) AS c FROM t2 t WHERE (t.a = t1.a) ) d0 ON (1);
+Query Plan
+=====================================================
+|ID|OPERATOR             |NAME|EST.ROWS|EST.TIME(us)|
+-----------------------------------------------------
+|0 |NESTED-LOOP JOIN     |    |2       |40          |
+|1 |├─TABLE FULL SCAN    |t1  |2       |3           |
+|2 |└─SUBPLAN SCAN       |d0  |1       |18          |
+|3 |  └─SCALAR GROUP BY  |    |1       |18          |
+|4 |    └─TABLE FULL SCAN|t   |1       |18          |
+=====================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([t1.a], [t1.b], [d0.c]), filter(nil), rowset=16
+      conds(nil), nl_params_([t1.a(:0)]), use_batch=false
+  1 - output([t1.a], [t1.b]), filter(nil), rowset=16
+      access([t1.a], [t1.b]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+  2 - output([d0.c]), filter(nil), rowset=16
+      access([d0.c])
+  3 - output([T_FUN_GROUP_CONCAT(cast(t.a, VARCHAR(65536)))]), filter(nil), rowset=16
+      group(nil), agg_func([T_FUN_GROUP_CONCAT(cast(t.a, VARCHAR(65536)))])
+  4 - output([t.a]), filter([t.a = :0]), rowset=16
+      access([t.a]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([t.__pk_increment]), range(MIN ; MAX)always true
+SELECT * FROM t1 JOIN LATERAL (   SELECT GROUP_CONCAT(t.a) AS c FROM t2 t WHERE (t.a = t1.a) ) d0 ON (1);
++------+------+------+
+| a    | b    | c    |
++------+------+------+
+|    1 | NULL | 1    |
+|    2 | NULL | 2    |
++------+------+------+
+
+EXPLAIN SELECT * FROM   LATERAL   (SELECT *     FROM t1     WHERE t1.a = t2.a)   right join   t2 on 1=1;
+Query Plan
+=================================================
+|ID|OPERATOR         |NAME|EST.ROWS|EST.TIME(us)|
+-------------------------------------------------
+|0 |HASH OUTER JOIN  |    |2       |6           |
+|1 |├─TABLE FULL SCAN|t2  |2       |3           |
+|2 |└─TABLE FULL SCAN|t1  |2       |3           |
+=================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([t1.a], [t1.b], [t2.a], [t2.b]), filter(nil), rowset=16
+      equal_conds([t1.a = t2.a]), other_conds(nil)
+  1 - output([t2.a], [t2.b]), filter(nil), rowset=16
+      access([t2.a], [t2.b]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+  2 - output([t1.a], [t1.b]), filter(nil), rowset=16
+      access([t1.a], [t1.b]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+SELECT * FROM   LATERAL   (SELECT *     FROM t1     WHERE t1.a = t2.a)   right join   t2 on 1=1;
++------+------+------+------+
+| a    | b    | a    | b    |
++------+------+------+------+
+|    1 | NULL |    1 | NULL |
+|    2 | NULL |    2 | NULL |
++------+------+------+------+
+
+EXPLAIN SELECT *
+  FROM
+    t1
+    LEFT JOIN (
+      t1 AS t2
+      LEFT JOIN t1 AS t3 ON TRUE
+    ) ON TRUE,
+    LATERAL (
+      SELECT SUM(t1.a), t2.a FROM t1
+    ) AS d1;
+Query Plan
+=======================================================================
+|ID|OPERATOR                               |NAME|EST.ROWS|EST.TIME(us)|
+-----------------------------------------------------------------------
+|0 |NESTED-LOOP JOIN                       |    |8       |158         |
+|1 |├─NESTED-LOOP OUTER JOIN CARTESIAN     |    |8       |8           |
+|2 |│ ├─TABLE FULL SCAN                    |t1  |2       |3           |
+|3 |│ └─MATERIAL                           |    |4       |6           |
+|4 |│   └─NESTED-LOOP OUTER JOIN CARTESIAN |    |4       |5           |
+|5 |│     ├─TABLE FULL SCAN                |t2  |2       |3           |
+|6 |│     └─MATERIAL                       |    |2       |3           |
+|7 |│       └─TABLE FULL SCAN              |t3  |2       |3           |
+|8 |└─SUBPLAN SCAN                         |d1  |1       |18          |
+|9 |  └─SCALAR GROUP BY                    |    |1       |18          |
+|10|    └─TABLE FULL SCAN                  |t1  |2       |18          |
+=======================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([t1.a], [t1.b], [t2.a], [t2.b], [t3.a], [t3.b], [d1.SUM(t1.a)], [d1.a]), filter(nil), rowset=16
+      conds(nil), nl_params_([t2.a(:0)]), use_batch=false
+  1 - output([t2.a], [t1.a], [t1.b], [t2.b], [t3.a], [t3.b]), filter(nil), rowset=16
+      conds(nil), nl_params_(nil), use_batch=false
+  2 - output([t1.a], [t1.b]), filter(nil), rowset=16
+      access([t1.a], [t1.b]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+  3 - output([t2.a], [t2.b], [t3.a], [t3.b]), filter(nil), rowset=16
+  4 - output([t2.a], [t2.b], [t3.a], [t3.b]), filter(nil), rowset=16
+      conds(nil), nl_params_(nil), use_batch=false
+  5 - output([t2.a], [t2.b]), filter(nil), rowset=16
+      access([t2.a], [t2.b]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+  6 - output([t3.a], [t3.b]), filter(nil), rowset=16
+  7 - output([t3.a], [t3.b]), filter(nil), rowset=16
+      access([t3.a], [t3.b]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t3.__pk_increment]), range(MIN ; MAX)always true
+  8 - output([d1.SUM(t1.a)], [d1.a]), filter(nil), rowset=16
+      access([d1.SUM(t1.a)], [d1.a])
+  9 - output([T_FUN_SUM(T_FUN_SUM(t1.a))], [:0]), filter(nil), rowset=16
+      group(nil), agg_func([T_FUN_SUM(T_FUN_SUM(t1.a))])
+ 10 - output([T_FUN_SUM(t1.a)]), filter(nil), rowset=16
+      access([t1.a]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true, 
+      pushdown_aggregation([T_FUN_SUM(t1.a)])
+SELECT *
+  FROM
+    t1
+    LEFT JOIN (
+      t1 AS t2
+      LEFT JOIN t1 AS t3 ON TRUE
+    ) ON TRUE,
+    LATERAL (
+      SELECT SUM(t1.a), t2.a FROM t1
+    ) AS d1;
++------+------+------+------+------+------+-----------+------+
+| a    | b    | a    | b    | a    | b    | SUM(t1.a) | a    |
++------+------+------+------+------+------+-----------+------+
+|    1 | NULL |    1 | NULL |    1 | NULL |         3 |    1 |
+|    1 | NULL |    1 | NULL |    2 | NULL |         3 |    1 |
+|    1 | NULL |    2 | NULL |    1 | NULL |         3 |    2 |
+|    1 | NULL |    2 | NULL |    2 | NULL |         3 |    2 |
+|    2 | NULL |    1 | NULL |    1 | NULL |         3 |    1 |
+|    2 | NULL |    1 | NULL |    2 | NULL |         3 |    1 |
+|    2 | NULL |    2 | NULL |    1 | NULL |         3 |    2 |
+|    2 | NULL |    2 | NULL |    2 | NULL |         3 |    2 |
++------+------+------+------+------+------+-----------+------+
+
+EXPLAIN select * from t1 left join lateral (select * from t4 where t1.a = t4.c2) v  on v.c1 = t1.a;
+Query Plan
+=======================================================
+|ID|OPERATOR               |NAME|EST.ROWS|EST.TIME(us)|
+-------------------------------------------------------
+|0 |MERGE RIGHT OUTER JOIN |    |2       |6           |
+|1 |├─TABLE FULL SCAN      |t4  |4       |3           |
+|2 |└─SORT                 |    |2       |3           |
+|3 |  └─TABLE FULL SCAN    |t1  |2       |3           |
+=======================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([t1.a], [t1.b], [t4.c1], [t4.c2], [t4.c3]), filter(nil), rowset=16
+      equal_conds([t4.c1 = t1.a]), other_conds(nil)
+      merge_directions([ASC])
+  1 - output([t4.c1], [t4.c2], [t4.c3]), filter([t4.c1 = t4.c2]), rowset=16
+      access([t4.c1], [t4.c2], [t4.c3]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([t4.c1]), range(MIN ; MAX)always true
+  2 - output([t1.a], [t1.b]), filter(nil), rowset=16
+      sort_keys([t1.a, ASC])
+  3 - output([t1.a], [t1.b]), filter(nil), rowset=16
+      access([t1.a], [t1.b]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+select * from t1 left join lateral (select * from t4 where t1.a = t4.c2) v  on v.c1 = t1.a;
++------+------+----+------+------+
+| a    | b    | c1 | c2   | c3   |
++------+------+----+------+------+
+|    1 | NULL |  1 |    1 |    1 |
+|    2 | NULL |  2 |    2 |    2 |
++------+------+----+------+------+
+
+EXPLAIN select /*+ use_concat */ * from t1, lateral (select * from t4 where t4.c1 = t1.a or t4.c2 = t1.b) v;
+Query Plan
+=====================================================
+|ID|OPERATOR             |NAME|EST.ROWS|EST.TIME(us)|
+-----------------------------------------------------
+|0 |UNION ALL            |    |3       |11          |
+|1 |├─MERGE JOIN         |    |2       |6           |
+|2 |│ ├─TABLE FULL SCAN  |t4  |4       |3           |
+|3 |│ └─SORT             |    |2       |3           |
+|4 |│   └─TABLE FULL SCAN|t1  |2       |3           |
+|5 |└─HASH JOIN          |    |1       |6           |
+|6 |  ├─TABLE FULL SCAN  |t1  |2       |3           |
+|7 |  └─TABLE FULL SCAN  |t4  |4       |3           |
+=====================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([UNION([1])], [UNION([2])], [UNION([3])], [UNION([4])], [UNION([5])]), filter(nil), rowset=16
+  1 - output([t1.a], [t1.b], [t4.c1], [t4.c2], [t4.c3]), filter(nil), rowset=16
+      equal_conds([t4.c1 = t1.a]), other_conds(nil)
+      merge_directions([ASC])
+  2 - output([t4.c1], [t4.c2], [t4.c3]), filter(nil), rowset=16
+      access([t4.c1], [t4.c2], [t4.c3]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t4.c1]), range(MIN ; MAX)always true
+  3 - output([t1.a], [t1.b]), filter(nil), rowset=16
+      sort_keys([t1.a, ASC])
+  4 - output([t1.a], [t1.b]), filter(nil), rowset=16
+      access([t1.a], [t1.b]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+  5 - output([t1.a], [t1.b], [t4.c1], [t4.c2], [t4.c3]), filter(nil), rowset=16
+      equal_conds([t4.c2 = t1.b]), other_conds([lnnvl(cast(t4.c1 = t1.a, TINYINT(-1, 0)))])
+  6 - output([t1.a], [t1.b]), filter(nil), rowset=16
+      access([t1.a], [t1.b]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+  7 - output([t4.c1], [t4.c2], [t4.c3]), filter(nil), rowset=16
+      access([t4.c1], [t4.c2], [t4.c3]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t4.c1]), range(MIN ; MAX)always true
+select /*+ use_concat */ * from t1, lateral (select * from t4 where t4.c1 = t1.a or t4.c2 = t1.b) v;
++------+------+----+------+------+
+| a    | b    | c1 | c2   | c3   |
++------+------+----+------+------+
+|    1 | NULL |  1 |    1 |    1 |
+|    2 | NULL |  2 |    2 |    2 |
++------+------+----+------+------+
+
+EXPLAIN select * from t1, lateral(select c1 a, 1 b, null c from t4 where t1.a = t4.c1) v where v.a is not null and v.b is not null and v.c is null;
+Query Plan
+===================================================
+|ID|OPERATOR           |NAME|EST.ROWS|EST.TIME(us)|
+---------------------------------------------------
+|0 |MERGE JOIN         |    |2       |5           |
+|1 |├─TABLE FULL SCAN  |t4  |4       |3           |
+|2 |└─SORT             |    |2       |3           |
+|3 |  └─TABLE FULL SCAN|t1  |2       |3           |
+===================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([t1.a], [t1.b], [t4.c1], [1], [NULL]), filter(nil), rowset=16
+      equal_conds([t1.a = t4.c1]), other_conds(nil)
+      merge_directions([ASC])
+  1 - output([t4.c1]), filter(nil), rowset=16
+      access([t4.c1]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t4.c1]), range(MIN ; MAX)always true
+  2 - output([t1.a], [t1.b]), filter(nil), rowset=16
+      sort_keys([t1.a, ASC])
+  3 - output([t1.a], [t1.b]), filter(nil), rowset=16
+      access([t1.a], [t1.b]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+select * from t1, lateral(select c1 a, 1 b, null c from t4 where t1.a = t4.c1) v where v.a is not null and v.b is not null and v.c is null;
++------+------+---+---+------+
+| a    | b    | a | b | c    |
++------+------+---+---+------+
+|    1 | NULL | 1 | 1 | NULL |
+|    2 | NULL | 2 | 1 | NULL |
++------+------+---+---+------+
+
+EXPLAIN select * from t1 left join lateral (select * from t4 where t1.a = t4.c2) v  on v.c1 = t1.a;
+Query Plan
+=======================================================
+|ID|OPERATOR               |NAME|EST.ROWS|EST.TIME(us)|
+-------------------------------------------------------
+|0 |MERGE RIGHT OUTER JOIN |    |2       |6           |
+|1 |├─TABLE FULL SCAN      |t4  |4       |3           |
+|2 |└─SORT                 |    |2       |3           |
+|3 |  └─TABLE FULL SCAN    |t1  |2       |3           |
+=======================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([t1.a], [t1.b], [t4.c1], [t4.c2], [t4.c3]), filter(nil), rowset=16
+      equal_conds([t4.c1 = t1.a]), other_conds(nil)
+      merge_directions([ASC])
+  1 - output([t4.c1], [t4.c2], [t4.c3]), filter([t4.c1 = t4.c2]), rowset=16
+      access([t4.c1], [t4.c2], [t4.c3]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([t4.c1]), range(MIN ; MAX)always true
+  2 - output([t1.a], [t1.b]), filter(nil), rowset=16
+      sort_keys([t1.a, ASC])
+  3 - output([t1.a], [t1.b]), filter(nil), rowset=16
+      access([t1.a], [t1.b]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+select * from t1 left join lateral (select * from t4 where t1.a = t4.c2) v  on v.c1 = t1.a;
++------+------+----+------+------+
+| a    | b    | c1 | c2   | c3   |
++------+------+----+------+------+
+|    1 | NULL |  1 |    1 |    1 |
+|    2 | NULL |  2 |    2 |    2 |
++------+------+----+------+------+
+
+drop table t1;
+drop table t2;
+drop table t3;
+drop table t4;
+drop table t11;
+drop table t12;
+

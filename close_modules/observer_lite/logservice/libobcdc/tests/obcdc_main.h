@@ -1,0 +1,100 @@
+/*
+ * Copyright (c) 2025 OceanBase.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#ifndef OCEANBASE_LIBOBCDC_TESTS_OBLOG_H__
+#define OCEANBASE_LIBOBCDC_TESTS_OBLOG_H__
+
+#include "share/ob_define.h"
+
+#include "libobcdc.h"     // IObCDCInstance
+#include "ob_binlog_record_printer.h" // ObBinlogRecordPrinter
+
+namespace oceanbase
+{
+namespace libobcdc
+{
+class IObCDCInstance;
+class ObLogMain
+{
+  static const int64_t NEXT_RECORD_TIMEOUT = 1000000;
+
+public:
+  virtual ~ObLogMain();
+
+protected:
+  ObLogMain();
+
+public:
+  static ObLogMain &get_instance();
+
+public:
+  int init(int argc, char **argv);
+  void destroy();
+
+  int start();
+  void run();
+  void stop();
+  void mark_stop_flag(const bool stop_flag) { stop_flag_ = stop_flag; }
+
+  bool need_reentrant() const { return enable_reentrant_; }
+  static void print_usage(const char *prog_name);
+
+public:
+  static void handle_error(const ObCDCError &err);
+
+private:
+  int parse_args_(int argc, char **argv);
+  bool check_args_();
+  int verify_record_info_(IBinlogRecord *br);
+  int parse_timezone_info_(const char *tz_fpath);
+
+private:
+  bool                    inited_;
+  IObCDCInstance          *obcdc_instance_;
+  ObCDCFactory            obcdc_factory_;
+  ObBinlogRecordPrinter   br_printer_;
+
+  // configuration
+  bool                    only_print_hex_;
+  bool                    only_print_dml_tx_checksum_;
+  bool                    print_hex_;
+  bool                    print_lob_md5_;
+  bool                    use_daemon_;
+  const char              *data_file_;
+  const char              *heartbeat_file_;
+  int64_t                 run_time_us_;
+  const char              *config_file_;
+  bool                    print_console_;
+  bool                    verify_mode_;
+  bool                    enable_reentrant_;
+  bool                    output_br_detail_;
+  bool                    delay_release_;
+  bool                    output_br_special_detail_;
+  int64_t                 start_timestamp_usec_;
+  uint64_t                tenant_id_;
+  const char              *tg_match_pattern_;
+
+  // Record heartbeat microsecond time stamps
+  int64_t                 last_heartbeat_timestamp_usec_;
+
+  volatile bool           stop_flag_ CACHE_ALIGNED;
+
+private:
+  DISALLOW_COPY_AND_ASSIGN(ObLogMain);
+};
+} // namespace libobcdc
+} // namespace oceanbase
+#endif /* OCEANBASE_LIBOBCDC_TESTS_OBLOG_H__ */

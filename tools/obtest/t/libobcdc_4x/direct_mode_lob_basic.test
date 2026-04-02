@@ -1,0 +1,152 @@
+#
+# owner:修铭
+# owner group:liboblog
+# description:
+# LOB类型与对应的长度限制：
+# - tinyetext tinyblob
+#   - 256 byte
+# - text blob
+#   - 64 KB
+# - mediumtext mediumblob
+#   - 16 MB
+# - longtext longblob
+#   - 48MB
+#
+# 一行长度限制：60M
+##
+
+ob1=OBI(cluster=1);
+ob1.force_stop;
+ob1.clean_backup_dest;
+ob1.reboot;
+ob1.create_client;
+
+# 准备环境
+let $ip=deploy_get_value(ob1.proxy0.ip);
+let $port=deploy_get_value(ob1.proxy0.port);
+connect (oblog_conn_sys,$ip,admin@sys,admin,oceanbase,$port);
+
+connection oblog_conn_sys;
+
+# create tenant, 创建oblog_tt租户
+create resource unit oblog_box_mysql max_cpu 2, memory_size='10G';
+create resource pool oblog_pool_mysql unit = 'oblog_box_mysql', unit_num = 1, zone_list = ('z1');
+create tenant oblog_tt replica_num = 1, primary_zone='z1', resource_pool_list=('oblog_pool_mysql') set ob_tcp_invited_nodes='%';
+
+connection oblog_conn_sys;
+alter tenant oblog_tt set variables max_allowed_packet=1073741824;
+
+sleep 2;
+# 在oblog_tt租户下操作
+connect (oblog_conn_tt,$ip,root@oblog_tt,,oceanbase,$port);
+connection oblog_conn_tt;
+
+connection oblog_conn_tt;
+# 设置最大包大小 1G
+set global max_allowed_packet=1073741824;
+
+connection oblog_conn_tt;
+
+# 设置事务超时时间: 100秒
+set ob_trx_timeout=100000000;
+set ob_query_timeout=100000000;
+
+let $mysql_tenant_name=oblog_tt;
+let $original_conn=oblog_conn_tt;
+
+source include/liboblog/enable_mysql_archive.inc;
+
+# 创建database 1
+create database oblog_db1;
+use oblog_db1;
+
+create table t1(pk int primary key, tiny_text tinytext, tiny_blob tinyblob, text_type text, blob_type blob, medium_text mediumtext, medium_blob mediumblob, long_text longtext, long_blob longblob);
+
+# 启动liboblog
+let $start_tstamp_usec = query_get_value(select time_to_usec(now(6)) as now, now, 1);
+
+let $cnt=0;
+
+ob1.oblog.set_extra_argument -m;
+ob1.oblog.gen_conf tb_white_list=oblog_tt.*.* log_level=DEBUG fetching_log_mode=direct archive_dest=$log_backup_dest;
+ob1.oblog.restart;
+
+# longtext达到48M限制 + longblob 11M = 59M
+insert into t1 values (1, "", "", "", "", "", "", repeat('a', 50331647), "");
+select md5(long_text), md5(long_blob)  from t1 where pk = 1;
+ob1.oblog.next;
+inc $cnt;
+
+insert into t1 values (2, "", "", "", "", "", "", repeat('b', 50331647), "");
+select md5(long_text), md5(long_blob)  from t1 where pk = 2;
+ob1.oblog.next;
+inc $cnt;
+
+insert into t1 values (3, "", "", "", "", "", "", repeat('a', 50331647), repeat('b', 50331647));
+select md5(long_text), md5(long_blob)  from t1 where pk = 3;
+ob1.oblog.next;
+inc $cnt;
+
+## outrow->outrow
+update t1 set long_blob = repeat('d', 11534336) where pk = 3;
+select md5(long_text), md5(long_blob)  from t1 where pk = 3;
+ob1.oblog.next;
+inc $cnt;
+
+## outrow->outrow
+update t1 set long_text= repeat('d', 11534336), long_blob = repeat('b', 11534336) where pk = 3;
+select md5(long_text), md5(long_blob)  from t1 where pk = 3;
+ob1.oblog.next;
+inc $cnt;
+
+insert into t1 values (4, "", "", repeat('a', 63210), "", repeat('a', 654321), "", repeat('a', 50331647), repeat('b', 50331647));
+select pk, md5(tiny_text), md5(tiny_blob), md5(text_type), md5(blob_type), md5(medium_text), md5(medium_blob), md5(long_text), md5(long_blob) from t1 where pk=4;
+ob1.oblog.next;
+inc $cnt;
+
+## outrow->inrow
+update t1 set long_text= "OceanBase", long_blob = "OceanBase CDC" where pk = 4;
+select pk, md5(tiny_text), md5(tiny_blob), md5(text_type), md5(blob_type), md5(medium_text), md5(medium_blob), md5(long_text), md5(long_blob) from t1 where pk=4;
+ob1.oblog.next;
+inc $cnt;
+
+## inrow-> outrow
+update t1 set long_text= repeat('a', 50331647), long_blob = repeat('b', 50331647) where pk = 4;
+select pk, md5(tiny_text), md5(tiny_blob), md5(text_type), md5(blob_type), md5(medium_text), md5(medium_blob), md5(long_text), md5(long_blob) from t1 where pk=4;
+ob1.oblog.next;
+inc $cnt;
+
+insert into t1(pk, long_blob) values (5, repeat('z', 134217728));
+ob1.oblog.next;
+inc $cnt;
+
+update t1 set long_text=repeat('z', 134217728) where pk=5;
+ob1.oblog.next;
+inc $cnt;
+
+# update primary key
+update t1 set pk=6 where pk=5;
+ob1.oblog.next;
+inc $cnt;
+
+delete from t1 where pk=3;
+ob1.oblog.next;
+inc $cnt;
+
+delete from t1 where pk=4;
+ob1.oblog.next;
+inc $cnt;
+ob1.oblog.stop;
+
+#ob1.oblog.set_start_tstamp_usec $start_tstamp_usec;
+#ob1.oblog.set_extra_argument -m;
+#ob1.oblog.gen_conf tb_white_list=oblog_tt.*.* log_level=DEBUG fetching_log_mode=direct archive_dest=$log_backup_dest;
+#ob1.oblog.restart;
+#
+#while ($cnt>0)
+#{
+#  ob1.oblog.next;
+#  dec $cnt;
+#}
+#
+#ob1.oblog.stop;

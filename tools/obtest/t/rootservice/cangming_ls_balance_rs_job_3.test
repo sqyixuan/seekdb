@@ -1,0 +1,255 @@
+# CASE_OWNER:
+#    @cangming.zl
+# CASE_DESC:
+#    This case tests three rs jobs
+#    namely ALTER_TENANT_LOCALITY, ALTER_RESOURCE_TENANT_UNIT_NUM, ALTER_TENANT_PRIMARY_ZONE.
+
+######################### case 2: enable_rebalance is closed #######################################
+########## FOR NOW, PRIMARY ZONE IS 'z1;z2;z3' UNIT_NUM IS 1， LOCALITY IS "F@z1, F@z2, F@z3" ##############
+#    case 2.1 ALTER_TENANT_LOCALITY "F@z1, F@z2, F@z3" -> "F@z1, F@z2"  (OB_SKIP_CHECKING_LS_STATUS)
+#    case 2.2 ALTER_TENANT_LOCALITY "F@z1, F@z2" -> "F@z1, F@z2, F@z3"  (OB_SKIP_CHECKING_LS_STATUS)
+#    case 2.3 ALTER_TENANT_LOCALITY "F@z1, F@z2, F@z3" ->  "F@z2, F@z3" (OB_OP_NOT_ALLOW)
+#    case 2.4 ALTER_TENANT_PRIMARY_ZONE 'z1;z2;z3' -> RANDOM (OB_OP_NOT_ALLOW)
+#    case 2.5 ALTER_TENANT_PRIMARY_ZONE 'z1;z2;z3' -> 'z1;z2,z3' (OB_SKIP_CHECKING_LS_STATUS)
+#    case 2.6 ALTER_TENANT_PRIMARY_ZONE z1;z2,z3 -> z2;z1;z3 (OB_OP_NOT_ALLOW)
+#    case 2.7 ALTER_RESOURCE_TENANT_UNIT_NUM 1->2 (OB_OP_NOT_ALLOW)
+
+######### case 3: enable_rebalance is closed right after the rs jobs start and before they end #####
+########## FOR NOW, PRIMARY ZONE IS RANDOM, UNIT_NUM IS 1， LOCALITY IS "F@z1, F@z2, F@z3" ######
+#    case 3.1 ALTER_TENANT_LOCALITY "F@z1, F@z2"  (OB_SKIP_CHECKING_LS_STATUS)
+#    case 3.2 ALTER_TENANT_LOCALITY "F@z1, F@z2" -> "F@z1, F@z2, F@z3" (enable_rebalance=false) -> "F@z1, F@z2"(rollback not allow, force rollback ok)
+#    case 3.3 ALTER_TENANT_PRIMARY_ZONE RANDOM -> z1;z2;z3 (OB_SKIP_CHECKING_LS_STATUS)
+#    case 3.4 ALTER_RESOURCE_TENANT_UNIT_NUM 1->2 (OB_SKIP_CHECKING_LS_STATUS)
+#    case 3.5 ALTER_RESOURCE_TENANT_UNIT_NUM 2->1 (OB_SKIP_CHECKING_LS_STATUS)
+
+#################################### case 4: old_name ####################################
+#    case 4.1 SHRINK_RESOURCE_POOL
+#    case 4.2 ROLLBACK_ALTER_TENANT_LOCALITY
+
+
+ob1=OBI(cluster=2:2:2,proxy_num=0);
+ob1.reboot;
+
+let $proxy_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $proxy_port = deploy_get_value(ob1.z1.obs0.mysql_port);
+connect(sys_conn, $proxy_ip, root@sys,,oceanbase, $proxy_port);
+
+ob1.mysql CREATE RESOURCE UNIT 1c2g MAX_CPU 1, MEMORY_SIZE '2G';
+ob1.mysql CREATE RESOURCE POOL pool1 UNIT='1c2g',UNIT_NUM=1,ZONE_LIST=('z1', 'z2', 'z3');
+ob1.mysql CREATE TENANT IF NOT EXISTS test_tenant ZONE_LIST=('z1', 'z2', 'z3'), RESOURCE_POOL_LIST=('pool1');
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+ob1.mysql alter system set ls_gc_delay_time='1s' tenant=all;
+sleep 3;
+#shutdown server balancer
+ob1.mysql alter system enable_rebalance = false tenant = 'sys';
+
+ob1.mysql alter tenant test_tenant PRIMARY_ZONE='z1;z2;z3';
+ob1.check_until_timeout select count(*) from DBA_OB_TENANT_JOBS where job_type = 'ALTER_TENANT_PRIMARY_ZONE' and job_status = 'INPROGRESS',1,60;
+let $job_id = deploy_get_value(ob1.select select job_id from DBA_OB_TENANT_JOBS where job_type = 'ALTER_TENANT_PRIMARY_ZONE' and job_status = 'INPROGRESS', job_id, 1);
+ob1.check_until_timeout select count(*) from DBA_OB_TENANT_JOBS where job_id = $job_id and job_status = 'SUCCESS',1,180;
+# ****************************************************************************************************
+# ************************************* case 2: enable rebalance is closed ***************************
+# ****************************************************************************************************
+########## FOR NOW, PRIMARY ZONE IS z1 UNIT_NUM IS 1， LOCALITY IS "F@z1, F@z2, F@z3" ##############
+
+ob1.mysql alter system enable_rebalance = false tenant = 'test_tenant';
+
+ob1.check_until_timeout select count(*) from __all_virtual_tenant_parameter_info where tenant_id = 1002 and name like "%enable_rebalance%" and value=true,0,60;
+sleep 10;
+#    case 2.1 ALTER_TENANT_LOCALITY "F@z1, F@z2, F@z3" -> "F@z1, F@z2"  (OB_SKIP_CHECKING_LS_STATUS)
+ob1.mysql alter tenant test_tenant locality="F@z1,F@z2";
+ob1.check_until_timeout select count(*) from DBA_OB_TENANT_JOBS where job_id = ($job_id+1) and job_status = 'SKIP_CHECKING_LS_STATUS',1,180;
+#    case 2.2 ALTER_TENANT_LOCALITY "F@z1, F@z2" -> "F@z1, F@z2, F@z3"  (OB_SKIP_CHECKING_LS_STATUS)
+ob1.mysql alter tenant test_tenant locality="F@z1,F@z2,F@z3";
+ob1.check_until_timeout select count(*) from DBA_OB_TENANT_JOBS where job_id = ($job_id+2) and job_status = 'SKIP_CHECKING_LS_STATUS',1,180;
+#    case 2.3 ALTER_TENANT_LOCALITY "F@z1, F@z2, F@z3" ->  "F@z2, F@z3" (OB_OP_NOT_ALLOW)
+--disable_query_log
+--error 4179
+alter tenant test_tenant locality="F@z2,F@z3";
+--enable_query_log
+
+#    case 2.4 ALTER_TENANT_PRIMARY_ZONE z1 -> RANDOM (OB_OP_NOT_ALLOW)
+--disable_query_log
+--error 4179
+alter tenant test_tenant PRIMARY_ZONE='RANDOM';
+--enable_query_log
+
+#    case 2.5 ALTER_TENANT_PRIMARY_ZONE 'z1;z2;z3' -> 'z1;z2,z3' (OB_SKIP_CHECKING_LS_STATUS)
+ob1.mysql alter tenant test_tenant PRIMARY_ZONE='z1;z2,z3';
+ob1.check_until_timeout select count(*) from DBA_OB_TENANT_JOBS where job_id = ($job_id+3) and job_status = 'SUCCESS',1,180;
+#    case 2.6 ALTER_TENANT_PRIMARY_ZONE z1;z2,z3 -> z2;z1;z3 (OB_OP_NOT_ALLOW)
+--disable_query_log
+--error 4179
+alter tenant test_tenant PRIMARY_ZONE='z2;z1;z3';
+--enable_query_log
+
+#    case 2.7 ALTER_RESOURCE_TENANT_UNIT_NUM 1->2 (OB_OP_NOT_ALLOW)
+--disable_query_log
+--error 4179
+alter resource tenant test_tenant UNIT_NUM = 2;
+--enable_query_log
+# ****************************************************************************************************
+# ****** case 3: enable_rebalance is closed right after the rs jobs start and before they end ********
+# ****************************************************************************************************
+ob1.mysql alter system enable_rebalance = true tenant = 'test_tenant';
+ob1.check_until_timeout select count(*) from __all_virtual_tenant_parameter_info where tenant_id = 1002 and name like "%enable_rebalance%" and value != 'True';,0,60;
+sleep 10;
+
+ob1.mysql alter tenant test_tenant PRIMARY_ZONE='RANDOM';
+ob1.check_until_timeout select count(*) from DBA_OB_TENANT_JOBS where job_type = 'ALTER_TENANT_PRIMARY_ZONE' and job_status = 'INPROGRESS',1,60;
+let $job_id = deploy_get_value(ob1.select select job_id from DBA_OB_TENANT_JOBS where job_type = 'ALTER_TENANT_PRIMARY_ZONE' and job_status = 'INPROGRESS', job_id, 1);
+ob1.check_until_timeout select count(*) from DBA_OB_TENANT_JOBS where job_id = $job_id and job_status = 'SUCCESS',1,180;
+
+#    case 3.1 ALTER_TENANT_LOCALITY "F@z1, F@z2"  (OB_SKIP_CHECKING_LS_STATUS)
+ob1.mysql set ob_global_debug_sync = 'BEFORE_CHECK_LOCALITY wait_for continue_signal';
+ob1.mysql alter tenant test_tenant locality="F@z1,F@z2";
+ob1.check_until_timeout select count(*) from DBA_OB_TENANT_JOBS where job_type = 'ALTER_TENANT_LOCALITY' and job_status = 'INPROGRESS',1,60;
+let $job_id = deploy_get_value(ob1.select select job_id from DBA_OB_TENANT_JOBS where job_type = 'ALTER_TENANT_LOCALITY' and job_status = 'INPROGRESS', job_id, 1);
+
+ob1.mysql alter system enable_rebalance = false tenant = 'test_tenant';
+ob1.check_until_timeout select count(*) from __all_virtual_tenant_parameter_info where tenant_id = 1002 and name like "%enable_rebalance%" and value = 'True',0,60;
+sleep 10;
+
+ob1.mysql set ob_global_debug_sync = 'now signal continue_signal';
+ob1.check_until_timeout select count(*) from DBA_OB_TENANT_JOBS where job_id = $job_id and job_status = 'SKIP_CHECKING_LS_STATUS',1,180;
+ob1.mysql set ob_global_debug_sync = 'BEFORE_CHECK_LOCALITY clear';
+
+#    case 3.2 ALTER_TENANT_LOCALITY "F@z1, F@z2" -> "F@z1, F@z2, F@z3" (enable_rebalance=false) -> "F@z1, F@z2"(rollback not allow, force rollback ok)
+ob1.mysql alter system enable_rebalance = true tenant = 'test_tenant';
+ob1.check_until_timeout select count(*) from __all_virtual_tenant_parameter_info where tenant_id = 1002 and name like "%enable_rebalance%" and value != 'True';,0,60;
+sleep 10;
+
+ob1.mysql set ob_global_debug_sync = 'BEFORE_CHECK_LOCALITY wait_for continue_signal';
+ob1.mysql alter tenant test_tenant locality="F@z1,F@z2, F@z3";
+ob1.check_until_timeout select count(*) from DBA_OB_TENANT_JOBS where job_type = 'ALTER_TENANT_LOCALITY' and job_status = 'INPROGRESS',1,60;
+let $job_id = deploy_get_value(ob1.select select job_id from DBA_OB_TENANT_JOBS where job_type = 'ALTER_TENANT_LOCALITY' and job_status = 'INPROGRESS', job_id, 1);
+
+ob1.mysql alter system enable_rebalance = false tenant = 'test_tenant';
+ob1.check_until_timeout select count(*) from __all_virtual_tenant_parameter_info where tenant_id = 1002 and name like "%enable_rebalance%" and value = 'True',0,60;
+sleep 10;
+
+--disable_query_log
+--error 4179
+alter tenant test_tenant locality="F@z1,F@z2";
+--enable_query_log
+
+ob1.mysql alter tenant test_tenant locality="F@z1,F@z2" force;
+eval select count(*) from DBA_OB_TENANT_JOBS where job_id = $job_id and job_status = 'FAILED';
+ob1.check_until_timeout select count(*) from DBA_OB_TENANT_JOBS where job_id = ($job_id+1) and job_status = 'SUCCESS',1,180;
+ob1.mysql set ob_global_debug_sync = 'now signal continue_signal';
+ob1.mysql set ob_global_debug_sync = 'BEFORE_CHECK_LOCALITY clear';
+
+#    case 3.3 ALTER_TENANT_PRIMARY_ZONE RANDOM -> z1;z2;z3 (OB_SKIP_CHECKING_LS_STATUS)
+ob1.mysql alter system enable_rebalance = true tenant = 'test_tenant';
+ob1.check_until_timeout select count(*) from __all_virtual_tenant_parameter_info where tenant_id = 1002 and name like "%enable_rebalance%" and value != 'True',0,60;
+sleep 10;
+
+ob1.mysql alter tenant test_tenant locality="F@z1,F@z2,F@z3";
+ob1.check_until_timeout select count(*) from DBA_OB_TENANT_JOBS where job_type = 'ALTER_TENANT_LOCALITY' and job_status = 'INPROGRESS',1,60;
+let $job_id = deploy_get_value(ob1.select select job_id from DBA_OB_TENANT_JOBS where job_type = 'ALTER_TENANT_LOCALITY' and job_status = 'INPROGRESS', job_id, 1);
+ob1.check_until_timeout select count(*) from DBA_OB_TENANT_JOBS where job_id = $job_id and job_status = 'SUCCESS',1,180;
+
+
+ob1.mysql set ob_global_debug_sync = 'BEFORE_CHECK_PRIMARY_ZONE wait_for continue_signal';
+ob1.mysql alter tenant test_tenant PRIMARY_ZONE='z1;z2;z3';
+ob1.check_until_timeout select count(*) from DBA_OB_TENANT_JOBS where job_type = 'ALTER_TENANT_PRIMARY_ZONE' and job_status = 'INPROGRESS',1,60;
+let $job_id = deploy_get_value(ob1.select select job_id from DBA_OB_TENANT_JOBS where job_type = 'ALTER_TENANT_PRIMARY_ZONE' and job_status = 'INPROGRESS', job_id, 1);
+
+ob1.mysql alter system enable_rebalance = false tenant = 'test_tenant';
+ob1.check_until_timeout select count(*) from __all_virtual_tenant_parameter_info where tenant_id = 1002 and name like "%enable_rebalance%" and value = 'True',0,60;
+sleep 10;
+
+ob1.mysql set ob_global_debug_sync = 'now signal continue_signal';
+ob1.check_until_timeout select count(*) from DBA_OB_TENANT_JOBS where job_id = $job_id and job_status = 'SKIP_CHECKING_LS_STATUS',1,180;
+ob1.mysql set ob_global_debug_sync = 'BEFORE_CHECK_PRIMARY_ZONE clear';
+
+
+
+#    case 3.4 ALTER_RESOURCE_TENANT_UNIT_NUM 1->2 (OB_SKIP_CHECKING_LS_STATUS)
+ob1.mysql alter system enable_rebalance = true tenant = 'test_tenant';
+ob1.check_until_timeout select count(*) from __all_virtual_tenant_parameter_info where tenant_id = 1002 and name like "%enable_rebalance%" and value != 'True',0,60;
+sleep 10;
+
+ob1.mysql set ob_global_debug_sync = 'BEFORE_CHECK_SHRINK_RESOURCE_POOL wait_for continue_signal';
+ob1.check_until_timeout select count(*) from __all_virtual_unit where tenant_id = 1002, 3, 240;
+ob1.check_until_timeout select count(*) from __all_virtual_unit where tenant_id = 1001, 3, 240;
+ob1.mysql alter resource tenant test_tenant UNIT_NUM = 2;
+ob1.check_until_timeout select count(*) from DBA_OB_TENANT_JOBS where job_type = 'ALTER_RESOURCE_TENANT_UNIT_NUM' and job_status = 'INPROGRESS',1,60;
+let $job_id = deploy_get_value(ob1.select select job_id from DBA_OB_TENANT_JOBS where job_type = 'ALTER_RESOURCE_TENANT_UNIT_NUM' and job_status = 'INPROGRESS', job_id, 1);
+
+ob1.mysql alter system enable_rebalance = false tenant = 'test_tenant';
+ob1.check_until_timeout select count(*) from __all_virtual_tenant_parameter_info where tenant_id = 1002 and name like "%enable_rebalance%" and value = 'True',0,60;
+sleep 10;
+
+ob1.mysql set ob_global_debug_sync = 'now signal continue_signal';
+ob1.check_until_timeout select count(*) from DBA_OB_TENANT_JOBS where job_id = $job_id and job_status = 'SKIP_CHECKING_LS_STATUS',1,180;
+
+#    case 3.5 ALTER_RESOURCE_TENANT_UNIT_NUM 2->1 (OB_SKIP_CHECKING_LS_STATUS)
+ob1.mysql alter system enable_rebalance = true tenant = 'test_tenant';
+ob1.check_until_timeout select count(*) from __all_virtual_tenant_parameter_info where tenant_id = 1002 and name like "%enable_rebalance%" and value != 'True',0,60;
+sleep 10;
+
+ob1.mysql set ob_global_debug_sync = 'BEFORE_CHECK_SHRINK_RESOURCE_POOL wait_for continue_signal';
+ob1.mysql alter resource tenant test_tenant UNIT_NUM = 1;
+ob1.check_until_timeout select count(*) from DBA_OB_TENANT_JOBS where job_type = 'ALTER_RESOURCE_TENANT_UNIT_NUM' and job_status = 'INPROGRESS',1,60;
+let $job_id = deploy_get_value(ob1.select select job_id from DBA_OB_TENANT_JOBS where job_type = 'ALTER_RESOURCE_TENANT_UNIT_NUM' and job_status = 'INPROGRESS', job_id, 1);
+
+ob1.mysql alter system enable_rebalance = false tenant = 'test_tenant';
+ob1.check_until_timeout select count(*) from __all_virtual_tenant_parameter_info where tenant_id = 1002 and name like "%enable_rebalance%" and value = 'True',0,60;
+sleep 10;
+
+ob1.mysql set ob_global_debug_sync = 'now signal continue_signal';
+# cannot finish, has ls in server
+ob1.check_until_timeout select count(*) from DBA_OB_TENANT_JOBS where job_id = $job_id and job_status = 'INPROGRESS',1,180;
+
+ob1.mysql set ob_global_debug_sync = 'BEFORE_CHECK_SHRINK_RESOURCE_POOL clear';
+
+ob1.mysql alter system enable_rebalance = true tenant = 'test_tenant';
+#################################### case 4: old_name ####################################
+ob1.check_until_timeout select count(*) from __all_virtual_unit where tenant_id = 1002, 3, 240;
+ob1.check_until_timeout select count(*) from __all_virtual_unit where tenant_id = 1001, 3, 240;
+ob1.mysql alter resource tenant test_tenant UNIT_NUM = 2;
+ob1.check_until_timeout select count(*) from DBA_OB_TENANT_JOBS where job_type = 'ALTER_RESOURCE_TENANT_UNIT_NUM' and job_status = 'INPROGRESS',1,60;
+let $job_id = deploy_get_value(ob1.select select job_id from DBA_OB_TENANT_JOBS where job_type = 'ALTER_RESOURCE_TENANT_UNIT_NUM' and job_status = 'INPROGRESS', job_id, 1);
+ob1.check_until_timeout select count(*) from DBA_OB_TENANT_JOBS where job_id = $job_id and job_status = 'SUCCESS',1,180;
+
+#    case 4.1 SHRINK_RESOURCE_POOL
+ob1.mysql set ob_global_debug_sync = 'BEFORE_CHECK_SHRINK_RESOURCE_POOL wait_for continue_signal';
+ob1.mysql alter resource tenant test_tenant UNIT_NUM = 1;
+ob1.check_until_timeout select count(*) from DBA_OB_TENANT_JOBS where job_type = 'ALTER_RESOURCE_TENANT_UNIT_NUM' and job_status = 'INPROGRESS',1,60;
+let $job_id = deploy_get_value(ob1.select select job_id from DBA_OB_TENANT_JOBS where job_type = 'ALTER_RESOURCE_TENANT_UNIT_NUM' and job_status = 'INPROGRESS', job_id, 1);
+ob1.mysql UPDATE oceanbase.__all_rootservice_job SET job_type='SHRINK_RESOURCE_TENANT_UNIT_NUM' where job_id=$job_id;
+ob1.check_until_timeout select count(*) from DBA_OB_TENANT_JOBS where job_type = 'SHRINK_RESOURCE_TENANT_UNIT_NUM' and job_status = 'INPROGRESS',1,60;
+ob1.mysql set ob_global_debug_sync = 'now signal continue_signal';
+ob1.mysql set ob_global_debug_sync = 'BEFORE_CHECK_SHRINK_RESOURCE_POOL clear';
+ob1.check_until_timeout select count(*) from DBA_OB_TENANT_JOBS where job_id = $job_id and job_status = 'SUCCESS',1,180;
+
+#    case 4.2 ROLLBACK_ALTER_TENANT_LOCALITY
+set ob_global_debug_sync = 'BEFORE_FINISH_LOCALITY wait_for continue_signal';
+ob1.mysql alter tenant test_tenant locality="F@z1,F@z2";
+ob1.check_until_timeout select count(*) from DBA_OB_TENANT_JOBS where job_type = 'ALTER_TENANT_LOCALITY' and job_status = 'INPROGRESS',1,60;
+let $job_id = deploy_get_value(ob1.select select job_id from DBA_OB_TENANT_JOBS where job_type = 'ALTER_TENANT_LOCALITY' and job_status = 'INPROGRESS', job_id, 1);
+ob1.mysql alter tenant test_tenant locality="F@z1,F@z2,F@z3";
+eval select count(*) from DBA_OB_TENANT_JOBS where job_id = $job_id and job_status = 'FAILED';
+let $job_id = deploy_get_value(ob1.select select job_id from DBA_OB_TENANT_JOBS where job_type = 'ALTER_TENANT_LOCALITY' and job_status = 'INPROGRESS', job_id, 1);
+ob1.mysql UPDATE oceanbase.__all_rootservice_job SET job_type='ROLLBACK_ALTER_TENANT_LOCALITY' where job_id=$job_id;
+ob1.mysql set ob_global_debug_sync = 'now signal continue_signal';
+ob1.mysql set ob_global_debug_sync = 'BEFORE_FINISH_LOCALITY clear';
+ob1.check_until_timeout select count(*) from DBA_OB_TENANT_JOBS where job_type = 'ROLLBACK_ALTER_TENANT_LOCALITY' and job_status = 'INPROGRESS',1,60;
+let $job_id = deploy_get_value(ob1.select select job_id from DBA_OB_TENANT_JOBS where job_type = 'ROLLBACK_ALTER_TENANT_LOCALITY' and job_status = 'INPROGRESS', job_id, 1);
+ob1.check_until_timeout select count(*) from DBA_OB_TENANT_JOBS where job_id = $job_id and job_status = 'SUCCESS',1,180;
+
+
+#################################### case 5: drop_tenant: clear all inprogress rs job ####################################
+ob1.mysql set ob_global_debug_sync = 'BEFORE_FINISH_LOCALITY wait_for continue_signal';
+ob1.mysql set ob_global_debug_sync = 'BEFORE_CHECK_PRIMARY_ZONE wait_for continue_signal2';
+ob1.mysql set ob_global_debug_sync = 'BEFORE_CHECK_SHRINK_RESOURCE_POOL wait_for continue_signal3';
+# 留一个成功的，保证成功的job不会被drop tenant逻辑改掉
+ob1.mysql UPDATE oceanbase.__all_rootservice_job SET job_status = 'INPROGRESS', result_code = NULL WHERE tenant_id = 1002 and job_id != $job_id;
+
+connection sys_conn;
+select count(*) from DBA_OB_TENANT_JOBS where tenant_id =1002 and job_status = 'INPROGRESS';
+
+ob1.mysql drop tenant test_tenant force;
+
+select count(*) from DBA_OB_TENANT_JOBS where tenant_id =1002 and job_status = 'FAILED' and result_code=-5157;

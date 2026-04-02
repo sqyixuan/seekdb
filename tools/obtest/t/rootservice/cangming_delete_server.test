@@ -1,0 +1,315 @@
+# CASE_OWNER:
+#    @cangming.zl
+# CASE_DESC:
+#    test delete and cancel delete server in various situations, see following comments.
+
+
+ob1=OBI(cluster=3:1:1,proxy_num=0,memory_size_limit='25G');
+ob1.z1.obs2.set status=disable;
+ob1.z3.obs0.set status=disable;
+ob1.reboot;
+
+let $obs0_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $obs0_port = deploy_get_value(ob1.z1.obs0.port);
+let $obs1_ip = deploy_get_value(ob1.z1.obs1.ip);
+let $obs1_port = deploy_get_value(ob1.z1.obs1.port);
+let $obs2_ip = deploy_get_value(ob1.z1.obs2.ip);
+let $obs2_port = deploy_get_value(ob1.z1.obs2.port);
+let $obs2_sql_port = deploy_get_value(ob1.z1.obs2.mysql_port);
+
+let $z2_ip = deploy_get_value(ob1.z2.obs0.ip);
+let $z2_port = deploy_get_value(ob1.z2.obs0.port);
+let $z3_ip = deploy_get_value(ob1.z3.obs0.ip);
+let $z3_port = deploy_get_value(ob1.z3.obs0.port);
+
+let $proxy_ip = deploy_get_value(ob1.z2.obs0.ip);
+let $proxy_port = deploy_get_value(ob1.z2.obs0.mysql_port);
+connect(sys_conn, $proxy_ip, root@sys,,oceanbase, $proxy_port);
+ob1.check_until_timeout select count(*) from __all_server where start_service_time = 0, 0, 60;
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+ob1.mysql alter system set enable_rebalance=FALSE;
+sleep 3;
+#缩短更新all_server_list时间
+alter system set_tp tp_name = ALL_SERVER_SCHEDULE_ERROR, error_code = 4016, frequency = 1;
+ob1.mysql alter tenant sys PRIMARY_ZONE='z2';
+ob1.check_until_timeout select count(*) from __all_server where svr_ip='$z2_ip' and svr_port=$z2_port and with_rootserver=1,1,120;
+# ****************************************************************************************************
+# ****************************** 1. 测试server_id 超过4096的情况下可以加机器并建立连接 *********************
+# ********************************* add again FAILED due to existing server_id ***********************
+# ********************************* clear env and add again successfully *****************************
+# ****************************************************************************************************
+update oceanbase.__all_sys_stat set value = 4095 where name = "ob_max_used_server_id";
+eval select id from oceanbase.__all_server order by id;
+ob1.z1.obs2.set status=enable;
+ob1.z1.obs2.start;
+sleep 60;
+ob1.z1.obs2.add;
+--disable_query_log
+eval select id from oceanbase.__all_server where svr_ip = '$obs2_ip' and svr_port=$obs2_port;
+--enable_query_log
+ob1.z1.obs2.delete;
+ob1.check_until_timeout select count(*) from __all_server where svr_ip='$obs2_ip' and svr_port=$obs2_port,0,60;
+# ****************************************************************************************************
+# ****************************** 1. delete empty server **********************************************
+# ********************************* add again FAILED due to existing server_id ***********************
+# ********************************* clear env and add again successfully *****************************
+# ****************************************************************************************************
+ob1.z1.obs1.delete;
+ob1.check_until_timeout select count(*) from __all_server where svr_ip='$obs1_ip' and svr_port=$obs1_port,0,30;
+ob1.check_until_timeout select count(*) from __all_rootservice_job where svr_ip='$obs1_ip' and svr_port=$obs1_port and job_type = 'DELETE_SERVER' and job_status = 'SUCCESS',1,60;
+--disable_all_result_log
+--error 4179
+eval ALTER SYSTEM ADD SERVER '$obs1_ip:$obs1_port';
+--enable_all_result_log
+ob1.z1.obs1.force_stop;
+ob1.z1.obs1.rmdir;
+ob1.z1.obs1.mkdir;
+ob1.z1.obs1.rsync;
+ob1.z1.obs1.start;
+sleep 60;
+alter system set_tp tp_name = ALL_SERVER_LIST_ERROR, error_code = 4016, frequency = 1;
+
+###to test ob1.check_until_timeout select count(*) from __all_virtual_sys_parameter_stat where name like "%all_server_list%" and value = '$obs0_ip:$obs0_port,$z2_ip:$z2_port', 2,60;
+ob1.check_until_timeout select count(*) from __all_virtual_sys_parameter_stat where name like "%all_server_list%" and value like '%$obs0_ip:$obs0_port%',2,30;
+ob1.check_until_timeout select count(*) from __all_virtual_sys_parameter_stat where name like "%all_server_list%" and value like '%$z2_ip:$z2_port%',2,30;
+ob1.check_until_timeout select count(*) from __all_virtual_sys_parameter_stat where name like "%all_server_list%" and value like '%$obs1_ip:$obs1_port%',0,30;
+ob1.z1.obs1.add;
+--disable_query_log
+eval select id from oceanbase.__all_server where svr_ip = '$obs1_ip' and svr_port=$obs1_port;
+--enable_query_log
+ob1.check_until_timeout select count(*) from __all_server where svr_ip='$obs1_ip' and svr_port=$obs1_port and status='ACTIVE' and start_service_time > 0 and last_offline_time = 0,1,120;
+alter system set_tp tp_name = ALL_SERVER_LIST_ERROR, error_code = 4016, frequency = 0;
+###to test ob1.check_until_timeout select count(*) from __all_virtual_sys_parameter_stat where name like "%all_server_list%" and value = '$obs0_ip:$obs0_port,$z2_ip:$z2_port', 3,60;
+ob1.check_until_timeout select count(*) from __all_virtual_sys_parameter_stat where name like "%all_server_list%" and value like '%$obs0_ip:$obs0_port%',3,30;
+ob1.check_until_timeout select count(*) from __all_virtual_sys_parameter_stat where name like "%all_server_list%" and value like '%$z2_ip:$z2_port%',3,30;
+ob1.check_until_timeout select count(*) from __all_virtual_sys_parameter_stat where name like "%all_server_list%" and value like '%$obs1_ip:$obs1_port%',0,30;
+
+###to test ob1.check_until_timeout select count(*) from __all_virtual_sys_parameter_stat where name like "%all_server_list%" and value = '$obs0_ip:$obs0_port,$obs1_ip:$obs1_port,$z2_ip:$z2_port', 3,630;
+ob1.check_until_timeout select count(*) from __all_virtual_sys_parameter_stat where name like "%all_server_list%" and value like '%$obs1_ip:$obs1_port%',3,630;
+ob1.check_until_timeout select count(*) from __all_virtual_sys_parameter_stat where name like "%all_server_list%" and value like '%$obs0_ip:$obs0_port%',3,30;
+ob1.check_until_timeout select count(*) from __all_virtual_sys_parameter_stat where name like "%all_server_list%" and value like '%$z2_ip:$z2_port%',3,30;
+# ****************************************************************************************************
+# ****************************** 2. delete server with 1c5g unit *************************************
+# ****************************************************************************************************
+ob1.mysql CREATE RESOURCE UNIT 1c5g MAX_CPU 1, MEMORY_SIZE '5G';
+ob1.mysql CREATE RESOURCE POOL pool1 UNIT='1c5g',UNIT_NUM=1,ZONE_LIST=('z1');
+ob1.mysql CREATE TENANT IF NOT EXISTS test_tenant ZONE_LIST=('z1'), RESOURCE_POOL_LIST=('pool1');
+let $tid = deploy_get_value(ob1.select select tenant_id from __all_tenant where tenant_name = 'test_tenant', tenant_id, 1);
+ob1.check_until_timeout select count(*) from __all_virtual_unit where TENANT_ID = $tid, 1, 240;
+let $uid = deploy_get_value(ob1.select select UNIT_ID from __all_virtual_unit where TENANT_ID = $tid, UNIT_ID, 1);
+ob1.check_until_timeout select count(*) from __all_virtual_unit where svr_ip = '$obs1_ip' and svr_port = $obs1_port and unit_id = $uid, 2, 240;
+# ****************************************************************************************************
+# ****************************** 2.1 delete server  & keep status deleting ***************************
+# ****************************************************************************************************
+ob1.mysql set ob_global_debug_sync = 'END_DELETE_SERVER_BEFORE_CHECK_META_TABLE wait_for signal';
+ob1.z1.obs1.delete;
+ob1.check_until_timeout select count(*) from __all_server where svr_ip='$obs1_ip' and svr_port=$obs1_port and status = 'DELETING' and start_service_time > 0 and last_offline_time = 0,1,60;
+ob1.check_until_timeout select count(*) from __all_rootservice_job where svr_ip='$obs1_ip' and svr_port=$obs1_port and job_type = 'DELETE_SERVER' and job_status = 'INPROGRESS',1,60;
+# ****************************************************************************************************
+# ****************************** 2.2 delete again return error OB_SERVER_ALREADY_DELETED *************
+# ****************************************************************************************************
+--disable_query_log
+--error 4628
+eval ALTER SYSTEM DELETE SERVER '$obs1_ip:$obs1_port';
+--enable_query_log
+# ****************************************************************************************************
+# ****************************** 2.3 delete successfully, server is removed from whitelist ***********
+# ****************************************************************************************************
+let $job_id = deploy_get_value(ob1.select select job_id from __all_rootservice_job where svr_ip='$obs1_ip' and svr_port=$obs1_port and job_type = 'DELETE_SERVER' and job_status = 'INPROGRESS', job_id, 1);
+ob1.mysql delete from oceanbase.__all_rootservice_job WHERE job_id = $job_id;
+ob1.check_until_timeout select count(*) from __all_rootservice_job where job_id = $job_id,0,5;
+ob1.mysql set ob_global_debug_sync = 'now signal signal';
+ob1.mysql set ob_global_debug_sync = 'END_DELETE_SERVER_BEFORE_CHECK_META_TABLE clear';
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where svr_ip='$obs1_ip' and svr_port=$obs1_port,0,100;
+# ****************************************************************************************************
+# ****************************** 2.4 delete again return error OB_SERVER_NOT_IN_WHITE_LIST ************
+# ****************************************************************************************************
+--disable_query_log
+--error 4630
+eval ALTER SYSTEM DELETE SERVER '$obs1_ip:$obs1_port';
+--enable_query_log
+# ****************************************************************************************************
+# ****************************** 3. fail to delete server, zone 'z1' resource not enough *************
+# ****************************************************************************************************
+ob1.z1.obs2.force_stop;
+ob1.z1.obs2.rmdir;
+ob1.z1.obs2.mkdir;
+ob1.z1.obs2.rsync;
+ob1.z1.obs2.start;
+sleep 60;
+ob1.z1.obs2.add;
+--disable_query_log
+eval select id from oceanbase.__all_server where svr_ip = '$obs2_ip' and svr_port=$obs2_port;
+--enable_query_log
+ob1.check_until_timeout select count(*) from __all_server where svr_ip='$obs2_ip' and svr_port=$obs2_port and status='ACTIVE' and start_service_time > 0 and last_offline_time = 0,1,120;
+
+ob1.mysql CREATE RESOURCE UNIT 1c17g MAX_CPU 1, MEMORY_SIZE '17G', LOG_DISK_SIZE='2G';
+ob1.mysql CREATE RESOURCE POOL pool2 UNIT='1c17g',UNIT_NUM=1,ZONE_LIST=('z1');
+ob1.mysql CREATE TENANT IF NOT EXISTS test_tenant2 ZONE_LIST=('z1'), RESOURCE_POOL_LIST=('pool2') set ob_tcp_invited_nodes='%', ob_compatibility_mode='mysql';
+let $tid = deploy_get_value(ob1.select select tenant_id from __all_tenant where tenant_name = 'test_tenant2', tenant_id, 1);
+ob1.check_until_timeout select count(*) from __all_virtual_unit where TENANT_ID = $tid, 1, 240;
+let $uid = deploy_get_value(ob1.select select UNIT_ID from __all_virtual_unit where TENANT_ID = $tid, UNIT_ID, 1);
+ob1.check_until_timeout select count(*) from __all_virtual_unit where svr_ip = '$obs2_ip' and svr_port = $obs2_port and unit_id = $uid, 2, 240;
+
+#测试server_id > 4096 可以建立session
+connect(mysql_conn, $obs2_ip, root@test_tenant2,,oceanbase, $obs2_sql_port);
+select tenant_name from DBA_OB_TENANTS;
+connection sys_conn;
+--disable_all_result_log
+--error 4733
+eval ALTER SYSTEM DELETE SERVER '$obs2_ip:$obs2_port';
+--enable_all_result_log
+# ****************************************************************************************************
+# ****************************** 4. delete online server && cancel delete ****************************
+# ****************************************************************************************************
+ob1.z1.obs1.force_stop;
+ob1.z1.obs1.rmdir;
+ob1.z1.obs1.mkdir;
+ob1.z1.obs1.rsync;
+ob1.z1.obs1.start;
+sleep 60;
+ob1.z1.obs1.add;
+ob1.check_until_timeout select count(*) from __all_server where svr_ip='$obs1_ip' and svr_port=$obs1_port and status='ACTIVE' and start_service_time > 0 and last_offline_time = 0,1,120;
+ob1.mysql set ob_global_debug_sync = 'END_DELETE_SERVER_BEFORE_CHECK_META_TABLE wait_for signal';
+ob1.z1.obs1.delete;
+ob1.check_until_timeout select count(*) from __all_server where svr_ip='$obs1_ip' and svr_port=$obs1_port and status = 'DELETING' and start_service_time > 0 and last_offline_time = 0,1,60;
+ob1.check_until_timeout select count(*) from __all_rootservice_job where svr_ip='$obs1_ip' and svr_port=$obs1_port and job_type = 'DELETE_SERVER' and job_status = 'INPROGRESS',1,60;
+ob1.z1.obs1.cancel_delete;
+ob1.check_until_timeout select count(*) from __all_server where svr_ip='$obs1_ip' and svr_port=$obs1_port and status = 'ACTIVE' and start_service_time > 0 and last_offline_time = 0,1,60;
+ob1.check_until_timeout select count(*) from __all_rootservice_job where svr_ip='$obs1_ip' and svr_port=$obs1_port and job_type = 'DELETE_SERVER' and job_status = 'FAILED' and result_code = -4072,1,60;
+# ****************************************************************************************************
+# ****************************** 5. delete offline server && cancel delete ***************************
+# ****************************************************************************************************
+ob1.z1.obs1.force_stop;
+ob1.check_until_timeout select count(*) from __all_server where svr_ip='$obs1_ip' and svr_port=$obs1_port and status = 'INACTIVE' and start_service_time = 0 and last_offline_time > 0,1,60;
+ob1.z1.obs1.delete;
+ob1.check_until_timeout select count(*) from __all_server where svr_ip='$obs1_ip' and svr_port=$obs1_port and status = 'DELETING' and start_service_time = 0 and last_offline_time > 0,1,60;
+ob1.check_until_timeout select count(*) from __all_rootservice_job where svr_ip='$obs1_ip' and svr_port=$obs1_port and job_type = 'DELETE_SERVER' and job_status = 'INPROGRESS',1,60;
+let $job_id = deploy_get_value(ob1.select select job_id from __all_rootservice_job where svr_ip='$obs1_ip' and svr_port=$obs1_port and job_type = 'DELETE_SERVER' and job_status = 'INPROGRESS', job_id, 1);
+ob1.mysql delete from oceanbase.__all_rootservice_job WHERE job_id = $job_id;
+ob1.check_until_timeout select count(*) from __all_rootservice_job where job_id = $job_id,0,5;
+ob1.z1.obs1.cancel_delete;
+ob1.check_until_timeout select count(*) from __all_server where svr_ip='$obs1_ip' and svr_port=$obs1_port and status = 'INACTIVE' and start_service_time = 0 and last_offline_time > 0,1,60;
+ob1.mysql set ob_global_debug_sync = 'now signal signal';
+ob1.mysql set ob_global_debug_sync = 'END_DELETE_SERVER_BEFORE_CHECK_META_TABLE clear';
+
+# ****************************************************************************************************
+# ****************************** 6. 删单zone server ***************************************************
+# ****************************************************************************************************
+ob1.z3.obs0.set status=enable;
+ob1.z3.obs0.start;
+ob1.mysql alter system add zone 'z3';
+ob1.mysql alter system start zone 'z3';
+sleep 60;
+ob1.z3.obs0.add;
+ob1.check_until_timeout select count(*) from __all_server where svr_ip='$z3_ip' and svr_port=$z3_port and status='ACTIVE' and start_service_time > 0 and last_offline_time = 0,1,120;
+ob1.mysql alter resource pool sys_pool zone_list = ('z1','z2','z3');
+ob1.mysql alter tenant sys locality="F@z1,F@z2,F@z3";
+ob1.check_until_timeout select count(*) from DBA_OB_TENANT_JOBS where job_type = 'ALTER_TENANT_LOCALITY' and job_status = 'INPROGRESS',1,60;
+let $job_id = deploy_get_value(ob1.select select job_id from DBA_OB_TENANT_JOBS where job_type = 'ALTER_TENANT_LOCALITY' and job_status = 'INPROGRESS', job_id, 1);
+ob1.check_until_timeout select count(*) from DBA_OB_TENANT_JOBS where job_id = $job_id and job_status = 'SUCCESS',1,180;
+ob1.z3.obs0.force_stop;
+ob1.check_until_timeout select count(*) from __all_server where svr_ip='$z3_ip' and svr_port=$z3_port and status='INACTIVE',1,15;
+connection sys_conn;
+--disable_all_result_log
+--error 4734
+eval alter system delete server '$z3_ip:$z3_port';
+--error 4734
+alter resource pool pool1 zone_list = ('z1','z3');
+--enable_all_result_log
+
+ob1.mysql alter tenant sys locality="F@z1,F@z2";
+ob1.check_until_timeout select count(*) from DBA_OB_TENANT_JOBS where job_type = 'ALTER_TENANT_LOCALITY' and job_status = 'INPROGRESS',1,60;
+let $job_id = deploy_get_value(ob1.select select job_id from DBA_OB_TENANT_JOBS where job_type = 'ALTER_TENANT_LOCALITY' and job_status = 'INPROGRESS', job_id, 1);
+ob1.check_until_timeout select count(*) from DBA_OB_TENANT_JOBS where job_id = $job_id and job_status = 'SUCCESS',1,180;
+ob1.mysql alter resource pool sys_pool zone_list = ('z1','z2');
+ob1.check_until_timeout select count(*) from __all_unit where zone='z3',0,5;
+ob1.mysql alter system delete server '$z3_ip:$z3_port';
+ob1.check_until_timeout select count(*) from __all_server where svr_ip='$z3_ip' and svr_port=$z3_port,0,120;
+# ****************************************************************************************************
+# ****************************** 7. 删临时下线且为空的server ********************************************
+# ****************************************************************************************************
+ob1.z3.obs0.rmdir;
+ob1.z3.obs0.mkdir;
+ob1.z3.obs0.rsync;
+ob1.z3.obs0.start;
+ob1.z1.obs1.start;
+sleep 60;
+ob1.z3.obs0.add;
+ob1.check_until_timeout select count(*) from __all_server where svr_ip='$obs1_ip' and svr_port=$obs1_port and status='ACTIVE' and start_service_time > 0 and last_offline_time = 0,1,120;
+ob1.check_until_timeout select count(*) from __all_server where svr_ip='$z3_ip' and svr_port=$z3_port and status='ACTIVE' and start_service_time > 0 and last_offline_time = 0,1,120;
+ob1.mysql alter resource pool pool1 zone_list = ('z1','z2','z3');
+ob1.mysql alter tenant test_tenant locality="F@z1,F@z2";
+ob1.check_until_timeout select count(*) from DBA_OB_TENANT_JOBS where job_type = 'ALTER_TENANT_LOCALITY' and job_status = 'INPROGRESS',1,60;
+let $job_id = deploy_get_value(ob1.select select job_id from DBA_OB_TENANT_JOBS where job_type = 'ALTER_TENANT_LOCALITY' and job_status = 'INPROGRESS', job_id, 1);
+ob1.check_until_timeout select count(*) from DBA_OB_TENANT_JOBS where job_id = $job_id and job_status = 'SUCCESS',1,180;
+ob1.mysql alter tenant test_tenant locality="F@z1,F@z2,F@z3";
+ob1.check_until_timeout select count(*) from DBA_OB_TENANT_JOBS where job_type = 'ALTER_TENANT_LOCALITY' and job_status = 'INPROGRESS',1,60;
+let $job_id = deploy_get_value(ob1.select select job_id from DBA_OB_TENANT_JOBS where job_type = 'ALTER_TENANT_LOCALITY' and job_status = 'INPROGRESS', job_id, 1);
+ob1.check_until_timeout select count(*) from DBA_OB_TENANT_JOBS where job_id = $job_id and job_status = 'SUCCESS',1,180;
+ob1.mysql alter resource pool sys_pool zone_list = ('z1','z2','z3');
+ob1.mysql alter tenant sys locality="F@z1,F@z2,F@z3";
+ob1.check_until_timeout select count(*) from DBA_OB_TENANT_JOBS where job_type = 'ALTER_TENANT_LOCALITY' and job_status = 'INPROGRESS',1,60;
+let $job_id = deploy_get_value(ob1.select select job_id from DBA_OB_TENANT_JOBS where job_type = 'ALTER_TENANT_LOCALITY' and job_status = 'INPROGRESS', job_id, 1);
+ob1.check_until_timeout select count(*) from DBA_OB_TENANT_JOBS where job_id = $job_id and job_status = 'SUCCESS',1,180;
+ob1.z1.obs0.force_stop;
+ob1.z2.obs0.check_until_timeout select count(*) from oceanbase.__all_virtual_ls_meta_table where svr_port=$obs0_port and svr_ip='$obs0_ip',6,10;
+ob1.z2.obs0.mysql alter system delete server '$obs0_ip:$obs0_port';
+ob1.z2.obs0.check_until_timeout select count(*) from oceanbase.__all_unit where svr_ip='$obs0_ip' and svr_port=$obs0_port, 0,120;
+ob1.z2.obs0.check_until_timeout select count(*) from oceanbase.__all_unit where migrate_from_svr_ip='$obs0_ip' and migrate_from_svr_port=$obs0_port, 0,240;
+ob1.z2.obs0.check_rs_log_until_success "Deleting server is temporary offline and empty(server=.*$obs0_ip:$obs0_port.*)";
+ob1.z2.obs0.check_until_timeout select count(*) from oceanbase.__all_virtual_ls_meta_table where svr_port=$obs0_port and svr_ip='$obs0_ip',0,100;
+# ****************************************************************************************************
+# ****************************** 8. 如果migrate_from_server列也有server，则这个server不为空 **************
+# ********************************* 这里其实测的是ut_operator的check_server_empty接口 *******************
+# ****************************************************************************************************
+ob1.z2.obs0.mysql alter system enable_rebalance = false tenant = 'sys';
+ob1.z2.obs0.mysql alter system set syslog_level="DEBUG";
+ob1.z2.obs0.check_until_timeout select count(*) from oceanbase.__all_server where svr_ip='$obs0_ip' and svr_port=$obs0_port,0,30;
+ob1.z1.obs0.rmdir;
+ob1.z1.obs0.mkdir;
+ob1.z1.obs0.rsync;
+ob1.z1.obs0.start;
+sleep 60;
+#验证并发情况下server_id被占用后添加server不成功
+eval select max(id) from oceanbase.__all_server order by id;
+let $max_sid = deploy_get_value(ob1.z2.obs0.select select max(id) as max_id from oceanbase.__all_server, max_id, 1);
+ob1.z2.obs0.mysql set ob_global_debug_sync = 'BEFORE_ADD_SERVER_TRANS wait_for signal_add';
+sleep 3;
+send set ob_query_timeout = 30000000;
+sleep 3;
+--disable_all_result_log
+send alter system add server '$obs0_ip:$obs0_port' ZONE='z1';
+--enable_all_result_log
+connect(sys_conn_2, $proxy_ip, root@sys,,oceanbase, $proxy_port);
+eval update oceanbase.__all_server set id = ($max_sid + 1) where id = $max_sid;
+eval select max(id) from oceanbase.__all_server order by id;
+set ob_global_debug_sync = 'now signal signal_add';
+set ob_global_debug_sync = 'BEFORE_ADD_SERVER_TRANS clear';
+sleep 3;
+ob1.z2.obs0.check_rs_log_until_success "server index is outdated due to concurrent operations";
+eval select max(id) from oceanbase.__all_server order by id;
+
+ob1.z1.obs0.force_stop;
+ob1.z1.obs0.rmdir;
+ob1.z1.obs0.mkdir;
+ob1.z1.obs0.rsync;
+ob1.z1.obs0.start;
+sleep 60;
+
+ob1.z2.obs0.mysql alter system add server '$obs0_ip:$obs0_port' ZONE='z1';
+--disable_query_log
+eval select id from oceanbase.__all_server where svr_ip = '$obs0_ip' and svr_port=$obs0_port;
+--enable_query_log
+ob1.z2.obs0.check_until_timeout select count(*) from oceanbase.__all_server where svr_ip='$obs0_ip' and svr_port=$obs0_port and status='ACTIVE' and start_service_time > 0 and last_offline_time = 0,1,120;
+let $uid = deploy_get_value(ob1.z2.obs0.select select unit_id from oceanbase.__all_unit where zone = 'z1' and unit_id != 1 limit 1, unit_id, 1);
+ob1.z2.obs0.mysql update oceanbase.__all_unit set migrate_from_svr_ip = '$obs0_ip', migrate_from_svr_port=$obs0_port where unit_id=$uid;
+ob1.z2.obs0.check_until_timeout select count(*) from oceanbase.__all_unit where migrate_from_svr_ip='$obs0_ip' and migrate_from_svr_port=$obs0_port, 1,2;
+ob1.z2.obs0.check_until_timeout select count(*) from oceanbase.__all_unit where svr_ip='$obs0_ip' and svr_port=$obs0_port, 0,2;
+connect(sys_conn, $proxy_ip, root@sys,,oceanbase, $proxy_port);
+# 报4018是因为上面的update导致了unit manager的server_loads里面没有这个server，但是migrate_from_server却有，实际上不会出现这种情况
+# 实际上是migrate_from_server先变成空，然后server_loads里面再没有这个server
+--disable_all_result_log
+--error 4018
+eval alter system delete server '$obs0_ip:$obs0_port';
+--enable_all_result_log

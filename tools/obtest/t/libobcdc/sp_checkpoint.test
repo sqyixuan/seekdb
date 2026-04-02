@@ -1,0 +1,133 @@
+#
+# owner:千溪
+# owner group:liboblog
+# description:
+# 测试点:
+# 单机多分区事务推进靠三种方式：
+# 1. 分区无事务发生,写checkpoint日志
+# 2. 根据clog的batch commit信息
+# 3. 根据后续事务携带checkpoint信息
+# 之前单机单分区事务sp commit日志不会携带checkpoint信息
+# 如下场景: 单机多分区事务 + 很多单机单分区事务 当关闭batch commit, 如果单机单分区没有checkpoint信息
+# 那么单机多分区事务无法推进
+#
+# 
+##
+
+ob1=OBI(cluster=1:1:1, init_unit_cpu=5);
+ob1.reboot;
+
+# 准备环境
+source include/liboblog/create_tenant_multiple_zone.inc;
+
+--disable_warnings
+drop database if exists oblog_db1;
+--disable_warnings
+drop table if exists oblog_db1.t1;
+--disable_warnings
+drop table if exists oblog_db1.t2;
+
+# 创建database
+create database oblog_db1;
+use oblog_db1;
+
+create table t1 (pk int primary key);
+create table t2 (pk int primary key);
+create table t3 (pk int primary key);
+
+# 启动liboblog
+# 只输出t1数据
+ob1.oblog.gen_conf tb_white_list=oblog_tt.oblog_db1.t1 test_checkpoint_mode_on=1 skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+
+
+######## 测试场景1： 单机多分区事务+一系列sp事务，测试是否sp事务可以推荐单机多分区事务
+echo "case 1";
+# t1和t2单机多分区事务
+begin;
+insert into t1 values(1);
+insert into t2 values(1);
+update t1 set pk=10 where pk=1;
+commit;
+
+# sp事务，测试能否sp-commit checkpoint可以推进t1-分区
+let $t1_dml_count = 2;
+let $t1_pk_val = 10;
+let $t1_pk_update_val = 11;
+while ($t1_dml_count <= 10)
+{
+  begin;
+  eval insert into t1 values($t1_dml_count);
+  eval update t1 set pk=$t1_pk_update_val where pk=$t1_pk_val;
+  commit;
+
+  inc $t1_pk_val;
+  inc $t1_pk_update_val;
+  inc $t1_dml_count;
+}
+
+sleep 1;
+begin;
+eval insert into t1 values($t1_dml_count);
+eval update t1 set pk=$t1_pk_update_val where pk=$t1_pk_val;
+commit;
+
+# 先输出单机多分区事务
+ob1.oblog.next;
+# t1单机单分区事务
+let $t1_dml_count = 2;
+while ($t1_dml_count <= 10)
+{
+  ob1.oblog.next;
+  inc $t1_dml_count;
+}
+# sleep 1s后的数据
+ob1.oblog.next;
+
+######## 测试场景2： 单机多分区事务+多机多分区事务
+echo "case 2";
+# t1和t2单机多分区事务
+begin;
+insert into t1 values(201);
+insert into t2 values(201);
+update t1 set pk=210 where pk=201;
+commit;
+
+# t1和t3多机多分区事务
+let $t1_dml_count = 2;
+let $insert_val = 202;
+let $t1_pk_val = 210;
+let $t1_pk_update_val = 211;
+
+while ($t1_dml_count <= 10)
+{
+  begin;
+  eval insert into t1 values($insert_val);
+  eval insert into t3 values($insert_val);
+  eval update t1 set pk=$t1_pk_update_val where pk=$t1_pk_val;
+  commit;
+
+  inc $t1_dml_count;
+  inc $insert_val;
+  inc $t1_pk_val;
+  inc $t1_pk_update_val;
+}
+
+# 先输出单机多分区事务
+ob1.oblog.next;
+
+let $t1_dml_count = 2;
+while ($t1_dml_count <= 10)
+{
+  ob1.oblog.next;
+  inc $t1_dml_count;
+}
+
+# stop liboblog
+ob1.oblog.stop;
+
+## 单机多分区事务, 过滤掉checkpoint日志, 需要依赖后一个事务推进
+## 因此drop table放到stop后面，避免检查心跳不推进
+drop table t1;
+drop table t2;
+drop table t3;

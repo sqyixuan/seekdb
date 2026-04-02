@@ -1,0 +1,177 @@
+#######################################################################################
+#owner : xianlin.lh
+#owner group: clog
+#description: arbitration test part01
+# 测试场景2F1A：
+# 1. 启动仲裁服务/server;
+# 2. 添加仲裁服务到ob集群;
+# 3. 建租户时指定开启仲裁服务；
+# 4. 为sys租户开启仲裁服务;
+#########################################################################################
+ob1=OBI(cluster=1:1:1, proxy_num=0, asvr_num=2);
+
+let $extra_conf = "cpu_count=8,memory_limit='20G',system_memory='5G',_hidden_sys_tenant_memory='1G',__min_full_resource_pool_memory='1073741824',cache_wash_threshold='1G',log_disk_size='30G'";
+ob1.z1.obs0.set extra_config=$extra_conf;
+ob1.z2.obs0.set extra_config=$extra_conf;
+ob1.z2.obs1.set extra_config=$extra_conf;
+ob1.z3.obs0.set extra_config=$extra_conf;
+
+let $arb_extra_conf = "ob_startup_mode=arbitration,cpu_count=1,memory_limit=1G,__easy_memory_limit=256M";
+ob1.asvr0.set extra_config=$arb_extra_conf;
+ob1.asvr1.set extra_config=$arb_extra_conf;
+
+ob1.asvr1.set status=disable;
+# bootstrap
+ob1.reboot;
+sleep 3;
+
+ob1.asvr1.set status=enable;
+ob1.asvr1.reboot;
+
+ob1.mysql alter system set ls_gc_delay_time='10s' tenant=sys;
+ob1.mysql alter system set ls_gc_delay_time='10s' tenant=all_user;
+ob1.mysql alter system set ls_gc_delay_time='10s' tenant=all_meta;
+ob1.mysql alter system set debug_sync_timeout = '1000s';
+ob1.mysql ALTER SYSTEM SET enable_rebalance = 'false';
+ob1.mysql ALTER SYSTEM SET enable_rereplication = 'true';
+ob_connect(conn_sys, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+# 启动仲裁server
+# 获取仲裁server的ip、port
+let $arb_svr_ip= deploy_get_value(ob1.asvr0.ip);
+let $arb_svr_port= deploy_get_value(ob1.asvr0.port);
+let $arb_svr_ip_2= deploy_get_value(ob1.asvr1.ip);
+let $arb_svr_port_2= deploy_get_value(ob1.asvr1.port);
+# add arbitration service, mytest.jar已经为本集群做了这一步
+# check arbitration service add success
+ob1.check_until_timeout select count(*) from DBA_OB_ARBITRATION_SERVICE where arbitration_service = "$arb_svr_ip:$arb_svr_port", 1, 30;
+ob1.check_until_timeout select count(*) from __all_virtual_arbitration_service_status, 3, 10;
+
+# 验证添加非法仲裁服务, 预期返回 OB_INVALID_ARGUMENT
+--echo test case for add arb service with invalid argument, expect OB_INVALID_ARGUMENT 1210
+--error 1210
+eval alter system add arbitration service "aaa";
+
+# 验证已有仲裁服务的场景下再次添加仲裁服务, 预期返回 OB_ARBITRATION_SERVICE_ALREADY_EXIST
+--disable_query_log
+--echo test case for add arb service again, expect OB_ARBITRATION_SERVICE_ALREADY_EXIST 4748
+--error 4748
+eval alter system add arbitration service "$arb_svr_ip:$arb_svr_port";
+
+--enable_query_log
+# 验证移除非法仲裁服务, 预期返回 OB_INVALID_ARGUMENT
+--echo test case for remove arb service with invalid argument, expect OB_INVALID_ARGUMENT 1210
+--error 1210
+eval alter system remove arbitration service "aaa";
+
+# 验证移除一个不存在的仲裁服务，预期返回 OB_OP_NOT_ALLOW
+--echo test case for remove arb service not exist, expect OB_OP_NOT_ALLOW 4179
+--error 4179
+eval alter system remove arbitration service "1.1.1.1:1";
+
+--disable_query_log
+# 验证删除仲裁服务, 注入清除持久化信息的错误，预期成功，但有warn信息输出
+ob1.mysql alter system set_tp tp_name = ERRSIM_REMOVE_CLUSTER_INFO_ERROR, error_code = 4016, frequency = 1;
+--echo test case for remove arb service, expect OB_SUCCESS
+ob1.mysql alter system remove arbitration service "$arb_svr_ip:$arb_svr_port";
+ob1.check_until_timeout select count(*) from DBA_OB_ARBITRATION_SERVICE, 0, 10;
+ob1.check_until_timeout select count(*) from __all_virtual_arbitration_service_status, 0, 20;
+ob1.mysql alter system set_tp tp_name = ERRSIM_REMOVE_CLUSTER_INFO_ERROR, error_code = 4016, frequency = 0;
+
+# 验证在没有仲裁服务的情况下删除仲裁服务，预期返回 OB_OP_NOT_ALLOW
+--echo test case for remove arb service without arb service, expect OB_ARBITRATION_SERVICE_NOT_EXIST 4747
+--error 4747
+eval alter system remove arbitration service "$arb_svr_ip:$arb_svr_port";
+
+--enable_query_log
+# 验证在没有仲裁服务的情况下，尝试开启租户仲裁服务，预期返回 OB_OP_NOT_ALLOW
+--echo test case for enable tenant arb service without arb service, expect OB_OP_NOT_ALLOW 4179
+--error 4179
+eval alter tenant sys enable_arbitration_service = true;
+
+# 验证错误注入的情况下，持久化集群信息时，添加仲裁服务的行为, 预期返回 4016
+--disable_query_log
+ob1.mysql alter system set_tp tp_name = ERRSIM_ADD_CLUSTER_INFO_ERROR, error_code = 4016, frequency = 1;
+--echo test errsim when persist cluster info to arbitration server
+--error 4016
+eval alter system add arbitration service "$arb_svr_ip:$arb_svr_port";
+ob1.mysql alter system set_tp tp_name = ERRSIM_ADD_CLUSTER_INFO_ERROR, error_code = 4016, frequency = 0;
+
+# 重新add arbitration service
+eval alter system add arbitration service "$arb_svr_ip:$arb_svr_port";
+
+# 验证错误注入的情况下，持久化集群信息时，替换仲裁服务的行为，预期返回 4016
+ob1.mysql alter system set_tp tp_name = ERRSIM_ADD_CLUSTER_INFO_ERROR, error_code = 4016, frequency = 1;
+--error 4016
+eval alter system replace arbitration service "$arb_svr_ip:$arb_svr_port" with "$arb_svr_ip_2:$arb_svr_port_2";
+ob1.mysql alter system set_tp tp_name = ERRSIM_ADD_CLUSTER_INFO_ERROR, error_code = 4016, frequency = 0;
+
+#replace arbitration service when all tenant with disabled arb status
+ob1.mysql alter system replace arbitration service "$arb_svr_ip:$arb_svr_port" with "$arb_svr_ip_2:$arb_svr_port_2";
+ob1.check_until_timeout select count(*) from DBA_OB_ARBITRATION_SERVICE where previous_arbitration_service != "", 0, 120;
+ob1.check_until_timeout select count(*) from DBA_OB_ARBITRATION_SERVICE where arbitration_service = "$arb_svr_ip_2:$arb_svr_port_2", 1, 120;
+#验证replace命令发给非RS机器时，remove_cluster_info动作不会报错
+ob1.mysql alter tenant sys primary_zone = "z1";
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_LS_LOCATIONS where tenant_id = 1 and role = "LEADER" and zone = "z1", 1, 30;
+ob1.z3.obs0.mysql alter system replace arbitration service "$arb_svr_ip_2:$arb_svr_port_2" with "$arb_svr_ip:$arb_svr_port";
+ob1.z3.obs0.mysql alter system replace arbitration service "$arb_svr_ip:$arb_svr_port" with "$arb_svr_ip_2:$arb_svr_port_2";
+
+# 验证错误注入清除持久化信息时，替换仲裁服务成功，但是报warning的行为
+ob1.mysql alter system set_tp tp_name = ERRSIM_REMOVE_CLUSTER_INFO_ERROR, error_code = 4016, frequency = 1;
+ob1.mysql alter system replace arbitration service "$arb_svr_ip_2:$arb_svr_port_2" with "$arb_svr_ip:$arb_svr_port";
+ob1.check_until_timeout select count(*) from DBA_OB_ARBITRATION_SERVICE where previous_arbitration_service != "", 0, 120;
+ob1.check_until_timeout select count(*) from DBA_OB_ARBITRATION_SERVICE where arbitration_service = "$arb_svr_ip:$arb_svr_port", 1, 120;
+ob1.mysql alter system set_tp tp_name = ERRSIM_REMOVE_CLUSTER_INFO_ERROR, error_code = 4016, frequency = 0;
+--enable_query_log
+
+connection conn_sys;
+let $sys_tenant_id=1;
+# change sys tenant to 2F
+eval alter tenant sys set locality = 'F@z1, F@z2';
+ob1.check_until_timeout select count(*) from __all_tenant where previous_locality != '', 0, 60;
+# test enable tenant arb service
+ob1.mysql set ob_global_debug_sync = 'BEFORE_EXECUTE_ARB_REPLICA_TASK wait_for signal_to_add';
+eval alter tenant sys enable_arbitration_service = true;
+# wait add arb replica finished
+ob1.check_until_timeout select count(*) from CDB_OB_LS_ARB_REPLICA_TASKS where tenant_id = $sys_tenant_id and task_type = 'ADD REPLICA', 1, 20;
+ob1.check_until_timeout select count(*) from DBA_OB_LS_ARB_REPLICA_TASKS where task_type = 'ADD REPLICA', 1, 20;
+ob1.mysql set ob_global_debug_sync = 'now signal signal_to_add';
+ob1.check_until_timeout select count(*) from CDB_OB_LS_ARB_REPLICA_TASK_HISTORY where tenant_id = $sys_tenant_id and task_type = 'ADD REPLICA' and execute_result like '%ret:0%', 1, 10;
+ob1.check_until_timeout select count(*) from DBA_OB_LS_ARB_REPLICA_TASK_HISTORY where task_type = 'ADD REPLICA' and execute_result like '%ret:0%', 1, 10;
+ob1.check_until_timeout select count(*) from __all_tenant where tenant_id=$sys_tenant_id and arbitration_service_status='ENABLED', 1, 60;
+ob1.check_until_timeout select count(*) from __all_virtual_log_stat where tenant_id=$sys_tenant_id and arbitration_member like "%$arb_svr_ip:$arb_svr_port%", 2, 60;
+# test disable tenant arb service
+ob1.mysql set ob_global_debug_sync = 'BEFORE_EXECUTE_ARB_REPLICA_TASK wait_for signal_to_remove';
+eval alter tenant sys enable_arbitration_service = false;
+# wait remove arb replica finished
+ob1.check_until_timeout select count(*) from CDB_OB_LS_ARB_REPLICA_TASKS where tenant_id = $sys_tenant_id and task_type = 'REMOVE REPLICA', 1, 20;
+ob1.check_until_timeout select count(*) from DBA_OB_LS_ARB_REPLICA_TASKS where task_type = 'REMOVE REPLICA', 1, 20;
+ob1.mysql set ob_global_debug_sync = 'now signal signal_to_remove';
+ob1.check_until_timeout select count(*) from __all_tenant where tenant_id=$sys_tenant_id and arbitration_service_status='DISABLED', 1, 60;
+ob1.check_until_timeout select count(*) from CDB_OB_LS_ARB_REPLICA_TASK_HISTORY where tenant_id = $sys_tenant_id and task_type = 'REMOVE REPLICA' and execute_result like '%ret:0%', 1, 10;
+ob1.check_until_timeout select count(*) from DBA_OB_LS_ARB_REPLICA_TASK_HISTORY where task_type = 'REMOVE REPLICA' and execute_result like '%ret:0%', 1, 10;
+ob1.check_until_timeout select count(*) from __all_virtual_log_stat where tenant_id=$sys_tenant_id and arbitration_member = '', 2, 30;
+# test enable tenant arb service
+ob1.mysql set ob_global_debug_sync = 'BEFORE_EXECUTE_ARB_REPLICA_TASK wait_for signal';
+eval alter tenant sys enable_arbitration_service = true;
+# switch rs
+ob1.check_until_timeout select count(*) from CDB_OB_LS_ARB_REPLICA_TASKS where tenant_id = $sys_tenant_id and task_type = 'ADD REPLICA', 1, 20;
+ob1.check_until_timeout select count(*) from DBA_OB_LS_ARB_REPLICA_TASKS where task_type = 'ADD REPLICA', 1, 20;
+ob1.mysql set ob_global_debug_sync = 'now signal signal';
+ob1.check_until_timeout select count(*) from CDB_OB_LS_ARB_REPLICA_TASK_HISTORY where tenant_id = $sys_tenant_id and task_type = 'ADD REPLICA' and execute_result like '%ret:0%', 2, 10;
+ob1.check_until_timeout select count(*) from DBA_OB_LS_ARB_REPLICA_TASK_HISTORY where task_type = 'ADD REPLICA' and execute_result like '%ret:0%', 2, 10;
+ob1.check_until_timeout select count(*) from __all_tenant where tenant_id=$sys_tenant_id and arbitration_service_status='ENABLED', 1, 60;
+# check arbitration member exist for sys tenant's ls
+ob1.check_until_timeout select count(*) from __all_virtual_log_stat where tenant_id=$sys_tenant_id and arbitration_member like "%$arb_svr_ip:$arb_svr_port%", 2, 30;
+ob1.mysql alter tenant sys set primary_zone='z1';
+ob1.check_until_timeout select count(*) = 1 from oceanbase.DBA_OB_LS_LOCATIONS where role = 'LEADER' and zone = 'z1', 1, 60;
+
+# 验证删租户后仲裁server上对应租户目录能自动删除
+let $arb_dir=deploy_get_value(ob1.asvr0.workdir);
+eval CREATE RESOURCE UNIT unit_4 MAX_CPU 1, MEMORY_SIZE='2G';
+eval CREATE RESOURCE POOL pool_4 UNIT = 'unit_4', UNIT_NUM = 1, zone_list = ('z2', 'z3');
+eval CREATE TENANT mysql_single_replica RESOURCE_POOL_LIST = ('pool_4'),  locality='F@z2, F@z3', primary_zone='RANDOM', enable_arbitration_service=true set ob_tcp_invited_nodes='%';
+let $mysql_single_replica_tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = 'mysql_single_replica', tenant_id, 1);
+drop tenant mysql_single_replica;
+sleep 8;
+ob1.asvr0.sh_p cd $arb_dir; cd ./store/clog; ls | grep cluster_1_tenant_1002 | wc -l;
+

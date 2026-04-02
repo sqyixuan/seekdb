@@ -1,0 +1,445 @@
+purge recyclebin;
+CREATE DATABASE IF NOT EXISTS trigger_test;
+USE trigger_test;
+SET AUTOCOMMIT=0;
+#mysql_trigger_ddl
+#mysql_trigger_ddl-1
+#mysql_trigger_ddl-1-1/mysql_trigger_ddl-1-3/mysql_trigger_ddl-1-4
+#mysql_trigger_ddl-2
+#mysql_trigger_ddl-2-1/mysql_trigger_ddl-2-2/mysql_trigger_ddl-2-3
+#创建不同类型的分区表，使用不同约束索引条件，然后再创建不同触发类型的trigger，最后对表执行DDL操作后触发trigger
+DROP TABLE IF EXISTS t2;
+CREATE TABLE t2(c0 INT,
+c1 VARCHAR(10),
+c2 SET('a','b','c','d','e','f','g'),
+c3 FLOAT,
+c4 DATE)
+PARTITION BY HASH(c0)
+(PARTITION p1,
+PARTITION p2,
+PARTITION p3,
+PARTITION p4
+);
+INSERT INTO t2 VALUES(0,'AA','a','0.123','2000-01-01'),
+(1,'BB','a','2.123','2001-11-11'),
+(3,'CC','b','3.123','2002-02-01'),
+(4,'DD','b','4.123','2003-03-11'),
+(5,'EE','c','5.123','2004-04-01'),
+(6,'FF','c','6.123','2005-05-11');
+DROP TABLE IF EXISTS t1;
+CREATE TABLE t1(c0 SMALLINT ZEROFILL PRIMARY KEY,
+c1 CHAR(10),
+c2 ENUM('a','b','c','d','e','f','g') NOT NULL DEFAULT 'a',
+c3 DOUBLE,
+c4 TIME,
+CONSTRAINT uni_key UNIQUE KEY(c0,c2))
+PARTITION BY KEY(c0)
+(PARTITION r1,
+PARTITION r2,
+PARTITION r3,
+PARTITION r4
+);
+INSERT INTO t1 VALUES(0,'AAA','a','10.123','20:01:01'),
+(1,'BBB','b','12.123','21:11:11'),
+(3,'CCC','c','13.123','22:22:01'),
+(4,'DDD','c','14.123','23:33:11'),
+(5,'EEE','c','15.123','19:44:01'),
+(6,'FFF','d','16.123','18:55:11');
+CREATE INDEX ind_1 ON t1(c3,c4);
+DROP TRIGGER IF EXISTS trg_insert;
+CREATE TRIGGER trg_insert BEFORE INSERT ON t2
+FOR EACH ROW
+BEGIN
+DECLARE c INT;
+SELECT MAX(c0) INTO c FROM t1;
+IF NEW.c0 = c THEN
+DELETE FROM t1 WHERE c0 = NEW.c0;
+ELSE
+INSERT INTO t1 VALUES(NEW.c0,CONCAT(NEW.c1,NEW.c1),NEW.c2,NEW.c3+NEW.c0,TIME(NEW.c4));
+END IF;
+END;
+//
+DROP TRIGGER IF EXISTS trg_update;//
+CREATE TRIGGER trg_update BEFORE UPDATE ON t1
+FOR EACH ROW
+BEGIN
+UPDATE t2 SET c0=NEW.c0,c1=CONCAT(NEW.c1,NEW.c1) WHERE c0=OLD.c0;
+END
+//
+DROP TRIGGER IF EXISTS trg_delete;//
+CREATE TRIGGER trg_delete AFTER DELETE ON t2
+FOR EACH ROW
+BEGIN
+DELETE FROM t1 WHERE c0=OLD.c0+1;
+END;
+//
+CREATE INDEX ind_2 ON t1(c2);
+alter system set _enable_drop_and_add_index = true;
+ALTER TABLE t1 DROP INDEX ind_1,ADD INDEX ind1(c1),RENAME INDEX ind_2 TO ind2;
+alter system set _enable_drop_and_add_index = false;
+alter system set _enable_drop_and_add_index = true;
+ALTER TABLE t1 ADD CONSTRAINT unk UNIQUE KEY(c0),DROP INDEX uni_key;
+alter system set _enable_drop_and_add_index = false;
+ALTER TABLE t1 SET PARALLEL=10,BLOCK_SIZE=20480,AUTO_INCREMENT=100;
+SHOW CREATE TABLE t1;
+Table	Create Table
+t1	CREATE TABLE `t1` (
+  `c0` smallint(5) unsigned zerofill NOT NULL,
+  `c1` char(10) DEFAULT NULL,
+  `c2` enum('a','b','c','d','e','f','g') NOT NULL DEFAULT 'a',
+  `c3` double DEFAULT NULL,
+  `c4` time DEFAULT NULL,
+  PRIMARY KEY (`c0`),
+  UNIQUE KEY `unk` (`c0`) BLOCK_SIZE 20480 LOCAL,
+  KEY `ind2` (`c2`) BLOCK_SIZE 20480 LOCAL,
+  KEY `ind1` (`c1`) BLOCK_SIZE 20480 LOCAL
+) ORGANIZATION INDEX DEFAULT CHARSET = utf8mb4 ROW_FORMAT = DYNAMIC COMPRESSION = 'zstd_1.3.8' REPLICA_NUM = 1 BLOCK_SIZE = 20480 USE_BLOOM_FILTER = FALSE ENABLE_MACRO_BLOCK_BLOOM_FILTER = FALSE TABLET_SIZE = 134217728 PCTFREE = 0 PARALLEL 10
+ partition by key(c0)
+(partition `r1`,
+partition `r2`,
+partition `r3`,
+partition `r4`)
+SELECT /*+INDEX(ind1)*/ * FROM t1 WHERE c1='AAA';
+c0	c1	c2	c3	c4
+00000	AAA	a	10.123	20:01:01
+#此处执行OB报错，待开发修复后执行，问题链接：
+ROLLBACK;
+UPDATE t1 SET c0=16,c1='H',c2='a',c3='17.789',c4='06:00:00' WHERE c0=6;
+SELECT * FROM t2 WHERE c0=16;
+c0	c1	c2	c3	c4
+16	HH	c	6.123	2005-05-11
+SELECT * FROM t1 WHERE c0=16;
+c0	c1	c2	c3	c4
+00016	H	a	17.789	06:00:00
+ROLLBACK;
+DELETE FROM t2 WHERE c0=3;
+SELECT * FROM t2 WHERE c0=3;
+c0	c1	c2	c3	c4
+SELECT * FROM t1 WHERE c0=4;
+c0	c1	c2	c3	c4
+ROLLBACK;
+#暂不支持，待支持后执行sql
+DROP INDEX ind2 ON t1;
+ALTER TABLE t1 DROP INDEX ind1,ADD CONSTRAINT fk_c0_c0 FOREIGN KEY(c0) REFERENCES t2(c0);
+ERROR HY000: Cannot add foreign key constraint
+SHOW CREATE TABLE t1;
+Table	Create Table
+t1	CREATE TABLE `t1` (
+  `c0` smallint(5) unsigned zerofill NOT NULL,
+  `c1` char(10) DEFAULT NULL,
+  `c2` enum('a','b','c','d','e','f','g') NOT NULL DEFAULT 'a',
+  `c3` double DEFAULT NULL,
+  `c4` time DEFAULT NULL,
+  PRIMARY KEY (`c0`),
+  UNIQUE KEY `unk` (`c0`) BLOCK_SIZE 20480 LOCAL,
+  KEY `ind1` (`c1`) BLOCK_SIZE 20480 LOCAL
+) ORGANIZATION INDEX DEFAULT CHARSET = utf8mb4 ROW_FORMAT = DYNAMIC COMPRESSION = 'zstd_1.3.8' REPLICA_NUM = 1 BLOCK_SIZE = 20480 USE_BLOOM_FILTER = FALSE ENABLE_MACRO_BLOCK_BLOOM_FILTER = FALSE TABLET_SIZE = 134217728 PCTFREE = 0 PARALLEL 10
+ partition by key(c0)
+(partition `r1`,
+partition `r2`,
+partition `r3`,
+partition `r4`)
+INSERT INTO t2 VALUES(7,'II','d',7.89,'2006-06-06');
+SELECT * FROM t2 WHERE c0=7;
+c0	c1	c2	c3	c4
+7	II	d	7.89	2006-06-06
+SELECT * FROM t1 WHERE c0=7;
+c0	c1	c2	c3	c4
+00007	IIII	d	14.889999866485596	00:00:00
+ROLLBACK;
+UPDATE t1 SET c0=10,c1='H',c2='a',c3='17.789',c4='06:00:00' WHERE c0=6;
+SELECT * FROM t2 WHERE c0=10;
+c0	c1	c2	c3	c4
+10	HH	c	6.123	2005-05-11
+SELECT * FROM t1 WHERE c0=10;
+c0	c1	c2	c3	c4
+00010	H	a	17.789	06:00:00
+ROLLBACK;
+DELETE FROM t2 WHERE c0=0;
+SELECT * FROM t2 WHERE c0=0;
+c0	c1	c2	c3	c4
+SELECT * FROM t1 WHERE c0=1;
+c0	c1	c2	c3	c4
+ROLLBACK;
+DROP TABLE IF EXISTS t2;
+CREATE TABLE t2(c0 SMALLINT ZEROFILL,c1 VARCHAR(10),CONSTRAINT fk_c0_c0 FOREIGN KEY(c0) REFERENCES t1(c0));
+INSERT INTO t2 VALUES(0,'a'),(1,'b'),(3,'b'),(4,'c'),(5,'c'),(6,'a');
+DROP TRIGGER IF EXISTS trg_insert;
+CREATE TRIGGER trg_insert BEFORE INSERT ON t2
+FOR EACH ROW
+BEGIN
+DECLARE c INT;
+SELECT MAX(c0) INTO c FROM t1;
+IF NEW.c0 = c THEN
+DELETE FROM t1 WHERE c0 = NEW.c0;
+ELSE
+INSERT INTO t1 VALUES(NEW.c0,CONCAT(NEW.c1,NEW.c1),NEW.c1,2*NEW.c0,'00:00:00');
+END IF;
+END;
+//
+DROP TRIGGER IF EXISTS trg_update;//
+CREATE TRIGGER trg_update BEFORE UPDATE ON t1
+FOR EACH ROW
+BEGIN
+UPDATE t2 SET c0=NEW.c0,c1=CONCAT(NEW.c1,NEW.c1) WHERE c0=OLD.c0;
+END
+//
+DROP TRIGGER IF EXISTS trg_delete;//
+CREATE TRIGGER trg_delete AFTER DELETE ON t2
+FOR EACH ROW
+BEGIN
+DELETE FROM t1 WHERE c0=OLD.c0+1;
+END;
+//
+alter system set _enable_drop_and_add_index = true;
+ALTER TABLE t1 DROP INDEX unk,ADD CONSTRAINT uni UNIQUE KEY(c0,c2);
+alter system set _enable_drop_and_add_index = false;
+SHOW CREATE TABLE t1;
+Table	Create Table
+t1	CREATE TABLE `t1` (
+  `c0` smallint(5) unsigned zerofill NOT NULL,
+  `c1` char(10) DEFAULT NULL,
+  `c2` enum('a','b','c','d','e','f','g') NOT NULL DEFAULT 'a',
+  `c3` double DEFAULT NULL,
+  `c4` time DEFAULT NULL,
+  PRIMARY KEY (`c0`),
+  UNIQUE KEY `uni` (`c0`, `c2`) BLOCK_SIZE 16384 LOCAL,
+  KEY `ind1` (`c1`) BLOCK_SIZE 20480 LOCAL
+) ORGANIZATION INDEX DEFAULT CHARSET = utf8mb4 ROW_FORMAT = DYNAMIC COMPRESSION = 'zstd_1.3.8' REPLICA_NUM = 1 BLOCK_SIZE = 20480 USE_BLOOM_FILTER = FALSE ENABLE_MACRO_BLOCK_BLOOM_FILTER = FALSE TABLET_SIZE = 134217728 PCTFREE = 0 PARALLEL 10
+ partition by key(c0)
+(partition `r1`,
+partition `r2`,
+partition `r3`,
+partition `r4`)
+INSERT INTO t2 VALUES(7,'d');
+SELECT * FROM t2 WHERE c0=7;
+c0	c1
+00007	d
+SELECT * FROM t1 WHERE c0=7;
+c0	c1	c2	c3	c4
+00007	dd	d	14	00:00:00
+ROLLBACK;
+UPDATE t1 SET c0=10,c1='H',c2='a',c3='17.789',c4='06:00:00' WHERE c0=6;
+ERROR 23000: Cannot add or update a child row: a foreign key constraint fails
+SELECT * FROM t2 WHERE c0=10;
+c0	c1
+SELECT * FROM t1 WHERE c0=10;
+c0	c1	c2	c3	c4
+ROLLBACK;
+DELETE FROM t2 WHERE c0=0;
+ERROR 23000: Cannot delete or update a parent row: a foreign key constraint fails
+SELECT * FROM t2 WHERE c0=0;
+c0	c1
+00000	a
+SELECT * FROM t1 WHERE c0=1;
+c0	c1	c2	c3	c4
+00001	BBB	b	12.123	21:11:11
+DROP TABLE IF EXISTS test1;
+ALTER TABLE t1 RENAME test1;
+SHOW TABLES;
+Tables_in_trigger_test
+t2
+test1
+SELECT test1.c0,test1.c1 FROM test1 ORDER BY 1;
+c0	c1
+00000	AAA
+00001	BBB
+00003	CCC
+00004	DDD
+00005	EEE
+00006	FFF
+INSERT INTO t2 VALUES(0,'a');
+ERROR 42S02: Table 'trigger_test.t1' doesn't exist
+UPDATE test1 SET c0=20,c1='b' WHERE c0=3;
+ERROR 23000: Cannot add or update a child row: a foreign key constraint fails
+DELETE FROM t2 WHERE c0=3;
+ERROR 42S02: Table 'trigger_test.t1' doesn't exist
+DROP TABLE IF EXISTS t2;
+CREATE TABLE t2(c0 INT,
+c1 VARCHAR(10),
+c2 SET('a','b','c','d','e','f','g'),
+c3 FLOAT,
+c4 DATE)
+PARTITION BY HASH(c0)
+(PARTITION p1,
+PARTITION p2,
+PARTITION p3,
+PARTITION p4
+);
+INSERT INTO t2 VALUES(0,'AA','a','0.123','2000-01-01'),
+(1,'BB','a','2.123','2001-11-11'),
+(3,'CC','b','3.123','2002-02-01'),
+(4,'DD','b','4.123','2003-03-11'),
+(5,'EE','c','5.123','2004-04-01'),
+(6,'FF','c','6.123','2005-05-11');
+DROP TABLE IF EXISTS t1;
+CREATE TABLE t1(c0 SMALLINT ZEROFILL PRIMARY KEY,
+c1 CHAR(10),
+c2 ENUM('a','b','c','d','e','f','g') NOT NULL DEFAULT 'a',
+c3 DOUBLE,
+c4 TIME,
+CONSTRAINT uni_key UNIQUE KEY(c0,c2))
+PARTITION BY KEY(c0)
+(PARTITION r1,
+PARTITION r2,
+PARTITION r3,
+PARTITION r4
+);
+INSERT INTO t1 VALUES(0,'AAA','a','10.123','20:01:01'),
+(1,'BBB','b','12.123','21:11:11'),
+(3,'CCC','c','13.123','22:22:01'),
+(4,'DDD','c','14.123','23:33:11'),
+(5,'EEE','c','15.123','19:44:01'),
+(6,'FFF','d','16.123','18:55:11');
+CREATE INDEX ind_1 ON t1(c3,c4);
+DROP TRIGGER IF EXISTS trg_insert;
+CREATE TRIGGER trg_insert AFTER INSERT ON t2
+FOR EACH ROW
+BEGIN
+DECLARE c INT;
+SELECT MAX(c0) INTO c FROM t1;
+IF NEW.c0 = c THEN
+DELETE FROM t1 WHERE c0 = NEW.c0;
+ELSE
+INSERT INTO t1 VALUES(NEW.c0,CONCAT(NEW.c1,NEW.c1),NEW.c2,NEW.c3+NEW.c0,TIME(NEW.c4));
+END IF;
+END;
+//
+DROP TRIGGER IF EXISTS trg_update;//
+CREATE TRIGGER trg_update AFTER UPDATE ON t1
+FOR EACH ROW
+BEGIN
+UPDATE t2 SET c0=NEW.c0,c1=CONCAT(NEW.c1,NEW.c1) WHERE c0=OLD.c0;
+END
+//
+DROP TRIGGER IF EXISTS trg_delete;//
+CREATE TRIGGER trg_delete BEFORE DELETE ON t2
+FOR EACH ROW
+BEGIN
+DELETE FROM t1 WHERE c0=OLD.c0+1;
+END;
+//
+ALTER TABLE t1 TRUNCATE PARTITION r2;
+ERROR 0A000: Drop hash partition not supported
+ALTER TABLE t1 ADD PARTITION (PARTITION r5);
+ERROR 42000: You have an error in your SQL syntax; check the manual that corresponds to your OceanBase version for the right syntax to use near ')' at line 1
+ALTER TABLE t1  DROP PARTITION r4;
+ERROR 0A000: Drop hash partition not supported
+SHOW CREATE TABLE t1;
+Table	Create Table
+t1	CREATE TABLE `t1` (
+  `c0` smallint(5) unsigned zerofill NOT NULL,
+  `c1` char(10) DEFAULT NULL,
+  `c2` enum('a','b','c','d','e','f','g') NOT NULL DEFAULT 'a',
+  `c3` double DEFAULT NULL,
+  `c4` time DEFAULT NULL,
+  PRIMARY KEY (`c0`),
+  UNIQUE KEY `uni_key` (`c0`, `c2`) BLOCK_SIZE 16384 LOCAL,
+  KEY `ind_1` (`c3`, `c4`) BLOCK_SIZE 16384 LOCAL
+) ORGANIZATION INDEX DEFAULT CHARSET = utf8mb4 ROW_FORMAT = DYNAMIC COMPRESSION = 'zstd_1.3.8' REPLICA_NUM = 1 BLOCK_SIZE = 16384 USE_BLOOM_FILTER = FALSE ENABLE_MACRO_BLOCK_BLOOM_FILTER = FALSE TABLET_SIZE = 134217728 PCTFREE = 0
+ partition by key(c0)
+(partition `r1`,
+partition `r2`,
+partition `r3`,
+partition `r4`)
+ALTER TABLE t2 TRUNCATE PARTITION p4;
+ERROR 0A000: Drop hash partition not supported
+ALTER TABLE t2 ADD PARTITION (PARTITION p5);
+ERROR 42000: You have an error in your SQL syntax; check the manual that corresponds to your OceanBase version for the right syntax to use near ')' at line 1
+ALTER TABLE t2  DROP PARTITION p3;
+ERROR 0A000: Drop hash partition not supported
+SHOW CREATE TABLE t2;
+Table	Create Table
+t2	CREATE TABLE `t2` (
+  `c0` int(11) DEFAULT NULL,
+  `c1` varchar(10) DEFAULT NULL,
+  `c2` set('a','b','c','d','e','f','g') DEFAULT NULL,
+  `c3` float DEFAULT NULL,
+  `c4` date DEFAULT NULL
+) ORGANIZATION INDEX DEFAULT CHARSET = utf8mb4 ROW_FORMAT = DYNAMIC COMPRESSION = 'zstd_1.3.8' REPLICA_NUM = 1 BLOCK_SIZE = 16384 USE_BLOOM_FILTER = FALSE ENABLE_MACRO_BLOCK_BLOOM_FILTER = FALSE TABLET_SIZE = 134217728 PCTFREE = 0
+ partition by hash(c0)
+(partition `p1`,
+partition `p2`,
+partition `p3`,
+partition `p4`)
+#创建不同类型的分区表，使用不同约束索引条件，然后再创建不同触发类型的trigger，最后对表中的列执行DDL操作后触发trigger
+DROP TABLE IF EXISTS t2;
+CREATE TABLE t2(c0 INT,
+c1 VARCHAR(10),
+c2 SET('a','b','c','d','e','f','g'),
+c3 FLOAT,
+c4 DATE,
+c5 YEAR DEFAULT '2000',
+c6 TEXT ,
+c7 VARBINARY(10) DEFAULT 'TEST')
+PARTITION BY HASH(c0)
+(PARTITION p1,
+PARTITION p2,
+PARTITION p3,
+PARTITION p4
+);
+INSERT INTO t2 VALUES(0,'AA','a',0.123,'2000-01-01','2000','TEST1','TEST1'),
+(1,'BB','a',2.123,'2001-11-11','2001','TEST2','TEST2'),
+(3,'CC','b',3.123,'2002-02-01','2002','TEST3','TEST3'),
+(4,'DD','b',4.123,'2003-03-11','2003','TEST4','TEST4'),
+(5,'EE','c',5.123,'2004-04-01','2004','TEST5','TEST5'),
+(6,'FF','c',6.123,'2005-05-11','2005','TEST6','TEST6');
+DROP TABLE IF EXISTS t1;
+CREATE TABLE t1(c0 SMALLINT ZEROFILL PRIMARY KEY,
+c1 CHAR(10),
+c2 ENUM('a','b','c','d','e','f','g') NOT NULL DEFAULT 'a',
+c3 DOUBLE,
+c4 TIME,
+c5 INT DEFAULT 0,
+c6 BLOB,
+c7 BINARY(10) DEFAULT 'test',
+CONSTRAINT uni_key UNIQUE KEY(c0,c2))
+PARTITION BY KEY(c0)
+(PARTITION r1,
+PARTITION r2,
+PARTITION r3,
+PARTITION r4
+);
+INSERT INTO t1 VALUES(0,'AAA','a',10.123,'20:01:01',2000,'TEST1','TEST1'),
+(1,'BBB','b',12.123,'21:11:11',2001,'TEST2','TEST2'),
+(2,'CCC','c',13.123,'22:22:01',2002,'TEST3','TEST3'),
+(3,'DDD','c',14.123,'23:33:11',2003,'TEST4','TEST4'),
+(4,'EEE','c',15.123,'19:44:01',2004,'TEST5','TEST5'),
+(5,'FFF','d',16.123,'18:55:11',2005,'TEST6','TEST6'),
+(6,'EEE','d',16.123,'17:05:17',2006,'TEST7','TEST7');
+CREATE INDEX ind_1 ON t1(c3,c4);
+DROP TRIGGER IF EXISTS trg_insert;
+CREATE TRIGGER trg_insert BEFORE INSERT ON t1
+FOR EACH ROW
+BEGIN
+DECLARE c INT;
+SELECT MAX(c0) INTO c FROM t2;
+IF NEW.c0 = c THEN
+DELETE FROM t2 WHERE c0 = NEW.c0;
+ELSE
+INSERT INTO t2(c0,c1,c2,c3,c4) VALUES(NEW.c0,CONCAT(NEW.c1,NEW.c1),NEW.c2,NEW.c3+NEW.c0,DATE(NEW.c4));
+END IF;
+END;
+//
+DROP TRIGGER IF EXISTS trg_update;//
+CREATE TRIGGER trg_update BEFORE UPDATE ON t2
+FOR EACH ROW
+BEGIN
+UPDATE t1 SET c0=NEW.c0,c1=CONCAT(NEW.c1,NEW.c1) WHERE c0=OLD.c0;
+END
+//
+DROP TRIGGER IF EXISTS trg_delete;//
+CREATE TRIGGER trg_delete BEFORE DELETE ON t2
+FOR EACH ROW
+BEGIN
+DELETE FROM t1 WHERE c0=OLD.c0+1;
+END;
+//
+#添加列、删除列、修改列
+#暂不支持，待支持后执行sql
+DROP TABLE IF EXISTS test1;
+DROP TABLE IF EXISTS t2;
+DROP TABLE IF EXISTS t1;
+SET AUTOCOMMIT=1;
+#########Empty recycle bin, delete test database, tables, etc##########
+purge recyclebin;

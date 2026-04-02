@@ -1,0 +1,190 @@
+##########################
+#owner :  qianxi
+#owner group: liboblog
+#description:
+# 测试点：
+# number
+#
+# NUMBER (precision， scale）
+# 1. precision表示数字中的有效位;如果没有指定precision的话，Oracle将使用38作为精度。
+#    scale默认设置为0；如果scale大于零，表示数字精确到小数点右边的位数; 如果scale小于零，Oracle将把该数字取舍到小数点左边的指定位数。
+# 2. Precision的取值范围为【1---38】；Scale的取值范围为【-84---127]
+# 3. Precision表示有效位数，有效数位：从左边第一个不为0的数算起，小数点和负号不计入有效位数；scale表示精确到多少位，指精确到小数点左边或右边多少位
+# 4. 如果precision小于scale，表示存储的是没有整数的小数。
+# 5. NUMBER整数部分允许的长度为（precision- scale），无论scale是正数还是负数
+#
+
+##########################
+
+ob1=OBI(cluster=1,init_unit_cpu=2);
+ob1.force_stop;
+ob1.clean_backup_dest;
+ob1.reboot;
+
+ob1.mysql alter system set resource_hard_limit= 800;
+sleep 2;
+ob_connect(conn_sys, ob1.proxy0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+
+--disable_warnings
+drop tenant if exists oracle;
+--disable_warnings
+drop resource pool if exists oblog_pool;
+--disable_warnings
+drop resource unit if exists oblog_box;
+
+###create oracle tenant
+ob1.mysql create resource unit oblog_box max_cpu=2, memory_size='10G';
+ob1.mysql create resource pool oblog_pool unit = 'oblog_box', unit_num = 1;
+ob1.mysql create tenant oracle replica_num = 1, resource_pool_list=('oblog_pool') set ob_tcp_invited_nodes='%', ob_compatibility_mode='oracle';
+sleep 2;
+ob_connect(conn_oracle, ob1.z1.obs0, SYS@oracle, ,SYS, , USE_OB_CONNECTOR);
+
+create user obtest IDENTIFIED BY "obtest";
+grant all on *.* to obtest WITH GRANT OPTION;
+grant dba to obtest;
+--disable_query_log
+create user oblog_db identified by "passwd";
+grant dba to oblog_db;
+grant dba to ORAAUDITOR;
+--enable_query_log
+ob_connect(conn_oracle_obtest,ob1.proxy0,OBTEST@oracle,obtest,obtest,,USE_OB_CONNECTOR);
+let $oracle_tenant_name=oracle;
+let $original_conn=conn_oracle_obtest;
+
+source include/liboblog/enable_oracle_archive.inc;
+
+alter session set current_schema = oblog_db;
+
+# 启动oblog
+ob1.oblog.gen_conf tb_white_list=oracle.*.* log_level=DEBUG test_mode_force_fetch_archive=1 skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+
+########## number指定precision的时候, 不指定scale
+# 1. 整数
+# 2. 小数点后忽略，但是四舍五入
+# 3. p取值 [1, 38]
+
+# p=1
+create table number_only_p_1(c0 int primary key, c1 number(1));
+ob1.oblog.next;
+insert into number_only_p_1 values (1, 0),(2, 0.2),(3, 0.0000005),(4, 0.5);
+select * from number_only_p_1 where C0 in(1, 2, 3, 4);
+ob1.oblog.next;
+insert into number_only_p_1 values (5, 9),(6, 9.2),(7, 9.0000005),(8, 9.4);
+select * from number_only_p_1 where C0 in(5, 6, 7, 8);
+ob1.oblog.next;
+insert into number_only_p_1 values (9, -9),(10, -9.2),(11, -9.0000005),(12, -9.4);
+select * from number_only_p_1 where C0 in(9, 10, 11, 12);
+ob1.oblog.next;
+
+# p=8
+create table number_only_p_2(c0 int primary key, c1 number(8));
+ob1.oblog.next;
+insert into number_only_p_2 values (1, 0),(2, 0.2),(3, 0.0000005),(4, 0.5);
+select * from number_only_p_2 where C0 in(1, 2, 3, 4);
+ob1.oblog.next;
+insert into number_only_p_2 values (5, -0.2),(6, -0.0000005),(7, -0.5);
+select * from number_only_p_2 where C0 in(5, 6, 7);
+ob1.oblog.next;
+insert into number_only_p_2 values (8, 12345678),(9, 12345678.1),(10, 12345678.5);
+select * from number_only_p_2 where C0 in(8, 9, 10);
+ob1.oblog.next;
+insert into number_only_p_2 values (11, -12345678),(12, -12345678.1),(13, -12345678.5);
+select * from number_only_p_2 where C0 in(11, 12, 13);
+ob1.oblog.next;
+
+# p=38
+create table number_only_p_3(c0 int primary key, c1 number(38));
+ob1.oblog.next;
+insert into number_only_p_3 values (1, 0),(2, 0.2),(3, 0.0000005),(4, 0.5);
+select * from number_only_p_3 where C0 in(1, 2, 3, 4);
+ob1.oblog.next;
+# 38=9 * 4 + 2
+insert into number_only_p_3 values (5, 12345678912345678912345678912345678912), (6, 12345678912345678912345678912345678912.4), (7, 12345678912345678912345678912345678912.5);
+select * from number_only_p_3 where C0 in(5, 6, 7);
+ob1.oblog.next;
+insert into number_only_p_3 values (8, -12345678912345678912345678912345678912), (9, -12345678912345678912345678912345678912.4), (10, -12345678912345678912345678912345678912.5);
+select * from number_only_p_3 where C0 in(8, 9, 10);
+ob1.oblog.next;
+
+########## number指定precision的时候, 也指定scale
+# 1. p < s 如果precision小于scale，表示存储的是没有整数的小数
+create table number_p_less_than_s_1(c0 int primary key, c1 number(2, 3));
+ob1.oblog.next;
+insert into number_p_less_than_s_1 values (1, 0),(2, 0.02),(3, 0.0000005),(4, 0.012),(5, 0.0123),(6, 0.0125),(7, 0.099);
+select * from number_p_less_than_s_1 where C0 in(1, 2, 3, 4, 5, 6, 7);
+ob1.oblog.next;
+insert into number_p_less_than_s_1 values (8, -0.02),(9, -0.0000005),(10, -0.012),(11, -0.0123),(12, -0.0125),(13, -0.099);
+select * from number_p_less_than_s_1 where C0 in(8, 9, 10, 11, 12, 13);
+ob1.oblog.next;
+
+create table number_p_less_than_s_2(c0 int primary key, c1 number(2, 127));
+ob1.oblog.next;
+# 0.[127位]
+insert into number_p_less_than_s_2 values(1, 0.0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001);
+select * from number_p_less_than_s_2 where C0 in(1);
+ob1.oblog.next;
+# 0.[127位]
+insert into number_p_less_than_s_2 values(2, 0.0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000012);
+select * from number_p_less_than_s_2 where C0 in(2);
+ob1.oblog.next;
+# 0.[128位]
+insert into number_p_less_than_s_2 values(3, 0.00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000123);
+select * from number_p_less_than_s_2 where C0 in(3);
+ob1.oblog.next;
+# 0.[128位]
+insert into number_p_less_than_s_2 values(4, 0.00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000126);
+select * from number_p_less_than_s_2 where C0 in(4);
+ob1.oblog.next;
+
+# 2. p > s
+# 2.1 s < 0
+create table number_p_larger_than_s_1(c0 int primary key, c1 number(2, -4));
+ob1.oblog.next;
+insert into number_p_larger_than_s_1 values (1, 0),(2, 1),(3, 12),(4, 123),(5, 1234),(6, 12345),(7, 15345),(8, 123456),(9, 125456);
+select * from number_p_larger_than_s_1 where C0 in(1, 2, 3, 4, 5, 6, 7, 8, 9);
+ob1.oblog.next;
+insert into number_p_larger_than_s_1 values (10, -1),(11, -12),(12, -123),(13, -1234),(14, -12345),(15, -15345),(16, -123456),(17,-125456);
+select * from number_p_larger_than_s_1 where C0 in(10, 11, 12, 13, 14, 15, 16, 17);
+ob1.oblog.next;
+
+create table number_p_larger_than_s_2(c0 int primary key, c1 number(2, -84));
+ob1.oblog.next;
+# 9 * 9 + 5 = 86
+insert into number_p_larger_than_s_2 values (1, 12345678912345678912345678912345678912345678912345678912345678912345678912345678912345),(2, 12545678912345678912345678912345678912345678912345678912345678912345678912345678912345);
+select * from number_p_larger_than_s_2 where C0 in(1, 2);
+ob1.oblog.next;
+insert into number_p_larger_than_s_2 values (3, -12345678912345678912345678912345678912345678912345678912345678912345678912345678912345),(4, -12545678912345678912345678912345678912345678912345678912345678912345678912345678912345);
+select * from number_p_larger_than_s_2 where C0 in(3, 4);
+ob1.oblog.next;
+
+# 2.2 s > 0
+create table number_p_larger_than_s_3(c0 int primary key, c1 number(7, 2));
+ob1.oblog.next;
+insert into number_p_larger_than_s_3 values (1, 0),(2, 1),(3, 12),(4, 123),(5, 1234),(6, 12345);
+select * from number_p_larger_than_s_3 where C0 in(1, 2, 3, 4, 5, 6);
+ob1.oblog.next;
+insert into number_p_larger_than_s_3 values (7, -1),(8, -12),(9, -123),(10, -1234),(11, -12345);
+select * from number_p_larger_than_s_3 where C0 in(7, 8, 9, 10, 11);
+ob1.oblog.next;
+insert into number_p_larger_than_s_3 values (12, 12345.1),(13, 12345.16),(14, 12345.164),(15, 12345.165);
+select * from number_p_larger_than_s_3 where C0 in(12, 13, 14, 15);
+ob1.oblog.next;
+insert into number_p_larger_than_s_3 values (16, -12345.1),(17, -12345.16),(18, -12345.164),(19, -12345.165);
+select * from number_p_larger_than_s_3 where C0 in(16, 17, 18, 19);
+ob1.oblog.next;
+
+create table number_p_larger_than_s_4(c0 int primary key, c1 number(38, 2));
+ob1.oblog.next;
+insert into number_p_larger_than_s_4 values (1, 123456789123456789123456789123456789), (2, 123456789123456789123456789123456789.12), (3, 123456789123456789123456789123456789.124), (4, 123456789123456789123456789123456789.125);
+select * from number_p_larger_than_s_4 where C0 in(1, 2, 3, 4);
+ob1.oblog.next;
+insert into number_p_larger_than_s_4 values (5, -123456789123456789123456789123456789), (6, -123456789123456789123456789123456789.12), (7, -123456789123456789123456789123456789.124), (8, -123456789123456789123456789123456789.125);
+select * from number_p_larger_than_s_4 where C0 in(5, 6, 7, 8);
+ob1.oblog.next;
+
+drop user oblog_db cascade;
+ob1.oblog.next;
+
+# stop liboblog
+ob1.oblog.stop;

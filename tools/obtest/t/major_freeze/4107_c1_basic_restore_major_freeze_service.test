@@ -1,0 +1,109 @@
+# owner: binifei.bnf
+# owner group: major freeze
+# basic restore major freeze service
+
+ob1=OBI(cluster=1, proxy_num=0);
+
+let $multi_zone_flag = 0;
+source include/create_backup_and_restore_tenant.inc;
+
+ob_connect(sys_conn, ob1.z1.obs0, root, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection sys_conn;
+select tenant_role from __all_virtual_tenant_info where tenant_id = 1004;
+#STANDBY
+
+let $cur_timestamp = `select ceil(UNIX_TIMESTAMP(current_timestamp(6)) * 1000000)`;
+ob1.check_until_timeout select floor(readable_scn  / 1000) > '$cur_timestamp' from __all_virtual_tenant_info where tenant_id = 1004, 1, 600;
+--enable_all_result_log
+
+####################### test restore major freeze service #######################
+connection sys_conn;
+let $backup_tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = '$backup_mysql_tenant', tenant_id, 1);
+let $restore_tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = '$restore_mysql_tenant', tenant_id, 1);
+ob_connect(restore_mysql_conn, ob1.z1.obs0, root@$restore_mysql_tenant, , test, , USE_MYSQL_CONNECTOR);
+connection restore_mysql_conn;
+
+# restore_mysql_tenant is not allowed to actively launch major freeze
+--error 4217
+alter system major freeze;
+
+# restore_mysql_tenant should complete major freeze according to the freeze_info from backup_mysql_tenant
+connection backup_mysql_conn;
+alter system major freeze;
+let $max_frozen_scn = `select max(frozen_scn) as value from oceanbase.__all_freeze_info`;
+connection sys_conn;
+ob1.check_until_timeout select (frozen_scn - last_scn) from CDB_OB_MAJOR_COMPACTION where tenant_id = $backup_tenant_id and frozen_scn = $max_frozen_scn, 0, 600;
+ob1.check_until_timeout select (frozen_scn - last_scn) from CDB_OB_MAJOR_COMPACTION where tenant_id = $restore_tenant_id and frozen_scn = $max_frozen_scn, 0, 600;
+
+# alter system major freeze tenant = all, which skips restore_mysql_tenant, and thus expect no error
+connection sys_conn;
+alter system major freeze tenant = sys;
+alter system major freeze tenant = all_user;
+alter system major freeze tenant = all_meta;
+let $max_frozen_scn = `select max(frozen_scn) as value from oceanbase.__all_freeze_info`;
+ob1.check_until_timeout select (frozen_scn - last_scn) from CDB_OB_MAJOR_COMPACTION where tenant_id = 1 and frozen_scn = $max_frozen_scn, 0, 600;
+connection backup_mysql_conn;
+let $max_frozen_scn = `select max(frozen_scn) as value from oceanbase.__all_freeze_info`;
+ob1.check_until_timeout select (frozen_scn - last_scn) from CDB_OB_MAJOR_COMPACTION where tenant_id = $backup_tenant_id and frozen_scn = $max_frozen_scn, 0, 600;
+ob1.check_until_timeout select (frozen_scn - last_scn) from CDB_OB_MAJOR_COMPACTION where tenant_id = $restore_tenant_id and frozen_scn = $max_frozen_scn, 0, 600;
+
+# similar to major freeze tenant = all. skip restore_mysql_tenant, and thus expect no error
+connection sys_conn;
+alter system major freeze tenant = backup_mysql_tenant, restore_mysql_tenant;
+connection backup_mysql_conn;
+let $max_frozen_scn = `select max(frozen_scn) as value from oceanbase.__all_freeze_info`;
+ob1.check_until_timeout select (frozen_scn - last_scn) from CDB_OB_MAJOR_COMPACTION where tenant_id = $backup_tenant_id and frozen_scn = $max_frozen_scn, 0, 600;
+ob1.check_until_timeout select (frozen_scn - last_scn) from CDB_OB_MAJOR_COMPACTION where tenant_id = $restore_tenant_id and frozen_scn = $max_frozen_scn, 0, 600;
+
+# restore_mysql_tenant is able to suspend and resume merge
+connection restore_mysql_conn;
+alter system suspend merge;
+connection sys_conn;
+let $is_suspend = deploy_get_value(ob1.select select is_suspended from CDB_OB_MAJOR_COMPACTION where tenant_id = $restore_tenant_id, is_suspended, 1);
+if ($is_suspend != YES)
+{
+    --echo alter system suspend merge failed
+}
+connection restore_mysql_conn;
+alter system resume merge;
+connection sys_conn;
+let $is_suspend = deploy_get_value(ob1.select select is_suspended from CDB_OB_MAJOR_COMPACTION where tenant_id = $restore_tenant_id, is_suspended, 1);
+if ($is_suspend != NO)
+{
+    --echo alter system resume merge failed
+}
+
+# restore_mysql_tenant is able to clear merge error
+connection sys_conn;
+let $restore_meta_tenant_id = $restore_tenant_id;
+dec $restore_meta_tenant_id;
+--disable_query_log
+eval alter system change tenant tenant_id = $restore_meta_tenant_id;
+use oceanbase;
+eval update __all_merge_info set is_merge_error = 1, error_type = 1 where tenant_id = $restore_tenant_id;
+eval alter system change tenant sys;
+let $is_error = deploy_get_value(ob1.select select is_error from CDB_OB_MAJOR_COMPACTION where tenant_id = $restore_tenant_id, is_error, 1);
+let $info = deploy_get_value(ob1.select select info from CDB_OB_MAJOR_COMPACTION where tenant_id = $restore_tenant_id, info, 1);
+if ($is_error != YES)
+{
+    --echo update sys is_error column failed
+}
+if ($info != CHECKSUM_ERROR)
+{
+    --echo update sys error_type column failed
+}
+--enable_query_log
+connection restore_mysql_conn;
+alter system clear merge error;
+# check clear_merge_error is valid
+connection sys_conn;
+let $is_error = deploy_get_value(ob1.select select is_error from CDB_OB_MAJOR_COMPACTION where tenant_id = $restore_tenant_id, is_error, 1);
+let $info = deploy_get_value(ob1.select select info from CDB_OB_MAJOR_COMPACTION where tenant_id = $restore_tenant_id, info, 1);
+if ($is_error != NO)
+{
+    --echo clear merge error failed
+}
+if ($info == CHECKSUM_ERROR)
+{
+    --echo clear merge error failed
+}

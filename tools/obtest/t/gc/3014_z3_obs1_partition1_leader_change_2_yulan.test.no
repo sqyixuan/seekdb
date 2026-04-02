@@ -1,0 +1,137 @@
+##
+# owner:yulan.way
+# owner group:transaction
+# description:
+# 测试功能点：多机单partition，复杂场景，leader变换相关
+# 用例描述:B宕机，写入数据，A宕机，B上线，重新选主后数据正确
+##
+ob1=OBI(cluster=2:2:2,init_unit_cpu=11,init_unit_num=1);
+ob1.reboot;
+sleep 5;
+
+let $ip=deploy_get_value(ob1.z1.obs0.ip);
+let $port=deploy_get_value(ob1.z1.obs0.mysql_port);
+connect (conn1,$ip,root@obtest,,test,$port);
+ob1.mysql alter system set enable_auto_leader_switch=false;
+
+##数据准备
+connection conn1
+create database obtest;
+use obtest;
+create table t1(pk int primary key, c1 int, c2 varchar(20));
+
+--disable_query_log
+let $cnt=50;
+while($cnt>0)
+{
+	eval insert into t1 values($cnt,$cnt,'c$cnt');
+	dec $cnt;
+}
+
+let $leader=deploy_get_value(ob1.get_leader obtest:obtest:t1);
+
+##follower B宕机
+let $follower=deploy_get_value(ob1.get_follower obtest:obtest:t1);
+$follower.force_stop;
+
+##更新数据
+--disable_query_log
+let $cnt=10;
+while($cnt>0)
+{
+	eval update t1 set c2='c$cnt$cnt' where pk=$cnt;
+	dec $cnt;
+}
+
+let $cnt=20;
+while($cnt>10)
+{
+	eval delete from t1 where pk=$cnt;
+	dec $cnt;
+}
+
+let $cnt=60;
+while($cnt>50)
+{
+	eval insert into t1 values($cnt,$cnt,'c$cnt');
+	dec $cnt;
+}
+
+##leader A宕机
+$leader.force_stop;
+
+##follower B上线
+$follower.nstart;
+
+sleep 30;
+
+set ob_trx_timeout=12000000;
+##原因：触发更新一次location 
+#执行失败后3s会更新location cache，但是已经发送rpc的事务还是需要等待100s后才会释放行锁，为了避免case执行时间过长，此处将事务超时时间设置为12s；
+--error 4012,0
+update t1 set c2='location cache' where pk=30;
+
+sleep 3;
+
+##更新数据
+--disable_query_log
+let $cnt=30;
+while($cnt>20)
+{
+	eval update t1 set c2='c$cnt$cnt' where pk=$cnt;
+	dec $cnt;
+}
+
+let $cnt=40;
+while($cnt>30)
+{
+	eval delete from t1 where pk=$cnt;
+	dec $cnt;
+}
+
+let $cnt=70;
+while($cnt>60)
+{
+	eval insert into t1 values($cnt,$cnt,'c$cnt');
+	dec $cnt;
+}
+
+select * from t1;
+
+##leader A 上线
+$leader.nstart;
+
+sleep 30;
+
+##切换leader A为主
+$leader.switch_partition obtest:obtest:t1;
+
+sleep 15;
+
+--enable_query_log
+select * from t1;
+
+let $cnt=80;
+while($cnt>70)
+{
+	eval insert into t1 values($cnt,$cnt,'c$cnt');
+	dec $cnt;
+}
+
+select * from t1;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

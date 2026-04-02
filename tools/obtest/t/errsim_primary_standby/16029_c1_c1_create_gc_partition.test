@@ -1,0 +1,75 @@
+#rs
+#msy164651
+#测试点：备库创建主库已经gc的partition的处理
+#case1 : 备库创建过程中，主库的副本被gc掉
+#case2 ：备库开始创建之前，主库的副本被gc掉
+ob1=OBI(cluster=1, proxy_num = 0);
+ob2=OBI(cluster=1, proxy_num = 0, leaderob=ob1);
+ob1.z1.obs0.set extra_config=schema_drop_gc_delay_time='10s';
+ob1.reboot;
+ob2.reboot;
+let $case_index = 1;
+let $unit_num = 1;
+let $locality = 'f@z1';
+let $zone_list = 'z1';
+source include/create_tenant_1.inc;
+ob1.source include/merge.inc;
+ob1.source include/migrate.inc;
+source include/fast_auto_rebalance_configuration.inc;
+ob1.mysql set global recyclebin = off; 
+
+ob_connect(conn1, ob1.z1.obs0, root@sys, , oceanbase, , USE_OB_CONNECTOR);
+ob_connect(conn2, ob2.z1.obs0, root@sys, , oceanbase, , USE_OB_CONNECTOR);
+connection conn1;
+#检查备库同步完成
+ob1.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO STANDBY, 100;
+ob2.mysql alter system set balancer_idle_time = '10s';
+#case 1
+#控制备库在创建表的时候member list之前报错，实际上partition已经创建完成,并且member_list已经写入表中
+ob_connect(conn3, ob1.z1.obs0, root@tenant_1, , test, , USE_OB_CONNECTOR);
+connection conn2;
+alter system set_tp tp_no = 82, error_code = 4013, frequency = 1;
+connection conn3;
+set recyclebin = off;
+create table t1 (c1 int primary key,c3 int); 
+create table t2(c1 int, c2 int, c3 varchar(20),primary key(c1,c2),index idx(c1, c2) local) partition by range columns (c1, c2) subpartition by hash(c1) subpartitions 10 (PARTITION p0 VALUES LESS THAN (1990, 1990), partition p1 values less than (2000, 2000));
+let $table_id = deploy_get_value(ob1.select select table_id from oceanbase.__all_virtual_table where table_name = 't1', table_id, 1);
+ob2.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where table_id = $table_id, 1, 10;
+ob2.mysql_p select member_list from oceanbase.__all_virtual_meta_table where table_id = $table_id;
+ob2.check_until_timeout select count(*) > 0 from oceanbase.__all_partition_member_list where table_id = $table_id, 1, 30;
+#partition创建成功
+connection conn3;
+drop table t1;
+alter table t2 drop partition p0;
+#等待主备库把这张表gc掉
+ob1.mysql alter system set schema_drop_gc_delay_time='1s';
+ob1.mysql alter system set ilog_flush_trigger_time = '30s';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tenant_gc_partition_info where table_id = $table_id, 0, 100;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_partition_info where table_id = $table_id, 0, 100;
+ob2.check_until_timeout select count(*) from oceanbase.__all_virtual_partition_info where table_id = $table_id, 0, 100;
+connection conn2;
+alter system set_tp tp_no = 82, error_code = 4013, frequency = 0;
+#持久化成员列表任务不会成功，但是检查到被gc后，可以不去创建了
+
+#case2 ：卡住备库的schema同步
+connection conn2;
+alter system set debug_sync_timeout = '100000s';
+ob2.mysql set ob_global_debug_sync = 'BEFORE_FOLLOWER_CLUSTER_SYNC_SCHEMA wait_for continue_signal';
+connection conn3;
+set recyclebin = off;
+create table t1 (c1 int primary key,c3 int);
+let $table_id = deploy_get_value(ob1.select select table_id from oceanbase.__all_virtual_table where table_name = 't1', table_id, 1);
+drop table t1;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_partition_info where table_id = $table_id, 0, 100;
+ob2.mysql set ob_global_debug_sync = 'now signal continue_signal';
+
+
+ob1.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO STANDBY, 100;
+
+#切换
+ob1.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO STANDBY, 100;
+ob1.mysql alter system commit to switchover to physical standby;
+ob2.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO PRIMARY, 100;
+ob2.mysql alter system commit to switchover to primary;
+
+

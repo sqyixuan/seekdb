@@ -1,0 +1,137 @@
+# owner: zhuangyifeng.zyf
+# owner group: sql1
+# tags: optimizer
+# description: 冗余 aggr 消除改写测试
+
+set session autocommit = 1;
+set session optimizer_features_enable="4.3.5.0";
+--disable_warnings
+DROP TABLE IF EXISTS t1;
+CREATE TABLE t1(c1 int primary key, c2 real, c3 varchar(10), c4 int);
+INSERT INTO t1(c1, c2, c3, c4)
+VALUES
+  (1, 1.1, 'Text1', 10),
+  (2, NULL, 'Text2', 20),
+  (3, 2.2, NULL, 30),
+  (4, 3.3, 'Text4', NULL),
+  (5, 4.4, 'Text5', 50),
+  (6, 5.5, 'Text6', 60),
+  (7, 9.9, 'Text10', 70),
+  (8, 10.10, '11', 80),
+  (9, 1.1, 'Text1', 10),    -- # duplicate
+  (10, NULL, NULL, NULL),   -- # nulls
+  (11, 11.11, NULL, NULL),  -- # nulls
+  (12, NULL, '12_', NULL),  -- # nulls
+  (13, NULL, NULL, 16),     -- # nulls
+  (14, 0.0, '', 0),         -- # empty string
+  (-1, -1.1, 'Negative', -10), -- # negative
+  (-2, -1.2, 'Negative', -10), -- # negative, dup
+  (-3, -1.2, 'Negative', NULL) -- # negative, dup, null
+;
+
+--result_format 4
+--explain_protocol 2
+
+-- echo # eliminate all aggrs except for approx_count_distinct for c1 (int, not nullable)
+SELECT c1, min(c1), max(c1), bit_or(c1), bit_and(c1), count(distinct c1), group_concat(distinct c1), sum(distinct c1), avg(distinct c1), approx_count_distinct(c1) FROM t1 GROUP BY c1;
+SELECT /*+no_rewrite*/ c1, min(c1), max(c1), bit_or(c1), bit_and(c1), count(distinct c1), group_concat(distinct c1), sum(distinct c1), avg(distinct c1), approx_count_distinct(c1) FROM t1 GROUP BY c1;
+-- echo
+-- echo # eliminate aggrs for c2 (real, nullable)
+SELECT c2, min(c2), max(c2), bit_or(c2), bit_and(c2), count(distinct c2), group_concat(distinct c2), sum(distinct c2), avg(distinct c2), count(c2) FROM t1 GROUP BY c2;
+SELECT /*+no_rewrite*/ c2, min(c2), max(c2), bit_or(c2), bit_and(c2), count(distinct c2), group_concat(distinct c2), sum(distinct c2), avg(distinct c2), count(c2) FROM t1 GROUP BY c2;
+-- echo
+-- echo # eliminate aggrs for c3 (varchar, nullable)
+SELECT c3, min(c3), max(c3), bit_or(c3), bit_and(c3), count(distinct c3), group_concat(distinct c3), sum(distinct c3), count(c3) FROM t1 GROUP BY c3;
+SELECT /*+no_rewrite*/ c3, min(c3), max(c3), bit_or(c3), bit_and(c3), count(distinct c3), group_concat(distinct c3), sum(distinct c3), avg(distinct c3), count(c3) FROM t1 GROUP BY c3;
+-- echo
+-- echo # eliminate all aggrs except for approx_count_distinct for c4 (int, nullable)
+SELECT c4, min(c4), max(c4), bit_or(c4), bit_and(c4), count(distinct c4), group_concat(distinct c4), sum(distinct c4), count(c4) FROM t1 GROUP BY c4;
+SELECT /*+no_rewrite*/ c4, min(c4), max(c4), bit_or(c4), bit_and(c4), count(distinct c4), group_concat(distinct c4), sum(distinct c4), count(c4) FROM t1 GROUP BY c4;
+-- echo
+-- echo # only aggr of c2 would be eliminated
+SELECT c2, max(c1 + 1), max(c2), count(distinct c3) FROM t1 GROUP BY c2;
+SELECT /*+no_rewrite*/ c2, max(c1 + 1), max(c2), count(distinct c3) FROM t1 GROUP BY c2;
+-- echo
+-- echo # aggr of c2 and c4 would be eliminated
+SELECT c2, c4, max(c1 + c2), max(c1), min(c2 + c4), count(distinct c3), sum(distinct c4) FROM t1 GROUP BY c2, c4;
+SELECT /*+no_rewrite*/ c2, c4, max(c1 + c2), max(c1), min(c2 + c4), count(distinct c3), sum(distinct c4) FROM t1 GROUP BY c2, c4;
+-- echo
+-- echo # having exprs can also be eliminated
+SELECT c2, max(c1), min(c2) FROM t1 GROUP BY c2 HAVING max(c2) > 0;
+SELECT /*+no_rewrite*/ c2, max(c1), min(c2) FROM t1 GROUP BY c2 HAVING max(c2) > 0;
+-- echo
+-- echo # aggrs with non-determined params would not be eliminated
+EXPLAIN BASIC SELECT c1, c2, count(distinct c2 + rand()), count(distinct c1 + rand()), approx_count_distinct(c1) FROM t1 GROUP BY c1, c2;
+EXPLAIN BASIC SELECT /*+no_rewrite*/ c1, c2, count(distinct c2 + rand()), count(distinct c1 + rand()), approx_count_distinct(c1) FROM t1 GROUP BY c1, c2;
+-- echo
+-- echo # below aggrs can not be eliminated for non-unique param: count/sum/avg/group_concat without distinct, std/var
+SELECT
+  c2,
+  approx_count_distinct(c2), 
+  count(c2), sum(c2), avg(c2), group_concat(c2),
+  stddev_pop(c2), stddev_samp(c2), stddev(c2),
+  var_pop(c2), var_samp(c2), variance(c2)
+FROM t1 GROUP BY c2;
+SELECT /*+no_rewrite*/
+  c2,
+  approx_count_distinct(c2), 
+  count(c2), sum(c2), avg(c2), group_concat(c2),
+  stddev_pop(c2), stddev_samp(c2), stddev(c2),
+  var_pop(c2), var_samp(c2), variance(c2)
+FROM t1 GROUP BY c2;
+-- echo
+-- echo # combining aggrs of different params
+EXPLAIN BASIC SELECT c1, c2, c3, max(c1)+count(distinct c2)+1, max(c1)+rand(), count(c3) FROM t1 GROUP BY c1, c2;
+EXPLAIN BASIC SELECT /*+no_rewrite*/ c1, c2, c3, max(c1)+count(distinct c2)+1, max(c1)+rand(), count(c3) FROM t1 GROUP BY c1, c2;
+-- echo
+-- echo # aggr with function param can also be eliminated
+SELECT 
+  c2, c4,
+  min(abs(c2)), 
+  count(distinct floor(c2)), 
+  avg(distinct ceiling(c2 + 1.0)), 
+  sum(distinct abs(c2) + pow(c4, 2)),
+  max(abs(c2 + c1)) -- can not be eliminate
+FROM t1 GROUP BY c2, c4
+HAVING count(distinct cos(c2)) < 1.0;
+SELECT /*+no_rewrite*/
+  c2, c4,
+  min(abs(c2)), 
+  count(distinct floor(c2)), 
+  avg(distinct ceiling(c2 + 1.0)), 
+  sum(distinct abs(c2) + pow(c4, 2)),
+  max(abs(c2 + c1))
+FROM t1 GROUP BY c2, c4
+HAVING count(distinct cos(c2)) < 1.0;
+-- echo
+-- echo # for string type, aggr with function param can be eliminated only if function is cast or convert
+SELECT 
+  c3, 
+  count(distinct cast(c3 as char(10))), 
+  count(distinct convert(c3, char)), 
+  count(distinct upper(c3)) 
+FROM t1 GROUP BY c3;
+SELECT /*+no_rewrite*/
+  c3, 
+  count(distinct cast(c3 as char(10))), 
+  count(distinct convert(c3, char)), 
+  count(distinct upper(c3)) 
+FROM t1 GROUP BY c3;
+
+# DO NOT rewrite count/group_cocnat with multiple parameters for now
+SELECT 
+  count(distinct 1, null), 
+  count(distinct c3, c4), 
+  group_concat(distinct c3, c4), 
+  group_concat(distinct 1, null) 
+FROM t1 GROUP BY c3, c4;
+
+SELECT /*+no_rewrite*/
+  count(distinct 1, null), 
+  count(distinct c3, c4), 
+  group_concat(distinct c3, c4), 
+  group_concat(distinct 1, null) 
+FROM t1 GROUP BY c3, c4;
+
+--explain_protocol 0
+DROP TABLE IF EXISTS t1;

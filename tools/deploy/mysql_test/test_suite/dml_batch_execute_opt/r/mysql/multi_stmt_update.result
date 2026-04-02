@@ -1,0 +1,952 @@
+drop table if exists t1,t2, t_overlap, t_no_pk, test1;
+result_format: 4
+set autocommit = false;
+affected rows: 0
+alter system set ob_enable_batched_multi_statement=true;
+affected rows: 0
+create table t1(a int, b int, c int, primary key(a,b)) partition by hash(a) partitions 4;
+affected rows: 0
+insert into t1 values(1, 1, 1), (2, 2, 2), (3, 3, 3);
+affected rows: 3
+info: Records: 3  Duplicates: 0  Warnings: 0
+update t1 set b = 2 where a = 1 and b = 1;update t1 set b = 1 where a = 2 and b = 2;//
+affected rows: 1
+info:  Rows matched: 1  Changed: 1  Warnings: 0
+affected rows: 1
+info: Rows matched: 1  Changed: 1  Warnings: 0
+commit;
+affected rows: 0
+select * from t1 order by a, b;
++---+---+------+
+| a | b | c    |
++---+---+------+
+| 1 | 2 |    1 |
+| 2 | 1 |    2 |
+| 3 | 3 |    3 |
++---+---+------+
+affected rows: 3
+## test to hit the plan cache
+update t1 set b = 2 where a = 1 and b = 1;update t1 set b = 1 where a = 2 and b = 2;//
+affected rows: 0
+info:  Rows matched: 0  Changed: 0  Warnings: 0
+affected rows: 0
+info: Rows matched: 0  Changed: 0  Warnings: 0
+update t1 set b = 3 where a = 1 and b = 2;update t1 set b = 4 where a = 2 and b = 1;//
+affected rows: 1
+info:  Rows matched: 1  Changed: 1  Warnings: 0
+affected rows: 1
+info: Rows matched: 1  Changed: 1  Warnings: 0
+commit;
+affected rows: 0
+select * from t1 order by a, b;
++---+---+------+
+| a | b | c    |
++---+---+------+
+| 1 | 3 |    1 |
+| 2 | 4 |    2 |
+| 3 | 3 |    3 |
++---+---+------+
+affected rows: 3
+update t1 set b = 5 where a = 1 and b = 3;update t1 set b = 6 where a = 2 and b = 4;update t1 set b = 7 where a = 3 and b = 3;//
+affected rows: 1
+info:  Rows matched: 1  Changed: 1  Warnings: 0
+affected rows: 1
+info:  Rows matched: 1  Changed: 1  Warnings: 0
+affected rows: 1
+info: Rows matched: 1  Changed: 1  Warnings: 0
+commit;
+affected rows: 0
+select * from t1 order by a, b;
++---+---+------+
+| a | b | c    |
++---+---+------+
+| 1 | 5 |    1 |
+| 2 | 6 |    2 |
+| 3 | 7 |    3 |
++---+---+------+
+affected rows: 3
+update t1 set b = 5 where a = 1 and b = 3;update t1 set b = '6' where a = 2 and b = 4;update t1 set b = 7 where a = '3' and b = '3';//
+affected rows: 0
+info:  Rows matched: 0  Changed: 0  Warnings: 0
+affected rows: 0
+info:  Rows matched: 0  Changed: 0  Warnings: 0
+affected rows: 0
+info: Rows matched: 0  Changed: 0  Warnings: 0
+rollback;
+affected rows: 0
+## batch multi stmt will forbid px sql
+update /*+parallel(2)*/ t1 set c = c+5 where a = 1 and b = 5;update /*+parallel(2)*/ t1 set c = c+6 where a = 2 and b = 6;update /*+parallel(2)*/ t1 set c = c+7 where a = 3 and b = 7;//
+affected rows: 1
+info:  Rows matched: 1  Changed: 1  Warnings: 0
+affected rows: 1
+info:  Rows matched: 1  Changed: 1  Warnings: 0
+affected rows: 1
+info: Rows matched: 1  Changed: 1  Warnings: 0
+select * from t1 order by a, b;
++---+---+------+
+| a | b | c    |
++---+---+------+
+| 1 | 5 |    6 |
+| 2 | 6 |    8 |
+| 3 | 7 |   10 |
++---+---+------+
+affected rows: 3
+rollback;
+affected rows: 0
+## test plan cache hit with parallel hints
+update /*+parallel(2)*/ t1 set c = c+5 where a = 1 and b = 5;update /*+parallel(2)*/ t1 set c = c+6 where a = 2 and b = 6;update /*+parallel(2)*/ t1 set c = c+7 where a = 3 and b = 7;//
+affected rows: 1
+info:  Rows matched: 1  Changed: 1  Warnings: 0
+affected rows: 1
+info:  Rows matched: 1  Changed: 1  Warnings: 0
+affected rows: 1
+info: Rows matched: 1  Changed: 1  Warnings: 0
+select * from t1 order by a, b;
++---+---+------+
+| a | b | c    |
++---+---+------+
+| 1 | 5 |    6 |
+| 2 | 6 |    8 |
+| 3 | 7 |   10 |
++---+---+------+
+affected rows: 3
+rollback;
+affected rows: 0
+// expect 3
+select hit_count, is_batched_multi_stmt, statement, query_sql from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'update%t1 set %' and query_sql not like '%?%' order by hit_count;
++-----------+-----------------------+--------------------------------------------------------------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| hit_count | is_batched_multi_stmt | statement                                                    | query_sql                                                                                                                                                                               |
++-----------+-----------------------+--------------------------------------------------------------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+|         0 |                     0 | update t1 set b = ? where a = ? and b = ?;                   | update t1 set b = 7 where a = '3' and b = '3';                                                                                                                                          |
+|         1 |                     1 | update /*+parallel(2)*/ t1 set c = c+? where a = ? and b = ? | update /*+parallel(2)*/ t1 set c = c+5 where a = 1 and b = 5;update /*+parallel(2)*/ t1 set c = c+6 where a = 2 and b = 6;update /*+parallel(2)*/ t1 set c = c+7 where a = 3 and b = 7; |
+|         3 |                     1 | update t1 set b = ? where a = ? and b = ?                    | update t1 set b = 2 where a = 1 and b = 1;update t1 set b = 1 where a = 2 and b = 2;                                                                                                    |
+|         8 |                     0 | update t1 set b = ? where a = ? and b = ?;                   | update t1 set b = 2 where a = 1 and b = 1;                                                                                                                                              |
++-----------+-----------------------+--------------------------------------------------------------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+affected rows: 4
+drop table t1;
+affected rows: 0
+
+drop table if exists t_concat;
+affected rows: 0
+create table t_concat (c1 int, c2 int, c3 int);
+affected rows: 0
+create index idx_c1 on t_concat(c1);
+affected rows: 0
+create index idx_c2 on t_concat(c2);
+affected rows: 0
+## test or expansion
+update t_concat set c3 = 1 where c1 = 1 or c2 = 1;update t_concat set c3 = 2 where c1 = 2 or c2 = 2;//
+affected rows: 0
+info:  Rows matched: 0  Changed: 0  Warnings: 0
+affected rows: 0
+info: Rows matched: 0  Changed: 0  Warnings: 0
+update /*+USE_CONCAT*/ t_concat set c3 = 1 where c1 = 1 or c2 = 1;update /*+USE_CONCAT*/ t_concat set c3 = 2 where c1 = 2 or c2 = 2;//
+affected rows: 0
+info:  Rows matched: 0  Changed: 0  Warnings: 0
+affected rows: 0
+info: Rows matched: 0  Changed: 0  Warnings: 0
+rollback;
+affected rows: 0
+select hit_count, is_batched_multi_stmt, statement, query_sql from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'update%t_concat set c3%' and query_sql not like '%?%' order by hit_count;
++-----------+-----------------------+-------------------------------------------------------------------+--------------------------------------------------------------------------------------------------------------------------------------+
+| hit_count | is_batched_multi_stmt | statement                                                         | query_sql                                                                                                                            |
++-----------+-----------------------+-------------------------------------------------------------------+--------------------------------------------------------------------------------------------------------------------------------------+
+|         0 |                     1 | update t_concat set c3 = ? where c1 = ? or c2 = ?                 | update t_concat set c3 = 1 where c1 = 1 or c2 = 1;update t_concat set c3 = 2 where c1 = 2 or c2 = 2;                                 |
+|         0 |                     1 | update /*+USE_CONCAT*/ t_concat set c3 = ? where c1 = ? or c2 = ? | update /*+USE_CONCAT*/ t_concat set c3 = 1 where c1 = 1 or c2 = 1;update /*+USE_CONCAT*/ t_concat set c3 = 2 where c1 = 2 or c2 = 2; |
++-----------+-----------------------+-------------------------------------------------------------------+--------------------------------------------------------------------------------------------------------------------------------------+
+affected rows: 2
+drop table t_concat;
+affected rows: 0
+
+drop table if exists t_fullscan;
+affected rows: 0
+create table t_fullscan(c1 int, c2 int, c3 int);
+affected rows: 0
+insert into t_fullscan values(1, 1, 2);
+affected rows: 1
+insert into t_fullscan values(2, 2, 3);
+affected rows: 1
+## test fullscan batch execution
+update t_fullscan set c3 = c1;update t_fullscan set c3 = c1;//
+affected rows: 2
+info:  Rows matched: 2  Changed: 2  Warnings: 0
+affected rows: 0
+info: Rows matched: 0  Changed: 0  Warnings: 0
+commit;
+affected rows: 0
+select hit_count, is_batched_multi_stmt, statement, query_sql from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where query_sql like 'update t_fullscan set c3%' and query_sql not like '%?%' order by hit_count;
++-----------+-----------------------+-------------------------------+--------------------------------------------------------------+
+| hit_count | is_batched_multi_stmt | statement                     | query_sql                                                    |
++-----------+-----------------------+-------------------------------+--------------------------------------------------------------+
+|         0 |                     1 | update t_fullscan set c3 = c1 | update t_fullscan set c3 = c1;update t_fullscan set c3 = c1; |
++-----------+-----------------------+-------------------------------+--------------------------------------------------------------+
+affected rows: 1
+select * from t_fullscan;
++------+------+------+
+| c1   | c2   | c3   |
++------+------+------+
+|    1 |    1 |    1 |
+|    2 |    2 |    2 |
++------+------+------+
+affected rows: 2
+drop table t_fullscan;
+affected rows: 0
+
+drop table if exists t_subquery1, t_subquery2;
+affected rows: 0
+create table t_subquery1(a int primary key, b int);
+affected rows: 0
+create table t_subquery2(a int primary key, b int);
+affected rows: 0
+## test update with subquery, not supported to batch it newly
+update t_subquery1 set b=1 where a=(select b from t_subquery2 where a=1);update t_subquery1 set b=2 where a=(select b from t_subquery2 where a=2);//
+affected rows: 0
+info:  Rows matched: 0  Changed: 0  Warnings: 0
+affected rows: 0
+info: Rows matched: 0  Changed: 0  Warnings: 0
+rollback;
+affected rows: 0
+select hit_count, is_batched_multi_stmt, statement, query_sql from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'update t_subquery1 set b%' and query_sql not like '%?%' order by hit_count;
++-----------+-----------------------+---------------------------------------------------------------------------+---------------------------------------------------------------------------+
+| hit_count | is_batched_multi_stmt | statement                                                                 | query_sql                                                                 |
++-----------+-----------------------+---------------------------------------------------------------------------+---------------------------------------------------------------------------+
+|         1 |                     0 | update t_subquery1 set b=? where a=(select b from t_subquery2 where a=?); | update t_subquery1 set b=1 where a=(select b from t_subquery2 where a=1); |
++-----------+-----------------------+---------------------------------------------------------------------------+---------------------------------------------------------------------------+
+affected rows: 1
+drop table t_subquery1, t_subquery2;
+affected rows: 0
+
+create table t_overlap(a int primary key, b int);
+affected rows: 0
+insert into t_overlap values(1, 1);
+affected rows: 1
+## test the situation update the same row continuously
+update t_overlap set a=2 where a=1;update t_overlap set a=3 where a=2;update t_overlap set a=4 where a=3;//
+affected rows: 1
+info:  Rows matched: 1  Changed: 1  Warnings: 0
+affected rows: 1
+info:  Rows matched: 1  Changed: 1  Warnings: 0
+affected rows: 1
+info: Rows matched: 1  Changed: 1  Warnings: 0
+select * from t_overlap;
++---+------+
+| a | b    |
++---+------+
+| 4 |    1 |
++---+------+
+affected rows: 1
+## hit the plan cache
+update t_overlap set a=3 where a=4;update t_overlap set a=2 where a=3;update t_overlap set a=1 where a=2;//
+affected rows: 1
+info:  Rows matched: 1  Changed: 1  Warnings: 0
+affected rows: 1
+info:  Rows matched: 1  Changed: 1  Warnings: 0
+affected rows: 1
+info: Rows matched: 1  Changed: 1  Warnings: 0
+select * from t_overlap;
++---+------+
+| a | b    |
++---+------+
+| 1 |    1 |
++---+------+
+affected rows: 1
+commit;
+affected rows: 0
+drop table t_overlap;
+affected rows: 0
+
+## test batch update with non primary key table 
+create table t_no_pk(a int, b varchar(10), c blob);
+affected rows: 0
+insert into t_no_pk values(1, 'abc', 'abcabc'), (2, 'bbb', 'ccc');
+affected rows: 2
+info: Records: 2  Duplicates: 0  Warnings: 0
+update t_no_pk set b='aaa' where a=1;update t_no_pk set b='cc' where a=2;//
+affected rows: 1
+info:  Rows matched: 1  Changed: 1  Warnings: 0
+affected rows: 1
+info: Rows matched: 1  Changed: 1  Warnings: 0
+select * from t_no_pk;//
++------+------+--------+
+| a    | b    | c      |
++------+------+--------+
+|    1 | aaa  | abcabc |
+|    2 | cc   | ccc    |
++------+------+--------+
+affected rows: 2
+update t_no_pk set b='ee' where a=1;update t_no_pk set b='dd' where a=2;//
+affected rows: 1
+info:  Rows matched: 1  Changed: 1  Warnings: 0
+affected rows: 1
+info: Rows matched: 1  Changed: 1  Warnings: 0
+select * from t_no_pk;//
++------+------+--------+
+| a    | b    | c      |
++------+------+--------+
+|    1 | ee   | abcabc |
+|    2 | dd   | ccc    |
++------+------+--------+
+affected rows: 2
+update t_no_pk set c='a' where a=1;update t_no_pk set c='b' where a=2;//
+affected rows: 1
+info:  Rows matched: 1  Changed: 1  Warnings: 0
+affected rows: 1
+info: Rows matched: 1  Changed: 1  Warnings: 0
+select * from t_no_pk;//
++------+------+------+
+| a    | b    | c    |
++------+------+------+
+|    1 | ee   | a    |
+|    2 | dd   | b    |
++------+------+------+
+affected rows: 2
+commit;
+affected rows: 0
+select hit_count, is_batched_multi_stmt, statement, query_sql from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'update t_no_pk set%' and query_sql not like '%?%' order by hit_count;
++-----------+-----------------------+-----------------------------------+---------------------------------------------------------------------------+
+| hit_count | is_batched_multi_stmt | statement                         | query_sql                                                                 |
++-----------+-----------------------+-----------------------------------+---------------------------------------------------------------------------+
+|         1 |                     1 | update t_no_pk set b=? where a=?  | update t_no_pk set b='aaa' where a=1;update t_no_pk set b='cc' where a=2; |
+|         1 |                     0 | update t_no_pk set c=? where a=?; | update t_no_pk set c='a' where a=1;                                       |
++-----------+-----------------------+-----------------------------------+---------------------------------------------------------------------------+
+affected rows: 2
+drop table t_no_pk;
+affected rows: 0
+
+create table t1(a int primary key, b int) partition by hash(a) partitions 2;
+affected rows: 0
+insert into t1 values(1, 1), (2, 2), (3, 3), (4, 4);
+affected rows: 4
+info: Records: 4  Duplicates: 0  Warnings: 0
+set autocommit = false;
+affected rows: 0
+alter system set ob_enable_batched_multi_statement=true;
+affected rows: 0
+update t1 set b=2 where a=1;update t1 set b=3 where a=2;update t1 set b=4 where a=3;update t1 set b=5 where a=4;//
+affected rows: 1
+info:  Rows matched: 1  Changed: 1  Warnings: 0
+affected rows: 1
+info:  Rows matched: 1  Changed: 1  Warnings: 0
+affected rows: 1
+info:  Rows matched: 1  Changed: 1  Warnings: 0
+affected rows: 1
+info: Rows matched: 1  Changed: 1  Warnings: 0
+commit;
+affected rows: 0
+select * from t1 order by a;
++---+------+
+| a | b    |
++---+------+
+| 1 |    2 |
+| 2 |    3 |
+| 3 |    4 |
+| 4 |    5 |
++---+------+
+affected rows: 4
+drop table t1;
+affected rows: 0
+
+create table t1(a int, b int, c int, primary key(a,b)) partition by hash(a) partitions 4;
+affected rows: 0
+create index gkey on t1(b);
+affected rows: 0
+insert into t1 values(1, 1, 1), (2, 2, 2), (3, 3, 3);
+affected rows: 3
+info: Records: 3  Duplicates: 0  Warnings: 0
+update t1 set b = 2 where a = 1 and b = 1;update t1 set b = 1 where a = 2 and b = 2;//
+affected rows: 1
+info:  Rows matched: 1  Changed: 1  Warnings: 0
+affected rows: 1
+info: Rows matched: 1  Changed: 1  Warnings: 0
+commit;
+affected rows: 0
+select * from t1 order by a, b;
++---+---+------+
+| a | b | c    |
++---+---+------+
+| 1 | 2 |    1 |
+| 2 | 1 |    2 |
+| 3 | 3 |    3 |
++---+---+------+
+affected rows: 3
+drop table t1;
+affected rows: 0
+
+create table t1(a int primary key, b int) partition by hash(a) partitions 2;
+affected rows: 0
+create index gkey on t1(b);
+affected rows: 0
+insert into t1 values(1, 1), (2, 2), (3, 3), (4, 4);
+affected rows: 4
+info: Records: 4  Duplicates: 0  Warnings: 0
+update t1 set b=2 where a=1;update t1 set b=3 where a=2;update t1 set b=4 where a=3;update t1 set b=5 where a=4;//
+affected rows: 1
+info:  Rows matched: 1  Changed: 1  Warnings: 0
+affected rows: 1
+info:  Rows matched: 1  Changed: 1  Warnings: 0
+affected rows: 1
+info:  Rows matched: 1  Changed: 1  Warnings: 0
+affected rows: 1
+info: Rows matched: 1  Changed: 1  Warnings: 0
+commit;
+affected rows: 0
+select * from t1 order by a;
++---+------+
+| a | b    |
++---+------+
+| 1 |    2 |
+| 2 |    3 |
+| 3 |    4 |
+| 4 |    5 |
++---+------+
+affected rows: 4
+drop table t1;
+affected rows: 0
+
+drop table if exists sbtest_hash1;
+affected rows: 0
+CREATE TABLE `sbtest_hash1` (
+  `id` varchar(20) NOT NULL,
+  `k` int(11) DEFAULT NULL,
+  `c1` varchar(8) DEFAULT '',
+  `c2` varchar(8) DEFAULT '',
+  `c3` varchar(8) DEFAULT '',
+  `pad` char(60) NOT NULL DEFAULT '',
+  PRIMARY KEY (`id`)
+) partition by key(id) partitions 3;
+affected rows: 0
+
+insert into sbtest_hash1 values('0190000653580000', 1, 'c1', 'c2', 'c3', 'pad'), ('0190000653580003', 2, 'c1', 'c2', 'c3', 'pad');
+affected rows: 2
+info: Records: 2  Duplicates: 0  Warnings: 0
+insert into sbtest_hash1 values('0190000653580004', 3, 'c1', 'c2', 'c3', 'pad'), ('0190000653580007', 4, 'c1', 'c2', 'c3', 'pad');
+affected rows: 2
+info: Records: 2  Duplicates: 0  Warnings: 0
+insert into sbtest_hash1 values('0190000653580009', 5, 'c1', 'c2', 'c3', 'pad'), ('0190000653580008', 6, 'c1', 'c2', 'c3', 'pad');
+affected rows: 2
+info: Records: 2  Duplicates: 0  Warnings: 0
+insert into sbtest_hash1 values('1', 7, 'c1', 'c2', 'c3', 'pad'), ('0190000653580010', 8, 'c1', 'c2', 'c3', 'pad');
+affected rows: 2
+info: Records: 2  Duplicates: 0  Warnings: 0
+commit;
+affected rows: 0
+UPDATE sbtest_hash1 SET c1='30181417' WHERE id='0190000653580000';UPDATE sbtest_hash1 SET c1='30181417' WHERE id='0190000653580001';UPDATE sbtest_hash1 SET c1='30181417' WHERE id='0190000653580002';UPDATE sbtest_hash1 SET c1='30181417' WHERE id='0190000653580003';UPDATE sbtest_hash1 SET c1='30181417' WHERE id='0190000653580004';UPDATE sbtest_hash1 SET c1='30181417' WHERE id='0190000653580005';UPDATE sbtest_hash1 SET c1='30181417' WHERE id='0190000653580006';UPDATE sbtest_hash1 SET c1='30181417' WHERE id='0190000653580007';//
+affected rows: 1
+info:  Rows matched: 1  Changed: 1  Warnings: 0
+affected rows: 0
+info:  Rows matched: 0  Changed: 0  Warnings: 0
+affected rows: 0
+info:  Rows matched: 0  Changed: 0  Warnings: 0
+affected rows: 1
+info:  Rows matched: 1  Changed: 1  Warnings: 0
+affected rows: 1
+info:  Rows matched: 1  Changed: 1  Warnings: 0
+affected rows: 0
+info:  Rows matched: 0  Changed: 0  Warnings: 0
+affected rows: 0
+info:  Rows matched: 0  Changed: 0  Warnings: 0
+affected rows: 1
+info: Rows matched: 1  Changed: 1  Warnings: 0
+commit;
+affected rows: 0
+select * from sbtest_hash1 order by id;
++------------------+------+----------+------+------+-----+
+| id               | k    | c1       | c2   | c3   | pad |
++------------------+------+----------+------+------+-----+
+| 0190000653580000 |    1 | 30181417 | c2   | c3   | pad |
+| 0190000653580003 |    2 | 30181417 | c2   | c3   | pad |
+| 0190000653580004 |    3 | 30181417 | c2   | c3   | pad |
+| 0190000653580007 |    4 | 30181417 | c2   | c3   | pad |
+| 0190000653580008 |    6 | c1       | c2   | c3   | pad |
+| 0190000653580009 |    5 | c1       | c2   | c3   | pad |
+| 0190000653580010 |    8 | c1       | c2   | c3   | pad |
+| 1                |    7 | c1       | c2   | c3   | pad |
++------------------+------+----------+------+------+-----+
+affected rows: 8
+drop table sbtest_hash1;
+affected rows: 0
+
+drop table if exists sbtest_hash1;
+affected rows: 0
+CREATE TABLE `sbtest_hash1` (
+  `id` varchar(20) NOT NULL,
+  `k` int(11) DEFAULT NULL,
+  `c1` varchar(8) DEFAULT '',
+  `c2` varchar(8) DEFAULT '',
+  `c3` varchar(8) DEFAULT '',
+  `pad` char(60) NOT NULL DEFAULT '',
+  PRIMARY KEY (`id`)
+) partition by key(id) partitions 3;
+affected rows: 0
+CREATE INDEX gkey ON sbtest_hash1(c1);
+affected rows: 0
+
+insert into sbtest_hash1 values('0190000653580000', 1, 'c1', 'c2', 'c3', 'pad'), ('0190000653580003', 2, 'c1', 'c2', 'c3', 'pad');
+affected rows: 2
+info: Records: 2  Duplicates: 0  Warnings: 0
+insert into sbtest_hash1 values('0190000653580004', 3, 'c1', 'c2', 'c3', 'pad'), ('0190000653580007', 4, 'c1', 'c2', 'c3', 'pad');
+affected rows: 2
+info: Records: 2  Duplicates: 0  Warnings: 0
+insert into sbtest_hash1 values('0190000653580009', 5, 'c1', 'c2', 'c3', 'pad'), ('0190000653580008', 6, 'c1', 'c2', 'c3', 'pad');
+affected rows: 2
+info: Records: 2  Duplicates: 0  Warnings: 0
+insert into sbtest_hash1 values('1', 7, 'c1', 'c2', 'c3', 'pad'), ('0190000653580010', 8, 'c1', 'c2', 'c3', 'pad');
+affected rows: 2
+info: Records: 2  Duplicates: 0  Warnings: 0
+commit;
+affected rows: 0
+UPDATE sbtest_hash1 SET c1='30181417' WHERE id='0190000653580000';UPDATE sbtest_hash1 SET c1='30181417' WHERE id='0190000653580001';UPDATE sbtest_hash1 SET c1='30181417' WHERE id='0190000653580002';UPDATE sbtest_hash1 SET c1='30181417' WHERE id='0190000653580003';UPDATE sbtest_hash1 SET c1='30181417' WHERE id='0190000653580004';UPDATE sbtest_hash1 SET c1='30181417' WHERE id='0190000653580005';UPDATE sbtest_hash1 SET c1='30181417' WHERE id='0190000653580006';UPDATE sbtest_hash1 SET c1='30181417' WHERE id='0190000653580007';//
+affected rows: 1
+info:  Rows matched: 1  Changed: 1  Warnings: 0
+affected rows: 0
+info:  Rows matched: 0  Changed: 0  Warnings: 0
+affected rows: 0
+info:  Rows matched: 0  Changed: 0  Warnings: 0
+affected rows: 1
+info:  Rows matched: 1  Changed: 1  Warnings: 0
+affected rows: 1
+info:  Rows matched: 1  Changed: 1  Warnings: 0
+affected rows: 0
+info:  Rows matched: 0  Changed: 0  Warnings: 0
+affected rows: 0
+info:  Rows matched: 0  Changed: 0  Warnings: 0
+affected rows: 1
+info: Rows matched: 1  Changed: 1  Warnings: 0
+commit;
+affected rows: 0
+select * from sbtest_hash1 order by id;
++------------------+------+----------+------+------+-----+
+| id               | k    | c1       | c2   | c3   | pad |
++------------------+------+----------+------+------+-----+
+| 0190000653580000 |    1 | 30181417 | c2   | c3   | pad |
+| 0190000653580003 |    2 | 30181417 | c2   | c3   | pad |
+| 0190000653580004 |    3 | 30181417 | c2   | c3   | pad |
+| 0190000653580007 |    4 | 30181417 | c2   | c3   | pad |
+| 0190000653580008 |    6 | c1       | c2   | c3   | pad |
+| 0190000653580009 |    5 | c1       | c2   | c3   | pad |
+| 0190000653580010 |    8 | c1       | c2   | c3   | pad |
+| 1                |    7 | c1       | c2   | c3   | pad |
++------------------+------+----------+------+------+-----+
+affected rows: 8
+drop table sbtest_hash1;
+affected rows: 0
+
+create table t1(a int, b int, c int, primary key(a,b));
+affected rows: 0
+create index gkey on t1(b) partition by hash(b) partitions 2;
+affected rows: 0
+insert into t1 values(1, 1, 1), (2, 2, 2), (3, 3, 3);
+affected rows: 3
+info: Records: 3  Duplicates: 0  Warnings: 0
+update t1 set b = 2 where a = 1 and b = 1;update t1 set b = 1 where a = 2 and b = 2;//
+affected rows: 1
+info:  Rows matched: 1  Changed: 1  Warnings: 0
+affected rows: 1
+info: Rows matched: 1  Changed: 1  Warnings: 0
+commit;
+affected rows: 0
+select * from t1 order by a, b;
++---+---+------+
+| a | b | c    |
++---+---+------+
+| 1 | 2 |    1 |
+| 2 | 1 |    2 |
+| 3 | 3 |    3 |
++---+---+------+
+affected rows: 3
+drop table t1;
+affected rows: 0
+
+create table t1(a int, b int, c int, primary key(a,b));
+affected rows: 0
+insert into t1 values(1, 1, 1), (2, 2, 2), (3, 3, 3);
+affected rows: 3
+info: Records: 3  Duplicates: 0  Warnings: 0
+update t1 set b = 2 where a = 1 and b = 1;update t1 set b = 1 where a = 2 and b = 2;//
+affected rows: 1
+info:  Rows matched: 1  Changed: 1  Warnings: 0
+affected rows: 1
+info: Rows matched: 1  Changed: 1  Warnings: 0
+commit;
+affected rows: 0
+select * from t1 order by a, b;
++---+---+------+
+| a | b | c    |
++---+---+------+
+| 1 | 2 |    1 |
+| 2 | 1 |    2 |
+| 3 | 3 |    3 |
++---+---+------+
+affected rows: 3
+drop table t1;
+affected rows: 0
+
+create table t1(a int primary key, b int);
+affected rows: 0
+insert into t1 values(1, 1), (2, 2), (3, 3), (4, 4);
+affected rows: 4
+info: Records: 4  Duplicates: 0  Warnings: 0
+set autocommit = false;
+affected rows: 0
+alter system set ob_enable_batched_multi_statement=true;
+affected rows: 0
+update t1 set b=2 where a=1;update t1 set b=3 where a=2;update t1 set b=4 where a=3;update t1 set b=5 where a=4;//
+affected rows: 1
+info:  Rows matched: 1  Changed: 1  Warnings: 0
+affected rows: 1
+info:  Rows matched: 1  Changed: 1  Warnings: 0
+affected rows: 1
+info:  Rows matched: 1  Changed: 1  Warnings: 0
+affected rows: 1
+info: Rows matched: 1  Changed: 1  Warnings: 0
+commit;
+affected rows: 0
+select * from t1 order by a;
++---+------+
+| a | b    |
++---+------+
+| 1 |    2 |
+| 2 |    3 |
+| 3 |    4 |
+| 4 |    5 |
++---+------+
+affected rows: 4
+drop table t1;
+affected rows: 0
+
+create table t1(a int, b int, c int, primary key(a,b));
+affected rows: 0
+create index gkey on t1(b);
+affected rows: 0
+insert into t1 values(1, 1, 1), (2, 2, 2), (3, 3, 3);
+affected rows: 3
+info: Records: 3  Duplicates: 0  Warnings: 0
+update t1 set b = 2 where a = 1 and b = 1;update t1 set b = 1 where a = 2 and b = 2;//
+affected rows: 1
+info:  Rows matched: 1  Changed: 1  Warnings: 0
+affected rows: 1
+info: Rows matched: 1  Changed: 1  Warnings: 0
+commit;
+affected rows: 0
+select * from t1 order by a, b;
++---+---+------+
+| a | b | c    |
++---+---+------+
+| 1 | 2 |    1 |
+| 2 | 1 |    2 |
+| 3 | 3 |    3 |
++---+---+------+
+affected rows: 3
+drop table t1;
+affected rows: 0
+
+create table t1(a int primary key, b int);
+affected rows: 0
+create index gkey on t1(b);
+affected rows: 0
+insert into t1 values(1, 1), (2, 2), (3, 3), (4, 4);
+affected rows: 4
+info: Records: 4  Duplicates: 0  Warnings: 0
+update t1 set b=2 where a=1;update t1 set b=3 where a=2;update t1 set b=4 where a=3;update t1 set b=5 where a=4;//
+affected rows: 1
+info:  Rows matched: 1  Changed: 1  Warnings: 0
+affected rows: 1
+info:  Rows matched: 1  Changed: 1  Warnings: 0
+affected rows: 1
+info:  Rows matched: 1  Changed: 1  Warnings: 0
+affected rows: 1
+info: Rows matched: 1  Changed: 1  Warnings: 0
+commit;
+affected rows: 0
+select * from t1 order by a;
++---+------+
+| a | b    |
++---+------+
+| 1 |    2 |
+| 2 |    3 |
+| 3 |    4 |
+| 4 |    5 |
++---+------+
+affected rows: 4
+drop table t1;
+affected rows: 0
+
+##Test scenarios where the number of partitions on the server is different
+create table t1(a int primary key, b int) partition by hash(a) partitions 4;
+affected rows: 0
+insert into t1 values(1, 1), (2, 2), (3, 3), (4, 4);
+affected rows: 4
+info: Records: 4  Duplicates: 0  Warnings: 0
+update t1 set b=2 where a=1;update t1 set b=3 where a=2;update t1 set b=4 where a=3;update t1 set b=5 where a=4;//
+affected rows: 1
+info:  Rows matched: 1  Changed: 1  Warnings: 0
+affected rows: 1
+info:  Rows matched: 1  Changed: 1  Warnings: 0
+affected rows: 1
+info:  Rows matched: 1  Changed: 1  Warnings: 0
+affected rows: 1
+info: Rows matched: 1  Changed: 1  Warnings: 0
+commit;
+affected rows: 0
+select * from t1 order by a;
++---+------+
+| a | b    |
++---+------+
+| 1 |    2 |
+| 2 |    3 |
+| 3 |    4 |
+| 4 |    5 |
++---+------+
+affected rows: 4
+drop table t1;
+affected rows: 0
+
+## test have same rowkey, batch execution will rollback
+drop table if exists t_bad;
+affected rows: 0
+create table t_bad(a int primary key, b int);
+affected rows: 0
+insert into t_bad values(1, 1), (2, 2), (3, 3), (4, 4);
+affected rows: 4
+info: Records: 4  Duplicates: 0  Warnings: 0
+update t_bad set b=2 where a=1;update t_bad set b=3 where a=1;update t_bad set b=4 where a=2;//
+affected rows: 1
+info:  Rows matched: 1  Changed: 1  Warnings: 0
+affected rows: 1
+info:  Rows matched: 1  Changed: 1  Warnings: 0
+affected rows: 1
+info: Rows matched: 1  Changed: 1  Warnings: 0
+commit ;
+affected rows: 0
+select * from t_bad order by a;
++---+------+
+| a | b    |
++---+------+
+| 1 |    3 |
+| 2 |    4 |
+| 3 |    3 |
+| 4 |    4 |
++---+------+
+affected rows: 4
+// expact is_batched_multi_stmt=1 and hit_count=0 and have two single stmt hit record
+select hit_count, is_batched_multi_stmt, statement, query_sql from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'UPDATE t_bad SET b=%' and query_sql not like 'UPDATE t_bad SET b=?%' order by hit_count;
++-----------+-----------------------+---------------------------------+-----------------------------------------------------------------------------------------------+
+| hit_count | is_batched_multi_stmt | statement                       | query_sql                                                                                     |
++-----------+-----------------------+---------------------------------+-----------------------------------------------------------------------------------------------+
+|         0 |                     1 | update t_bad set b=? where a=?  | update t_bad set b=2 where a=1;update t_bad set b=3 where a=1;update t_bad set b=4 where a=2; |
+|         2 |                     0 | update t_bad set b=? where a=?; | update t_bad set b=2 where a=1;                                                               |
++-----------+-----------------------+---------------------------------+-----------------------------------------------------------------------------------------------+
+affected rows: 2
+drop table t_bad;
+affected rows: 0
+
+drop table if exists sbtest_hash1;
+affected rows: 0
+CREATE TABLE `sbtest_hash1` (
+  `id` varchar(20) NOT NULL,
+  `k` int(11) DEFAULT NULL,
+  `c1` varchar(8) DEFAULT '',
+  `c2` varchar(8) DEFAULT '',
+  `c3` varchar(8) DEFAULT '',
+  `pad` char(60) NOT NULL DEFAULT '',
+  PRIMARY KEY (`id`)
+) partition by key(id) partitions 3;
+affected rows: 0
+
+insert into sbtest_hash1 values('0190000653580000', 1, 'c1', 'c2', 'c3', 'pad'), ('0190000653580003', 2, 'c1', 'c2', 'c3', 'pad');
+affected rows: 2
+info: Records: 2  Duplicates: 0  Warnings: 0
+insert into sbtest_hash1 values('0190000653580004', 3, 'c1', 'c2', 'c3', 'pad'), ('0190000653580007', 4, 'c1', 'c2', 'c3', 'pad');
+affected rows: 2
+info: Records: 2  Duplicates: 0  Warnings: 0
+insert into sbtest_hash1 values('0190000653580009', 5, 'c1', 'c2', 'c3', 'pad'), ('0190000653580008', 6, 'c1', 'c2', 'c3', 'pad');
+affected rows: 2
+info: Records: 2  Duplicates: 0  Warnings: 0
+insert into sbtest_hash1 values('1', 7, 'c1', 'c2', 'c3', 'pad'), ('0190000653580010', 8, 'c1', 'c2', 'c3', 'pad');
+affected rows: 2
+info: Records: 2  Duplicates: 0  Warnings: 0
+commit;
+affected rows: 0
+UPDATE sbtest_hash1 SET c1='30181417' WHERE id='0190000653580000';UPDATE sbtest_hash1 SET c1='30181417' WHERE id='0190000653580001';UPDATE sbtest_hash1 SET c1='30181417' WHERE id='0190000653580002';UPDATE sbtest_hash1 SET c1='30181417' WHERE id='0190000653580003';UPDATE sbtest_hash1 SET c1='30181417' WHERE id='0190000653580004';UPDATE sbtest_hash1 SET c1='30181417' WHERE id='0190000653580005';UPDATE sbtest_hash1 SET c1='30181417' WHERE id='0190000653580006';UPDATE sbtest_hash1 SET c1='30181417' WHERE id='0190000653580007';//
+affected rows: 1
+info:  Rows matched: 1  Changed: 1  Warnings: 0
+affected rows: 0
+info:  Rows matched: 0  Changed: 0  Warnings: 0
+affected rows: 0
+info:  Rows matched: 0  Changed: 0  Warnings: 0
+affected rows: 1
+info:  Rows matched: 1  Changed: 1  Warnings: 0
+affected rows: 1
+info:  Rows matched: 1  Changed: 1  Warnings: 0
+affected rows: 0
+info:  Rows matched: 0  Changed: 0  Warnings: 0
+affected rows: 0
+info:  Rows matched: 0  Changed: 0  Warnings: 0
+affected rows: 1
+info: Rows matched: 1  Changed: 1  Warnings: 0
+commit;
+affected rows: 0
+select * from sbtest_hash1 order by id;
++------------------+------+----------+------+------+-----+
+| id               | k    | c1       | c2   | c3   | pad |
++------------------+------+----------+------+------+-----+
+| 0190000653580000 |    1 | 30181417 | c2   | c3   | pad |
+| 0190000653580003 |    2 | 30181417 | c2   | c3   | pad |
+| 0190000653580004 |    3 | 30181417 | c2   | c3   | pad |
+| 0190000653580007 |    4 | 30181417 | c2   | c3   | pad |
+| 0190000653580008 |    6 | c1       | c2   | c3   | pad |
+| 0190000653580009 |    5 | c1       | c2   | c3   | pad |
+| 0190000653580010 |    8 | c1       | c2   | c3   | pad |
+| 1                |    7 | c1       | c2   | c3   | pad |
++------------------+------+----------+------+------+-----+
+affected rows: 8
+drop table sbtest_hash1;
+affected rows: 0
+
+drop table if exists sbtest_hash1;
+affected rows: 0
+alter system flush plan cache global;
+affected rows: 0
+CREATE TABLE `sbtest_hash1` (
+  `id` varchar(20) NOT NULL,
+  `k` int(11) DEFAULT NULL,
+  `c1` varchar(8) DEFAULT '',
+  `c2` varchar(8) DEFAULT '',
+  `c3` varchar(8) DEFAULT '',
+  `pad` char(60) NOT NULL DEFAULT '',
+  PRIMARY KEY (`id`)
+) partition by key(id) partitions 3;
+affected rows: 0
+CREATE INDEX gkey ON sbtest_hash1(c1);
+affected rows: 0
+
+insert into sbtest_hash1 values('0190000653580000', 1, 'c1', 'c2', 'c3', 'pad'), ('0190000653580003', 2, 'c1', 'c2', 'c3', 'pad');
+affected rows: 2
+info: Records: 2  Duplicates: 0  Warnings: 0
+insert into sbtest_hash1 values('0190000653580004', 3, 'c1', 'c2', 'c3', 'pad'), ('0190000653580007', 4, 'c1', 'c2', 'c3', 'pad');
+affected rows: 2
+info: Records: 2  Duplicates: 0  Warnings: 0
+insert into sbtest_hash1 values('0190000653580009', 5, 'c1', 'c2', 'c3', 'pad'), ('0190000653580008', 6, 'c1', 'c2', 'c3', 'pad');
+affected rows: 2
+info: Records: 2  Duplicates: 0  Warnings: 0
+insert into sbtest_hash1 values('1', 7, 'c1', 'c2', 'c3', 'pad'), ('0190000653580010', 8, 'c1', 'c2', 'c3', 'pad');
+affected rows: 2
+info: Records: 2  Duplicates: 0  Warnings: 0
+commit;
+affected rows: 0
+UPDATE sbtest_hash1 SET c1='30181417' WHERE id='0190000653580000';UPDATE sbtest_hash1 SET c1='30181417' WHERE id='0190000653580001';UPDATE sbtest_hash1 SET c1='30181417' WHERE id='0190000653580002';UPDATE sbtest_hash1 SET c1='30181417' WHERE id='0190000653580003';UPDATE sbtest_hash1 SET c1='30181417' WHERE id='0190000653580004';UPDATE sbtest_hash1 SET c1='30181417' WHERE id='0190000653580005';UPDATE sbtest_hash1 SET c1='30181417' WHERE id='0190000653580006';UPDATE sbtest_hash1 SET c1='30181417' WHERE id='0190000653580007';//
+affected rows: 1
+info:  Rows matched: 1  Changed: 1  Warnings: 0
+affected rows: 0
+info:  Rows matched: 0  Changed: 0  Warnings: 0
+affected rows: 0
+info:  Rows matched: 0  Changed: 0  Warnings: 0
+affected rows: 1
+info:  Rows matched: 1  Changed: 1  Warnings: 0
+affected rows: 1
+info:  Rows matched: 1  Changed: 1  Warnings: 0
+affected rows: 0
+info:  Rows matched: 0  Changed: 0  Warnings: 0
+affected rows: 0
+info:  Rows matched: 0  Changed: 0  Warnings: 0
+affected rows: 1
+info: Rows matched: 1  Changed: 1  Warnings: 0
+commit;
+affected rows: 0
+select * from sbtest_hash1 order by id;
++------------------+------+----------+------+------+-----+
+| id               | k    | c1       | c2   | c3   | pad |
++------------------+------+----------+------+------+-----+
+| 0190000653580000 |    1 | 30181417 | c2   | c3   | pad |
+| 0190000653580003 |    2 | 30181417 | c2   | c3   | pad |
+| 0190000653580004 |    3 | 30181417 | c2   | c3   | pad |
+| 0190000653580007 |    4 | 30181417 | c2   | c3   | pad |
+| 0190000653580008 |    6 | c1       | c2   | c3   | pad |
+| 0190000653580009 |    5 | c1       | c2   | c3   | pad |
+| 0190000653580010 |    8 | c1       | c2   | c3   | pad |
+| 1                |    7 | c1       | c2   | c3   | pad |
++------------------+------+----------+------+------+-----+
+affected rows: 8
+UPDATE sbtest_hash1 SET c1='30181418' WHERE id='0190000653580000';UPDATE sbtest_hash1 SET c1='30181418' WHERE id='0190000653580001';UPDATE sbtest_hash1 SET c1='30181418' WHERE id='0190000653580002';UPDATE sbtest_hash1 SET c1='30181418' WHERE id='0190000653580003';UPDATE sbtest_hash1 SET c1='30181418' WHERE id='0190000653580004';UPDATE sbtest_hash1 SET c1='30181418' WHERE id='0190000653580005';UPDATE sbtest_hash1 SET c1='30181418' WHERE id='0190000653580006';UPDATE sbtest_hash1 SET c1='30181418' WHERE id='0190000653580007';//
+affected rows: 1
+info:  Rows matched: 1  Changed: 1  Warnings: 0
+affected rows: 0
+info:  Rows matched: 0  Changed: 0  Warnings: 0
+affected rows: 0
+info:  Rows matched: 0  Changed: 0  Warnings: 0
+affected rows: 1
+info:  Rows matched: 1  Changed: 1  Warnings: 0
+affected rows: 1
+info:  Rows matched: 1  Changed: 1  Warnings: 0
+affected rows: 0
+info:  Rows matched: 0  Changed: 0  Warnings: 0
+affected rows: 0
+info:  Rows matched: 0  Changed: 0  Warnings: 0
+affected rows: 1
+info: Rows matched: 1  Changed: 1  Warnings: 0
+commit;
+affected rows: 0
+select * from sbtest_hash1 order by id;
++------------------+------+----------+------+------+-----+
+| id               | k    | c1       | c2   | c3   | pad |
++------------------+------+----------+------+------+-----+
+| 0190000653580000 |    1 | 30181418 | c2   | c3   | pad |
+| 0190000653580003 |    2 | 30181418 | c2   | c3   | pad |
+| 0190000653580004 |    3 | 30181418 | c2   | c3   | pad |
+| 0190000653580007 |    4 | 30181418 | c2   | c3   | pad |
+| 0190000653580008 |    6 | c1       | c2   | c3   | pad |
+| 0190000653580009 |    5 | c1       | c2   | c3   | pad |
+| 0190000653580010 |    8 | c1       | c2   | c3   | pad |
+| 1                |    7 | c1       | c2   | c3   | pad |
++------------------+------+----------+------+------+-----+
+affected rows: 8
+// expect 1
+select hit_count, is_batched_multi_stmt, statement from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'UPDATE sbtest_hash1 SET c1=%' and query_sql not like '%?%' order by hit_count;
++-----------+-----------------------+-----------------------------------------+
+| hit_count | is_batched_multi_stmt | statement                               |
++-----------+-----------------------+-----------------------------------------+
+|         1 |                     1 | UPDATE sbtest_hash1 SET c1=? WHERE id=? |
++-----------+-----------------------+-----------------------------------------+
+affected rows: 1
+create table test1(h1 int,h2 char(10));
+affected rows: 0
+insert into test1 values(-5,'柳树');
+affected rows: 1
+insert into test1 values(0,'垂杨柳');
+affected rows: 1
+insert into test1 values(10,'杨柳');
+affected rows: 1
+select * from test1 order by h1 asc;
++------+-----------+
+| h1   | h2        |
++------+-----------+
+|   -5 | 柳树      |
+|    0 | 垂杨柳    |
+|   10 | 杨柳      |
++------+-----------+
+affected rows: 3
+UPDATE test1 SET h2 = CASE WHEN h2 = '杨柳' THEN '向日葵花' ELSE h2 END;UPDATE test1 SET h2 = CASE WHEN h2 = '向日葵花' THEN '玫瑰花' ELSE h2 END;//
+affected rows: 1
+info:  Rows matched: 3  Changed: 1  Warnings: 0
+affected rows: 1
+info: Rows matched: 3  Changed: 1  Warnings: 0
+UPDATE test1 SET h2 = CASE WHEN h2 = '玫瑰花' THEN '国花' ELSE h2 END;//
+affected rows: 1
+info: Rows matched: 3  Changed: 1  Warnings: 0
+select * from test1 order by h1 asc;
++------+-----------+
+| h1   | h2        |
++------+-----------+
+|   -5 | 柳树      |
+|    0 | 垂杨柳    |
+|   10 | 国花      |
++------+-----------+
+affected rows: 3
+drop table test1;
+affected rows: 0
+
+alter system set ob_enable_batched_multi_statement=false;
+affected rows: 0
+drop table sbtest_hash1;
+affected rows: 0
+

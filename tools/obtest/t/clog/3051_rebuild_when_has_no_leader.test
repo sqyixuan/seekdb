@@ -1,0 +1,133 @@
+##
+# owner: runlin.zjf
+# owner group: clog
+# description: trigger rebuild when has no leader
+##
+ob1=OBI(cluster=2:2:2, proxy_num=0);
+ob1.reboot;
+sleep 5;
+
+let $rs = deploy_get_value(ob1.get_leader sys:oceanbase:__all_core_table:0);
+let $ip=deploy_get_value($rs.ip);
+let $port=deploy_get_value($rs.mysql_port);
+connect (conn_sys,$ip,root,,oceanbase,$port);
+
+ob1.mysql create resource pool rp1 unit = 'sys_unit_config', unit_num = 2, zone_list = ('z1', 'z2', 'z3');
+ob1.mysql create tenant test replica_num 3, primary_zone 'z1', resource_pool_list('rp1') set ob_tcp_invited_nodes='%';
+
+let $obs = deploy_get_value(ob1.get_leader test:oceanbase:__all_dummy:0);
+let $ip=deploy_get_value($obs.ip);
+let $port=deploy_get_value($obs.mysql_port);
+connect (conn_test,$ip,root@test,,test,$port);
+
+connection conn_sys;
+alter system set enable_rebalance=false;
+alter system set enable_rereplication=false;
+alter system set balancer_idle_time='10s';
+
+# 1. Set the 'clog_max_unconfirmed_log_count' each replica to 100
+# 2. Set the 'rebuild_replica_data_lag_threshold' to 1
+# 3. Create table t1
+# 4. Ensure that sys table are different with user table
+# 5. Block the net between leader and follower2
+# 6. Insert 150 records
+# 7. Trigger t1 minor merge
+# 8. Leader force stop, follower1 can not change into leader active,
+#    because of the slide range is 100
+# 9. Check follower2 can rebuild success, and there is only one leader
+
+# Step 1 and 2
+alter system set clog_max_unconfirmed_log_count = 100;
+alter system set rebuild_replica_data_lag_threshold = 1;
+
+connection conn_test;
+
+# Step 3
+create table t1(c1 int, c2 int) primary_zone='z1' locality='F@z1,F@z2,L@z3';
+sleep 2;
+
+# Step 4
+let $expect_host=deploy_get_value(ob1.select select concat(svr_ip,':',svr_port) as host from __all_server where zone='z1' except (select concat(svr_ip,':',svr_port) as host from __all_unit where unit_id=1 and zone='z1'), host, 1);
+let $tid=deploy_get_value(ob1.select select table_id from __all_virtual_table where table_name='t1', table_id, 1);
+let $expect_host=deploy_get_value(ob1.select select concat(svr_ip,':',svr_port) as host from __all_server where zone='z1' except (select concat(svr_ip,':',svr_port) as host from __all_virtual_partition_table where table_id!='$tid' and zone='z1'), host, 1);
+let $actual_host=deploy_get_value(ob1.select select concat(svr_ip,':',svr_port) as host from __all_virtual_meta_table where table_id='$tid' and zone='z1', host, 1);
+if($actual_host != $expect_host)
+{
+    connection conn_sys;
+    let $expect = deploy_get_value(ob1.get_obs_by_addr $expect_host);
+    let $actual = deploy_get_value(ob1.get_obs_by_addr $actual_host);
+    $actual.migrate_to $expect,test:test:t1;
+    sleep 5;
+}
+
+let $expect_host=deploy_get_value(ob1.select select concat(svr_ip,':',svr_port) as host from __all_server where zone='z2' except (select concat(svr_ip,':',svr_port) as host from __all_unit where unit_id=1 and zone='z2'), host, 1);
+let $actual_host=deploy_get_value(ob1.select select concat(svr_ip,':',svr_port) as host from __all_virtual_meta_table where table_id='$tid' and zone='z2', host, 1);
+if($actual_host != $expect_host)
+{
+    connection conn_sys;
+    let $expect = deploy_get_value(ob1.get_obs_by_addr $expect_host);
+    let $actual = deploy_get_value(ob1.get_obs_by_addr $actual_host);
+    $actual.migrate_to $expect,test:test:t1;
+    sleep 5;
+}
+
+let $expect_host=deploy_get_value(ob1.select select concat(svr_ip,':',svr_port) as host from __all_server where zone='z3' except (select concat(svr_ip,':',svr_port) as host from __all_unit where unit_id=1 and zone='z3'), host, 1);
+let $actual_host=deploy_get_value(ob1.select select concat(svr_ip,':',svr_port) as host from __all_virtual_meta_table where table_id='$tid' and zone='z3', host, 1);
+if($actual_host != $expect_host)
+{
+    connection conn_sys;
+    let $expect = deploy_get_value(ob1.get_obs_by_addr $expect_host);
+    let $actual = deploy_get_value(ob1.get_obs_by_addr $actual_host);
+    $actual.migrate_to $expect,test:test:t1;
+    sleep 5;
+}
+
+# Step 5
+let $leader=deploy_get_value(ob1.get_leader test:test:t1);
+let $leader_ip=deploy_get_value($leader.ip);
+let $leader_port=deploy_get_value($leader.port);
+
+let $follower_1=deploy_get_value(ob1.select select concat(svr_ip,':',svr_port) as host from __all_virtual_clog_stat where table_id='$tid' and role!='LEADER' and replica_type!='5', host, 1);
+let $follower_1_obs=deploy_get_value(ob1.get_obs_by_addr $follower_1);
+let $follower_1_ip=deploy_get_value(ob1.select select svr_ip as host from __all_virtual_clog_stat where table_id='$tid' and role!='LEADER' and replica_type!='5', host, 1);
+let $follower_1_port=deploy_get_value(ob1.select select svr_port as port from __all_virtual_clog_stat where table_id='$tid' and role!='LEADER' and replica_type!='5', port, 1);
+
+let $follower_2=deploy_get_value(ob1.select select concat(svr_ip,':',svr_port) as host from __all_virtual_clog_stat where table_id='$tid' and role!='LEADER' and replica_type='5', host, 1);
+let $follower_2_obs=deploy_get_value(ob1.get_obs_by_addr $follower_2);
+let $follower_2_ip=deploy_get_value(ob1.select select svr_ip as host from __all_virtual_clog_stat where table_id='$tid' and role!='LEADER' and replica_type='5', host, 1);
+let $follower_2_port=deploy_get_value(ob1.select select svr_port as port from __all_virtual_clog_stat where table_id='$tid' and role!='LEADER' and replica_type='5', port, 1);
+
+sleep 5;
+$leader.block_net $follower_2_obs;
+$follower_2_obs.block_net $leader;
+sleep 2;
+
+connection conn_test;
+
+# Step 6
+let $cnt=150;
+while ($cnt > 0)
+{
+  eval insert into test.t1 values($cnt, $cnt);
+  dec $cnt;
+}
+sleep 20;
+
+# Step 7
+ob1.mysql alter system minor freeze server = ('$follower_1_ip:$follower_1_port');
+sleep 5;
+ob1.mysql alter system minor freeze server = ('$follower_1_ip:$follower_1_port');
+sleep 5;
+# Wait minor freeze finish
+ob1.check_until_timeout select count(table_type)=1 from  __all_virtual_table_mgr where svr_ip = '$follower_1_ip' and svr_port = '$follower_1_port' and table_id = '$tid' and table_type = 0, 1, 300;
+ob1.check_until_timeout select last_replay_log_id > 150 from  __all_virtual_partition_info where svr_ip = '$follower_1_ip' and svr_port = '$follower_1_port' and table_id = '$tid', 1, 100;
+
+sleep 30;
+# Step 8
+$leader.force_stop;
+$leader.clean_net $follower_2_obs;
+sleep 20;
+
+ob1.check_until_timeout select rebuild from oceanbase.__all_virtual_meta_table where table_id='$tid' and svr_ip='$follower_2_ip' and svr_port='$follower_2_port',0,30;
+# Step 9
+ob1.check_until_timeout select count(1) from oceanbase.__all_virtual_clog_stat where table_id='$tid' and role='LEADER', 1, 60;

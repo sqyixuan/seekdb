@@ -1,0 +1,278 @@
+# owner: xingrui.cwh
+# owner group: RS
+# description:  并行truncate 大分区、临时表、自增列等的拦截
+
+connect(sys_conn, $OBMYSQL_MS0, root@sys,,oceanbase, $OBMYSQL_PORT);
+connection sys_conn;
+--disable_warnings
+--disable_query_log
+--disable_result_log
+drop table if exists xingrui_truncate_test, xingrui_truncate_not_exist, xingrui_customer, xingrui_product, xingrui_mysql_tmp_table;
+drop table if exists xingrui_geometry, `xingrui_a'b`, `xingrui_a'"b`, `xingrui_a'\nb`, `xingrui_a'\rb`, `xingrui_a'\tb`, `xingrui_'测试`;
+drop table if exists xingrui_null_to_null, xingrui_null_to_not_null, xingrui_not_null_to_null, xingrui_not_null_to_not_null;
+drop table if exists xingrui_autoinc_without, xingrui_autoinc_again, xingrui_autoinc_value1, xingrui_autoinc_value2, xingrui_autoinc_type;
+--error 1146
+drop index xingrui_truncate_index on xingrui_truncate_test;
+--enable_query_log
+--enable_warnings
+--enable_result_log
+
+# 1.1 create table with large partition
+create table xingrui_truncate_test(col1 int) partition by hash(col1) partitions 100;
+truncate table xingrui_truncate_test;
+
+# 1.2 truncate table not exist
+--error 1146
+truncate table xingrui_truncate_not_exist;
+
+# 1.3 truncate index table
+create index xingrui_truncate_index on xingrui_truncate_test(col1);
+--error 1146
+truncate table xingrui_truncate_index;
+
+# 1.4 truncate table in recyclebin
+set @@recyclebin = on;
+drop table xingrui_truncate_test;
+--error 1146
+truncate table xingrui_truncate_test;
+
+# 1.5 truncate sys table
+--error 1235
+truncate table __all_core_table;
+
+# 1.6 truncate foregin key table
+create table xingrui_product(c1 int primary key, c2 int);
+create table xingrui_customer(c1 int primary key, c2 int, constraint cons_name_customer foreign key(c1) references xingrui_product(c1), foreign key(c2) references xingrui_customer(c1));
+--error 1701
+truncate table xingrui_product;
+
+# 1.7 truncate mysql tmp  table
+#create temporary table xingrui_mysql_tmp_table (col int);
+#truncate xingrui_mysql_tmp_table;
+
+# 1.8 truncate geometry
+create table xingrui_geometry(g geometry  NOT NULL);
+create index idx2 on xingrui_geometry (g);
+INSERT INTO xingrui_geometry (g) VALUES
+  (ST_GeomFromText('POINT(0 0)')),
+  (ST_GeomFromText('POINT(1 1)')),
+  (ST_GeomFromText('POINT(2 2)')),
+  (ST_GeomFromText('POINT(3 3)')),
+  (ST_GeomFromText('POINT(4 4)')),
+  (ST_GeomFromText('POINT(5 5.5)')),
+  (ST_GeomFromText('POINT(6 6)')),
+  (ST_GeomFromText('POINT(7 7)'));
+truncate xingrui_geometry;
+
+# 1.9 under mysql truncate table which has special symbol
+create table `xingrui_a'b`(col1 int);
+truncate table `xingrui_a'b`;
+create table `xingrui_a'"b`(col1 int);
+truncate table `xingrui_a'"b`;
+create table `xingrui_a'\nb`(col1 int);
+truncate table `xingrui_a'\nb`;
+create table `xingrui_a'\rb`(col1 int);
+truncate table `xingrui_a'\rb`;
+create table `xingrui_a'\tb`(col1 int);
+truncate table `xingrui_a'\tb`;
+create table `xingrui_'测试`(col1 int);
+truncate table `xingrui_'测试`;
+
+# 2 truncate table after alter table with autoincrement in offline/online mode
+
+# 2.1 alter table type from null to null
+# 2.1.1 DDL_TABLE_REDEFINITION
+create table xingrui_null_to_null (col1 int auto_increment, col2 int);
+alter table xingrui_null_to_null modify column col1 int;
+truncate table xingrui_null_to_null;
+let $not_init_table_id = query_get_value(select table_id from oceanbase.__all_virtual_table where table_name = "xingrui_null_to_null" and tenant_id = 1, table_id, 1);
+let $truncate_version = query_get_value(select truncate_version from oceanbase.__all_virtual_table where table_id = $not_init_table_id and tenant_id = 1, truncate_version, 1);
+alter table xingrui_null_to_null modify column col1 int primary key auto_increment;
+insert into xingrui_null_to_null values ("666", "666");
+let $autoinc_truncate_version = query_get_value(select truncate_version from oceanbase.__all_virtual_auto_increment where sequence_key = $not_init_table_id and tenant_id = 1, truncate_version, 1);
+if ($autoinc_truncate_version == $truncate_version)
+{
+  echo "offline ddl should not inherit truncate_version";
+}
+
+# 2.1.2 DDL_MODIFY_COLUMN
+drop table xingrui_null_to_null;
+create table xingrui_null_to_null (col1 int auto_increment, col2 int);
+alter table xingrui_null_to_null modify column col1 int;
+truncate table xingrui_null_to_null;
+let $not_init_table_id = query_get_value(select table_id from oceanbase.__all_virtual_table where table_name = "xingrui_null_to_null" and tenant_id = 1, table_id, 1);
+let $truncate_version = query_get_value(select truncate_version from oceanbase.__all_virtual_table where table_id = $not_init_table_id and tenant_id = 1, truncate_version, 1);
+alter table xingrui_null_to_null modify column col1 int auto_increment;
+insert into xingrui_null_to_null values ("666", "666");
+let $autoinc_truncate_version = query_get_value(select truncate_version from oceanbase.__all_virtual_auto_increment where sequence_key = $not_init_table_id and tenant_id = 1, truncate_version, 1);
+if ($autoinc_truncate_version == $truncate_version)
+{
+  echo "offline ddl should not inherit truncate_version";
+}
+
+
+# 2.2 alter table type from null to not null
+# 2.2.1 DDL_TABLE_REDEFINITION
+create table xingrui_null_to_not_null (col1 int auto_increment, col2 int);
+alter table xingrui_null_to_not_null modify column col1 int;
+truncate table xingrui_null_to_not_null;
+let $not_init_table_id = query_get_value(select table_id from oceanbase.__all_virtual_table where table_name = "xingrui_null_to_not_null" and tenant_id = 1, table_id, 1);
+let $truncate_version = query_get_value(select truncate_version from oceanbase.__all_virtual_table where table_id = $not_init_table_id and tenant_id = 1, truncate_version, 1);
+alter table xingrui_null_to_not_null modify column col1 int primary key auto_increment;
+insert into xingrui_null_to_not_null values ("666", "666");
+let $autoinc_truncate_version = query_get_value(select truncate_version from oceanbase.__all_virtual_auto_increment where sequence_key = $not_init_table_id and tenant_id = 1, truncate_version, 1);
+if ($autoinc_truncate_version == $truncate_version)
+{
+  echo "offline ddl should not inherit truncate_version";
+}
+
+# 2.2.2 DDL_MODIFY_COLUMN
+drop table xingrui_null_to_not_null;
+create table xingrui_null_to_not_null (col1 int auto_increment, col2 int);
+alter table xingrui_null_to_not_null modify column col1 int;
+truncate table xingrui_null_to_not_null;
+let $not_init_table_id = query_get_value(select table_id from oceanbase.__all_virtual_table where table_name = "xingrui_null_to_not_null" and tenant_id = 1, table_id, 1);
+let $truncate_version = query_get_value(select truncate_version from oceanbase.__all_virtual_table where table_id = $not_init_table_id and tenant_id = 1, truncate_version, 1);
+alter table xingrui_null_to_not_null modify column col1 int auto_increment not null;
+insert into xingrui_null_to_not_null values ("666", "666");
+let $autoinc_truncate_version = query_get_value(select truncate_version from oceanbase.__all_virtual_auto_increment where sequence_key = $not_init_table_id and tenant_id = 1, truncate_version, 1);
+if ($autoinc_truncate_version == $truncate_version)
+{
+  echo "offline ddl should not inherit truncate_version";
+}
+
+# 2.3 alter table type from not null to null
+# 2.3.1 DDL_TABLE_REDEFINITION
+create table xingrui_not_null_to_null (col1 int not null auto_increment, col2 int);
+alter table xingrui_not_null_to_null modify column col1 int not null;
+truncate table xingrui_not_null_to_null;
+let $not_init_table_id = query_get_value(select table_id from oceanbase.__all_virtual_table where table_name = "xingrui_not_null_to_null" and tenant_id = 1, table_id, 1);
+let $truncate_version = query_get_value(select truncate_version from oceanbase.__all_virtual_table where table_id = $not_init_table_id and tenant_id = 1, truncate_version, 1);
+alter table xingrui_not_null_to_null modify column col1 int auto_increment, drop column col2;
+insert into xingrui_not_null_to_null values ("666");
+let $autoinc_truncate_version = query_get_value(select truncate_version from oceanbase.__all_virtual_auto_increment where sequence_key = $not_init_table_id and tenant_id = 1, truncate_version, 1);
+if ($autoinc_truncate_version == $truncate_version)
+{
+  echo "offline ddl should not inherit truncate_version";
+}
+
+# 2.3.2 DDL_MODIFY_AUTO_INCREMENT online ddl
+drop table xingrui_not_null_to_null;
+create table xingrui_not_null_to_null (col1 int not null auto_increment);
+alter table xingrui_not_null_to_null modify column col1 int not null;
+truncate table xingrui_not_null_to_null;
+let $not_init_table_id = query_get_value(select table_id from oceanbase.__all_virtual_table where table_name = "xingrui_not_null_to_null" and tenant_id = 1, table_id, 1);
+let $truncate_version = query_get_value(select truncate_version from oceanbase.__all_virtual_table where table_id = $not_init_table_id and tenant_id = 1, truncate_version, 1);
+alter table xingrui_not_null_to_null modify column col1 int auto_increment;
+insert into xingrui_not_null_to_null values ("666");
+let $autoinc_truncate_version = query_get_value(select truncate_version from oceanbase.__all_virtual_auto_increment where sequence_key = $not_init_table_id and tenant_id = 1, truncate_version, 1);
+if ($autoinc_truncate_version != $truncate_version)
+{
+  echo "_all_table's truncate_version is not equal to __all_auto_increment's truncate_version";
+}
+
+# 2.4 alter table type from not null to not null
+# 2.4.1 DDL_TABLE_REDEFINITION
+create table xingrui_not_null_to_not_null (col1 int auto_increment not null);
+alter table xingrui_not_null_to_not_null modify column col1 int not null;
+truncate table xingrui_not_null_to_not_null;
+let $not_init_table_id = query_get_value(select table_id from oceanbase.__all_virtual_table where table_name = "xingrui_not_null_to_not_null" and tenant_id = 1, table_id, 1);
+let $truncate_version = query_get_value(select truncate_version from oceanbase.__all_virtual_table where table_id = $not_init_table_id and tenant_id = 1, truncate_version, 1);
+alter table xingrui_not_null_to_not_null modify column col1 int primary key auto_increment;
+insert into xingrui_not_null_to_not_null values ("666");
+let $autoinc_truncate_version = query_get_value(select truncate_version from oceanbase.__all_virtual_auto_increment where sequence_key = $not_init_table_id and tenant_id = 1, truncate_version, 1);
+if ($autoinc_truncate_version == $truncate_version)
+{
+  echo "offline ddl should not inherit truncate_version";
+}
+
+# 2.4.2 DDL_MODIFY_AUTO_INCREMENT online ddl
+drop table xingrui_not_null_to_not_null;
+create table xingrui_not_null_to_not_null (col1 int auto_increment not null);
+alter table xingrui_not_null_to_not_null modify column col1 int not null;
+truncate table xingrui_not_null_to_not_null;
+let $not_init_table_id = query_get_value(select table_id from oceanbase.__all_virtual_table where table_name = "xingrui_not_null_to_not_null" and tenant_id = 1, table_id, 1);
+let $truncate_version = query_get_value(select truncate_version from oceanbase.__all_virtual_table where table_id = $not_init_table_id and tenant_id = 1, truncate_version, 1);
+alter table xingrui_not_null_to_not_null modify column col1 int auto_increment;
+insert into xingrui_not_null_to_not_null values ("666");
+let $autoinc_truncate_version = query_get_value(select truncate_version from oceanbase.__all_virtual_auto_increment where sequence_key = $not_init_table_id and tenant_id = 1, truncate_version, 1);
+if ($autoinc_truncate_version != $truncate_version)
+{
+  echo "_all_table's truncate_version is not equal to __all_auto_increment's truncate_version";
+}
+
+# 2.5 alter table without truncate, and sequence value should not be init
+create table xingrui_autoinc_without (col1 int auto_increment);
+let $not_init_table_id = query_get_value(select table_id from oceanbase.__all_virtual_table where table_name = "xingrui_autoinc_without", table_id, 1);
+insert into xingrui_autoinc_without values ("666");
+let $before_alter = query_get_value(select sequence_value from oceanbase.__all_virtual_auto_increment where sequence_key = $not_init_table_id and tenant_id = 1, sequence_value, 1);
+alter table xingrui_autoinc_without modify column col1 int not null;
+alter table xingrui_autoinc_without modify column col1 int auto_increment;
+let $after_alter = query_get_value(select sequence_value from oceanbase.__all_virtual_auto_increment where sequence_key = $not_init_table_id and tenant_id = 1, sequence_value, 1);
+if ($before_alter != $after_alter)
+{
+  echo "autoincrement sequence_value is mistake inited!!!";
+}
+
+# 2.6 alter table and truncate table add and drop auto_increment over and over again
+create table xingrui_autoinc_again (col1 int auto_increment not null);
+alter table xingrui_autoinc_again modify column col1 int not null;
+truncate table xingrui_autoinc_again;
+let $not_init_table_id = query_get_value(select table_id from oceanbase.__all_virtual_table where table_name = "xingrui_autoinc_again" and tenant_id = 1, table_id, 1);
+let $truncate_version = query_get_value(select truncate_version from oceanbase.__all_virtual_table where table_id = $not_init_table_id and tenant_id = 1, truncate_version, 1);
+alter table xingrui_autoinc_again modify column col1 int auto_increment not null;
+insert into xingrui_autoinc_again values ("666");
+alter table xingrui_autoinc_again modify column col1 int not null;
+alter table xingrui_autoinc_again modify column col1 int auto_increment not null;
+insert into xingrui_autoinc_again values ("666");
+let $autoinc_truncate_version = query_get_value(select truncate_version from oceanbase.__all_virtual_auto_increment where sequence_key = $not_init_table_id and tenant_id = 1, truncate_version, 1);
+if ($autoinc_truncate_version != $truncate_version)
+{
+  echo "_all_table's truncate_version is not equal to __all_auto_increment's truncate_version";
+}
+
+# 2.7 modify autoincrement
+# 2.7.1 modify autoincrement with truncate
+create table xingrui_autoinc_value1 (col1 int auto_increment);
+insert into xingrui_autoinc_value1 values("666");
+truncate table xingrui_autoinc_value1;
+let $not_init_table_id = query_get_value(select table_id from oceanbase.__all_virtual_table where table_name = "xingrui_autoinc_value1" and tenant_id = 1, table_id, 1);
+let $truncate_version = query_get_value(select truncate_version from oceanbase.__all_virtual_table where table_name = "xingrui_autoinc_value1" and tenant_id = 1, truncate_version, 1);
+alter table xingrui_autoinc_value1 set auto_increment = 10000;
+let $autoinc_truncate_version = query_get_value(select truncate_version from oceanbase.__all_virtual_auto_increment where sequence_key = $not_init_table_id and tenant_id = 1, truncate_version, 1);
+if ($autoinc_truncate_version != $truncate_version)
+{
+  echo "_all_table's truncate_version is not equal to __all_auto_increment's truncate_version";
+}
+
+# 2.7.2 modify autoincrement without truncate
+create table xingrui_autoinc_value2 (col1 int auto_increment);
+let $not_init_table_id = query_get_value(select table_id from oceanbase.__all_virtual_table where table_name = "xingrui_autoinc_value2" and tenant_id = 1, table_id, 1);
+insert into xingrui_autoinc_value2 values ("666");
+let $before_alter = query_get_value(select sequence_value from oceanbase.__all_virtual_auto_increment where sequence_key = $not_init_table_id and tenant_id = 1, sequence_value, 1);
+alter table xingrui_autoinc_value2 set auto_increment = 10000;
+let $after_alter = query_get_value(select sequence_value from oceanbase.__all_virtual_auto_increment where sequence_key = $not_init_table_id and tenant_id = 1, sequence_value, 1);
+if ($before_alter != $after_alter)
+{
+  echo "autoincrement sequence_value is mistake inited!!!";
+}
+
+# 2.8 alter table online ddl like change varchar length
+create table xingrui_autoinc_type (col1 int not null, col2 varchar(10));
+let $not_init_table_id = query_get_value(select table_id from oceanbase.__all_virtual_table where table_name = "xingrui_autoinc_type" and tenant_id = 1, table_id, 1);
+insert into xingrui_autoinc_type values ("666", "666");
+truncate table xingrui_autoinc_type;
+let $truncate_version = query_get_value(select truncate_version from oceanbase.__all_virtual_table where table_id = $not_init_table_id and tenant_id = 1, truncate_version, 1);
+alter table xingrui_autoinc_type modify column col1 int auto_increment not null;
+alter table xingrui_autoinc_type change column col2 col2 VARCHAR(20);
+let $autoinc_truncate_version = query_get_value(select truncate_version from oceanbase.__all_virtual_auto_increment where sequence_key = $not_init_table_id and tenant_id = 1, truncate_version, 1);
+if ($autoinc_truncate_version != $truncate_version)
+{
+  echo "_all_table's truncate_version is not equal to __all_auto_increment's truncate_version";
+}
+
+drop table xingrui_customer, xingrui_product, xingrui_geometry;
+#drop table xingrui_mysql_tmp_table;
+drop table `xingrui_a'b`, `xingrui_a'"b`, `xingrui_a'\nb`, `xingrui_a'\rb`, `xingrui_a'\tb`, `xingrui_'测试`;
+drop table xingrui_null_to_null, xingrui_null_to_not_null, xingrui_not_null_to_null, xingrui_not_null_to_not_null;
+drop table xingrui_autoinc_without, xingrui_autoinc_again, xingrui_autoinc_value1, xingrui_autoinc_value2, xingrui_autoinc_type;

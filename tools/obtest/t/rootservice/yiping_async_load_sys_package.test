@@ -1,0 +1,90 @@
+ob1=OBI(cluster=1:1:1,proxy_num=0);
+ob1.reboot;
+
+ob_connect(sys_conn, ob1.z1.obs0, root@sys,,oceanbase,USE_MYSQL_CONNECTOR);
+# mysql完成，oracle未完成
+select job_id, job_type, job_status from oceanbase.__all_rootservice_job;
+
+# 集群重启
+ob1.force_stop;
+ob1.nstart;
+
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where start_service_time <= 0 or status='INACTIVE',0,180;
+ob1.check_until_timeout select count(1) as unsync_cnt from GV\$OB_LOG_STAT where in_sync = 'NO',0,600;
+source include/check_schema_sync_for_restart.inc;
+
+let $leader_zone=deploy_get_value(ob1.select select zone from oceanbase.__all_ls_meta_table where role=1 and ls_id=1 and tenant_id=1, zone, 1);
+
+# 强制load sys package报错4016，验证能自动重试
+ob1.mysql alter system set_tp tp_name=ERRSIM_LOAD_PACKAGE_ERROR, error_code=4016, frequency = 1;
+ob1.$leader_zone.obs0.check_rs_log_until_success -c 'ERRSIM_LOAD_PACKAGE_ERROR.*ret.-4016';
+ob1.mysql alter system set_tp tp_name=ERRSIM_LOAD_PACKAGE_ERROR, error_code=4016, frequency = 0;
+
+# 重启后自动执行load sys package，等所有load sys package的rs job完成
+ob1.check_until_timeout select count(*) from __all_rootservice_job where job_status!='SUCCESS', 0, 600;
+
+let $ip = deploy_get_value(ob1.z1.obs0.ip);
+let $port = deploy_get_value(ob1.z1.obs0.port);
+
+ob1.mysql alter tenant sys set primary_zone='z1';
+ob1.check_until_timeout select role from __all_ls_meta_table where ls_id=1 and tenant_id=1 and zone='z1', 1, 600;
+ob1.check_until_timeout select count(*)>0 from oceanbase.__all_rootservice_event_history where event='full_rootservice' and value1=0 and value2 like '%$ip:$port%' order by 1 desc, 1, 10;
+
+# 集群重启
+ob1.force_stop;
+ob1.nstart;
+
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where start_service_time <= 0 or status='INACTIVE',0,180;
+ob1.check_until_timeout select count(1) as unsync_cnt from GV\$OB_LOG_STAT where in_sync = 'NO',0,600;
+source include/check_schema_sync_for_restart.inc;
+
+ob1.check_until_timeout select role from oceanbase.__all_ls_meta_table where ls_id=1 and tenant_id=1 and zone='z1', 1, 600;
+ob1.check_until_timeout select count(*)>0 from oceanbase.__all_rootservice_event_history where event='full_rootservice' and value1=0 and value2 like '%$ip:$port%' order by 1 desc, 1, 10;
+
+# 重启后会自动执行一次load sys package，这个时候因为重启前成功了，所以预期不会走到执行DDL
+ob1.z1.obs0.check_rs_log_until_success -c "rs job is not INPROGRESS, no need to load package";
+
+ob1.mysql create resource unit box max_cpu 4, memory_size='10G';
+ob1.mysql create resource pool pool unit = 'box', unit_num = 1;
+
+ob1.mysql update oceanbase.__all_rootservice_job set job_status='INPROGRESS' where job_type='LOAD_ORACLE_SYS_PACKAGE';
+
+ob_connect(sys_conn, ob1.z1.obs0, root@sys,,oceanbase,USE_MYSQL_CONNECTOR);
+send create tenant oracle replica_num = 1, resource_pool_list=('pool') set ob_tcp_invited_nodes='%', ob_compatibility_mode='oracle';
+
+# 创建租户会block在等待sys package load完成
+ob1.z1.obs0.check_rs_log_until_success -c "sys_package is not ready";
+
+ob1.mysql update oceanbase.__all_rootservice_job set job_status='SUCCESS' where job_type='LOAD_ORACLE_SYS_PACKAGE';
+
+let $sys_package_count = deploy_get_value(ob1.select select count(*) a from __all_package, a, 1);
+
+reap;
+
+# 新集群，验证导入失败能通过run upgrade job的方式重新导入
+ob2=OBI(cluster=1:1:1,proxy_num=0);
+ob2.reboot;
+ob2.mysql update oceanbase.__all_rootservice_job set job_status='SUCCESS' where job_type='LOAD_ORACLE_SYS_PACKAGE';
+# 集群重启
+ob2.force_stop;
+ob2.nstart;
+
+ob2.check_until_timeout select count(*) from oceanbase.__all_server where start_service_time <= 0 or status='INACTIVE',0,180;
+ob2.check_until_timeout select count(1) as unsync_cnt from GV\$OB_LOG_STAT where in_sync = 'NO',0,600;
+--disable_query_log
+ob2.check_until_timeout select count(*) from oceanbase.__all_server a left join oceanbase.__all_virtual_server_schema_info b on a.svr_ip = b.svr_ip and a.svr_port = b.svr_port where b.svr_ip is null, 0, 120;
+ob2.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_server_schema_info as a join oceanbase.__all_virtual_server_schema_info as b on a.tenant_id = b.tenant_id  where a.refreshed_schema_version != b.refreshed_schema_version or a.refreshed_schema_version % 8 != 0, 0, 180;
+--enable_query_log
+let $new_sys_package_count = deploy_get_value(ob2.select select count(*) a from __all_package, a, 1);
+if ($new_sys_package_count == $sys_package_count)
+{
+--echo sys_package load finished, case error
+--exit
+}
+ob2.mysql alter system run upgrade job 'UPGRADE_SYSTEM_PACKAGE';
+ob2.check_until_timeout select job_status from __all_rootservice_job where job_type='UPGRADE_SYSTEM_PACKAGE', SUCCESS, 120;
+let $new_sys_package_count = deploy_get_value(ob2.select select count(*) a from __all_package, a, 1);
+if ($new_sys_package_count != $sys_package_count)
+{
+--echo sys_package load failed
+}

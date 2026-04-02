@@ -1,0 +1,237 @@
+##########################
+# owner : keqing.llt
+# owner group: CLOG
+# description: test for rpc compress
+##########################
+
+ob1=OBI(cluster=1:1:1, proxy_num=0);
+
+let $extra_conf = "cpu_count=16,memory_limit='20G',system_memory='5G',__min_full_resource_pool_memory='1073741824',cache_wash_threshold='1G',enable_async_syslog=false,_private_buffer_size='16K',_fast_commit_callback_count='1',log_disk_size='20G'";
+ob1.z1.obs0.set extra_config=$extra_conf;
+ob1.z2.obs0.set extra_config=$extra_conf;
+ob1.z3.obs0.set extra_config=$extra_conf;
+
+sleep 3;
+ob1.reboot;
+sleep 3;
+let $cpu = 1;
+let $memory = '2G';
+let $disk = '2G';
+let $iops = 100000;
+let $session = 64;
+
+ob_connect(conn_sys, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+set @@session.ob_query_timeout = 1000000000;
+# mysql tenant
+eval CREATE RESOURCE UNIT unit_1 MAX_CPU $cpu, MEMORY_SIZE $memory, MAX_IOPS $iops, LOG_DISK_SIZE $disk;
+eval CREATE RESOURCE POOL pool_1 UNIT = 'unit_1', UNIT_NUM = 1, zone_list = ('z1', 'z2', 'z3');;
+eval CREATE TENANT mysql RESOURCE_POOL_LIST = ('pool_1'), primary_zone='z1;z2' set ob_tcp_invited_nodes='%';
+
+source include/check_schema_sync.inc;
+
+let $mysql_tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = 'mysql', tenant_id, 1);
+
+let $z1_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $z1_port = deploy_get_value(ob1.z1.obs0.port);
+let $z2_ip = deploy_get_value(ob1.z2.obs0.ip);
+let $z2_port = deploy_get_value(ob1.z2.obs0.port);
+let $z3_ip = deploy_get_value(ob1.z3.obs0.ip);
+let $z3_port = deploy_get_value(ob1.z3.obs0.port);
+
+ob1.check_until_timeout select count(*) from __all_virtual_ls_meta_table where tenant_id = '$mysql_tenant_id' and ls_id = 1001 and role = 1, 1, 60;
+ob1.check_until_timeout select count(*) from __all_virtual_ls_meta_table where tenant_id = '$mysql_tenant_id' and ls_id = 1001 and role = 1 and svr_ip = '$z3_ip' and svr_port = '$z3_port', 0, 60;
+let $leader_ip=deploy_get_value(ob1.select select svr_ip as host from __all_virtual_ls_meta_table where tenant_id = $mysql_tenant_id and ls_id =  1001 and role = 1,  host, 1);
+let $leader_ip_port=deploy_get_value(ob1.select select concat(svr_ip,':',svr_port) as host from __all_virtual_ls_meta_table where tenant_id = $mysql_tenant_id and ls_id =  1001 and role = 1 order by svr_ip, svr_port limit 1, host, 1);
+
+if ($leader_ip == $z1_ip)
+{
+  let $follower_ip_1 = $z2_ip;
+  let $follower_port_1 = $z2_port;
+  let $follower_ip_2 = $z3_ip;
+  let $follower_port_2 = $z3_port;
+}
+
+if ($leader_ip == $z2_ip)
+{
+  let $follower_ip_1 = $z1_ip;
+  let $follower_port_1 = $z1_port;
+  let $follower_ip_2 = $z3_ip;
+  let $follower_port_2 = $z3_port;
+}
+
+let $follower_ip_port_1=deploy_get_value(ob1.select select concat(svr_ip,':',svr_port) as host from __all_virtual_ls_meta_table where tenant_id = $mysql_tenant_id and ls_id =  1001 and svr_ip = '$follower_ip_1' and svr_port = '$follower_port_1', host, 1);
+let $follower_ip_port_2=deploy_get_value(ob1.select select concat(svr_ip,':',svr_port) as host from __all_virtual_ls_meta_table where tenant_id = $mysql_tenant_id and ls_id =  1001 and svr_ip = '$follower_ip_2' and svr_port = '$follower_port_2', host, 1);
+let $leader_obs=deploy_get_value(ob1.get_obs_by_addr $leader_ip_port);
+let $follower_obs_1=deploy_get_value(ob1.get_obs_by_addr $follower_ip_port_1);
+let $follower_obs_2=deploy_get_value(ob1.get_obs_by_addr $follower_ip_port_2);
+
+ob_connect(conn_mysql, ob1.z1.obs0, root@mysql, , test, , USE_MYSQL_CONNECTOR);
+sleep 3;
+alter system set log_transport_compress_all= 'True';
+
+#lz4_1.0
+alter system set log_transport_compress_func= 'lz4_1.0';
+
+# create table
+create table t1 (c1 int primary key, c2 int);
+source include/check_schema_sync.inc;
+
+# insert and update
+insert into t1 values(1, 11);
+insert into t1 values(2, 22);
+insert into t1 values(3, 33);
+insert into t1 values(4, 44);
+insert into t1 values(5, 55);
+update t1 set c2=2222 where c1=2;
+delete from t1 where c2<100;
+select * from t1 where c1 != 5;
+--disable_query_log
+let $cnt=100;
+while ($cnt > 5)
+{
+  eval insert into t1 values($cnt, $cnt);
+  dec $cnt;
+}
+--enable_query_log
+
+# swith leader and insert data
+ob_connect(conn_sys, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection conn_sys;
+source include/check_schema_sync.inc;
+eval alter system switch replica leader ls=1001 server='$follower_ip_port_1' tenant='mysql';
+# check switch leader success
+ob1.check_until_timeout select count(*) from __all_virtual_ls_meta_table where tenant_id = '$mysql_tenant_id' and concat(svr_ip,':',svr_port) = '$follower_ip_port_1' and ls_id = 1001 and role = 1, 1, 60;
+sleep 10;
+ob_connect(conn_mysql, ob1.z1.obs0, root@mysql, , test, , USE_MYSQL_CONNECTOR);
+
+--disable_query_log
+let $cnt=200;
+while ($cnt > 100)
+{
+  eval insert into t1 values($cnt, $cnt);
+  dec $cnt;
+}
+--enable_query_log
+
+# reboot and check data
+ob1.z1.obs0.force_stop;
+sleep 5;
+ob1.z1.obs0.nstart;
+sleep 30;
+source include/check_schema_sync.inc;
+ob1.check_until_timeout select count(*) from __all_virtual_log_stat where tenant_id = $mysql_tenant_id and ls_id = 1001 and role = 'LEADER', 1, 120;
+
+ob_connect(conn_mysql, ob1.z1.obs0, root@mysql, , test, , USE_MYSQL_CONNECTOR);
+connection conn_mysql;
+select count(*) from t1;
+drop table if exists t1;
+
+#zstd_1.0
+alter system set log_transport_compress_func= 'zstd_1.0';
+# create table
+create table t1 (c1 int primary key, c2 int);
+source include/check_schema_sync.inc;
+
+# insert and update
+insert into t1 values(1, 11);
+insert into t1 values(2, 22);
+insert into t1 values(3, 33);
+insert into t1 values(4, 44);
+insert into t1 values(5, 55);
+update t1 set c2=2222 where c1=2;
+delete from t1 where c2<100;
+select * from t1 where c1 != 5;
+let $cnt=100;
+--disable_query_log
+while ($cnt > 5)
+{
+  eval insert into t1 values($cnt, $cnt);
+  dec $cnt;
+}
+--enable_query_log
+
+# swith leader and insert data
+ob_connect(conn_sys, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection conn_sys;
+source include/check_schema_sync.inc;
+eval alter system switch replica leader ls=1001 server='$follower_ip_port_1' tenant='mysql';
+# check switch leader success
+ob1.check_until_timeout select count(*) from __all_virtual_ls_meta_table where tenant_id = '$mysql_tenant_id' and concat(svr_ip,':',svr_port) = '$follower_ip_port_1' and ls_id = 1001 and role = 1, 1, 60;
+sleep 10;
+ob_connect(conn_mysql, ob1.z1.obs0, root@mysql, , test, , USE_MYSQL_CONNECTOR);
+--disable_query_log
+let $cnt=200;
+while ($cnt > 100)
+{
+  eval insert into t1 values($cnt, $cnt);
+  dec $cnt;
+}
+--enable_query_log
+
+# reboot and check data
+ob1.z1.obs0.force_stop;
+sleep 5;
+ob1.z1.obs0.nstart;
+sleep 30;
+source include/check_schema_sync.inc;
+ob1.check_until_timeout select count(*) from __all_virtual_log_stat where tenant_id = $mysql_tenant_id and ls_id = 1001 and role = 'LEADER', 1, 120;
+
+ob_connect(conn_mysql, ob1.z1.obs0, root@mysql, , test, , USE_MYSQL_CONNECTOR);
+connection conn_mysql;
+select count(*) from t1;
+drop table if exists t1;
+
+#zstd_1.3.8
+alter system set log_transport_compress_func= 'zstd_1.3.8';
+# create table
+create table t1 (c1 int primary key, c2 int);
+source include/check_schema_sync.inc;
+
+# insert and update
+insert into t1 values(1, 11);
+insert into t1 values(2, 22);
+insert into t1 values(3, 33);
+insert into t1 values(4, 44);
+insert into t1 values(5, 55);
+update t1 set c2=2222 where c1=2;
+delete from t1 where c2<100;
+select * from t1 where c1 != 5;
+let $cnt=100;
+--disable_query_log
+while ($cnt > 5)
+{
+  eval insert into t1 values($cnt, $cnt);
+  dec $cnt;
+}
+--enable_query_log
+
+# swith leader and insert data
+ob_connect(conn_sys, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection conn_sys;
+source include/check_schema_sync.inc;
+eval alter system switch replica leader ls=1001 server='$follower_ip_port_1' tenant='mysql';
+# check switch leader success
+ob1.check_until_timeout select count(*) from __all_virtual_ls_meta_table where tenant_id = '$mysql_tenant_id' and concat(svr_ip,':',svr_port) = '$follower_ip_port_1' and ls_id = 1001 and role = 1, 1, 60;
+sleep 10;
+ob_connect(conn_mysql, ob1.z1.obs0, root@mysql, , test, , USE_MYSQL_CONNECTOR);
+--disable_query_log
+let $cnt=200;
+while ($cnt > 100)
+{
+  eval insert into t1 values($cnt, $cnt);
+  dec $cnt;
+}
+--enable_query_log
+
+# reboot and check data
+ob1.z1.obs0.force_stop;
+sleep 5;
+ob1.z1.obs0.nstart;
+sleep 30;
+source include/check_schema_sync.inc;
+ob1.check_until_timeout select count(*) from __all_virtual_log_stat where tenant_id = $mysql_tenant_id and ls_id = 1001 and role = 'LEADER', 1, 120;
+
+ob_connect(conn_mysql, ob1.z1.obs0, root@mysql, , test, , USE_MYSQL_CONNECTOR);
+connection conn_mysql;
+select count(*) from t1;
+drop table if exists t1;

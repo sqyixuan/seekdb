@@ -1,0 +1,85 @@
+# owner: yunxing.cyx
+# owner group: trans
+# description: standby tenant transaction behavior
+# ------------------
+
+connect (sys,$OBMYSQL_MS0,root,,oceanbase,$OBMYSQL_PORT);
+connect (mysql_conn,$OBMYSQL_MS0,root,,test,$OBMYSQL_PORT);
+
+connection sys;
+--disable_warnings
+
+# create standby tenant of tt_test;
+connection sys;
+#create resource unit if not exists standby_test_unit max_cpu 2, memory_size='2G';
+drop tenant if exists cyx_standby force;
+drop resource pool if exists cyx_standby_pool;
+#create resource pool cyx_standby_pool unit=standby_test_unit, unit_num=1, zone_list=('zone1');
+
+connection mysql_conn;
+create user if not exists rep_user identified by '123456';
+grant select on oceanbase.* to rep_user@'%';
+
+connection sys;
+#let $svr_ip_port=`select concat(svr_ip,":",inner_port) from oceanbase.__all_server where zone = 'zone1' limit 1`;
+--disable_query_log
+#eval create standby tenant cyx_standby log_restore_source = 'service=$svr_ip_port user=rep_user password=123456' resource_pool_list=('cyx_standby_pool');
+--enable_query_log
+
+--enable_warnings
+
+#connect (standby_conn,$OBMYSQL_MS0,root@cyx_standby,,test,$OBMYSQL_PORT);
+
+connection mysql_conn;
+set autocommit=1;
+--disable_warnings
+drop table if exists standby_t;
+--enable_warnings
+create table standby_t(id int);
+insert into standby_t values(1),(2),(3);
+
+# 1. plain select
+connection mysql_conn;
+--sleep 20
+show create table test.standby_t;
+set autocommit=1;
+select * from standby_t;
+
+# 2. dml
+connection mysql_conn;
+#--error 4688
+insert into standby_t values(4);
+
+# 3. start transaction
+connection mysql_conn;
+#--error 4688
+start transaction read write;
+
+# 4. serializable read
+connection mysql_conn;
+set session transaction isolation level serializable;
+set autocommit=0;
+select * from standby_t;
+
+connection mysql_conn;
+insert into standby_t values(5);
+commit;
+
+# --- repeatable read ---
+connection mysql_conn;
+select * from standby_t;
+commit;
+select * from standby_t;
+
+# 5. others
+connection mysql_conn;
+--disable_result_log
+show databases;
+--enable_result_log
+
+# teardown
+connection sys;
+--disable_warnings
+#drop tenant if exists cyx_standby force;
+drop resource pool if exists cyx_standby_pool;
+--enable_warnings

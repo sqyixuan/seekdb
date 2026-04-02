@@ -1,0 +1,125 @@
+# owner: rongxuan.lc
+# description: 本case是为了测试带readonly的unit的迁移 
+
+####unit中带有readonly的副本
+#(1)手动迁移unit;
+#(2)宕机迁移；
+
+ob1=OBI(cluster=2:2:2:3:3, proxy_num=0, init_unit_cpu=2,locality=HZ:HZ:SH:SH:SZ);
+ob1.reboot;
+
+##新建租户
+ob1.mysql create resource pool rp1 unit = 'sys_unit_config', unit_num = 2, zone_list = ('z1', 'z2', 'z3', 'z4', 'z5');
+ob1.mysql create tenant tt1 replica_num 5, primary_zone 'z2', resource_pool_list ('rp1'), locality="F@z1,F@z2,F@z3,L@z4, L@z5, R@z4,R@z5";
+ob1.mysql alter system set balancer_idle_time = '10s';
+ob1.mysql alter system set server_data_copy_in_concurrency = 10;
+ob1.mysql alter system set server_data_copy_out_concurrency = 10;
+ob1.mysql alter system set server_permanent_offline_time='20s';
+ob1.mysql alter system set server_temporary_offline_time='15s';
+sleep 2;
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from __all_tenant where tenant_name = "tt1", tenant_id, 1);
+let $tt1ip= deploy_get_value(ob1.select select svr_ip from __all_unit where zone='z1' and resource_pool_id = $tenant_id limit 1, svr_ip, 1);
+let $port= deploy_get_value(ob1.select select svr_port from __all_unit where zone='z1' and resource_pool_id = $tenant_id limit 1, svr_port, 1);
+let $tt1port = deploy_get_value(ob1.select select inner_port from __all_server where svr_ip='$tt1ip' and svr_port = $port, inner_port, 1);
+
+connect(tt1_conn, $tt1ip, root@tt1,,test, $tt1port);
+connection tt1_conn;
+eval create table test(c1 int primary key, c2 int) locality="F@z1,F@z2,F@z3,R@z4,R@z5";
+eval insert into test values(1,2);
+
+##检查unit的位置
+let $obs0ip = deploy_get_value(ob1.z4.obs1.ip);
+let $obs0port = deploy_get_value(ob1.z4.obs1.port);
+let $obs0sqlport = deploy_get_value(ob1.z4.obs1.mysql_port);
+
+let $obs4ip = deploy_get_value(ob1.z4.obs0.ip);
+let $obs4port = deploy_get_value(ob1.z4.obs0.port);
+
+--disable_query_log
+--disable_result_log
+let $in_z4 = deploy_get_value(ob1.select select count(*) c from oceanbase.__all_virtual_meta_table where svr_port=$obs0port and svr_ip='$obs0ip', c, 1);
+if ($in_z4 == 1)
+{
+  let $destip=deploy_get_value(ob1.z4.obs0.ip);
+  let $destport=deploy_get_value(ob1.z4.obs0.port);
+  ob1.mysql alter system migrate unit 1009 destination '$destip:$destport';
+} 
+if ($in_z4 == 0)
+{
+  let $destip=deploy_get_value(ob1.z4.obs1.ip);
+  let $destport=deploy_get_value(ob1.z4.obs1.port);
+  ob1.mysql alter system migrate unit 1009 destination '$destip:$destport';
+}
+--enable_query_log
+--enable_result_log
+##检查迁移成功
+let $count = 360;
+while($count >0)
+{
+  if ($in_z4 == 1)
+  {
+    let $unit = deploy_get_value(ob1.select select count(*) c from oceanbase.__all_unit where unit_id = 1009 and svr_ip= '$obs4ip' and svr_port=$obs4port, c, 1);
+    if ($unit == 1) 
+    {
+      echo "migrate unit 1009 success";
+      let $count = 0;
+    }
+  }
+  if ($in_z4 == 0)
+  {
+    let $unit = deploy_get_value(ob1.select select count(*) c from oceanbase.__all_unit where unit_id = 1009 and svr_ip= '$obs0ip' and svr_port=$obs0port, c, 1);
+    if ($unit == 1) 
+    {
+      echo "migrate unit 1009 success";
+      let $count = 0;
+    }
+  }
+  dec $count;
+  sleep 1;
+}
+
+let $z2ip = deploy_get_value(ob1.z5.obs1.ip);
+let $z2port = deploy_get_value(ob1.z5.obs1.port);
+let $z3ip = deploy_get_value(ob1.z5.obs0.ip);
+let $z3port = deploy_get_value(ob1.z5.obs0.port);
+
+##停掉z5上面的一台机器，检查迁移；
+--disable_query_log
+--disable_result_log
+let $in_z5 = deploy_get_value(ob1.select select count(*) c from oceanbase.__all_virtual_meta_table where svr_port=$z2port and svr_ip='$z2ip', c, 1);
+if ($in_z5 == 1)
+{
+  ob1.z5.obs1.stop;
+} 
+if ($in_z5 == 0)
+{
+  ob1.z5.obs0.stop;
+}
+--enable_query_log
+--enable_result_log
+
+##等待永久下线，迁移unit
+let $count = 360;
+while($count >0)
+{
+  if ($in_z5 == 1)
+  {
+    let $unit = deploy_get_value(ob1.select select count(*) c from oceanbase.__all_unit where unit_id = 1010 and svr_ip= '$z3ip' and svr_port=$z3port, c, 1);
+    if ($unit == 1) 
+    {
+      echo "migrate unit 1010 success";
+      let $count = 0;
+    }
+  }
+  if ($in_z5 == 0)
+  {
+    let $unit = deploy_get_value(ob1.select select count(*) c from oceanbase.__all_unit where unit_id = 1010 and svr_ip= '$z2ip' and svr_port=$z2port, c, 1);
+    if ($unit == 1) 
+    {
+      echo "migrate unit 1010 success";
+      let $count = 0;
+    }
+  }
+  dec $count;
+  sleep 1;
+}

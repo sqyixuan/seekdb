@@ -1,0 +1,151 @@
+#owner: dachuan.sdc
+# owner group: sql2
+# tags: schema
+# description
+--disable_query_log
+
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+
+--disable_warnings
+drop database if exists hualong;
+create database hualong;
+--enable_warnings
+
+use hualong;
+create table hidden_t1 (c1 int, c2 int default 5, c3 int default 10);
+create table hidden_pt1 (c1 int, c2 int default 8, c3 int default 16) partition by hash (c1) partitions 3;
+
+#test hidden_t1
+--echo test hidden_t1
+--sorted_result
+
+connect (obsys1,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection obsys1;
+select column_id, column_name, rowkey_position, is_hidden, nullable from oceanbase.__all_virtual_column where table_id in (select t.table_id from oceanbase.__all_virtual_table t join oceanbase.__all_virtual_database d on t.database_id = d.database_id where t.table_name = 'hidden_t1' and d.database_name = 'hualong');
+
+connection default;
+
+insert into hidden_t1(c1) values (1), (2), (3), (4);
+insert into hidden_t1 values (5, 5, 5);
+insert into hidden_t1(c1) values (6);
+
+--sorted_result
+select * from hidden_t1;
+
+#test hidden_pt1
+--echo test hiden_pt1
+--sorted_result
+
+connection obsys1;
+select column_id, column_name, rowkey_position, is_hidden, nullable from oceanbase.__all_virtual_column where table_id in (select t.table_id from oceanbase.__all_virtual_table t join oceanbase.__all_virtual_database d on t.database_id = d.database_id where t.table_name = 'hidden_pt1' and d.database_name = 'hualong');
+connection default;
+
+insert into hidden_pt1(c1) values (0), (3), (6);
+insert into hidden_pt1 values (1, 1, 1), (4, 4, 4), (7, 7, 7);
+insert into hidden_pt1(c1,c2) values (2, 2), (5, 5), (8, 8);
+
+--sorted_result
+select * from hidden_pt1;
+
+#test show table
+--echo test show create table
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create table hidden_t1;
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create table hidden_pt1;
+
+#test information_schema
+--sorted_result
+select * from information_schema.statistics where table_name = 'hidden_t1';
+--sorted_result
+select * from information_schema.table_constraints where table_name = 'hidden_t1';
+
+--sorted_result
+select * from information_schema.statistics where table_name = 'hidden_t1';
+--sorted_result
+select * from information_schema.table_constraints where table_name = 'hidden_t1';
+
+create index idx_ht1 on hidden_t1 (c2);
+alter table hidden_t1 add unique index uidx_ht1 (c1, c3);
+create index idx_hpt1 on hidden_pt1 (c2) local;
+alter table hidden_pt1 add unique index uidx_hpt1 (c1, c3) local;
+
+### hidden_t1
+--source mysql_test/include/check_all_idx_ok.inc
+show index from hidden_t1;
+--sorted_result
+select * from information_schema.statistics where table_name = 'hidden_t1' and table_schema='hualong';
+--sorted_result
+select * from information_schema.table_constraints where constraint_schema = 'hualong' and table_name = 'hidden_t1';
+
+--sorted_result
+connection obsys1;
+select column_id, column_name, index_position, rowkey_position, is_hidden, nullable from oceanbase.__all_virtual_column where table_id in (select t.table_id from oceanbase.__all_virtual_table t join oceanbase.__all_virtual_database d on t.database_id = d.database_id where t.table_name like '%idx_ht1' and d.database_name = 'hualong') order by table_id;
+connection default;
+## hideen_pt1
+--source mysql_test/include/check_all_idx_ok.inc
+show index from hidden_pt1;
+--sorted_result
+select * from information_schema.statistics where table_name = 'hidden_pt1' and table_schema='hualong';
+--sorted_result
+select * from information_schema.table_constraints where constraint_schema = 'hualong' and table_name = 'hidden_pt1';
+
+--sorted_result
+connection obsys1;
+select column_id, column_name, index_position, rowkey_position, is_hidden, nullable from oceanbase.__all_virtual_column where table_id in (select t.table_id from oceanbase.__all_virtual_table t join oceanbase.__all_virtual_database d on t.database_id = d.database_id where t.table_name like '%idx_hpt1' and d.database_name = 'hualong') order by table_id;
+connection default;
+
+#### test alter column
+create table hidden_t2 (c1 int) partition by hash(c1) partitions 3;
+--error 1235
+alter table hidden_t2 add column c3 int primary key;
+alter table hidden_t2 modify column c1 int primary key;
+--error 1068
+alter table hidden_t2 change column c1 c3 int primary key;
+--error 3855
+alter table hidden_t2 drop column c1;
+alter table hidden_t2 add column c2 int;
+--error 3855
+alter table hidden_t2 drop column c1;
+
+### use trick method to test cluster_id and partition_id
+create table hidden_t3 (a1 int, a2 int) partition by hash(a1) partitions 3;
+insert into hidden_t3 values (0, 0), (3, 3);
+insert into hidden_t3 values (1, 1);
+replace into hidden_t3 values (1, 2), (4, 2), (7, 2);
+insert into hidden_t3 values (2, 2), (5, 5), (8, 8);
+insert into hidden_t3 values (1, 1) on duplicate key update a2 = 3;
+--sorted_result
+select * from hidden_t3;
+
+insert into hidden_t3 values (99,99);
+insert into hidden_t3 values (100,100);
+insert into hidden_t3 values (101,101);
+
+connection obsys1;
+let $table_id = query_get_value(select table_id from oceanbase.__all_virtual_table where table_name = 'hidden_t3' order by schema_version desc limit 1, table_id, 1);
+
+#--echo update hidden_t3's pk column to not hidden
+#--disable_query_log
+#eval update oceanbase.__all_column set is_hidden = 0 where tenant_id = 1 and table_id = $table_id and column_id in (1,4,5);
+#eval update oceanbase.__all_column_history set is_hidden = 0 where tenant_id = 1 and table_id = $table_id and column_id in (1,4,5);
+#--enable_query_log
+## explict update table schema_version
+#alter table hidden_t3 read write;
+
+#select * from hidden_t3;
+
+
+--echo update hidden_t3's pk column to hidden
+--disable_query_log
+eval update oceanbase.__all_column set is_hidden = 1 where tenant_id = 1 and table_id = $table_id and column_id in (1,4,5);
+eval update oceanbase.__all_column_history set is_hidden = 1 where tenant_id = 1 and table_id = $table_id and column_id in (1,4,5);
+connection default;
+--enable_query_log
+alter table hidden_t3 read write;
+
+set @@recyclebin = off;
+drop database hualong;
+
+disconnect obsys1;

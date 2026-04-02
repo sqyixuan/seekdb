@@ -1,0 +1,259 @@
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+#owner:yuchen.wyc
+#owner group: sql1
+# tags: optimizer, global_index
+#this file try to test select statement from global index
+
+--result_format 4
+--enable_sorted_result
+
+--disable_warnings
+drop database if exists global_index;
+--enable_warnings
+create database global_index;
+use global_index;
+sleep 5;
+
+create table t1(a int primary key, b int, c int) partition by hash(a) partitions 4;
+create index i1 on t1(b) partition by hash(b) partitions 4;
+--disable_query_log
+--let $count = 1
+while($count <= 10000)
+{
+  --let $stmt=insert into t1(a, b, c) values ($count, $count+1, $count+2)
+  eval $stmt;
+  inc $count;
+}
+--enable_query_log
+
+create table t2(a int primary key, b int, c int) partition by hash(a) partitions 2;
+create index i1 on t2(b) global;
+
+--disable_query_log
+--let $count = 1
+while($count <= 10000)
+{
+  --let $stmt=insert into t2(a, b, c) values ($count, $count+1, $count+2)
+  eval $stmt;
+  inc $count;
+}
+--enable_query_log
+
+call dbms_stats.set_global_prefs('ESTIMATE_BLOCK', 'FALSE');
+call dbms_stats.gather_table_stats('global_index', 't1');
+call dbms_stats.gather_table_stats('global_index', 't2');
+call dbms_stats.set_global_prefs('ESTIMATE_BLOCK', null);
+
+connect (conn_admin, $OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection conn_admin;
+## insert a trace event to throw an error that das result buffer overflow, test send remaining result through DTL
+alter system set_tp tp_no = 301, error_code = 1, frequency = 1;
+connection default;
+select /*+index(t1 i1), index(t2 i1), use_nl(t1 t2)*/ t1.* from t1 join t2 where t1.b>2 and t1.b<10000 and t1.b=t2.b order by t1.a limit 100;
+connection conn_admin;
+alter system set_tp tp_no = 301, error_code = 0, frequency = 1;
+connection default;
+
+select /*+index(t1 i1), index(t2 i1), use_nl(t1 t2)*/ count(1) from t1 join t2 where t1.b>2 and t1.b<10000 and t1.b=t2.b;
+select /*+index(t1 i1), index(t2 i1), use_nl(t1 t2)*/ count(1) from t1 join t2 where t1.b>2 and t1.b<10000 and t1.b=t2.b;
+SET _NLJ_BATCHING_ENABLED=false;
+select /*+index(t1 i1), index(t2 i1), use_nl(t1 t2)*/ t1.* from t1 join t2 where t1.b>2 and t1.b<10 and t1.b=t2.b order by t1.a;
+SET _NLJ_BATCHING_ENABLED=true;
+explain select /*+index(t1 i1), index(t2 i1), use_nl(t1 t2)*/ * from t1 join t2 where t1.b>2 and t1.b<10000 and t1.b=t2.b order by t1.a, t2.a limit 100;
+select /*+index(t1 i1), index(t2 i1), use_nl(t1 t2)*/ * from t1 join t2 where t1.b>2 and t1.b<10000 and t1.b=t2.b order by t1.a, t2.a limit 100;
+select /*+index(t1 i1), index(t2 i1), use_nl(t1 t2)*/ t1.a, t1.c, t2.a, t2.c from t1 join t2 where t1.b>2 and t1.b<10000 and t1.b=t2.b order by t1.a, t2.a limit 100;
+## test batch row count is less than partition count
+select /*+index(t1 i1), index(t2 i1), use_nl(t1 t2)*/ * from t1 join t2 where t1.b>1 and t1.b<3 and t1.b=t2.b;
+## test nested loop cartesian join, expected unuse batch nlj opt
+select /*+index(t1 primary), index(t2 primary), use_nl(t1 t2)*/ * from t1, t2 where t1.a=t2.a and t1.a=100;
+## test scan row count large than the batch row count, need many batch rescan
+connection conn_admin;
+alter system set_tp tp_no = 400, error_code = 100, frequency = 1;
+connection default;
+select /*+index(t1 i1), index(t2 i1), use_nl(t1 t2)*/ * from t1 join t2 where t1.b>2 and t1.b<10000 and t1.b=t2.b order by t1.a, t2.a limit 100;
+## test left table not match with right table, expected empty result
+select /*+query_timeout(1000000000), index(t1 i1), index(t2 i1), use_nl(t1 t2)*/ * from t1 join t2 where t1.b>2 and t1.b<10000 and t1.b-10000=t2.b;
+connection conn_admin;
+alter system set_tp tp_no = 400, error_code = 0, frequency = 1;
+connection default;
+drop table t1;
+drop table t2;
+
+create table t1(a int, b int, c int) partition by hash(a) partitions 2;
+create index i1 on t1(a) global;
+insert into t1 values(1, 1, 1), (2, 2, 2), (3, 3, 3);
+create table t2(a int primary key, b int, c int) partition by hash(a) partitions 2;
+create index i2 on t2(b) global;
+explain extended_noaddr select /*+index(t1 i1), use_nl(t1 t2)*/ * from t1 join t2 on t1.b=t2.b where t1.a>0;
+select /*+index(t1 i1), use_nl(t1 t2)*/ * from t1 join t2 on t1.b=t2.b where t1.a>0;
+explain extended_noaddr select /*+index(t1 i1), use_nl(t1 t2)*/ * from t1 left join t2 on t1.b=t2.b where t1.a>0;
+select /*+index(t1 i1), use_nl(t1 t2)*/ * from t1 left join t2 on t1.b=t2.b where t1.a>0;
+
+drop table t1;
+drop table t2;
+create table t1(a int, b varchar(10), key a(a, b)) partition by hash(a) partitions 2;
+create table t2(a int primary key, b varchar(10), key b(b)) partition by hash(a) partitions 2;
+create table t3(a int primary key, b varchar(10)) partition by hash(a) partitions 2;
+insert into t1 values(1, 'aaaaaaa'), (2, 'bbbbb');
+insert into t2 select * from t1;
+insert into t3 select * from t1;
+explain extended_noaddr select /*+use_nl(t1 t2), leading(t1), index(t1 a)*/ (select a from t3 where t3.a=t1.b) a, t1.b from t1 join t2 on t1.b=t2.b where t1.a>0 and t1.a<10;
+select /*+use_nl(t1 t2), leading(t1)*/ (select a from t3 where t3.b=t1.b) a, t1.b from t1 join t2 on t1.b=t2.b where t1.a>0 and t1.a<10;
+
+create table bnlj_t1(a int, b int, c int, primary key (a,b))
+partition by range columns(a) subpartition by hash(b) subpartitions 3
+(
+  partition p100 values less than (100),
+  partition p200 values less than (200),
+  partition p300 values less than (300),
+  partition pMax values less than (MAXVALUE)
+);
+create table bnlj_t2(a int, b int, c int, primary key (a, b))
+partition by range columns(a) subpartition by hash(b) subpartitions 2
+(
+  partition p100 values less than (100),
+  partition p200 values less than (200),
+  partition p300 values less than (300),
+  partition pMax values less than (MAXVALUE)
+);
+insert into bnlj_t1 (a, b, c) values (5, 5, 5), (7, 7, 7), (105, 105, 105), (107, 107, 107), (205, 205, 205), (207, 207, 207), (305, 305, 305), (307, 307, 307), (405, 405, 405), (407, 407, 407);
+insert into bnlj_t2 (a, b, c) values (5, 5, 5), (6, 6, 6), (105, 105, 105), (106, 106, 106), (205, 205, 205), (206, 206, 206), (305, 305, 305), (306, 306, 306), (405, 405, 405), (406, 406, 406);
+
+explain extended_noaddr select /*+leading(tb ta) use_nl(ta tb)*/ * from (select a, b, c from bnlj_t2 group by a, c) as ta join bnlj_t1 as tb on ta.a = tb.a and ta.b = tb.c;
+select /*+leading(tb ta) use_nl(ta tb)*/ * from (select a, b, c from bnlj_t2 group by a, c) as ta join bnlj_t1 as tb on ta.a = tb.a and ta.b = tb.c;
+explain extended_noaddr select /*+leading(tb ta) use_nl(ta tb)*/ * from (select a, b, c from bnlj_t2 where c < 300 group by a, c) as ta join bnlj_t1 as tb on ta.a = tb.a and ta.b = tb.c;
+select /*+leading(tb ta) use_nl(ta tb)*/ * from (select a, b, c from bnlj_t2 where c < 300 group by a, c) as ta join bnlj_t1 as tb on ta.a = tb.a and ta.b = tb.c;
+explain extended_noaddr select /*+leading(tb ta) use_nl(ta tb)*/ * from (select a, b, c from bnlj_t2 group by a, c) as ta join bnlj_t1 as tb on ta.a = tb.a and ta.c = tb.c and ta.b = tb.c;
+select /*+leading(tb ta) use_nl(ta tb)*/ * from (select a, b, c from bnlj_t2 group by a, c) as ta join bnlj_t1 as tb on ta.a = tb.a and ta.c = tb.c and ta.b = tb.c;
+explain extended_noaddr select /*+leading(tb ta) use_nl(ta tb)*/ * from (select a, b, c from bnlj_t2) as ta join bnlj_t1 as tb on ta.a = tb.c and ta.c = tb.b;
+select /*+leading(tb ta) use_nl(ta tb)*/ * from (select a, b, c from bnlj_t2) as ta join bnlj_t1 as tb on ta.a = tb.c and ta.c = tb.b;
+
+explain extended_noaddr select /*+use_nl(ta tb) no_rewrite */ * from (select a, b, c from bnlj_t1) as ta right outer join (select a, b, c from bnlj_t2) as tb on ta.a = tb.a AND TIMESTAMP '2009-8-2 2:11:51' >= TIMESTAMP '2029-6-25 8:58:31';
+select /*+use_nl(ta tb) no_rewrite */ * from (select a, b, c from bnlj_t1) as ta right outer join (select a, b, c from bnlj_t2) as tb on ta.a = tb.a AND TIMESTAMP '2009-8-2 2:11:51' >= TIMESTAMP '2029-6-25 8:58:31';
+
+explain extended_noaddr select /*+use_nl(ta tb) no_rewrite */ * from (select a, b, c from bnlj_t1) as ta right outer join (select a, b, c from bnlj_t2) as tb on ta.a = tb.a;
+select /*+use_nl(ta tb) no_rewrite */ * from (select a, b, c from bnlj_t1) as ta right outer join (select a, b, c from bnlj_t2) as tb on ta.a = tb.a;
+
+drop table bnlj_t1;
+drop table bnlj_t2;
+
+create table item
+(
+    i_item_sk                 integer               not null,
+    i_class                   char(50)                      ,
+    i_category                char(50)                      ,
+    primary key (i_item_sk)
+);
+
+create table catalog_sales
+(
+    cs_sold_date_sk           integer                       ,
+    cs_bill_customer_sk       integer                       ,
+    cs_item_sk                integer               not null,
+    cs_order_number           integer               not null,
+    primary key (cs_item_sk, cs_order_number)
+)
+partition by hash (cs_item_sk) partitions 4;
+
+create table web_sales
+(
+    ws_sold_date_sk           integer                       ,
+    ws_item_sk                integer               not null,
+    ws_bill_customer_sk       integer                       ,
+    ws_order_number           integer               not null,
+    primary key (ws_item_sk, ws_order_number)
+)
+partition by hash (ws_item_sk) partitions 4;
+
+explain extended_noaddr
+select /*+leading(item cs_or_ws_sales) use_nl(cs_or_ws_sales)*/count(1) from
+( select cs_sold_date_sk sold_date_sk,
+  cs_bill_customer_sk customer_sk,
+  cs_item_sk item_sk
+  from   catalog_sales
+  union all
+  select ws_sold_date_sk sold_date_sk,
+  ws_bill_customer_sk customer_sk,
+  ws_item_sk item_sk
+  from   web_sales
+) cs_or_ws_sales,
+item
+where item_sk = i_item_sk
+and i_category = 'Jewelry'
+and i_class = 'consignment';
+
+drop table item;
+drop table catalog_sales;
+drop table web_sales;
+
+--disable_warnings
+drop table if exists t1, t2, t3;
+--enable_warnings
+create table t1(a int primary key, b int);
+create table t2(a int primary key, b int);
+create table t3(a int primary key, b int);
+set @rownum=0;
+insert into t1 select @rownum:=@rownum+1, @rownum from table(generator(2000)) t;
+set @rownum=0;
+insert into t2 select @rownum:=@rownum+1, @rownum from table(generator(2000)) t;
+set @rownum=0;
+insert into t3 select @rownum:=@rownum+1, @rownum from table(generator(2000)) t;
+explain select /*+use_nl(t1, t)*/ count(1) from t1, (select a from t2 union all select a from t3) t where t1.b>0 and t1.a=t.a;
+select /*+use_nl(t1, t)*/ count(1) from t1, (select a from t2 union all select a from t3) t where t1.b>0 and t1.a=t.a;
+drop table t1, t2, t3;
+
+create table t1(c1 int primary key);
+insert into t1 values(-5), (1), (2);
+create table t2(c1 int primary key);
+insert into t2 values(1), (2);
+explain select /*+leading(A), use_nl(A, B)*/ B.c1 from t1 A, ( select c1 from ( ( select c1 from t2 ) except ( select c1 from t2 ) ) ) B where A.c1 = B.c1 order by 1;
+select /*+leading(A), use_nl(A, B)*/ B.c1 from t1 A, ( select c1 from ( ( select c1 from t2 ) except ( select c1 from t2 ) ) ) B where A.c1 = B.c1 order by 1;
+explain select /*+leading(A), use_nl(A, B)*/ B.c1 from t1 A, ( select c1 from ( ( select c1 from t2 ) intersect ( select c1 from t2 ) ) ) B where A.c1 = B.c1 order by 1;
+select /*+leading(A), use_nl(A, B)*/ B.c1 from t1 A, ( select c1 from ( ( select c1 from t2 ) intersect ( select c1 from t2 ) ) ) B where A.c1 = B.c1 order by 1;
+drop table t1, t2;
+
+create table t1(a int, b int) partition by hash(a) partitions 5;
+create table t2(a int, b int, c int);
+create index i1 on t2(b) global partition by hash(b) partitions 5;
+ 
+insert into t2 values(1, 1, 1), (2, 2, 2), (3, 3, 3), (4, 4, 4);
+insert into t2 select * from t2;
+insert into t2 select * from t2;
+insert into t1 select a, b from t2;
+ 
+explain select /*+use_nl(t1 t2), leading(t1) index(t2 i1)*/ * from t1 join t2 on t1.b=t2.b order by t1.a limit 5;
+select /*+use_nl(t1 t2), leading(t1) index(t2 i1)*/ * from t1 join t2 on t1.b=t2.b order by t1.a limit 5;
+
+--disable_warnings
+drop table if exists t1,t2,t3;
+--enable_warnings
+
+CREATE TABLE `t1` (
+  `c1` int(11) NOT NULL,
+  `c2` int(11) DEFAULT NULL,
+  `c3` int(11) DEFAULT NULL,
+  PRIMARY KEY (`c1`)
+);
+
+CREATE TABLE `t2` (
+  `c1` int(11) DEFAULT NULL,
+  `c2` int(11) DEFAULT NULL,
+  KEY `i2` (`c2`) BLOCK_SIZE 16384 LOCAL
+);
+
+CREATE TABLE `t3` (
+  `c1` int(11) DEFAULT NULL,
+  `c2` int(11) DEFAULT NULL,
+  KEY `i2` (`c2`) BLOCK_SIZE 16384 LOCAL
+);
+
+insert into t1 values (1,1,1),(2,2,2),(3,3,3);
+insert into t2 values (NULL,NULL),(1,1),(NULL,NULL),(2,2),(1,1);
+insert into t3 select * from t2;
+
+explain select /*+opt_param('DAS_BATCH_RESCAN_FLAG', 2047) opt_param('HASH_JOIN_ENABLED', 'false')*/ * FROM t1 WHERE c2 not in (select c2 from ((select c2 from t2) except (select c2 from t3))) and c2 not in (10);
+select /*+opt_param('DAS_BATCH_RESCAN_FLAG', 2047) opt_param('HASH_JOIN_ENABLED', 'false')*/ * FROM t1 WHERE c2 not in (select c2 from ((select c2 from t2) except (select c2 from t3))) and c2 not in (10);
+
+drop database global_index;

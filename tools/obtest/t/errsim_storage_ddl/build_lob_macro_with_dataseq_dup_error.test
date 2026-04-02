@@ -1,0 +1,68 @@
+# owner: liujixiong.ljx
+# owner group: ddl
+# description: to check that there are no duplicated data sequence of lob macro blocks.
+
+--disable_query_log
+ob1=OBI(cluster=1, proxy_num=1, init_unit_cpu=2, init_unit_num=1);
+ob1.force_stop;
+ob1.reboot;
+
+ob_connect(conn_sys, ob1.proxy0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+set @@global.ob_query_timeout = 100000000000;
+ob1.mysql alter system set resource_hard_limit = 800;
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+
+ob_connect(conn_obtest, ob1.proxy0, root@obtest, , test, , USE_MYSQL_CONNECTOR);
+sleep 2;
+set ob_default_lob_inrow_threshold = 128;
+create table test(c1 bigint, c2 longtext, c3 longtext, c4 varchar(1024)) row_format = redundant, compression = 'none';
+insert /*+ query_timeout(100000000000) parallel(32) enable_parallel_dml */ into test select random() c1, randstr(1024, random()) c2, randstr(1024,random()) c3, randstr(1024,random()) c4 from table(generator(200000));
+
+# lob id cache size 10000.
+ob1.mysql alter system set_tp tp_no = 518, error_code = 10000, frequency = 1;
+SET SESSION _FORCE_PARALLEL_DDL_DOP = 8;
+alter table test partition by hash(c1) partitions 1;
+
+ob1.mysql alter system set_tp tp_no = 518, error_code = 10000, frequency = 0;
+
+# check duplicated data sequence, no result is expected.
+ob_connect(conn_sys, ob1.proxy0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+let $tenant_id = query_get_value(select tenant_id from oceanbase.__all_tenant where tenant_name = 'obtest', tenant_id, 1);
+let $data_table_id = query_get_value(select table_id from oceanbase.__all_virtual_table where tenant_id = $tenant_id and table_name like '%test%', table_id, 1);
+let $lob_meta_table_id = query_get_value(select table_id from oceanbase.__all_virtual_table where tenant_id = $tenant_id and data_table_id = $data_table_id and table_name like '%LOB_META%', table_id, 1);
+eval select count(1) > 0 as sql_normal from oceanbase.__all_virtual_tablet_sstable_macro_info where tablet_id in (select tablet_id from oceanbase.__all_virtual_tablet_to_ls where tenant_id = $tenant_id and table_id in ($data_table_id, $lob_meta_table_id));
+eval select * from oceanbase.__all_virtual_tablet_sstable_macro_info where tablet_id in (select tablet_id from oceanbase.__all_virtual_tablet_to_ls where tenant_id = $tenant_id and table_id in ($data_table_id, $lob_meta_table_id)) group by svr_ip, svr_port, tenant_id, ls_id, tablet_id, end_log_scn, macro_logic_version, cg_idx having count(distinct data_seq) <> count (1);
+
+connection conn_obtest;
+drop table test;
+
+--echo
+--echo "test for lob meta: 3 slices(with_outrow -> without_outrow -> with_outrow), to check whether the sequence is correct."
+sleep 2;
+set ob_default_lob_inrow_threshold = 128;
+create sequence pk_sequence start with 1 increment by 1 nomaxvalue nocache;
+create table test(c1 bigint primary key, c2 longtext) row_format = redundant, compression = 'none';
+# the first lob slice.
+insert /*+ query_timeout(100000000000) parallel(16) enable_parallel_dml */ into test select pk_sequence.nextval c1, randstr(1024, random()) c2 from table(generator(10000));
+# the second lob slice.
+insert /*+ query_timeout(100000000000) parallel(16) enable_parallel_dml */ into test select pk_sequence.nextval c1, randstr(64, random()) c2 from table(generator(10000));
+# the last lob slice.
+insert /*+ query_timeout(100000000000) parallel(16) enable_parallel_dml */ into test select pk_sequence.nextval c1, randstr(1024, random()) c2 from table(generator(10000));
+
+# lob id cache size 10000.
+ob1.mysql alter system set_tp tp_no = 518, error_code = 10000, frequency = 1;
+SET SESSION _FORCE_PARALLEL_DDL_DOP = 1;
+alter table test partition by hash(c1) partitions 1;
+ob1.mysql alter system set_tp tp_no = 518, error_code = 10000, frequency = 0;
+
+# check duplicated data sequence, no result is expected.
+ob_connect(conn_sys, ob1.proxy0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+let $tenant_id = query_get_value(select tenant_id from oceanbase.__all_tenant where tenant_name = 'obtest', tenant_id, 1);
+let $data_table_id = query_get_value(select table_id from oceanbase.__all_virtual_table where tenant_id = $tenant_id and table_name like '%test%', table_id, 1);
+let $lob_meta_table_id = query_get_value(select table_id from oceanbase.__all_virtual_table where tenant_id = $tenant_id and data_table_id = $data_table_id and table_name like '%LOB_META%', table_id, 1);
+eval select count(1) > 0 as sql_normal from oceanbase.__all_virtual_tablet_sstable_macro_info where tablet_id in (select tablet_id from oceanbase.__all_virtual_tablet_to_ls where tenant_id = $tenant_id and table_id in ($data_table_id, $lob_meta_table_id));
+eval select * from oceanbase.__all_virtual_tablet_sstable_macro_info where tablet_id in (select tablet_id from oceanbase.__all_virtual_tablet_to_ls where tenant_id = $tenant_id and table_id in ($data_table_id, $lob_meta_table_id)) group by svr_ip, svr_port, tenant_id, ls_id, tablet_id, end_log_scn, macro_logic_version, cg_idx having count(distinct data_seq) <> count (1);
+
+connection conn_obtest;
+drop table test;
+drop sequence pk_sequence;

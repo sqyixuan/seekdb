@@ -19,9 +19,7 @@
 #include <pthread.h>
 #include <stdint.h>
 #include <stdlib.h>
-#ifdef __linux__
 #include <sys/prctl.h>
-#endif
 
 #include "lib/ob_define.h"
 #include "lib/utility/ob_macro_utils.h"

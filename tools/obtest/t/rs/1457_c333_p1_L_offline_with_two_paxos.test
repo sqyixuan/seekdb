@@ -1,0 +1,74 @@
+# owner: rongxuan.lc
+# description: 本case是为了FL部署在同一个zone时，L永久下线后，类型转换代码会选择F进行转换；
+ob1=OBI(cluster=3:3:3,  proxy_num=0, ct_num = 0, locality=HZ:HZ:HZ);
+ob1.reboot;
+ob1.mysql alter system set resource_hard_limit=900;
+ob1.mysql alter system set resource_soft_limit=800;
+ob1.mysql alter system set balancer_idle_time = '10s';
+ob1.mysql alter system set server_data_copy_in_concurrency =50;
+ob1.mysql alter system set server_data_copy_out_concurrency = 50;
+ob1.mysql alter system set data_copy_concurrency = 200;
+ob1.mysql alter tenant sys set primary_zone = 'z1';
+let $cpu = 1;
+let $memory = 1073741824;
+let $min_memory = 1073741824;
+let $disk = 536870912;
+let $iops = 100000;
+let $session = 64;
+let $case_index = 1;
+
+ob1.mysql alter system set enable_rereplication = false;
+ob1.mysql CREATE RESOURCE UNIT unit_$case_index MAX_CPU $cpu, MAX_MEMORY $memory, MAX_IOPS $iops, MAX_DISK_SIZE $disk, MAX_SESSION_NUM $session, MIN_CPU=1, MIN_MEMORY=$min_memory, MIN_IOPS=128;
+ob1.mysql CREATE RESOURCE POOL pool_2 UNIT = 'unit_1', UNIT_NUM = 2, ZONE_LIST = ('z1', 'z2','z3');
+ob1.mysql CREATE RESOURCE POOL pool_3 UNIT = 'unit_1', UNIT_NUM = 1, ZONE_LIST = ('z1', 'z2','z3'),replica_type = 'L';
+ob1.mysql CREATE TENANT tenant_$case_index RESOURCE_POOL_LIST = ('pool_2', 'pool_3'), locality='F@z1,F@z2,F@z3,L@z1,L@z2,R@z2', primary_zone='z1;z2;z3' set ob_tcp_invited_nodes='%';
+sleep 3;
+ob1.create_client tenant=tenant_1,user=root,passwd=,database=test;
+create table test(c1 int primary key, c2 int) partition by hash(c1) partitions 10;
+let $t_id = deploy_get_value(ob1.select select table_id from __all_virtual_table where table_name = 'test', table_id, 1);
+ob1.mysql alter system set server_permanent_offline_time = '20s';
+let $addr = deploy_get_value(ob1.select select concat(svr_ip,":",svr_port) addr from __all_unit where zone='z2' and replica_type='5', addr, 1);
+let $obi = deploy_get_value(ob1.get_obs_by_addr $addr);
+$obi.force_stop;
+###现阶段不支持R转成L;也不能从F转成L;所以什么都不做；等待OBI起来；
+ob1.check_until_timeout select count(*) from __all_virtual_meta_table where table_id = $t_id and role =1 and member_list like '%,%,%,%,%', 0, 60;
+ob1.check_until_timeout select count(*) from __all_rootservice_event_history where module like '%balance%' and event not like '%remove%' and event not like '%tenant_balance%' and event not like '%local_index%', 0, 2;
+
+###关掉复制；将F迁移到logonly unit上面;
+$obi.start;
+ob1.check_until_timeout select count(*) from __all_server where start_service_time <= 0, 0, 30;
+let $src_addr = deploy_get_value(ob1.select select concat(svr_ip,":",svr_port) addr from __all_virtual_meta_table where replica_type = 0 and partition_id = 2 and zone = 'z2' and table_id = $t_id, addr, 1);
+ob1.mysql alter system move replica partition_id='2%0@$t_id' source='$src_addr' destination='$addr';
+sleep 5;
+ob1.mysql alter system set enable_rereplication =true;
+####等待F-->L;
+ob1.check_until_timeout select count(*) c from __all_virtual_meta_table where partition_id = 2 and zone = 'z2' and table_id = $t_id and concat(svr_ip,":",svr_port)='$addr' and replica_type = 5, 1, 60;
+
+ob1.mysql alter tenant tenant_1 set locality='F@z1,F@z2,F@z3,L@z2,R@z2';
+ob1.check_until_timeout select count(*) from __all_rootservice_job where job_type = "ALTER_TENANT_LOCALITY" and job_status = "SUCCESS", 1, 120; 
+ob1.mysql alter tenant tenant_1 set locality = 'F@z1,F@z2,L@z3,L@z2,R@z2';
+ob1.check_until_timeout select count(*) from __all_rootservice_job where job_type = "ALTER_TENANT_LOCALITY" and job_status = "SUCCESS", 2, 120; 
+ob1.create_client tenant=sys,user=root,passwd=,database=test;
+--error 4179
+alter tenant tenant_1 set locality = 'L@z1,F@z2,L@z3,L@z2,R@z2';
+ob1.mysql alter tenant tenant_1 set locality = 'F@z1,F@z2,L@z3,L@z2,R@z2,F@z3';
+ob1.check_until_timeout select count(*) from __all_rootservice_job where job_type = "ALTER_TENANT_LOCALITY" and job_status = "SUCCESS", 3, 120; 
+ob1.mysql alter tenant tenant_1 set primary_zone='z2';
+ob1.mysql alter tenant tenant_1 set locality = 'L@z1,F@z2,L@z2,L@z3,R@z2,F@z3';
+ob1.check_until_timeout select count(*) from __all_rootservice_job where job_type = "ALTER_TENANT_LOCALITY" and job_status = "SUCCESS", 4, 120; 
+
+ob1.mysql alter tenant tenant_1 set locality = 'L@z1,F@z2,L@z2,R@z2,F@z3';
+ob1.check_until_timeout select count(*) from __all_rootservice_job where job_type = "ALTER_TENANT_LOCALITY" and job_status = "SUCCESS", 5, 120; 
+ob1.mysql alter tenant tenant_1 set locality = 'L@z1,F@z2,L@z2,F@z1,F@z3';
+ob1.check_until_timeout select count(*) from __all_rootservice_job where job_type = "ALTER_TENANT_LOCALITY" and job_status = "SUCCESS", 6, 120; 
+ob1.mysql alter tenant tenant_1 set locality = 'L@z1,F@z2,L@z2,F@z3';
+ob1.check_until_timeout select count(*) from __all_rootservice_job where job_type = "ALTER_TENANT_LOCALITY" and job_status = "SUCCESS", 7, 120; 
+ob1.mysql alter tenant tenant_1 set locality = 'L@z1,F@z2,L@z2,F@z1,F@z3';
+ob1.check_until_timeout select count(*) from __all_rootservice_job where job_type = "ALTER_TENANT_LOCALITY" and job_status = "SUCCESS", 8, 120; 
+ob1.mysql alter tenant tenant_1 set primary_zone='z1';
+ob1.mysql alter tenant tenant_1 set locality = 'L@z1,F@z2,L@z2,F@z1,L@z3';
+ob1.check_until_timeout select count(*) from __all_rootservice_job where job_type = "ALTER_TENANT_LOCALITY" and job_status = "SUCCESS", 9, 120; 
+
+
+
+

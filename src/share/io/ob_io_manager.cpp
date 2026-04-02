@@ -436,9 +436,9 @@ void ObTrafficControl::inner_calc_()
     int64_t write_bytes = 0;
     net_ibw_.inc(read_bytes);
     net_obw_.inc(write_bytes);
-    if (0 != (ret = qdisc_set_limit(OB_IO_MANAGER_V2.get_sub_root_qid((int)ObIOMode::READ), std::max(static_cast<int64_t>(0), device_bandwidth_ - read_bytes)))) {
+    if (0 != (ret = qdisc_set_limit(OB_IO_MANAGER_V2.get_sub_root_qid((int)ObIOMode::READ), std::max(0L, device_bandwidth_ - read_bytes)))) {
       LOG_WARN("set net_in limit failed", K(ret));
-    } else if (0 != (ret = qdisc_set_limit(OB_IO_MANAGER_V2.get_sub_root_qid((int)ObIOMode::WRITE), std::max(static_cast<int64_t>(0), device_bandwidth_ - write_bytes)))) {
+    } else if (0 != (ret = qdisc_set_limit(OB_IO_MANAGER_V2.get_sub_root_qid((int)ObIOMode::WRITE), std::max(0L, device_bandwidth_ - write_bytes)))) {
       LOG_WARN("set net_out limit failed", K(ret));
     }
   }
@@ -1366,8 +1366,7 @@ int ObTenantIOManager::start()
     LOG_WARN("not init", K(ret), K(is_inited_));
   } else if (is_working()) {
     // do nothing
-  } else if (OB_FAIL(callback_mgr_.init(tenant_id_, callback_thread_count,
-                     callback_thread_count * DEFAULT_QUEUE_DEPTH))) {
+  } else if (OB_FAIL(callback_mgr_.init(tenant_id_, callback_thread_count, DEFAULT_QUEUE_DEPTH, &io_allocator_))) {
     LOG_WARN("init callback manager failed", K(ret), K(tenant_id_), K(callback_thread_count));
   } else {
     is_working_ = true;
@@ -1558,7 +1557,7 @@ int ObTenantIOManager::inner_aio(const ObIOInfo &info, ObIOHandle &handle)
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("device handle is null", K(ret), K(info));
   } else if ((SLOG_IO != info.flag_.get_sys_module_id() &&
-              CLOG_READ_IO != info.flag_.get_sys_module_id() &&
+              CLOG_READ_IO != info.flag_.get_sys_module_id() && 
               CLOG_WRITE_IO != info.flag_.get_sys_module_id()) &&
               !info.fd_.device_handle_->is_object_device() &&
               NULL != detector && detector->is_data_disk_has_fatal_error()) {

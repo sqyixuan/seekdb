@@ -1,0 +1,70 @@
+# owner: jianyun.sjy
+# owner group: storage
+# description: test migrate replica fail at handover
+#
+
+--disable_query_log
+ob1=OBI(cluster=1:1:2,proxy_num=1,init_unit_cpu=5);
+ob1.reboot;
+ob1.create_client;
+
+# 关闭自动切主，设置永久下线时间
+ob1.mysql alter system set resource_hard_limit = 500;
+ob1.mysql alter system set enable_auto_leader_switch = false;
+ob1.mysql alter system set merger_check_interval = '10s';
+ob1.mysql alter system set server_permanent_offline_time = '20s';
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_server_stat where start_service_time = 0, 0, 60;
+let $ip = deploy_get_value(ob1.z1.obs0.ip);
+let $port = deploy_get_value(ob1.z1.obs0.mysql_port);
+connect (conn_obtest,$ip,root@obtest,,test,$port);
+connection conn_obtest;
+set @@session.ob_query_timeout = 20000000;
+
+create table test01 (pk1 int, pk2 int, pk3 int, f1 varchar(1024), f2 varchar(4096), primary key(pk1,pk2,pk3));
+sleep 10;
+let $cnt=1;
+while($cnt < 10)
+{
+  eval insert into test01 values($cnt, $cnt, $cnt, 'ocean', 'base');
+  inc $cnt;
+}
+select pk1, pk2, pk3, f1, f2 from test01;
+
+connect(conn2,$ip,root@sys,,,$port);
+connection conn2;
+set @@session.ob_query_timeout = 200000000;
+use oceanbase;
+
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from __all_tenant where tenant_name='obtest', tenant_id, 1);
+let $table_id = deploy_get_value(ob1.select select table_id from __all_virtual_table where table_name='test01', table_id, 1);
+let $src_host = deploy_get_value(ob1.select select concat(svr_ip, ':', svr_port) host from __all_virtual_meta_table where table_id = $table_id and zone = 'z3', host, 1);
+let $src = deploy_get_value(ob1.get_obs_by_addr $src_host);
+let $src_ip = deploy_get_value($src.ip);
+let $src_port = deploy_get_value($src.port);
+let $dest_host = deploy_get_value(ob1.select select concat(svr_ip, ':', svr_port) host from __all_server where zone='z3' and (svr_ip != '$src_ip' or svr_port != '$src_port'), host, 1);
+let $dst = deploy_get_value(ob1.get_obs_by_addr $dest_host);
+let $dst_ip = deploy_get_value($dst.ip);
+let $dst_port = deploy_get_value($dst.port);
+
+ob1.mysql set ob_global_debug_sync = 'FAST_MIGRATE_AFTER_SUSPEND_SRC wait_for signal_1';
+ob1.mysql alter system delete server '$src_host';
+sleep 10;
+$src.force_stop;
+sleep 20;
+ob1.mysql set ob_global_debug_sync = 'now signal signal_1';
+
+ob1.check_until_timeout select count(*) from __all_rootservice_event_history where module = 'server_fast_recovery' and value1 like '%$src_host%' and event = 'finish_recovery', 1, 480;
+let $final_host = deploy_get_value(ob1.select select concat(svr_ip, ':', svr_port) host from __all_virtual_meta_table where zone='z3' and table_id=$table_id, host, 1);
+let $meta_row_cnt = deploy_get_value(ob1.select select count(*) cnt from __all_virtual_meta_table where zone='z3' and table_id=$table_id, cnt, 1);
+if ($dest_host == $final_host)
+{
+  --echo recover success, $meta_row_cnt
+}
+ob1.mysql alter system switch replica leader partition_id='0%0@$table_id' server='$final_host';
+sleep 10;
+let $final_obs = deploy_get_value(ob1.get_obs_by_addr $final_host);
+$final_obs.check_leader obtest:test:test01;
+connection conn_obtest;
+select pk1, pk2, pk3, f1, f2 from test01;

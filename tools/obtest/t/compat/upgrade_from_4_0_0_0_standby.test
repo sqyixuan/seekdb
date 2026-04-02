@@ -1,0 +1,262 @@
+##
+# owner      : shouju.zyp
+# owner group: RS
+# description: 测试从4.0 升级到master分支4.1
+##
+ob1=OBI(cluster=1:1:1,proxy_num=0,version=4_0_0_0);
+
+source include/mini_ob_config.inc;
+ob1.z1.obs0.set extra_config = "cache_wash_threshold='1G',_ob_minor_merge_schedule_interval='3s'";
+ob1.z2.obs0.set extra_config = "cache_wash_threshold='1G',_ob_minor_merge_schedule_interval='3s'";
+ob1.z3.obs0.set extra_config = "cache_wash_threshold='1G',_ob_minor_merge_schedule_interval='3s'";
+
+let $backup_cluster_name = deploy_get_value(ob1.get_cluster_name);
+let $backup_cluster_id = deploy_get_value(ob1.get_cluster_id);
+let $backup_ip       = deploy_get_value(ob1.z1.obs0.ip);
+let $backup_port     = deploy_get_value(ob1.z1.obs0.mysql_port);
+let $restore_ip         = deploy_get_value(ob1.z1.obs0.ip);
+let $restore_port       = deploy_get_value(ob1.z1.obs0.mysql_port);
+let $backup_dest = deploy_get_value(ob1.get_backup_dest);
+let $backup_oracle_tenant   = backup_oracle_tenant;
+let $backup_oracle_tenant    = backup_oracle_tenant;
+let $restore_oracle_tenant = restore_oracle_tenant;
+let $restore_oracle_tenant_new = restore_oracle_tenant_new;
+let $restore_oracle_tenant = restore_oracle_tenant;
+let $log_backup_dest = deploy_get_value(ob1.get_log_backup_dest $backup_oracle_tenant);
+let $data_backup_dest = deploy_get_value(ob1.get_data_backup_dest $backup_oracle_tenant);
+let $restore_log_archive_dest = deploy_get_value(ob1.get_log_backup_dest $restore_oracle_tenant);
+
+# 必须先stop掉老的，删除才能有效，不然可能会有残留。
+ob1.force_stop;
+ob1.clean_backup_dest;
+ob1.reboot;
+
+# 固定sys租户规格
+ob1.mysql alter resource unit sys_unit_config memory_size='2G';
+
+connect(backup_sys_conn, $backup_ip, root@sys,,oceanbase, $backup_port);
+connection backup_sys_conn;
+use oceanbase;
+source sql/physical_backup/prepare_multi_zone_resource.sql;
+
+ob1.mysql alter system set _backup_idle_time = '10s';
+ob1.mysql alter system set _advance_checkpoint_timeout = '5m';
+ob1.mysql alter system set merger_check_interval = '10s';
+ob1.mysql alter system set enable_async_syslog=false;
+
+# create oracle tenant, test create tenant before major freeze
+ob1.mysql CREATE TENANT update_oracle_tenant RESOURCE_POOL_LIST = ('small_pool'), primary_zone = "z1" set ob_tcp_invited_nodes='%', ob_compatibility_mode='oracle';
+
+ob_connect(sys_conn_oracle, ob1.z1.obs0, SYS@update_oracle_tenant, ,SYS, , USE_OB_CONNECTOR);
+connection sys_conn_oracle;
+set global wait_timeout = 288000;
+create user test IDENTIFIED BY "test";
+grant all on *.* to test WITH GRANT OPTION;
+grant dba to test;
+
+ob_connect(update_oracle_conn, ob1.z1.obs0,TEST@update_oracle_tenant,test,test,,USE_OB_CONNECTOR);
+connection update_oracle_conn;
+
+create table t1(a int, b int, c int, CONSTRAINT "c1" PRIMARY KEY ("A"));
+create index idx_b on t1(B);
+insert into t1(a, b) values(1, 1);
+insert into t1(a, b) values(2, 2);
+
+# 7 打开升级配置, 升级前检查
+ob1.upgrade_check_before;
+
+# 8.执行升级SQL
+ob1.upgrade_commond_for_server pre;
+
+#8.3 升级z1
+ob1.z1.force_stop;
+ob1.z1.upgrade;
+ob1.z1.nstart;
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where zone = 'z1' and (start_service_time is null or status='INACTIVE'),0,120;
+ob1.check_until_timeout  select count(1) as unsync_cnt from GV\$OB_LOG_STAT where in_sync = 'NO',0,600;
+source include/check_schema_sync_for_restart.inc;
+
+ob1.check_until_timeout select count(*) from oceanbase.GV\$OB_PARAMETERS where name = "compatible" and value != "0.0.0.0", 0, 1;
+
+# binary未升级完，不能对主租户执行switchover操作
+ob_connect(sys_conn, ob1.z1.obs0, root, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection sys_conn;
+--error 1235
+eval ALTER SYSTEM SWITCHOVER TO STANDBY TENANT update_oracle_tenant;
+
+--error 1235
+eval ALTER SYSTEM SWITCHOVER TO PRIMARY TENANT update_oracle_tenant;
+
+--error 1235
+eval ALTER SYSTEM ACTIVATE STANDBY TENANT update_oracle_tenant;
+
+--error 1235
+eval ALTER SYSTEM RECOVER STANDBY TENANT update_oracle_tenant UNTIL UNLIMITED;
+
+
+
+ob1.z2.force_stop;
+ob1.z2.upgrade;
+ob1.z2.nstart;
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where zone = 'z2' and (start_service_time is null or status='INACTIVE'),0,120;
+ob1.z3.force_stop;
+ob1.z3.upgrade;
+ob1.z3.nstart;
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where zone = 'z3' and (start_service_time is null or status='INACTIVE'),0,120;
+ob1.check_until_timeout  select count(1) as unsync_cnt from GV\$OB_LOG_STAT where in_sync = 'NO',0,600;
+
+ob1.check_until_timeout select count(*) from oceanbase.GV\$OB_PARAMETERS where tenant_id = 1002 and name = "compatible" and value != "4.1.0.0", 3, 20;
+
+# binary升级完成后，租户的兼容性版本还未升级到4.1时，不能对主租户执行switchover操作
+ob_connect(sys_conn, ob1.z1.obs0, root, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection sys_conn;
+--error 1235
+eval ALTER SYSTEM SWITCHOVER TO STANDBY TENANT update_oracle_tenant;
+
+--error 1235
+eval ALTER SYSTEM SWITCHOVER TO PRIMARY TENANT update_oracle_tenant;
+
+--error 1235
+eval ALTER SYSTEM ACTIVATE STANDBY TENANT update_oracle_tenant;
+
+--error 1235
+eval ALTER SYSTEM RECOVER STANDBY TENANT update_oracle_tenant UNTIL UNLIMITED;
+
+source include/check_schema_sync_for_restart.inc;
+
+ob1.upgrade_commond_for_server post;
+
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_upgrade_inspection where name = "data_version_check" and info = "succeed", 1, 1;
+ob1.check_until_timeout select count(*) from oceanbase.GV\$OB_PARAMETERS where tenant_id = 1 and name = "compatible" and value = "4.1.0.0", 3, 1;
+ob1.check_until_timeout select count(*) from oceanbase.GV\$OB_PARAMETERS where tenant_id = 1002 and name = "compatible" and value = "4.1.0.0", 3, 5;
+
+# 升级完成后, 对主租户执行switchover操作
+ob1.mysql ALTER SYSTEM SWITCHOVER TO STANDBY TENANT update_oracle_tenant;
+
+ob_connect(update_oracle_conn, ob1.z1.obs0,TEST@update_oracle_tenant,test,test,,USE_OB_CONNECTOR);
+connection update_oracle_conn;
+select * from t1;
+# 1   1
+# 2   2
+
+# create oracle tenant, test create tenant before major freeze
+ob1.mysql CREATE TENANT $backup_oracle_tenant RESOURCE_POOL_LIST = ('small_pool_1'), primary_zone = "z1" set ob_tcp_invited_nodes='%', ob_compatibility_mode='oracle';
+ob_connect(sys_conn, ob1.z1.obs0, root, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection sys_conn;
+let $backup_oracle_tenant_id = query_get_value(select tenant_id from oceanbase.__all_tenant where tenant_name='$backup_oracle_tenant', tenant_id, 1);
+#创建tablet
+ob_connect(sys_conn_oracle, ob1.z1.obs0, SYS@$backup_oracle_tenant, ,SYS, , USE_OB_CONNECTOR);
+connection sys_conn_oracle;
+set global wait_timeout = 288000;
+
+--disable_all_result_log
+eval alter system set data_backup_dest='$data_backup_dest';
+eval alter system set log_archive_dest='location=$log_backup_dest';
+--enable_all_result_log
+
+connection sys_conn_oracle;
+set global wait_timeout = 288000;
+create user test IDENTIFIED BY "test";
+grant all on *.* to test WITH GRANT OPTION;
+grant dba to test;
+ob_connect(backup_oracle_conn, ob1.z1.obs0,TEST@$backup_oracle_tenant,test,test,,USE_OB_CONNECTOR);
+connection backup_oracle_conn;
+
+create table t2(a int, b int, c int, CONSTRAINT "c2" PRIMARY KEY ("A"));
+create index idx_b on t2(B);
+insert into t2(a, b) values(1, 1);
+insert into t2(a, b) values(2, 2);
+
+#开启日志备份
+ob1.mysql alter system archivelog;
+ob1.check_until_timeout select status from oceanbase.CDB_OB_ARCHIVELOG where tenant_id=$backup_oracle_tenant_id, DOING, 600;
+
+ob1.mysql alter system major freeze tenant = '$backup_oracle_tenant';
+sleep 10;
+ob1.check_until_timeout select (frozen_scn - last_scn) as result from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$backup_oracle_tenant_id, 0, 600;
+
+#开启数据备份
+ob1.mysql alter system backup database;
+ob1.check_until_timeout select count(*) c from __all_backup_job_history where tenant_id = 1, 1, 600;
+ob1.check_until_timeout select result from oceanbase.CDB_OB_BACKUP_JOB_HISTORY where tenant_id = $backup_oracle_tenant_id, 0, 10;
+ob1.check_until_timeout select result from oceanbase.CDB_OB_BACKUP_TASK_HISTORY where tenant_id = $backup_oracle_tenant_id, 0, 10;
+
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_dag where dag_type like '%BACKUP%', 0, 60;
+
+sleep 20;
+connect(backup_sys_conn, $backup_ip, root@sys,,oceanbase, $backup_port);
+connection backup_sys_conn;
+use oceanbase;
+let $restore_path = $log_backup_dest,$data_backup_dest;
+let $ls_id1 = deploy_get_value(ob1.select select ls_id from oceanbase.__all_virtual_ls where tenant_id = $backup_oracle_tenant_id and ls_id != 1, ls_id, 1);
+ob1.mysql alter tenant $backup_oracle_tenant set primary_zone = 'z1';
+ob1.check_until_timeout select count(*)>=2 from oceanbase.__all_virtual_ls_status where status = 'NORMAL' and tenant_id = $backup_oracle_tenant_id, 1, 100;
+let $ls_id2 = deploy_get_value(ob1.select select max(ls_id) as ls_id from oceanbase.__all_virtual_ls where tenant_id = $backup_oracle_tenant_id, ls_id, 1);
+let $create_scn1 = deploy_get_value(ob1.select select create_scn from oceanbase.__all_virtual_ls where tenant_id = $backup_oracle_tenant_id and ls_id = $ls_id1, create_scn, 1);
+let $create_scn2 = deploy_get_value(ob1.select select create_scn from oceanbase.__all_virtual_ls where tenant_id = $backup_oracle_tenant_id and ls_id =  $ls_id2, create_scn, 1);
+sleep 3;
+let $restore_checkpoint1 = `select ceil(min_restore_scn / 1000) as min_restore_scn from CDB_OB_BACKUP_SET_FILES where tenant_id = $backup_oracle_tenant_id`;
+let $restore_checkpoint2 = `select ceil(UNIX_TIMESTAMP(current_timestamp(6)) * 1000000)`;
+ob1.check_until_timeout select floor(checkpoint_scn / 1000) > '$restore_checkpoint1' from CDB_OB_ARCHIVELOG, 1, 600;
+ob1.check_until_timeout select floor(checkpoint_scn / 1000) > '$restore_checkpoint2' from CDB_OB_ARCHIVELOG, 1, 600;
+let $restore_checkpoint = $restore_checkpoint2;
+let $restore_checkpoint = `select usec_to_time(floor(checkpoint_scn/1000)) from CDB_OB_ARCHIVELOG`;
+
+
+#开启数据恢复
+connect(restore_sys_conn, $restore_ip, root@sys,,oceanbase, $restore_port);
+ob1.mysql alter resource unit sys_unit_config memory_size='2G';
+connection restore_sys_conn;
+ob1.mysql alter system set enable_async_syslog=false;
+ob1.mysql alter system restore $restore_oracle_tenant from '$restore_path' until time='$restore_checkpoint' with 'pool_list=small_pool_2&primary_zone=z1';
+ob1.check_until_timeout SELECT status FROM __all_tenant WHERE tenant_id = 1005, NORMAL, 200;
+ob1.check_until_timeout select count(*) from __all_virtual_ls_meta_table where tenant_id = 1006 and restore_status = 0, 6, 1200;
+ob1.check_until_timeout select status FROM __all_tenant WHERE tenant_id = 1006, NORMAL, 200;
+ob1.check_until_timeout select count(*) FROM __all_restore_job, 0, 200;
+
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tenant_info where tenant_id = 1006 and tenant_role = 'STANDBY' and switchover_status = 'NORMAL', 1, 10;
+ob1.mysql ALTER SYSTEM RECOVER STANDBY TENANT $restore_oracle_tenant UNTIL UNLIMITED;
+
+ob_connect(backup_oracle_conn, ob1.z1.obs0,TEST@$backup_oracle_tenant,test,test,,USE_OB_CONNECTOR);
+connection backup_oracle_conn;
+
+create table t3(a int, b int, c int, CONSTRAINT "c3" PRIMARY KEY ("A"));
+create index idx_3 on t3(B);
+insert into t3(a, b) values(1, 1);
+
+# 升级完成后, 对主备租户执行switchover操作
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tenant_info where tenant_id = 1004 and tenant_role = 'PRIMARY' and switchover_status = 'NORMAL', 1, 10;
+let $primary_switchover_epoch = deploy_get_value(ob1.select select switchover_epoch from oceanbase.__all_virtual_tenant_info where tenant_id = 1004, switchover_epoch, 1);
+ob_connect(conn_sys_ob1, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+select TENANT_ID, TENANT_NAME, TENANT_TYPE, COMPATIBILITY_MODE, STATUS, IN_RECYCLEBIN, LOCKED, TENANT_ROLE, SWITCHOVER_STATUS, LOG_MODE from DBA_OB_TENANTS order by TENANT_ID;
+select count(*) from DBA_OB_TENANTS where SYNC_SCN >= REPLAYABLE_SCN and REPLAYABLE_SCN>=READABLE_SCN and RECOVERY_UNTIL_SCN !=0 and TENANT_TYPE = "USER";
+# 1
+ob1.mysql ALTER SYSTEM SWITCHOVER TO STANDBY TENANT $backup_oracle_tenant;
+let $primary_sync_scn = deploy_get_value(ob1.select select sync_scn from oceanbase.__all_virtual_tenant_info where tenant_id = 1004, sync_scn, 1);
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tenant_info where tenant_id = 1004 and switchover_epoch = $primary_switchover_epoch, 0, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tenant_info where tenant_id = 1004 and tenant_role = 'STANDBY' and switchover_status = 'NORMAL' and replayable_scn = $primary_sync_scn, 1, 10;
+let $to_standby_tenant_id = 1004;
+let $to_primary_tenant_id = 1006;
+
+#  等待主租户变为备租户，并且完成归档
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tenant_info where tenant_id = $to_standby_tenant_id and tenant_role = 'STANDBY' and switchover_status = 'NORMAL', 1, 10;
+source include/check_archive_finish.inc;
+# 等待备租户switchover_status状态是normal
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tenant_info where tenant_id = $to_primary_tenant_id and tenant_role = 'STANDBY' and switchover_status = 'NORMAL', 1, 10;
+
+ob_connect(backup_oracle_conn, ob1.z1.obs0,TEST@$backup_oracle_tenant,test,test,,USE_OB_CONNECTOR);
+connection backup_oracle_conn;
+select * from t2;
+# 1   1
+# 2   2
+
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tenant_info where tenant_id = 1006 and tenant_role = 'STANDBY' and switchover_status = 'NORMAL', 1, 10;
+let standby_switchover_epoch = deploy_get_value(ob1.select select switchover_epoch from oceanbase.__all_virtual_tenant_info where tenant_id = 1006, switchover_epoch, 1);
+ob1.mysql ALTER SYSTEM SWITCHOVER TO PRIMARY TENANT $restore_oracle_tenant;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tenant_info where tenant_id = 1006 and switchover_epoch = $standby_switchover_epoch, 0, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tenant_info where tenant_id = 1006 and tenant_role = 'PRIMARY' and switchover_status = 'NORMAL' and recovery_until_scn = 4611686018427387903, 1, 10;
+
+ob_connect(restore_oracle_conn, ob1.z1.obs0,TEST@$restore_oracle_tenant,test,test,,USE_OB_CONNECTOR);
+connection restore_oracle_conn;
+select * from t3;
+# 1   1

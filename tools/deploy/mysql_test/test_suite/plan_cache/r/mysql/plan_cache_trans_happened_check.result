@@ -1,0 +1,95 @@
+result_format: 4
+
+alter system set large_query_threshold = '1s';
+alter system set enable_auto_leader_switch=false;
+alter system set resource_hard_limit = 500;
+
+alter system flush plan cache global;
+
+drop database if exists xy_db;
+create database xy_db;
+use xy_db;
+
+drop table if exists trans_happened_table;
+create table trans_happened_table(c1 int primary key, c2 int, c3 int, index idx_c3(c3), index inx_c2(c2));
+
+
+
+insert into trans_happened_table values(1,1,1), (2,2,2),(3,1,1),(4,1,1);
+
+
+=============================== same transform happened route===============================
+select * from trans_happened_table where c2 = 3 or c3 = 3;
++----+------+------+
+| c1 | c2   | c3   |
++----+------+------+
++----+------+------+
+select * from trans_happened_table where c2 = 3 or c3 = 3;
++----+------+------+
+| c1 | c2   | c3   |
++----+------+------+
++----+------+------+
+explain select * from trans_happened_table where c2 = 3 or c3 = 3;
+Query Plan
+===================================================
+|ID|OPERATOR  |NAME                |EST. ROWS|COST|
+---------------------------------------------------
+|0 |TABLE SCAN|trans_happened_table|2        |46  |
+===================================================
+
+Outputs & filters: 
+-------------------------------------
+  0 - output([trans_happened_table.c1], [trans_happened_table.c2], [trans_happened_table.c3]), filter([trans_happened_table.c2 = 3 OR trans_happened_table.c3 = 3]), 
+      access([trans_happened_table.c1], [trans_happened_table.c2], [trans_happened_table.c3]), partitions(p0)
+
+
+// expect hit_count = 1
+select type,hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'select * from trans_happened_table where c2 = ? or c3 = ?';
++------+-----------+
+| type | hit_count |
++------+-----------+
+|    1 |         1 |
++------+-----------+
+
+// alter system switch replica part1 to backup server
+
+=============================== diff transform happened route===============================
+
+select * from trans_happened_table where c2 = 1 or c3 = 1;
++----+------+------+
+| c1 | c2   | c3   |
++----+------+------+
+|  1 |    1 |    1 |
+|  3 |    1 |    1 |
+|  4 |    1 |    1 |
++----+------+------+
+explain select * from trans_happened_table where c2 = 1 or c3 = 1;
+Query Plan
+=============================================================
+|ID|OPERATOR            |NAME                |EST. ROWS|COST|
+-------------------------------------------------------------
+|0 |EXCHANGE IN REMOTE  |                    |2        |47  |
+|1 | EXCHANGE OUT REMOTE|                    |2        |46  |
+|2 |  TABLE SCAN        |trans_happened_table|2        |46  |
+=============================================================
+
+Outputs & filters: 
+-------------------------------------
+  0 - output([trans_happened_table.c1], [trans_happened_table.c2], [trans_happened_table.c3]), filter(nil)
+  1 - output([trans_happened_table.c1], [trans_happened_table.c2], [trans_happened_table.c3]), filter(nil)
+  2 - output([trans_happened_table.c1], [trans_happened_table.c2], [trans_happened_table.c3]), filter([trans_happened_table.c2 = 1 OR trans_happened_table.c3 = 1]), 
+      access([trans_happened_table.c1], [trans_happened_table.c2], [trans_happened_table.c3]), partitions(p0)
+
+// expect type = 1, hit_count = 1,type = 2, hit_count = 0,
+select type,hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'select * from trans_happened_table where c2 = ? or c3 = ?';
++------+-----------+
+| type | hit_count |
++------+-----------+
+|    1 |         1 |
+|    2 |         0 |
++------+-----------+
+****************************** cleanup ******************************
+drop database if exists xy_db;
+
+alter system set large_query_threshold = '100ms';
+alter system set enable_auto_leader_switch = true;

@@ -1,0 +1,791 @@
+#owner: gehao.wh
+#owner group: 多模
+#description: vector_ddl
+#tags:vector
+#author: wb-ljh01399065
+
+purge recyclebin;
+
+--disable_warnings
+drop database IF EXISTS obljh;
+--enable_warnings
+
+create database obljh ;
+use obljh;
+set timestamp = 1600000000;
+set ob_trx_timeout = 10000000000;
+set ob_query_timeout = 10000000000;
+set ob_default_lob_inrow_threshold = 0;
+
+alter system set ob_vector_memory_limit_percentage =44;
+set ob_query_timeout  = 3216672000000000;
+
+
+
+##分区表视图的查询操作
+--disable_warnings 
+drop table if exists t1;
+drop view if exists v1;
+--enable_warnings
+CREATE TABLE t1 (c1 int , c2 VARCHAR(30),c3 vector(3) ,c4 vector(3))PARTITION BY KEY(c1) PARTITIONS 4;
+##设置表comment
+ALTER TABLE t1 COMMENT='这是向量索引表，存储详细信息。';
+insert into t1(c1,c2,c3,c4) values(1,'[1,1,2]','[2,2,3]','[1,3,2]');
+insert into t1(c1,c2,c3,c4) values(2,'[1,0,3]','[1,0,3]','[2,3,2]');
+insert into t1(c1,c2,c3,c4) values(3,'[-1,2,2]','[-3,2,3]','[4,3,3]');
+insert into t1(c1,c2,c3,c4) values(4,'[-1,-2,-2]','[-4,2,3]',null);
+insert into t1(c1,c2,c3,c4) values(5,'[-1,-3,-2]',null,'[2,3,1]');
+create view v1 as select * from t1;
+insert /*+ direct(true,100) enable_parallel_dml parallel(2)*/ into v1 select c1,c2,c3,c4 from t1;
+insert  into t1 select c1,c2,c3,c4 from t1;
+insert /*+ direct(true,100) enable_parallel_dml parallel(2) append*/ into t1 select c1,c2,c3,c4 from t1;
+
+select l2_distance(c3,c2) from v1  group by l2_distance(c3,[1,2,3]) order by c1;
+select l2_distance(c3,c2) from v1  group by l2_distance(c3,[1,2,3]) order by l2_distance(c3, [1,2,3]) APPROX limit 10,100;
+select l2_distance(c3,c2) from v1  group by l2_distance(c3,[1,2,3]) order by l2_distance(c3, [1,2,3]) APPROX limit 100000000;
+
+
+
+##分区表视图replace into操作
+--disable_warnings 
+drop table if exists t1;
+--enable_warnings
+CREATE TABLE t1 (c1 int primary key, c2 VARCHAR(30),c3 vector(3) ,c4 vector(3)) partition by list columns (c1)(
+  PARTITION p0 VALUES in(10),
+  PARTITION p1 VALUES in(50)
+);
+##设置列comment
+--error 1659
+ALTER TABLE t1 MODIFY COLUMN c1 vector(3);
+--error 1659
+ALTER TABLE t1 MODIFY COLUMN c1 vector(3) COMMENT '向量索引列';
+ALTER TABLE t1 MODIFY COLUMN c4 vector(3) COMMENT 'a';
+CREATE VECTOR INDEX vector_idx_c4  ON t1 (c4)  WITH (distance=l2, lib=vsag, type=hnsw, m=10, ef_construction=100, ef_search=40);
+drop index vector_idx_c4 on t1;
+
+
+--disable_warnings 
+drop view if exists v1;
+--enable_warnings
+create view v1 as select * from t1;
+##导致core  --已修复
+--error 1526
+replace into v1 values(1,'[1,1,2]','[2,2,3]','[1,3,2]');
+--error 1526
+replace into t1 values(1,'[1,1,2]','[2,2,3]','[1,3,2]');
+replace into v1 values(10,'[1,1,2]','[2,2,3]','[1,3,2]');
+replace into v1 values(10,'[1,1,2]','[2,2,3]','[1,3,2]');
+##--error 4377  
+replace into t1 select c1,c2,c3,c4 from v1;
+
+
+
+##分区表视图insert into操作
+--disable_warnings 
+drop table if exists t1;
+drop table if exists tt1;
+drop view if exists v1;
+--enable_warnings
+CREATE TABLE t1 (c1 int primary key, c2 varchar(30),c3 vector(3) ,c4 vector(3),
+VECTOR INDEX vector_idx(c3) 
+WITH (distance=l2, lib=vsag, type=hnsw, m=10, ef_construction=100, ef_search=40))PARTITION BY KEY(c1) PARTITIONS 4;
+insert into t1(c1,c2,c3,c4) values(1,'[1,1,2]','[2,2,3]','[1,3,2]');
+insert into t1(c1,c2,c3,c4) values(2,'[1,0,3]','[1,0,3]','[2,3,2]');
+insert into t1(c1,c2,c3,c4) values(3,'[-1,2,2]','[-3,2,3]','[4,3,3]');
+insert into t1(c1,c2,c3,c4) values(4,'[-1,-2,-2]','[-4,2,3]',null);
+insert into t1(c1,c2,c3,c4) values(5,'[-1,-3,-2]',null,'[2,3,1]');
+create view v1 as  select * from t1 order by l2_distance(c3, [1,2,3]) approximate limit 10;
+--error 1471
+insert into v1(c1,c2,c3,c4) values(6,'[-1,-3,-2]',null,'[2,3,1]');
+--error 1471
+replace into v1 values(10,'[1,1,2]','[2,2,3]','[1,3,2]');
+--error 1471
+replace into v1 values(10,'[1,1,2]','[2,2,3]','[1,3,2]');
+--error 1235
+select * from v1 order by l2_distance(c3, c4) approximate limit 10;
+
+
+
+##分区表视图INSERT ... ON DUPLICATE KEY UPDATE操作
+--disable_warnings 
+drop table if exists t1;
+drop table if exists tt1;
+drop view if exists v1;
+--enable_warnings
+CREATE TABLE t1 (c1 int primary key, c2 varchar(30),c3 vector(3) ,c4 vector(3),
+VECTOR INDEX vector_idx(c3) 
+WITH (distance=l2, lib=vsag, type=hnsw, m=10, ef_construction=100, ef_search=40))PARTITION BY KEY(c1) PARTITIONS 4;
+insert into t1(c1,c2,c3,c4) values(1,'[1,1,2]','[2,2,3]','[1,3,2]');
+insert into t1(c1,c2,c3,c4) values(2,'[1,0,3]','[1,0,3]','[2,3,2]');
+insert into t1(c1,c2,c3,c4) values(3,'[-1,2,2]','[-3,2,3]','[4,3,3]');
+insert into t1(c1,c2,c3,c4) values(4,'[-1,-2,-2]','[-4,2,3]',null);
+insert into t1(c1,c2,c3,c4) values(5,'[-1,-3,-2]',null,'[2,3,1]');
+create view v1 as  select * from t1;
+##导致core
+insert into v1(c1,c2,c3,c4) values(1,'[1,2,3]','[1,3,3]','[2,1,2]') ON DUPLICATE KEY UPDATE c2='[1,null,3]';
+
+##分区表视图update操作
+--disable_warnings 
+drop table if exists t1;
+drop table if exists tt1;
+drop view if exists v1;
+--enable_warnings
+CREATE TABLE t1 (c1 int primary key, c2 vector(3),c3 vector(3) ,c4 vector(3),
+VECTOR INDEX vector_idx(c3) 
+WITH (distance=l2, lib=vsag, type=hnsw, m=10, ef_construction=100, ef_search=40))PARTITION BY KEY(c1) PARTITIONS 4;
+insert into t1(c1,c2,c3,c4) values(1,'[1,1,2]','[2,2,3]','[1,3,2]');
+insert into t1(c1,c2,c3,c4) values(2,'[1,0,3]','[1,0,3]','[2,3,2]');
+insert into t1(c1,c2,c3,c4) values(3,'[-1,2,2]','[-3,2,3]','[4,3,3]');
+insert into t1(c1,c2,c3,c4) values(4,'[-1,-2,-2]','[-4,2,3]',null);
+insert into t1(c1,c2,c3,c4) values(5,'[-1,-3,-2]',null,'[2,3,1]');
+create view v1 as  select * from t1;
+
+update v1 set c1 = 10 where c1 =5;
+update v1 set c2 = '[1,23,null]' where c1 =5;
+update v1 set c2 = '[1,23,abs(null)]' where c1 =5;
+update v1 set c2 =[l2_distance('[1,3,2]','[1,1,2]'),l2_distance('[1,2,2]','[1,1,11]'),l2_distance('[1,1,2]','[1,1,2]')] where c3 is null;
+update v1 set c1 = l2_distance('[1,8,2]','[1,1,2]') where c3 = '[2,2,3]';
+update v1 set c1 = l2_distance('[1,10,2]','[1,1,2]'),c2 = '[1,1,1]',c3 = '[0,1,0]',c4 = '[0.1,1.2,100]' where c4 = '[2,3,2]';
+update v1 set c2 ='[1,2,3]' where c1 >l2_distance('[1,1,2]','[1,2,2]');
+
+update v1 set c2 =[1,2,3] where c1 >l2_distance('[1,1,2]','[1,2,2]');
+update v1 set c2 =[2,2,3] where c1 <l2_distance('[1,1,2]','[1,2,2]');
+update v1 set c2 =[1,2,3] where c1 >=l2_distance('[1,1,2]','[1,2,2]');
+update v1 set c2 =[2,2,3] where c1 <=l2_distance('[1,1,2]','[1,2,2]');
+update v1 set c2 =[1,2,3] where c1 =l2_distance('[1,1,2]','[1,2,2]');
+update v1 set c2 =[2,2,3] where c1 <>l2_distance('[1,1,2]','[1,2,2]');
+update v1 set c2 =[1,2,3] where c1 > l2_distance('[1,3,2]','[1,2,2]') and c1 > l2_distance('[1,3,2]','[1,2,2]');
+update v1 set c2 =[2,2,3] where c1 < l2_distance('[1,1,2]','[1,2,2]') or c1 > l2_distance('[1,3,2]','[1,2,2]') ;
+
+
+
+--echo ##分区表后创建向量索引  导致hang
+--disable_warnings 
+drop table if exists t1;
+--enable_warnings
+CREATE TABLE t1 (c1 int primary key, c2 VARCHAR(30),c3 vector(3) ,c4 vector(3),
+VECTOR INDEX vector_idx_c3(c3) 
+WITH (distance=l2, lib=vsag, type=hnsw, m=10, ef_construction=100, ef_search=40))
+PARTITION BY RANGE(c1) (
+PARTITION p0 VALUES less than(5),
+PARTITION p1 VALUES less than(6),
+PARTITION p2 VALUES less than(9),
+PARTITION p5 VALUES less than (MAXVALUE));
+insert into t1(c1,c2,c3,c4) values(1,'[1,1,2]','[2,2,3]','[1,3,2]');
+insert into t1(c1,c2,c3,c4) values(3,'[1,0,3]','[1,0,3]','[2,3,2]');
+insert into t1(c1,c2,c3,c4) values(4,'[-1,2,2]','[-3,2,3]','[4,3,3]');
+insert into t1(c1,c2,c3,c4) values(7,'[-1,-2,-2]','[-4,2,3]',null);
+insert into t1(c1,c2,c3,c4) values(8,'[-1,-3,-2]',null,'[2,3,1]');
+CREATE VECTOR INDEX vector_idx_c4  ON t1 (c4)  WITH (distance=l2, lib=vsag, type=hnsw, m=10, ef_construction=100, ef_search=40);
+##show index from t1;
+
+--echo ##普通表后创建向量索引  
+--disable_warnings 
+drop table if exists t1;
+--enable_warnings
+CREATE TABLE t1 (c1 int primary key, c2 VARCHAR(30),c3 vector(3) ,c4 vector(3),
+VECTOR INDEX vector_idx_c3(c3) 
+WITH (distance=l2, lib=vsag, type=hnsw, m=10, ef_construction=100, ef_search=40));
+insert into t1(c1,c2,c3,c4) values(1,'[1,1,2]','[2,2,3]','[1,3,2]');
+insert into t1(c1,c2,c3,c4) values(3,'[1,0,3]','[1,0,3]','[2,3,2]');
+insert into t1(c1,c2,c3,c4) values(4,'[-1,2,2]','[-3,2,3]','[4,3,3]');
+insert into t1(c1,c2,c3,c4) values(7,'[-1,-2,-2]','[-4,2,3]',null);
+insert into t1(c1,c2,c3,c4) values(8,'[-1,-3,-2]',null,'[2,3,1]');
+CREATE VECTOR INDEX vector_idx_c4  ON t1 (c4)  WITH (distance=l2, lib=vsag, type=hnsw, m=10, ef_construction=100, ef_search=40);
+##show index from t1;
+
+--echo ##普通表后创建普通索引 
+--disable_warnings 
+drop table if exists t1;
+--enable_warnings
+CREATE TABLE t1 (c1 int primary key, c2 VARCHAR(30),c3 vector(3) ,c4 vector(3),
+VECTOR INDEX vector_idx_c3(c3) 
+WITH (distance=l2, lib=vsag, type=hnsw, m=10, ef_construction=100, ef_search=40));
+insert into t1(c1,c2,c3,c4) values(1,'[1,1,2]','[2,2,3]','[1,3,2]');
+insert into t1(c1,c2,c3,c4) values(3,'[1,0,3]','[1,0,3]','[2,3,2]');
+insert into t1(c1,c2,c3,c4) values(4,'[-1,2,2]','[-3,2,3]','[4,3,3]');
+insert into t1(c1,c2,c3,c4) values(7,'[-1,-2,-2]','[-4,2,3]',null);
+insert into t1(c1,c2,c3,c4) values(8,'[-1,-3,-2]',null,'[2,3,1]');
+--error 1235
+CREATE  INDEX vector_idx_c3  ON t1 (c3) ;
+CREATE  INDEX vector_idx_c1  ON t1 (c1) ;
+##show index from t1;
+
+##指定分区的dml操作
+--disable_warnings 
+drop table if exists t1;
+--enable_warnings
+
+CREATE TABLE t1 (c1 int primary key, c2 VARCHAR(30),c3 vector(3) ,c4 vector(3),
+VECTOR INDEX vector_idx_c3(c3) 
+WITH (distance=l2, lib=vsag, type=hnsw, m=10, ef_construction=100, ef_search=40))
+PARTITION BY RANGE(c1) (
+PARTITION p0 VALUES less than(5),
+PARTITION p1 VALUES less than(6),
+PARTITION p2 VALUES less than(9),
+PARTITION p5 VALUES less than (MAXVALUE));
+insert into t1(c1,c2,c3,c4) values(1,'[1,1,2]','[2,2,3]','[1,3,2]');
+insert into t1(c1,c2,c3,c4) values(3,'[1,0,3]','[1,0,3]','[2,3,2]');
+insert into t1(c1,c2,c3,c4) values(4,'[-1,2,2]','[-3,2,3]','[4,3,3]');
+insert into t1(c1,c2,c3,c4) values(7,'[-1,-2,-2]','[-4,2,3]',null);
+insert into t1(c1,c2,c3,c4) values(8,'[-1,-3,-2]',null,'[2,3,1]');
+insert into t1(c1,c2,c3,c4) values(9,'[1,1,2]','[2,2,3]','[1,3,2]');
+insert into t1(c1,c2,c3,c4) values(10,'[1,0,3]','[1,0,3]','[2,3,2]');
+insert into t1(c1,c2,c3,c4) values(2,'[-1,2,2]','[-3,2,3]','[4,3,3]');
+insert into t1(c1,c2,c3,c4) values(11,'[-1,-2,-2]','[-4,2,3]',null);
+insert into t1(c1,c2,c3,c4) values(100,null,null,null);
+replace into t1(c1,c2,c3,c4) values(11,'[-1,-2,-2]','[-4,2,3]',null);
+replace into t1(c1,c2,c3,c4) values(11,'[-1,-1,-2]','[-4,2,3]',null);
+##show create table t1;
+TRUNCATE TABLE t1;
+
+##--已知问题 入参都是向量列
+select * from t1 PARTITION (p2) order by l2_distance(c3, [1,2,3]) approximate limit 10 ;
+select * from t1 PARTITION (p5) order by l2_distance(c3, [1,2,3]) approximate limit 10 ;
+select * from t1 PARTITION (p2) order by l2_distance(c3, [1,2,3]) approximate limit 10 ;
+select l2_distance(c3, c2) from t1 PARTITION (p2) union all select l2_distance(c3, [1,2,3]) from t1 PARTITION (p5) ;
+CREATE VECTOR INDEX vector_idx_c4  ON t1 (c4)  WITH (distance=l2, lib=vsag, type=hnsw, m=10, ef_construction=100, ef_search=40);
+drop index vector_idx_c4 on t1;
+
+
+##创建存储列
+alter system set ob_vector_memory_limit_percentage =44;
+--disable_warnings 
+drop table if exists t1;
+--enable_warnings
+CREATE TABLE t1 (c1 int primary key, c2 varchar(30),c3 vector(3) ,c4 vector(3),c5 double AS (l2_distance([1,2,3],(c3))) STORED,
+VECTOR INDEX vector_idx(c3) 
+WITH (distance=l2, lib=vsag, type=hnsw, m=10, ef_construction=100, ef_search=40))PARTITION BY KEY(c1) PARTITIONS 4;
+insert into t1(c1,c2,c3,c4) values(1,'[1,1,2]','[2,2,3]','[1,3,2]');
+insert into t1(c1,c2,c3,c4) values(3,'[1,0,3]','[1,0,3]','[2,3,2]');
+insert into t1(c1,c2,c3,c4) values(4,'[-1,2,2]','[-3,2,3]','[4,3,3]');
+insert into t1(c1,c2,c3,c4) values(7,'[-1,-2,-2]','[-4,2,3]',null);
+insert into t1(c1,c2,c3,c4) values(8,'[-1,-3,-2]',null,'[2,3,1]');
+insert into t1(c1,c2,c3,c4) values(9,'[1,1,2]','[2,2,3]','[1,3,2]');
+insert into t1(c1,c2,c3,c4) values(10,'[1,0,3]','[1,0,3]','[2,3,2]');
+insert into t1(c1,c2,c3,c4) values(2,'[-1,2,2]','[-3,2,3]','[4,3,3]');
+insert into t1(c1,c2,c3,c4) values(11,'[-1,-2,-2]','[-4,2,3]',null);
+##导致core  新引入问题 
+##show create table t1;
+
+--error 1235
+CREATE VECTOR INDEX vector_idx_c1  ON t1 (c5)  WITH (distance=l2, lib=vsag, type=hnsw, m=10, ef_construction=100, ef_search=40);
+
+##定义存储列后查看表定义报错
+##--error 4016
+##show create table t1;
+
+
+drop table if exists t1;
+CREATE TABLE t1 (c1 int primary key, c2 varchar(30),c3 vector(3) ,c4 vector(3),c5 double AS (l2_distance([1],[1])) STORED,
+VECTOR INDEX vector_idx(c3) 
+WITH (distance=l2, lib=vsag, type=hnsw, m=10, ef_construction=100, ef_search=40));
+
+##show create table t1;
+
+##定义存储列报错4201
+--disable_warnings 
+drop table if exists t1;
+--enable_warnings
+CREATE TABLE t1 (c1 int primary key, c2 varchar(30),c3 vector(3) ,c4 vector(3),c5 vector(3) AS (c2+c3) STORED);
+
+##定义存储列后建索引
+--disable_warnings 
+drop table if exists t1;
+--enable_warnings
+CREATE TABLE t1 (c1 INT PRIMARY KEY,c2 vector(3),c3 vector(3), c4 vector(3),c5 vector(3) AS (c4*c3) STORED);
+--error 1235
+CREATE VECTOR INDEX vector_idx_c5  ON t1 (c5)  WITH (distance=l2, lib=vsag, type=hnsw, m=10, ef_construction=100, ef_search=40);
+
+--echo ##查看表结构报错4016
+--disable_warnings 
+drop table if exists t1;
+--enable_warnings
+CREATE TABLE t1 (c1 int primary key, c2 varchar(30),c3 vector(3) ,c4 vector(3),c5 vector(3) AS ([1,2,3]) STORED);
+##show create table t1;
+
+##虚拟列
+--disable_warnings 
+drop table if exists t1;
+--enable_warnings
+CREATE TABLE t1 (c1 int primary key, c2 varchar(30) ,c3 vector(3) ,c4 vector(3),c5 vector(3) AS ((c3*c2)) check(c5 = [2,2,6] or null ),c6 vector(3) AS ((c3*c4)) ,c7 vector(3) AS ((c3-c4)) ,c8 vector(3) AS ((c3+c4+c2)) ,
+VECTOR INDEX vector_idx(c3) 
+WITH (distance=l2, lib=vsag, type=hnsw, m=10, ef_construction=100, ef_search=40))PARTITION BY KEY(c1) PARTITIONS 4;
+insert into t1(c1,c2,c3,c4) values(1,'[1,1,2]','[2,2,3]','[1,3,2]');
+insert into t1(c1,c2,c3,c4) values(3,'[1,0,3]','[1,0,3]','[2,3,2]');
+insert into t1(c1,c2,c3,c4) values(4,'[-1,2,2]','[-3,2,3]','[4,3,3]');
+insert into t1(c1,c2,c3,c4) values(7,'[-1,-2,-2]','[-4,2,3]',null);
+insert into t1(c1,c2,c3,c4) values(8,'[-1,-3,-2]',null,'[2,3,1]');
+insert into t1(c1,c2,c3,c4) values(9,'[1,1,2]','[2,2,3]','[1,3,2]');
+insert into t1(c1,c2,c3,c4) values(10,'[1,0,3]','[1,0,3]','[2,3,2]');
+insert into t1(c1,c2,c3,c4) values(2,'[-1,2,2]','[-3,2,3]','[4,3,3]');
+insert into t1(c1,c2,c3,c4) values(11,'[-1,-2,-2]','[-4,2,3]',null);
+##show create table t1;
+--error 1235
+CREATE VECTOR INDEX vector_idx_c1  ON t1 (c6)  WITH (distance=l2, lib=vsag, type=hnsw, m=10, ef_construction=100, ef_search=40);
+--error 1235
+CREATE VECTOR INDEX vector_idx_c1  ON t1 (c7)  WITH (distance=l2, lib=vsag, type=hnsw, m=10, ef_construction=100, ef_search=40);
+--error 1235
+CREATE VECTOR INDEX vector_idx_c1  ON t1 (c8)  WITH (distance=l2, lib=vsag, type=hnsw, m=10, ef_construction=100, ef_search=40);
+
+
+###生成列作为连接键
+--disable_warnings 
+drop table if exists t1;
+drop table if exists tt1;
+--enable_warnings
+CREATE TABLE t1 (c1 int primary key, c2 varchar(30),c3 vector(3) ,c4 vector(3),c5 double AS (l2_distance([1,2,3],c3)) STORED,
+VECTOR INDEX vector_idx(c3) 
+WITH (distance=l2, lib=vsag, type=hnsw, m=10, ef_construction=100, ef_search=40));
+insert into t1(c1,c2,c3,c4) values(1,'[1,1,2]','[2,2,3]','[1,3,2]');
+insert into t1(c1,c2,c3,c4) values(2,'[1,0,3]','[1,0,3]','[2,3,2]');
+insert into t1(c1,c2,c3,c4) values(3,'[-1,2,2]','[-3,2,3]','[4,3,3]');
+insert into t1(c1,c2,c3,c4) values(4,'[-1,-2,-2]','[-4,2,3]',null);
+insert into t1(c1,c2,c3,c4) values(5,'[-1,-3,-2]',null,'[2,3,1]');
+create table tt1 like t1;
+replace INTO tt1(c1,c2,c3,c4) SELECT c1,c2,c3,c4  FROM t1;
+
+select * from t1 a ,tt1 b where a.c4=b.c4 order by l2_distance(b.c3, [1,2,3])  limit 100;
+select * from t1 a ,tt1 b where a.c4=b.c4 order by l2_distance(b.c3, [1,2,3]) approximate limit 100;
+
+select * from t1 a ,t1 b where a.c5=b.c5 order by l2_distance(b.c3, [1,2,3])  limit 100;
+select * from t1 a ,t1 b where a.c5=b.c5 order by l2_distance(b.c3, [1,2,3]) approximate limit 100;
+
+###ctas 进行join连接导致core
+--disable_warnings 
+drop table if exists t2;
+drop table if exists tt1;
+drop table if exists t1;
+--enable_warnings
+CREATE TABLE t2 (c1 int primary key, c2 varchar(30),c3 vector(3) ,c4 vector(3),
+VECTOR INDEX vector_idx(c3)
+WITH (distance=l2, lib=vsag, type=hnsw, m=10, ef_construction=100, ef_search=40))PARTITION BY KEY(c1) PARTITIONS 4;
+insert into t2(c1,c2,c3,c4) values(1,'[1,1,2]','[2,2,3]','[1,3,2]');
+insert into t2(c1,c2,c3,c4) values(2,'[1,0,3]','[1,0,3]','[2,3,2]');
+insert into t2(c1,c2,c3,c4) values(3,'[-1,2,2]','[-3,2,3]','[4,3,3]');
+insert into t2(c1,c2,c3,c4) values(4,'[-1,-2,-2]','[-4,2,3]',null);
+insert into t2(c1,c2,c3,c4) values(5,'[-1,-3,-2]',null,'[2,3,1]');
+create table tt1 as select * from t2;
+replace INTO tt1(c1,c2,c3,c4) SELECT c1,c2,c3,c4  FROM t2;
+replace INTO tt1(c1,c2,c3,c4) SELECT c1,c2,c3,c4  FROM t2;
+
+CREATE TABLE t1 (c1 int primary key, c2 varchar(30) ,c3 vector(3) ,c4 vector(3),c5 vector(3) AS ((c3*c2)) check(c5 = [2,2,6] or null ),c6 vector(3) AS ((c3*c4)) ,c7 vector(3) AS ((c3-c4)) ,c8 vector(3) AS ((c3+c4+c2)) ,
+VECTOR INDEX vector_idx(c3) 
+WITH (distance=l2, lib=vsag, type=hnsw, m=10, ef_construction=100, ef_search=40))PARTITION BY KEY(c1) PARTITIONS 4;
+insert into t1(c1,c2,c3,c4) values(1,'[1,1,2]','[2,2,3]','[1,3,2]');
+insert into t1(c1,c2,c3,c4) values(3,'[1,0,3]','[1,0,3]','[2,3,2]');
+insert into t1(c1,c2,c3,c4) values(4,'[-1,2,2]','[-3,2,3]','[4,3,3]');
+insert into t1(c1,c2,c3,c4) values(7,'[-1,-2,-2]','[-4,2,3]',null);
+insert into t1(c1,c2,c3,c4) values(8,'[-1,-3,-2]',null,'[2,3,1]');
+insert into t1(c1,c2,c3,c4) values(9,'[1,1,2]','[2,2,3]','[1,3,2]');
+insert into t1(c1,c2,c3,c4) values(10,'[1,0,3]','[1,0,3]','[2,3,2]');
+insert into t1(c1,c2,c3,c4) values(2,'[-1,2,2]','[-3,2,3]','[4,3,3]');
+insert into t1(c1,c2,c3,c4) values(11,'[-1,-2,-2]','[-4,2,3]',null);
+##show create table t1;
+select * from t1;
+replace INTO tt1(c1,c2,c3,c4) SELECT c1,c2,c3,c4  FROM t1;
+select count(*) from t1 a ,tt1 b where a.c4=b.c4 order by l2_distance(b.c3, [1,2,3])  limit 100;
+select count(*) from t1 a ,tt1 b where a.c4=b.c4 order by l2_distance(a.c3, [1,2,3]) approximate limit 100;
+
+
+##create like 后replace/insert
+--disable_warnings 
+drop table if exists t1;
+drop table if exists tt1;
+--enable_warnings
+CREATE TABLE t1 (c1 int primary key, c2 varchar(30),c3 vector(3) ,c4 vector(3),
+VECTOR INDEX vector_idx(c3) 
+WITH (distance=l2, lib=vsag, type=hnsw, m=10, ef_construction=100, ef_search=40));
+insert into t1(c1,c2,c3,c4) values(1,'[1,1,2]','[2,2,3]','[1,3,2]');
+insert into t1(c1,c2,c3,c4) values(2,'[1,0,3]','[1,0,3]','[2,3,2]');
+insert into t1(c1,c2,c3,c4) values(3,'[-1,2,2]','[-3,2,3]','[4,3,3]');
+create table tt1 like t1;
+replace INTO tt1(c1,c2,c3,c4) SELECT c1,c2,c3,c4  FROM t1;
+select * from t1 a ,tt1 b where a.c4=b.c4 order by l2_distance(b.c3, [1,2,3])  limit 10;
+select * from t1 a ,tt1 b where a.c4=b.c4 order by l2_distance(b.c3, [1,2,3]) approximate limit 10;
+
+select * from t1 a ,tt1 b where a.c3=b.c3 order by l2_distance(b.c3, [1,2,3])  limit 100;
+select * from t1 a ,tt1 b where a.c3=b.c3 order by l2_distance(b.c3, [1,2,3]) approximate limit 100;
+
+
+--disable_warnings 
+drop table if exists t1;
+drop table if exists tt1;
+--enable_warnings
+CREATE TABLE t1 (c1 int primary key, c2 varchar(30),c3 vector(3) ,c4 vector(3),
+VECTOR INDEX vector_idx(c3) 
+WITH (distance=l2, lib=vsag, type=hnsw, m=10, ef_construction=100, ef_search=40));
+insert into t1(c1,c2,c3,c4) values(1,'[1,1,2]','[2,2,3]','[1,3,2]');
+insert into t1(c1,c2,c3,c4) values(2,'[1,0,3]','[1,0,3]','[2,3,2]');
+insert into t1(c1,c2,c3,c4) values(3,'[-1,2,2]','[-3,2,3]','[4,3,3]');
+create table tt1 like t1;
+insert INTO tt1(c1,c2,c3,c4) SELECT c1,c2,c3,c4  FROM t1;
+
+select * from t1 a ,tt1 b where a.c4=b.c4 order by l2_distance(b.c3, [1,2,3])  limit 100;
+select * from t1 a ,tt1 b where a.c4=b.c4 order by l2_distance(b.c3, [1,2,3]) approximate limit 100;
+
+select * from t1 a ,tt1 b where a.c2=b.c2 order by l2_distance(b.c3, [1,2,3])  limit 100;
+select * from t1 a ,tt1 b where a.c2=b.c2 order by l2_distance(b.c3, [1,2,3]) approximate limit 100;
+
+
+set ob_default_lob_inrow_threshold=0;
+--disable_warnings 
+drop table if exists t1;
+drop table if exists tt1;
+--enable_warnings
+CREATE TABLE t1 (c1 int primary key, c2 varchar(30),c3 vector(3) ,c4 vector(3),
+VECTOR INDEX vector_idx(c3) 
+WITH (distance=l2, lib=vsag, type=hnsw, m=10, ef_construction=100, ef_search=40));
+insert into t1(c1,c2,c3,c4) values(1,'[1,1,2]','[2,2,3]','[1,3,2]');
+insert into t1(c1,c2,c3,c4) values(2,'[1,0,3]','[1,0,3]','[2,3,2]');
+insert into t1(c1,c2,c3,c4) values(3,'[-1,2,2]','[-3,2,3]','[4,3,3]');
+insert into t1(c1,c2,c3,c4) values(4,'[-1,-2,-2]','[-4,2,3]',null);
+insert into t1(c1,c2,c3,c4) values(5,'[-1,-3,-2]',null,'[2,3,1]');
+create table tt1 like t1;
+replace INTO tt1(c1,c2,c3,c4) SELECT c1,c2,c3,c4  FROM t1;
+select * from t1 a ,t1 b where a.c3=b.c3;
+select * from t1 a ,tt1 b where a.c3=b.c3;
+
+select * from t1 a ,t1 b where a.c1=b.c1;
+select * from t1 a ,tt1 b where a.c1=b.c1;
+select * from t1 a ,tt1 b where a.c3=b.c3 order by l2_distance(b.c3, [1,2,3]) approximate limit 100;
+select * from t1 a ,tt1 b where a.c2=b.c2 order by l2_distance(b.c3, [1,2,3])  limit 100;
+select * from t1 a ,tt1 b where a.c2=b.c2 order by l2_distance(b.c3, [1,2,3]) approximate limit 100;
+
+
+--disable_warnings 
+drop table if exists t1;
+drop table if exists tt1;
+--enable_warnings
+CREATE TABLE t1 (c1 int primary key, c2 varchar(30),c3 vector(3) ,c4 vector(3),
+VECTOR INDEX vector_idx(c3) 
+WITH (distance=l2, lib=vsag, type=hnsw, m=10, ef_construction=100, ef_search=40));
+insert into t1(c1,c2,c3,c4) values(1,'[1,1,2]','[2,2,3]','[1,3,2]');
+insert into t1(c1,c2,c3,c4) values(2,'[1,0,3]','[1,0,3]','[2,3,2]');
+insert into t1(c1,c2,c3,c4) values(3,'[-1,2,2]','[-3,2,3]','[4,3,3]');
+
+select * from t1 a ,t1 b where a.c3=b.c3 order by l2_distance(b.c3, [1,2,3])  limit 100;
+select * from t1 a ,t1 b where a.c3=b.c3 order by l2_distance(b.c3, [1,2,3]) approximate limit 100;
+
+select * from t1 a ,t1 b where a.c2=b.c2 order by l2_distance(b.c3, [1,2,3])  limit 100;
+select * from t1 a ,t1 b where a.c2=b.c2 order by l2_distance(b.c3, [1,2,3]) approximate limit 100;
+
+
+
+
+
+##分区表中定义存储列后再创建临时表插入数据
+--disable_warnings 
+drop table if exists t1;
+drop table if exists tt1;
+--enable_warnings
+CREATE TABLE t1 (c1 int primary key, c2 varchar(30),c3 vector(3) ,c4 vector(3),
+VECTOR INDEX vector_idx(c3) 
+WITH (distance=l2, lib=vsag, type=hnsw, m=10, ef_construction=100, ef_search=40))PARTITION BY KEY(c1) PARTITIONS 4;
+insert into t1(c1,c2,c3,c4) values(1,'[1,1,2]','[2,2,3]','[1,3,2]');
+insert into t1(c1,c2,c3,c4) values(2,'[1,0,3]','[1,0,3]','[2,3,2]');
+insert into t1(c1,c2,c3,c4) values(3,'[-1,2,2]','[-3,2,3]','[4,3,3]');
+insert into t1(c1,c2,c3,c4) values(4,'[-1,-2,-2]','[-4,2,3]',null);
+insert into t1(c1,c2,c3,c4) values(5,'[-1,-3,-2]',null,'[2,3,1]');
+CREATE TABLE tt1 LIKE t1;
+insert INTO tt1(c1,c2,c3,c4) SELECT c1,c2,c3,c4  FROM t1;
+replace INTO tt1(c1,c2,c3,c4) SELECT c1,c2,c3,c4  FROM t1;
+select avg(a.c3+b.c3) from tt1 a ,t1 b order by l2_distance(b.c3, [1,2,3]) approximate limit 1;
+select avg(a.c3+b.c3) from tt1 a ,t1 b order by l2_distance(b.c3, [1,2,3])  limit 1;
+
+--disable_warnings 
+drop table if exists t1;
+drop table if exists tt1;
+--enable_warnings
+CREATE TABLE t1 (c1 int primary key, c2 varchar(30),c3 vector(3) ,c4 vector(3),
+VECTOR INDEX vector_idx(c3) 
+WITH (distance=l2, lib=vsag, type=hnsw, m=10, ef_construction=100, ef_search=40));
+insert into t1(c1,c2,c3,c4) values(1,'[1,1,2]','[2,2,3]','[1,3,2]');
+insert into t1(c1,c2,c3,c4) values(2,'[1,0,3]','[1,0,3]','[2,3,2]');
+insert into t1(c1,c2,c3,c4) values(3,'[-1,2,2]','[-3,2,3]','[4,3,3]');
+insert into t1(c1,c2,c3,c4) values(4,'[-1,-2,-2]','[-4,2,3]',null);
+insert into t1(c1,c2,c3,c4) values(5,'[-1,-3,-2]',null,'[2,3,1]');
+CREATE TABLE tt1 LIKE t1;
+insert INTO tt1(c1,c2,c3,c4) SELECT c1,c2,c3,c4  FROM t1;
+replace INTO tt1(c1,c2,c3,c4) SELECT c1,c2,c3,c4  FROM t1;
+select avg(a.c3+b.c3) from tt1 a ,t1 b order by l2_distance(b.c3, [1,2,3]) approximate limit 1;
+select avg(a.c3+b.c3) from tt1 a ,t1 b order by l2_distance(b.c3, [1,2,3])  limit 1;
+
+
+##分区表和普通表
+--disable_warnings 
+drop table if exists t1;
+--enable_warnings
+CREATE TABLE t1 (c1 int primary key, c2 varchar(30),c3 vector(3) ,c4 vector(3),
+VECTOR INDEX vector_idx(c3) 
+WITH (distance=l2, lib=vsag, type=hnsw, m=10, ef_construction=100, ef_search=40))PARTITION BY KEY(c1) PARTITIONS 4;
+insert into t1(c1,c2,c3,c4) values(1,'[1,1,2]','[2,2,3]','[1,3,2]');
+insert into t1(c1,c2,c3,c4) values(2,'[1,0,3]','[1,0,3]','[2,3,2]');
+insert into t1(c1,c2,c3,c4) values(3,'[-1,2,2]','[-3,2,3]','[4,3,3]');
+
+
+--disable_warnings 
+drop table if exists t2;
+--enable_warnings
+CREATE TABLE t2 (c1 int primary key, c2 varchar(30),c3 vector(3) ,c4 vector(3),
+VECTOR INDEX vector_idx(c3) 
+WITH (distance=l2, lib=vsag, type=hnsw, m=10, ef_construction=100, ef_search=40));
+insert into t2(c1,c2,c3,c4) values(1,'[1,1,2]','[2,2,3]','[1,3,2]');
+insert into t2(c1,c2,c3,c4) values(2,'[1,0,3]','[1,0,3]','[2,3,2]');
+insert into t2(c1,c2,c3,c4) values(3,'[-1,2,2]','[-3,2,3]','[4,3,3]');
+
+
+select avg(a.c3+b.c3) from t2 a ,t1 b order by l2_distance(b.c3, [1,2,3]) approximate limit 10;
+select avg(a.c3+b.c3) from t2 a ,t1 b order by l2_distance(b.c3, [1,2,3])  limit 10;
+
+
+--disable_warnings 
+drop table if exists t1;
+--enable_warnings
+CREATE TABLE t1 (c1 int primary key, c2 varchar(30),c3 vector(3) ,c4 vector(3),
+VECTOR INDEX vector_idx(c3) 
+WITH (distance=l2, lib=vsag, type=hnsw, m=10, ef_construction=100, ef_search=40));
+insert into t1(c1,c2,c3,c4) values(1,'[1,1,2]','[2,2,3]','[1,3,2]');
+insert into t1(c1,c2,c3,c4) values(2,'[1,0,3]','[1,0,3]','[2,3,2]');
+insert into t1(c1,c2,c3,c4) values(3,'[-1,2,2]','[-3,2,3]','[4,3,3]');
+insert into t1(c1,c2,c3,c4) values(4,'[-1,-2,-2]','[-4,2,3]',null);
+insert into t1(c1,c2,c3,c4) values(5,'[-1,-3,-2]',null,'[2,3,1]');
+
+--disable_warnings 
+drop table if exists t2;
+--enable_warnings
+CREATE TABLE t2 (c1 int primary key, c2 varchar(30),c3 vector(3) ,c4 vector(3),
+VECTOR INDEX vector_idx(c3) 
+WITH (distance=l2, lib=vsag, type=hnsw, m=10, ef_construction=100, ef_search=40));
+insert into t2(c1,c2,c3,c4) values(1,'[1,1,2]','[2,2,3]','[1,3,2]');
+insert into t2(c1,c2,c3,c4) values(2,'[1,0,3]','[1,0,3]','[2,3,2]');
+insert into t2(c1,c2,c3,c4) values(3,'[-1,2,2]','[-3,2,3]','[4,3,3]');
+insert into t2(c1,c2,c3,c4) values(4,'[-1,-2,-2]','[-4,2,3]',null);
+insert into t2(c1,c2,c3,c4) values(5,'[-1,-3,-2]',null,'[2,3,1]');
+
+select a.c3+b.c3 from t2 a ,t1 b order by l2_distance(b.c3, [1,2,3]) approximate limit 100;
+select a.c3+b.c3 from t2 a ,t1 b order by l2_distance(b.c3, [1,2,3])  limit 100;
+
+select * from t2 a ,t1 b order by l2_distance(b.c3, [1,2,3]) approximate limit 100;
+select * from t2 a ,t1 b order by l2_distance(b.c3, [1,2,3])  limit 100;
+
+
+
+##分区表创建临时表
+--disable_warnings
+drop table if exists t1;
+drop table if exists tt1;
+drop table if exists tt2;
+--enable_warnings
+CREATE TABLE t1 (c1 int primary key, c2 varchar(30),c3 vector(3) ,c4 vector(3),
+VECTOR INDEX vector_idx(c3) 
+WITH (distance=l2, lib=vsag, type=hnsw, m=10, ef_construction=100, ef_search=40))PARTITION BY KEY(c1) PARTITIONS 4;
+insert into t1(c1,c2,c3,c4) values(1,'[1,1,2]','[2,2,3]','[1,3,2]');
+insert into t1(c1,c2,c3,c4) values(2,'[1,0,3]','[1,0,3]','[2,3,2]');
+insert into t1(c1,c2,c3,c4) values(3,'[-1,2,2]','[-3,2,3]','[4,3,3]');
+insert into t1(c1,c2,c3,c4) values(4,'[-1,-2,-2]','[-4,2,3]',null);
+insert into t1(c1,c2,c3,c4) values(5,'[-1,-3,-2]',null,'[2,3,1]');
+CREATE TABLE tt1 as select * from t1;
+CREATE TABLE tt2 like t1;
+replace INTO tt1(c1,c2,c3,c4) SELECT c1,c2,c3,c4  FROM t1;
+replace INTO tt1(c1,c2,c3,c4) SELECT c1,c2,c3,c4  FROM t1;
+replace INTO tt2(c1,c2,c3,c4) SELECT c1,c2,c3,c4  FROM t1;
+replace INTO tt2(c1,c2,c3,c4) SELECT c1,c2,c3,c4  FROM t1;
+
+
+
+--disable_warnings
+drop table if exists t1;
+drop table if exists tt1;
+drop table if exists tt2;
+--enable_warnings
+CREATE TABLE t1 (c1 int primary key, c2 varchar(30),c3 vector(3) ,c4 vector(3),
+VECTOR INDEX vector_idx(c3) 
+WITH (distance=l2, lib=vsag, type=hnsw, m=10, ef_construction=100, ef_search=40))PARTITION BY KEY(c1) PARTITIONS 4;
+CREATE TABLE tt1 like t1;
+insert into t1(c1,c2,c3,c4) values(1,'[1,1,2]','[2,2,3]','[1,3,2]');
+insert into t1(c1,c2,c3,c4) values(2,'[1,0,3]','[1,0,3]','[2,3,2]');
+insert into t1(c1,c2,c3,c4) values(3,'[-1,2,2]','[-3,2,3]','[4,3,3]');
+insert into t1(c1,c2,c3,c4) values(4,'[-1,-2,-2]','[-4,2,3]',null);
+insert into t1(c1,c2,c3,c4) values(5,'[-1,-3,-2]',null,'[2,3,1]');
+insert into tt1(c1,c2,c3,c4) values(1,'[1,1,2]','[2,2,3]','[1,3,2]');
+insert into tt1(c1,c2,c3,c4) values(2,'[1,0,3]','[1,0,3]','[2,3,2]');
+insert into tt1(c1,c2,c3,c4) values(3,'[-1,2,2]','[-3,2,3]','[4,3,3]');
+insert into tt1(c1,c2,c3,c4) values(4,'[-1,-2,-2]','[-4,2,3]',null);
+insert into tt1(c1,c2,c3,c4) values(5,'[-1,-3,-2]',null,'[2,3,1]');
+CREATE TABLE tt2 as select * from t1;
+select count(*) from t1 a,tt1 b order by l2_distance(a.c3, [1,2,3]) approximate limit 10;
+select count(*) from t1 a,tt2 b order by l2_distance(a.c3, [1,2,3]) approximate limit 10;
+select count(*) from tt1 a,tt2 b order by l2_distance(a.c3, [1,2,3]) approximate limit 10;
+select count(*) from tt1 a ,tt2 b ,t1 c order by l2_distance(a.c3, [1,2,3]) approximate limit 10;
+select count(*) from t1 a,tt1 b where l2_distance(a.c2,b.c3)=l2_distance(a.c3,b.c4) order by l2_distance(a.c3, [1,2,3]) approximate limit 10;
+select count(*) from t1 a,tt2 b where l2_distance(a.c2,b.c3)=l2_distance(a.c3,b.c4) order by l2_distance(a.c3, [1,2,3]) approximate limit 10;
+select count(*) from tt1 a,tt2 b where l2_distance(a.c2,b.c3)=l2_distance(a.c3,b.c4) order by l2_distance(a.c3, [1,2,3]) approximate limit 10;
+select count(*) from tt1 a,tt2 b where l2_distance(a.c2,[0.123,0.523,0.852])=l2_distance(a.c3,[0.123,0.523,0.852]) order by l2_distance(a.c3, [1,2,3]) approximate limit 10;
+
+
+
+##创建多个相同列的不同索引名  --存在4016的错误
+--disable_warnings
+drop table if exists t1;
+drop table if exists tt1;
+drop table if exists tt2;
+--enable_warnings
+CREATE TABLE t1 (c1 int primary key, c2 varchar(30),c3 vector(3) ,c4 vector(3),
+VECTOR INDEX vector_idx(c3) 
+WITH (distance=l2, lib=vsag, type=hnsw, m=10, ef_construction=100, ef_search=40))PARTITION BY KEY(c1) PARTITIONS 4;
+insert into t1(c1,c2,c3,c4) values(1,'[1,1,2]','[2,2,3]','[1,3,2]');
+insert into t1(c1,c2,c3,c4) values(2,'[1,0,3]','[1,0,3]','[2,3,2]');
+insert into t1(c1,c2,c3,c4) values(3,'[-1,2,2]','[-3,2,3]','[4,3,3]');
+insert into t1(c1,c2,c3,c4) values(4,'[-1,-2,-2]','[-4,2,3]',null);
+insert into t1(c1,c2,c3,c4) values(5,'[-1,-3,-2]',null,'[2,3,1]');
+CREATE TABLE tt1 like t1;
+replace into tt1(c1,c2,c3,c4) values(1,'[1,1,2]','[2,2,3]','[1,3,2]');
+--error 1235
+CREATE VECTOR INDEX vector_idx_c1  ON tt1 (c3)  WITH (distance=l2, lib=vsag, type=hnsw, m=10, ef_construction=100, ef_search=40);
+--error 1235
+CREATE VECTOR INDEX vector_idx_c2  ON tt1 (c3)  WITH (distance=l2, lib=vsag, type=hnsw, m=10, ef_construction=100, ef_search=40);
+--error 1235
+CREATE VECTOR INDEX vector_idx_c3  ON tt1 (c3)  WITH (distance=l2, lib=vsag, type=hnsw, m=10, ef_construction=100, ef_search=40);
+--error 1235
+CREATE VECTOR INDEX vector_idx_c4  ON tt1 (c3)  WITH (distance=l2, lib=vsag, type=hnsw, m=10, ef_construction=100, ef_search=40);
+--error 1235
+CREATE VECTOR INDEX vector_idx_c5  ON tt1 (c3)  WITH (distance=l2, lib=vsag, type=hnsw, m=10, ef_construction=100, ef_search=40);
+--error 1235
+CREATE VECTOR INDEX 中文123  ON tt1 (c3)  WITH (distance=l2, lib=vsag, type=hnsw, m=10, ef_construction=100, ef_search=40);
+select * from  tt1  order by l2_distance(c3, [1,2,3]) approximate limit 10;
+select c2+c3 from tt1 order by l2_distance(c3, [1,2,3])  limit 10;
+select c2+c3 from tt1 order by l2_distance(c3, [1,2,3]) approximate limit 10;
+select avg(c2+c3) from tt1 order by l2_distance(c3, [1,2,3])  limit 10;
+select avg(c2+c3) from tt1 order by l2_distance(c3, [1,2,3]) approximate limit 10;
+--error 1235
+select avg(c2+c3) from tt1 order by l2_distance(avg(c3), [1,2,3]) approximate limit 10;
+
+
+
+##创建函数索引
+--disable_warnings
+drop table if exists t1;
+--enable_warnings
+CREATE TABLE t1 (c1 int primary key, c2 varchar(30),c3 vector(3) ,c4 vector(3),
+VECTOR INDEX vector_idx(c3) 
+WITH (distance=l2, lib=vsag, type=hnsw, m=10, ef_construction=100, ef_search=40))PARTITION BY KEY(c1) PARTITIONS 4;
+CREATE INDEX idx1 ON t1(((l2_distance([2,2,3], [1,2,3]))));
+--error 3762
+CREATE INDEX idx2 ON t1((c3+c4));
+CREATE INDEX idx3 ON t1(c1);
+
+##查询计划中的vid报错4016  已修复
+##--disable_warnings
+##drop table if exists t1;
+##drop table if exists tt1;
+##--enable_warnings
+##CREATE TABLE t1 (c1 int primary key, c2 varchar(30),c3 vector(3),c4 vector(3),
+##VECTOR INDEX vector_idx(c3) 
+##WITH (distance=l2, lib=vsag, type=hnsw, m=10, ef_construction=100, ef_search=40))PARTITION BY KEY(c1) PARTITIONS 4;
+##insert into t1(c1,c2,c3,c4) values(3,'[-1,2,2]','[-3,2,3]','[4,3,3]');
+##insert into t1(c1,c2,c3,c4) values(4,'[-1,-2,-2]','[-4,2,3]',null);
+##insert into t1(c1,c2,c3,c4) values(5,'[-1,-3,-2]',null,'[2,3,1]');
+##explain select l2_distance([2,2,3], c2) from t1 order by l2_distance(c3, [1,2,3]) approximate limit 10;
+##select t1.__vid_1728378644013859 from t1;
+##select l2_distance([2,2,3], c2) from t1 order by l2_distance(c3, [1,2,3]) approximate limit 10;
+
+##设置约束
+--disable_warnings
+drop table if exists t1;
+drop table if exists tt1;
+--enable_warnings
+CREATE TABLE t1 (c1 int primary key, c2 varchar(30) ,c3 vector(3),c4 vector(3),
+VECTOR INDEX vector_idx(c3) 
+WITH (distance=l2, lib=vsag, type=hnsw, m=10, ef_construction=100, ef_search=40))PARTITION BY KEY(c1) PARTITIONS 4;
+--error 1235
+ALTER TABLE t1  DROP PARTITION p1;
+##explain select l2_distance([2,2,3], c2) from t1 order by l2_distance(c3, [1,2,3]) approximate limit 10;
+ALTER TABLE t1 ADD CONSTRAINT chk_c3_range CHECK (l2_distance(c3, [1,2,3])>1.5);
+
+#创建多个索引
+--disable_warnings
+drop table if exists t1;
+--enable_warnings
+CREATE TABLE t1 (c1 int primary key, c2 VARCHAR(30),c3 vector(3) ,c4 vector(3),
+VECTOR INDEX vector_idx_c3(c3) 
+WITH (distance=l2, lib=vsag, type=hnsw, m=10, ef_construction=100, ef_search=40))
+PARTITION BY RANGE(c1) (
+PARTITION p0 VALUES less than(5),
+PARTITION p1 VALUES less than(6),
+PARTITION p2 VALUES less than(9),
+PARTITION p5 VALUES less than (MAXVALUE));
+insert into t1(c1,c2,c3,c4) values(1,'[1,1,2]','[2,2,3]','[1,3,2]');
+insert into t1(c1,c2,c3,c4) values(3,'[1,0,3]','[1,0,3]','[2,3,2]');
+insert into t1(c1,c2,c3,c4) values(4,'[-1,2,2]','[-3,2,3]','[4,3,3]');
+insert into t1(c1,c2,c3,c4) values(7,'[-1,-2,-2]','[-4,2,3]',null);
+insert into t1(c1,c2,c3,c4) values(8,'[-1,-3,-2]',null,'[2,3,1]');
+CREATE VECTOR INDEX vector_idx_c4  ON t1 (c4)  WITH (distance=l2, lib=vsag, type=hnsw, m=10, ef_construction=100, ef_search=40);
+--error 1235
+CREATE VECTOR INDEX vector_idx_c3  ON t1 (c4)  WITH (distance=l2, lib=vsag, type=hnsw, m=10, ef_construction=100, ef_search=40);
+##show index from t1;
+
+
+--disable_warnings
+drop table if exists t1;
+drop table if exists tt1;
+--enable_warnings
+CREATE TABLE t1 (c1 int primary key, c2 varchar(30),c3 vector(3) ,c4 vector(3),c5 double AS (l2_distance([1],[1])) STORED)PARTITION BY KEY(c5) PARTITIONS 4;
+insert into t1(c1,c2,c3,c4) values(1,'[1,1,2]','[2,2,3]','[1,3,2]');
+insert into t1(c1,c2,c3,c4) values(2,'[1,0,3]','[1,0,3]','[2,3,2]');
+insert into t1(c1,c2,c3,c4) values(3,'[-1,2,2]','[-3,2,3]','[4,3,3]');
+insert into t1(c1,c2,c3,c4) values(4,'[-1,-2,-2]','[-4,2,3]',null);
+insert into t1(c1,c2,c3,c4) values(5,'[-1,-3,-2]',null,'[2,3,1]');
+CREATE TABLE tt1 LIKE t1;
+INSERT INTO tt1(c1,c2,c3,c4) SELECT c1,c2,c3,c4  FROM t1;
+
+--disable_warnings
+DROP TABLE if exists t1;
+drop materialized view if exists  mv1;
+--enable_warnings
+CREATE TABLE t1 (c1 int primary key, c2 vector(3),c3 vector(3) ,c4 vector(3));
+insert into t1 values(1,'[1,1,2]','[2,2,3]','[1,3,2]');
+insert into t1 values(2,'[1,0,3]','[1,0,3]','[2,3,2]');
+insert into t1 values(3,'[-1,2,2]','[-3,2,3]','[4,3,3]');
+insert into t1 values(4,'[-1,-2,-2]','[-4,2,3]',null);
+insert into t1 values(5,'[-1,-3,-2]',null,'[2,3,1]');
+create materialized view mv1  parallel 2 refresh complete on demand  as select * from t1;
+select count(*) from mv1,t1 ;
+--error 5083
+select * from mv1 union select * from t1 order by  c1;
+select * from t1 union select * from t1 order by  c1;
+
+
+#基表为物化视图
+--disable_warnings
+DROP TABLE if exists t1;
+drop materialized view if exists  mv1;
+--enable_warnings
+CREATE TABLE t1 (c1 int primary key, c2 vector(3),c3 vector(3) ,c4 vector(3),
+VECTOR INDEX vector_idx(c3)
+WITH (distance=l2, lib=vsag, type=hnsw, m=10, ef_construction=100, ef_search=40));
+insert into t1 values(1,'[1,1,2]','[2,2,3]','[1,3,2]');
+create materialized view mv1  parallel 2 refresh complete on demand  as select * from t1;
+replace into t1 select * from mv1;
+select * from t1;
+
+--disable_warnings
+DROP TABLE if exists t1;
+drop materialized view if exists  mv1;
+--enable_warnings
+CREATE TABLE t1 (c1 int primary key, c2 vector(3),c3 vector(3) ,c4 vector(3));
+insert into t1 values(1,'[1,1,2]','[2,2,3]','[1,3,2]');
+create materialized view mv1  parallel 2 refresh complete on demand  as select * from t1 order by l2_distance(c3, [1,2,3]) approximate limit 10;
+replace into t1 select * from mv1;
+select * from t1;
+
+
+
+--echo  ########清空回收站，删除测试数据库，表等 ##########
+--disable_warnings
+drop database  IF EXISTS  obljh;
+--enable_warnings
+alter system set ob_vector_memory_limit_percentage =0;
+
+
+

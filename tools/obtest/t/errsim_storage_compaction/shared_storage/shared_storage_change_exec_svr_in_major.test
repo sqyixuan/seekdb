@@ -1,0 +1,163 @@
+# owner: lixia.yq
+# owner group: storage [shared_storage]
+# description: this case is use for test change exec svr in major
+#
+
+ob1=OBI(cluster=1:1:1,proxy_num=0,init_unit_cpu=5);
+ob1.reboot;
+sleep 10;
+
+--source include/compaction/set_common_parameters.inc
+
+let $proxy_ip=deploy_get_value(ob1.z1.obs0.ip);
+let $proxy_port=deploy_get_value(ob1.z1.obs0.mysql_port);
+
+connect(sys_conn, $proxy_ip, root,,oceanbase, $proxy_port);
+
+ob_connect(conn_mysql, ob1.z1.obs0, root@obtest, , test, , USE_MYSQL_CONNECTOR);
+connection conn_mysql;
+create table test01(c1 int, c2 int, c3 varchar(40960)) compression= 'none';
+
+let $tablet_id=deploy_get_value(ob1.select select tablet_id from oceanbase.__all_virtual_table where table_name='test01', tablet_id, 1);
+let $tenant_id=deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name='obtest', tenant_id, 1);
+let $ls_id=deploy_get_value(ob1.select select ls_id from oceanbase.__all_virtual_tablet_to_ls where tenant_id=$tenant_id and tablet_id=$tablet_id, ls_id, 1);
+
+connection conn_mysql;
+--disable_query_log
+let $cnt=1;
+while($cnt < 10)
+{
+  eval insert into test01 values($cnt, $cnt, repeat('oceanbase', 4096));
+  inc $cnt;
+}
+--enable_query_log
+
+#########################################################################
+# TEST_0: tablet major freeze not support
+#########################################################################
+
+connection sys_conn;
+# not support tablet major freeze cmd in ss mode
+--error 1064
+alter system major freeze tenant=obtest tablet_id=$tablet_id;
+
+#########################################################################
+# TEST_1: choose specified exev svr, and restart when major
+#########################################################################
+
+ob1.mysql alter system set compaction_low_thread_score=1 tenant obtest;
+
+# EN_SHARED_STORAGE_COMPACTION_CHOOSE_EXEC_SVR=4023
+# will choose svr_id=3 as exec_svr
+ob1.mysql alter system set_tp tp_no=743, error_code=4023, frequency=1;
+
+ob1.mysql alter system major freeze tenant obtest;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$tenant_id and LAST_SCN != GLOBAL_BROADCAST_SCN , 1, 300;
+let $major_scn=deploy_get_value(ob1.select select GLOBAL_BROADCAST_SCN from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$tenant_id, GLOBAL_BROADCAST_SCN, 1);
+
+let $exec_svr_port=deploy_get_value(ob1.select select svr_port from oceanbase.__all_server where id=3, svr_port, 1);
+let $exec_svr_ip=deploy_get_value(ob1.select select svr_ip from oceanbase.__all_server where id=3, svr_ip, 1);
+
+# check exist one finish major tablet
+# update skip major dag may running a very long time
+ob1.check_until_timeout select count(*) > 0 as c from oceanbase.__all_virtual_tablet_compaction_history where tenant_id=$tenant_id and type="MAJOR_MERGE" and compaction_scn=$major_scn and svr_ip='$exec_svr_ip' and svr_port=$exec_svr_port and exec_mode="EXEC_MODE_OUTPUT", 1, 900;
+
+# clear EN_SHARED_STORAGE_COMPACTION_CHOOSE_EXEC_SVR
+ob1.mysql alter system set_tp tp_no=743, error_code=4023, frequency=0;
+
+# restart exec svr 3
+ob1.z3.obs0.restart;
+ob1.check_until_timeout select count(*) > 0 as c from oceanbase.__all_server where id=3 and status="ACTIVE", 1, 300;
+
+# wait major finish
+ob1.mysql alter system set compaction_low_thread_score=10 tenant obtest;
+source include/compaction/wait_tenant_major_finish_on_ss.inc;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_shared_storage_compaction_info where tenant_id=$tenant and tablet_id=0 and obj_type="LS_SVR_COMPACTION_STATUS" and info not like "merged_scn:$major_scn%finish_state=\"IDLE\"%", 0, 300;
+
+
+#########################################################################
+# TEST_2: restart cluster after major freeze
+#########################################################################
+connection conn_mysql;
+--disable_query_log
+while($cnt < 20)
+{
+  eval insert into test01 values($cnt, $cnt, repeat('oceanbase', 4096));
+  inc $cnt;
+}
+--enable_query_log
+
+ob1.mysql alter system major freeze tenant obtest;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$tenant_id and LAST_SCN != GLOBAL_BROADCAST_SCN , 1, 300;
+let $major_scn=deploy_get_value(ob1.select select GLOBAL_BROADCAST_SCN from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$tenant_id, GLOBAL_BROADCAST_SCN, 1);
+
+# check have schedule output dag & calc checksum dag
+ob1.check_until_timeout select count(*) > 3 as c from oceanbase.__all_virtual_tablet_compaction_history where tenant_id=$tenant_id and type="MAJOR_MERGE" and compaction_scn=$major_scn and exec_mode="EXEC_MODE_OUTPUT", 1, 600;
+let $output_tablet_id=deploy_get_value(ob1.select select tablet_id from oceanbase.__all_virtual_tablet_compaction_history where tenant_id=$tenant_id and type="MAJOR_MERGE" and compaction_scn=$major_scn and exec_mode="EXEC_MODE_OUTPUT" limit 1, tablet_id, 1);
+ob1.check_until_timeout select count(*) > 3 as c from oceanbase.__all_virtual_tablet_compaction_history where tenant_id=$tenant_id and type="MAJOR_MERGE" and compaction_scn=$major_scn and exec_mode="EXEC_MODE_CALC_CKM", 1, 600;
+
+ob1.restart;
+sleep 180;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$tenant_id and LAST_SCN = GLOBAL_BROADCAST_SCN , 1, 1200;
+# have output tablet shuold not schedule after restart
+ob1.check_until_timeout select count(*) as c from oceanbase.__all_virtual_tablet_compaction_history where tenant_id=$tenant_id and type="MAJOR_MERGE" and compaction_scn=$major_scn and exec_mode="EXEC_MODE_OUTPUT" and tablet_id=$output_tablet_id, 0, 10;
+
+#########################################################################
+# TEST_3: choose specified exev svr, and offline exec svr
+#########################################################################
+ob1.mysql alter system set server_permanent_offline_time = '20s';
+ob1.mysql alter system set compaction_low_thread_score=1 tenant obtest;
+
+connection conn_mysql;
+--disable_query_log
+while($cnt < 20)
+{
+  eval insert into test01 values($cnt, $cnt, repeat('oceanbase', 4096));
+  inc $cnt;
+}
+--enable_query_log
+
+# EN_SHARED_STORAGE_COMPACTION_CHOOSE_EXEC_SVR=4023
+# will choose svr_id=3 as exec_svr
+ob1.mysql alter system set_tp tp_no=743, error_code=4023, frequency=1;
+
+ob1.mysql alter system major freeze tenant obtest;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$tenant_id and LAST_SCN != GLOBAL_BROADCAST_SCN , 1, 300;
+let $major_scn=deploy_get_value(ob1.select select GLOBAL_BROADCAST_SCN from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$tenant_id, GLOBAL_BROADCAST_SCN, 1);
+
+let $exec_svr_port=deploy_get_value(ob1.select select svr_port from oceanbase.__all_server where id=3, svr_port, 1);
+let $exec_svr_ip=deploy_get_value(ob1.select select svr_ip from oceanbase.__all_server where id=3, svr_ip, 1);
+
+# check exist one finish major tablet
+ob1.check_until_timeout select count(*) > 0 as c from oceanbase.__all_virtual_tablet_compaction_history where tenant_id=$tenant_id and type="MAJOR_MERGE" and compaction_scn=$major_scn and svr_port=$exec_svr_port and exec_mode="EXEC_MODE_OUTPUT", 1, 900;
+
+# clear EN_SHARED_STORAGE_COMPACTION_CHOOSE_EXEC_SVR
+ob1.mysql alter system set_tp tp_no=743, error_code=4023, frequency=0;
+
+# kill exec svr 3
+ob1.z3.obs0.force_stop;
+ob1.check_until_timeout select count(*) > 0 as c from oceanbase.__all_server where id=3 and status="INACTIVE", 1, 300;
+
+# wait to change exec svr
+ob1.check_until_timeout select count(*) > 0 as c from __all_virtual_shared_storage_compaction_info where tenant_id=$tenant_id and tablet_id=0 and obj_type="COMPACTION_SVRS" and info like "%exec_svr_id:3, compaction_scn:$major_scn%exec_svr_id:%", 1, 300;
+
+let $exec_svr_is_svr1=deploy_get_value(ob1.select select count(*)>0 as c from __all_virtual_shared_storage_compaction_info where tenant_id=$tenant_id and ls_id=$ls_id and obj_type="COMPACTION_SVRS" and info like "%exec_svr_id:1, compaction_scn:$major_scn", c, 1);
+
+if (1 == $exec_svr_is_svr1) {
+  ob1.z1.obs0.check_log_until_success -c "sstable merge finished, just download major and write major ckm info to report.* compaction_scn:$major_scn";
+}
+
+if (0 == $exec_svr_is_svr1) {
+  ob1.z2.obs0.check_log_until_success -c "sstable merge finished, just download major and write major ckm info to report.* compaction_scn:$major_scn";
+}
+
+# check exist one finish major tablet on new exec svr
+ob1.check_until_timeout select count(*) > 0 as c from oceanbase.__all_virtual_tablet_compaction_history where tenant_id=$tenant_id and type="MAJOR_MERGE" and compaction_scn=$major_scn and svr_port!=$exec_svr_port and exec_mode="EXEC_MODE_OUTPUT", 1, 300;
+
+# wait major finish
+ob1.mysql alter system set compaction_low_thread_score=10 tenant obtest;
+source include/compaction/wait_tenant_major_finish_on_ss.inc;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_shared_storage_compaction_info where tenant_id=$tenant and tablet_id=0 and obj_type="LS_SVR_COMPACTION_STATUS" and info not like "merged_scn:$major_scn%finish_state=\"IDLE\"%", 0, 300;
+
+
+# do not add case after z3 permanent offline

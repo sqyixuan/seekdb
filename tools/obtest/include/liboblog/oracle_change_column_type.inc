@@ -1,0 +1,62 @@
+#
+# owner: 千溪
+#
+# description: 测试liboblog对数据类型的支持
+#
+# 在Oracle兼容模式下：
+# 字符串类型包括char、varchar、varchar2，clob，其中对于char类型，只能是其他类型转换成char类型，但char类型不能转换成其他类型；
+# char 最大2000，不能将clob/blob->char，报错不支持Truncate the data of column schema not supported
+
+
+create table t1 (n number, c1 char(20), c2 varchar(20), c3 varchar2(20));
+ob1.oblog.next;
+
+# 准备数据
+let $cnt = 1;
+while ($cnt < 4)
+{
+  eval insert into t1 values ($cnt, 'oceanbase_c1', 'oceanbase_c1', 'oceanbase_c1');
+  ob1.oblog.next;
+  inc $cnt;
+}
+
+connection conn_sys;
+let $start_tstamp_usec = query_get_value(select time_to_usec(now(6)) as now, now, 1);
+ob_connect(conn_oracle_obtest,ob1,OBTEST@oracle,obtest,obtest,,USE_OB_CONNECTOR);
+alter session set current_schema = oblog_db;
+
+######### 类型转换 ###################
+alter table t1 modify c1 char(100);
+alter table t1 modify c2 char(100);
+alter table t1 modify c3 char(100);
+
+insert into t1 values (100, 'abc', 'abc', 'abc');
+ob1.oblog.next_dml;
+# oracle模式下，列类型转换后，update 语句报错, 发现SQL有bug，已提aone 后续再打开
+# Aone: 
+#update t1 set c1 = 'oceanbase_c3', c2 = 'oceanbase_c3', c3 = 'oceanbase_c3' where n = 1;
+#ob1.oblog.next_dml;
+
+# stop liboblog
+ob1.oblog.stop;
+
+connection conn_sys;
+use oceanbase;
+let $tenant_id = query_get_value(select tenant_id from __all_tenant where tenant_name="oracle", tenant_id, 1);
+alter system change tenant oracle;
+# schema split mode, 在租户本身下面查询
+let $max_ddl_schema_version = query_get_value(select max(schema_version) as ver from __all_ddl_operation, ver, 1);
+
+ob1.oblog.gen_conf tb_white_list=oracle.*.* log_level=INFO data_start_schema_version=$tenant_id:$max_ddl_schema_version;
+ob1.oblog.set_start_tstamp_usec $start_tstamp_usec;
+ob1.oblog.restart;
+
+ob_connect(conn_oracle_obtest,ob1,OBTEST@oracle,obtest,obtest,,USE_OB_CONNECTOR);
+alter session set current_schema = oblog_db;
+insert into t1 values (101, 'abc', 'abc', 'abc');
+ob1.oblog.next_dml;
+#update t1 set c1 = 'oceanbase_c3', c2 = 'oceanbase_c3', c3 = 'oceanbase_c3' where n = 2;
+#ob1.oblog.next_dml;
+
+# stop liboblog
+ob1.oblog.stop;

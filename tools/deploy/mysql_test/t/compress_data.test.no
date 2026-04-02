@@ -1,0 +1,231 @@
+# owner: muwei.ym
+# owner group: 
+# description: test compress method
+#
+
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+
+connect (ob_sys_muwei,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection ob_sys_muwei;
+
+--disable_warnings
+drop database if exists db_create;
+create database db_create;
+use db_create;
+--enable_warnings
+
+CREATE TABLE compress_table (c1 int primary key, c2 varchar(500), c3 float, index i1 (c1), index i2 (c2), unique index i2_u (c2)) COMPRESSION = 'NONE';
+--source mysql_test/include/show_create_table_old_version.inc
+SHOW CREATE TABLE compress_table;
+
+insert into compress_table values (1, '11111111111111111111111111', 1.1);
+insert into compress_table values (2, '22222222222222222222222222', 2.2);
+insert into compress_table values (3, '33333333333333333333333333', 3.3);
+select * from compress_table;
+
+
+let $db_id = query_get_value(select database_id from oceanbase.__all_virtual_database where tenant_id = 1 and database_name = 'db_create', database_id, 1);
+let $table_id = query_get_value(select table_id from oceanbase.__all_virtual_table where tenant_id = 1 and table_name = 'compress_table' and database_id = $db_id, table_id, 1);
+
+##没有统计信息
+--disable_query_log
+--echo select from oceanbase.__all_virtual_partition_sstable_merge_info
+eval select tenant_id,partition_id,table_type,occupy_size,macro_block_count from oceanbase.__all_virtual_partition_sstable_merge_info where (table_id = $table_id or major_table_id = $table_id) order by version desc, table_id limit 8;
+--enable_query_log
+
+#合并
+--echo "[== start of 1st merge ==]"
+--source mysql_test/include/majorfreeze.inc
+--source mysql_test/include/index_quick_major.inc
+--source mysql_test/include/wait_daily_merge.inc
+connection ob_sys_muwei;
+--echo "[== end of 1st merge   ==]"
+--echo "[== check macroblock size ==]"
+--disable_query_log
+--echo select from oceanbase.__all_virtual_partition_sstable_merge_info
+let $version = query_get_value(select max(version) as version from oceanbase.__all_virtual_partition_sstable_merge_info, version, 1);
+eval select tenant_id,partition_id,table_type,occupy_size,macro_block_count from oceanbase.__all_virtual_partition_sstable_merge_info where (table_id = $table_id or major_table_id = $table_id) and (version >= $version-1) order by version desc, table_id;
+--enable_query_log
+--echo "[===========================]"
+--echo ""
+
+#修改压缩算法
+ALTER TABLE compress_table set COMPRESSION = 'snappy_1.0';
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create table compress_table;
+
+#合并
+--echo "[== start of 2nd merge ==]"
+--source mysql_test/include/majorfreeze.inc
+--source mysql_test/include/index_quick_major.inc
+--source mysql_test/include/wait_daily_merge.inc
+connection ob_sys_muwei;
+--echo "[== end of 2nd merge   ==]"
+##统计信息信息没有变化，没有触发全量合并
+--echo "[== check macroblock size ==]"
+--disable_query_log
+--echo select from oceanbase.__all_virtual_partition_sstable_merge_info
+let $version = query_get_value(select max(version) as version from oceanbase.__all_virtual_partition_sstable_merge_info, version, 1);
+eval select tenant_id,partition_id,table_type,occupy_size,macro_block_count from oceanbase.__all_virtual_partition_sstable_merge_info where (table_id = $table_id or major_table_id = $table_id) and (version >= $version-1) order by version desc, table_id;
+--enable_query_log
+--echo "[===========================]"
+--echo ""
+
+
+let $rewrite_merge_version  = query_get_value(select value + 1 as rewrite_merge_version from oceanbase.__all_zone where name = 'last_merged_version' and zone = '', rewrite_merge_version, 1);
+--disable_query_log
+--echo "alter tenant rewrite_merge_version"
+eval alter tenant sys rewrite_merge_version = $rewrite_merge_version;
+--enable_query_log
+--echo "[== start of 3rd merge ==]"
+--source mysql_test/include/majorfreeze.inc
+--source mysql_test/include/index_quick_major.inc
+--source mysql_test/include/wait_daily_merge.inc
+connection ob_sys_muwei;
+--echo "[== end of 3rd merge   ==]"
+--echo "[== check macroblock size ==]"
+--disable_query_log
+--echo select from oceanbase.__all_virtual_partition_sstable_merge_info
+let $version = query_get_value(select max(version) as version from oceanbase.__all_virtual_partition_sstable_merge_info, version, 1);
+eval select tenant_id,partition_id,table_type,occupy_size,macro_block_count from oceanbase.__all_virtual_partition_sstable_merge_info where (table_id = $table_id or major_table_id = $table_id) and (version >= $version-1) order by version desc, table_id;
+--enable_query_log
+--echo "[===========================]"
+--echo ""
+
+create index i2_2 on compress_table(c2);
+alter table compress_table add unique index i2_u_2 (c2);
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create table compress_table;
+
+--echo "[== start of 4th merge ==]"
+--source mysql_test/include/majorfreeze.inc
+--source mysql_test/include/index_quick_major.inc
+--source mysql_test/include/wait_daily_merge.inc
+connection ob_sys_muwei;
+--echo "[== end of 4th merge   ==]"
+--echo "[== check macroblock size ==]"
+--echo "no new info for index"
+--disable_query_log
+--echo select from oceanbase.__all_virtual_partition_sstable_merge_info
+let $version = query_get_value(select max(version) as version from oceanbase.__all_virtual_partition_sstable_merge_info, version, 1);
+eval select tenant_id,partition_id,table_type,occupy_size,macro_block_count from oceanbase.__all_virtual_partition_sstable_merge_info where (table_id = $table_id or major_table_id = $table_id) and (version >= $version-1) order by version desc, table_id;
+--enable_query_log
+--echo "[===========================]"
+--echo ""
+
+--echo "[== start of 5th merge ==]"
+--source mysql_test/include/majorfreeze.inc
+--source mysql_test/include/index_quick_major.inc
+--source mysql_test/include/wait_daily_merge.inc
+connection ob_sys_muwei;
+--echo "[== end of 5th merge   ==]"
+--echo "[== check macroblock size ==]"
+--disable_query_log
+--echo select from oceanbase.__all_virtual_partition_sstable_merge_info
+let $version = query_get_value(select max(version) as version from oceanbase.__all_virtual_partition_sstable_merge_info, version, 1);
+eval select tenant_id,partition_id,table_type,occupy_size,macro_block_count from oceanbase.__all_virtual_partition_sstable_merge_info where (table_id = $table_id or major_table_id = $table_id) and (version >= $version-1) order by version desc, table_id;
+--enable_query_log
+--echo "[===========================]"
+--echo ""
+
+ALTER TABLE compress_table set COMPRESSION = 'none';
+
+--echo "[== start of 6th merge ==]"
+--source mysql_test/include/majorfreeze.inc
+--source mysql_test/include/index_quick_major.inc
+--source mysql_test/include/wait_daily_merge.inc
+connection ob_sys_muwei;
+--echo "[== end of 6th merge   ==]"
+--echo "[== check macroblock size ==]"
+--echo "no change of macro size"
+--disable_query_log
+--echo select from oceanbase.__all_virtual_partition_sstable_merge_info
+let $version = query_get_value(select max(version) as version from oceanbase.__all_virtual_partition_sstable_merge_info, version, 1);
+eval select tenant_id,partition_id,table_type,occupy_size,macro_block_count from oceanbase.__all_virtual_partition_sstable_merge_info where (table_id = $table_id or major_table_id = $table_id) and (version >= $version-1) order by version desc, table_id;
+--enable_query_log
+--echo "[===========================]"
+--echo ""
+
+update compress_table set c3 = 1.11 where c1 = 1;
+--echo "[== start of 7th merge ==]"
+--source mysql_test/include/majorfreeze.inc
+--source mysql_test/include/index_quick_major.inc
+--source mysql_test/include/wait_daily_merge.inc
+connection ob_sys_muwei;
+--echo "[== end of 7th merge   ==]"
+--echo "[== check macroblock size ==]"
+--echo "only table compress_table change"
+--disable_query_log
+--echo select from oceanbase.__all_virtual_partition_sstable_merge_info
+let $version = query_get_value(select max(version) as version from oceanbase.__all_virtual_partition_sstable_merge_info, version, 1);
+eval select tenant_id,partition_id,table_type,occupy_size,macro_block_count from oceanbase.__all_virtual_partition_sstable_merge_info where (table_id = $table_id or major_table_id = $table_id) and (version >= $version-1) order by version desc, table_id;
+--enable_query_log
+--echo "[===========================]"
+--echo ""
+
+update compress_table set c2 = "11111111111111111111111111_" where c1 = 1;
+--echo "[== start of 8th merge ==]"
+--source mysql_test/include/majorfreeze.inc
+--source mysql_test/include/index_quick_major.inc
+--source mysql_test/include/wait_daily_merge.inc
+connection ob_sys_muwei;
+--echo "[== end of 8th merge   ==]"
+--echo "[== check macroblock size ==]"
+--echo "index i2 i2_2 i2_3 i2_4 change"
+--disable_query_log
+--echo select from oceanbase.__all_virtual_partition_sstable_merge_info
+let $version = query_get_value(select max(version) as version from oceanbase.__all_virtual_partition_sstable_merge_info, version, 1);
+eval select tenant_id,partition_id,table_type,occupy_size,macro_block_count from oceanbase.__all_virtual_partition_sstable_merge_info where (table_id = $table_id or major_table_id = $table_id) and (version >= $version-1) order by version desc, table_id;
+--enable_query_log
+--echo "[===========================]"
+--echo ""
+
+
+let $rewrite_merge_version  = query_get_value(select value + 1 as rewrite_merge_version from oceanbase.__all_zone where name = 'last_merged_version' and zone = '', rewrite_merge_version, 1);
+--disable_query_log
+--echo "alter tenant rewrite_merge_version"
+eval alter tenant sys rewrite_merge_version = $rewrite_merge_version;
+--enable_query_log
+--echo "[== start of 9th merge ==]"
+--source mysql_test/include/majorfreeze.inc
+--source mysql_test/include/index_quick_major.inc
+--source mysql_test/include/wait_daily_merge.inc
+connection ob_sys_muwei;
+--echo "[== end of 9th merge   ==]"
+--echo "[== check macroblock size ==]"
+--echo "only index i1 change"
+--disable_query_log
+--echo select from oceanbase.__all_virtual_partition_sstable_merge_info
+let $version = query_get_value(select max(version) as version from oceanbase.__all_virtual_partition_sstable_merge_info, version, 1);
+eval select tenant_id,partition_id,table_type,occupy_size,macro_block_count from oceanbase.__all_virtual_partition_sstable_merge_info where (table_id = $table_id or major_table_id = $table_id) and (version >= $version-1) order by version desc, table_id;
+--enable_query_log
+--echo "[===========================]"
+--echo ""
+
+insert into compress_table values (4,'44444444444444444444444444',4.4);
+insert into compress_table values (5,'55555555555555555555555555',5.5);
+insert into compress_table values (6,'66666666666666666666666666',6.6);
+
+--echo "[== start of 10th merge ==]"
+--source mysql_test/include/majorfreeze.inc
+--source mysql_test/include/index_quick_major.inc
+--source mysql_test/include/wait_daily_merge.inc
+connection ob_sys_muwei;
+--echo "[== end of 10th merge   ==]"
+--echo "[== check macroblock size ==]"
+--disable_query_log
+--echo select from oceanbase.__all_virtual_partition_sstable_merge_info
+let $version = query_get_value(select max(version) as version from oceanbase.__all_virtual_partition_sstable_merge_info, version, 1);
+eval select tenant_id,partition_id,table_type,occupy_size,macro_block_count from oceanbase.__all_virtual_partition_sstable_merge_info where (table_id = $table_id or major_table_id = $table_id) and (version >= $version-1) order by version desc, table_id;
+--enable_query_log
+--echo "[===========================]"
+--echo ""
+
+#TRUNCATE TABLE compress_table;
+#--source mysql_test/include/show_create_table_old_version.inc
+#show create table compress_table;
+
+set @@recyclebin = off;
+drop database db_create;

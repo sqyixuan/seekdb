@@ -1,0 +1,304 @@
+# owner: zhengshi.jhc
+# oweer group: rs
+# 功能：创建单分区表副本平铺检测
+#case 1:
+#系统租户:指定primary_zone:z1;z2,z3 单unit 正常模式
+#case 2:
+#普通租户:primary_zone:random/empty 多unit 正常模式: F,F,F
+#case 3:
+#普通租户:primary_zone:random/empty 多unit 正常模式: F,F,L
+#case 4:
+#普通租户:primary_zone:random/empty 多unit 混部: F{2},L
+#case 5:
+#普通租户:primary_zone:random/empty 多unit 正常模式: F,R{all_server}, F,R{all_server}, F,R{all_server}
+# 设置集群规模
+ob1=OBI(cluster=3:3:3, proxy_num = 0, init_unit_cpu = 0);
+ob1.reboot;
+ob1.mysql alter system set enable_auto_leader_switch = false;
+#ob1.mysql alter system set enable_rebalance = false;
+#自动配置参数并创建UNIT参数规格
+#source include/fast_auto_rebalance_configuration.inc;
+let $cpu = 1;
+let $memory = 1073741824;
+let $min_memory = 1073741824;
+let $disk = 536870912;
+let $iops = 100000;
+let $session = 64;
+ob1.mysql CREATE RESOURCE UNIT unit_1 MAX_CPU $cpu, MAX_MEMORY $memory, MAX_IOPS $iops, MAX_DISK_SIZE $disk, MAX_SESSION_NUM $session, MIN_CPU=1, MIN_MEMORY=$min_memory, MIN_IOPS=128;
+#获得ip、port用于连接
+let $proxy_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $proxy_port = deploy_get_value(ob1.z1.obs0.mysql_port);
+let $obs0_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $obs0_port = deploy_get_value(ob1.z1.obs0.port);
+let $obs1_ip = deploy_get_value(ob1.z1.obs1.ip);
+let $obs1_port = deploy_get_value(ob1.z1.obs1.port);
+let $obs2_ip = deploy_get_value(ob1.z1.obs2.ip);
+let $obs2_port = deploy_get_value(ob1.z1.obs2.port);
+let $obs3_ip = deploy_get_value(ob1.z2.obs0.ip);
+let $obs3_port = deploy_get_value(ob1.z2.obs0.port);
+let $obs4_ip = deploy_get_value(ob1.z2.obs1.ip);
+let $obs4_port = deploy_get_value(ob1.z2.obs1.port);
+let $obs5_ip = deploy_get_value(ob1.z2.obs2.ip);
+let $obs5_port = deploy_get_value(ob1.z2.obs2.port);
+let $obs6_ip = deploy_get_value(ob1.z3.obs0.ip);
+let $obs6_port = deploy_get_value(ob1.z3.obs0.port);
+let $obs7_ip = deploy_get_value(ob1.z3.obs1.ip);
+let $obs7_port = deploy_get_value(ob1.z3.obs1.port);
+let $obs8_ip = deploy_get_value(ob1.z3.obs2.ip);
+let $obs8_port = deploy_get_value(ob1.z3.obs2.port);
+connect(sys_conn, $proxy_ip, root@sys,,test, $proxy_port);
+connection sys_conn;
+let $count = 0;
+while($count < 9)
+{
+  eval CREATE TABLE t1_$count (pk int primary key);
+  inc $count;
+}
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from __all_tenant where tenant_name = 'sys', tenant_id, 1);
+let $resource_pool_id = deploy_get_value(ob1.select select resource_pool_id from __all_resource_pool where tenant_id = $tenant_id, resource_pool_id, 1);
+let $unit_id1 = deploy_get_value(ob1.select select unit_id from oceanbase.__all_unit where resource_pool_id = $resource_pool_id and zone = 'z1', unit_id, 1);
+let $unit_id2 = deploy_get_value(ob1.select select unit_id from oceanbase.__all_unit where resource_pool_id = $resource_pool_id and zone = 'z2', unit_id, 1);
+let $unit_id3 = deploy_get_value(ob1.select select unit_id from oceanbase.__all_unit where resource_pool_id = $resource_pool_id and zone = 'z3', unit_id, 1);
+#每个unit上有9个副本，leader都在z1上
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where unit_id = $unit_id1, 9, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where unit_id = $unit_id2, 9, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where unit_id = $unit_id3, 9, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where role = 1 and unit_id = $unit_id1, 9, 10;
+#创建分区表是否有影响
+let $count = 0;
+while($count < 9)
+{
+  eval CREATE TABLE t11_$count (pk int primary key) partition by hash(pk) partitions 10;
+  inc $count;
+}
+#case 2 3unit primary_zone = '' F,F,F
+connection sys_conn;
+ob1.mysql CREATE RESOURCE POOL pool1 UNIT = 'unit_1', unit_num = 3, zone_list = ('z1', 'z2', 'z3');
+ob1.mysql CREATE TENANT t1 resource_pool_list = ('pool1'), locality = "F@z1,F@z2,F@z3" set ob_tcp_invited_nodes = '%';
+connect(t1_conn, $proxy_ip, root@t1,,test, $proxy_port);
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = 't1', tenant_id, 1);
+let $resource_pool_id = deploy_get_value(ob1.select select resource_pool_id from __all_resource_pool where tenant_id = $tenant_id, resource_pool_id, 1);
+#let $unit_id = deploy_get_value(ob1.select select min(unit_id) from oceanbase.__all_unit where resource_pool_id = $resource_pool_id, unit_id, 1);
+connection t1_conn;
+let $count = 0;
+while($count < 9)
+{
+  eval create table t_$count (value int);
+  inc $count;
+}
+#检查该tenant下所有unit的副本数和leader数,建9张表,每个unit上3个副本，1个leader
+#let $unit_id = deploy_get_value(ob1.select select unit_id from oceanbase.__all_unit where svr_ip = "$obs0_ip" and svr_port = '$obs0_port' and resource_pool_id = $resource_pool_id, unit_id, 1);
+#let $unit_count = deploy_get_value(ob1.select select count(*) from oceanbase.__all_virtual_meta_table where unit_id = $unit_id, count(*), 1);
+#eval echo $unit_count;
+#let $leader_count = deploy_get_value(ob1.select select count(*) from oceanbase.__all_virtual_meta_table where role = 1 and unit_id = $unit_id, count(*), 1);
+#eval echo $leader_count;
+let $unit_id = deploy_get_value(ob1.select select unit_id from oceanbase.__all_unit where svr_ip = "$obs0_ip" and svr_port = '$obs0_port' and resource_pool_id = $resource_pool_id, unit_id, 1);
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where unit_id = $unit_id, 3, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where role = 1 and unit_id = $unit_id, 1, 10;
+let $unit_id = deploy_get_value(ob1.select select unit_id from oceanbase.__all_unit where svr_ip = "$obs1_ip" and svr_port = '$obs1_port' and resource_pool_id = $resource_pool_id, unit_id, 1);
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where unit_id = $unit_id, 3, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where role = 1 and unit_id = $unit_id, 1, 10;
+let $unit_id = deploy_get_value(ob1.select select unit_id from oceanbase.__all_unit where svr_ip = "$obs2_ip" and svr_port = '$obs2_port' and resource_pool_id = $resource_pool_id, unit_id, 1);
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where unit_id = $unit_id, 3, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where role = 1 and unit_id = $unit_id, 1, 10;
+let $unit_id = deploy_get_value(ob1.select select unit_id from oceanbase.__all_unit where svr_ip = "$obs3_ip" and svr_port = '$obs3_port' and resource_pool_id = $resource_pool_id, unit_id, 1);
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where unit_id = $unit_id, 3, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where role = 1 and unit_id = $unit_id, 1, 10;
+let $unit_id = deploy_get_value(ob1.select select unit_id from oceanbase.__all_unit where svr_ip = "$obs4_ip" and svr_port = '$obs4_port' and resource_pool_id = $resource_pool_id, unit_id, 1);
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where unit_id = $unit_id, 3, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where role = 1 and unit_id = $unit_id, 1, 10;
+let $unit_id = deploy_get_value(ob1.select select unit_id from oceanbase.__all_unit where svr_ip = "$obs5_ip" and svr_port = '$obs5_port' and resource_pool_id = $resource_pool_id, unit_id, 1);
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where unit_id = $unit_id, 3, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where role = 1 and unit_id = $unit_id, 1, 10;
+let $unit_id = deploy_get_value(ob1.select select unit_id from oceanbase.__all_unit where svr_ip = "$obs6_ip" and svr_port = '$obs6_port' and resource_pool_id = $resource_pool_id, unit_id, 1);
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where unit_id = $unit_id, 3, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where role = 1 and unit_id = $unit_id, 1, 10;
+let $unit_id = deploy_get_value(ob1.select select unit_id from oceanbase.__all_unit where svr_ip = "$obs7_ip" and svr_port = '$obs7_port' and resource_pool_id = $resource_pool_id, unit_id, 1);
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where unit_id = $unit_id, 3, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where role = 1 and unit_id = $unit_id, 1, 10;
+let $unit_id = deploy_get_value(ob1.select select unit_id from oceanbase.__all_unit where svr_ip = "$obs8_ip" and svr_port = '$obs8_port' and resource_pool_id = $resource_pool_id, unit_id, 1);
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where unit_id = $unit_id, 3, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where role = 1 and unit_id = $unit_id, 1, 10;
+#创建分区表是否有影响
+let $count = 0;
+while($count < 9)
+{
+  eval CREATE TABLE t11_$count (pk int primary key) partition by hash(pk) partitions 10;
+  inc $count;
+}
+ob1.mysql drop tenant t1 force;
+ob1.mysql drop resource pool pool1;
+#case 3 3 unit primary_zone='RANDOM' F,F,l
+#
+#F1 F2 F1 F2 F1 F2      F2 F1 F2 F1 F2 F1 
+#F2 F1 F2 F1 F2 F1      F1 F2 F1 F2 F1 F2
+#F1 F2 F1 F2 F1 F2      F2 F1 F2 F1 F2 F1 
+connection sys_conn;
+ob1.mysql CREATE RESOURCE POOL pool2 UNIT = 'unit_1', unit_num = 3, zone_list = ('z1', 'z2', 'z3');
+ob1.mysql CREATE TENANT t2 primary_zone = 'RANDOM', resource_pool_list = ('pool2'), locality = "F@z1,F@z2,L@z3" set ob_tcp_invited_nodes = '%';
+let $tenant2 = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name ='t2', tenant_id, 1);
+connect(t2_conn, $proxy_ip, root@t2,,test, $proxy_port);
+connection t2_conn;
+let $resource_pool_id = deploy_get_value(ob1.select select resource_pool_id from __all_resource_pool where tenant_id = $tenant2, resource_pool_id, 1);
+let $unit_id1 = deploy_get_value(ob1.select select unit_id from oceanbase.__all_unit where svr_ip = '$obs0_ip' and svr_port = '$obs0_port' and resource_pool_id = $resource_pool_id, unit_id, 1);
+let $unit_id2 = deploy_get_value(ob1.select select unit_id from oceanbase.__all_unit where svr_ip = '$obs1_ip' and svr_port = '$obs1_port' and resource_pool_id = $resource_pool_id, unit_id, 1);
+let $unit_id3 = deploy_get_value(ob1.select select unit_id from oceanbase.__all_unit where svr_ip = '$obs2_ip' and svr_port = '$obs2_port' and resource_pool_id = $resource_pool_id, unit_id, 1);
+let $unit_id4 = deploy_get_value(ob1.select select unit_id from oceanbase.__all_unit where svr_ip = '$obs3_ip' and svr_port = '$obs3_port' and resource_pool_id = $resource_pool_id, unit_id, 1);
+let $unit_id5 = deploy_get_value(ob1.select select unit_id from oceanbase.__all_unit where svr_ip = '$obs4_ip' and svr_port = '$obs4_port' and resource_pool_id = $resource_pool_id, unit_id, 1);
+let $unit_id6 = deploy_get_value(ob1.select select unit_id from oceanbase.__all_unit where svr_ip = '$obs5_ip' and svr_port = '$obs5_port' and resource_pool_id = $resource_pool_id, unit_id, 1);
+let $unit_id7 = deploy_get_value(ob1.select select unit_id from oceanbase.__all_unit where svr_ip = '$obs6_ip' and svr_port = '$obs6_port' and resource_pool_id = $resource_pool_id, unit_id, 1);
+let $unit_id8 = deploy_get_value(ob1.select select unit_id from oceanbase.__all_unit where svr_ip = '$obs7_ip' and svr_port = '$obs7_port' and resource_pool_id = $resource_pool_id, unit_id, 1);
+let $unit_id9 = deploy_get_value(ob1.select select unit_id from oceanbase.__all_unit where svr_ip = '$obs8_ip' and svr_port = '$obs8_port' and resource_pool_id = $resource_pool_id, unit_id, 1);
+#建18张表，每个unit上6个replica，zone1，zone2上的每个unit 3个leader
+let $count = 0;
+while($count < 18)
+{
+  eval create table t_$count (value int);
+  inc $count;
+}
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where unit_id = $unit_id1, 6, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where unit_id = $unit_id2, 6, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where unit_id = $unit_id3, 6, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where role = 1 and unit_id = $unit_id1, 3, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where role = 1 and unit_id = $unit_id2, 3, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where role = 1 and unit_id = $unit_id3, 3, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where unit_id = $unit_id4, 6, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where unit_id = $unit_id5, 6, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where unit_id = $unit_id6, 6, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where role = 1 and unit_id = $unit_id4, 3, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where role = 1 and unit_id = $unit_id5, 3, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where role = 1 and unit_id = $unit_id6, 3, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where unit_id = $unit_id7, 6, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where unit_id = $unit_id8, 6, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where unit_id = $unit_id9, 6, 10;
+#创建分区表是否有影响
+let $count = 0;
+while($count < 9)
+{
+  eval CREATE TABLE t11_$count (pk int primary key) partition by hash(pk) partitions 10;
+  inc $count;
+}
+ob1.mysql drop tenant t2 force;
+ob1.mysql drop resource pool pool2;
+#case 4 3 unit F,F,F
+connection sys_conn;
+CREATE RESOURCE POOL pool3 UNIT = 'unit_1', unit_num = 3, zone_list = ('z1', 'z2', 'z3');
+--error 1210
+CREATE TENANT t3 primary_zone = 'RANDOM', resource_pool_list = ('pool3'), locality = "F{2},L@[z1,z2,z3]" set ob_tcp_invited_nodes = '%';
+CREATE TENANT t3 primary_zone = 'RANDOM', resource_pool_list = ('pool3'), locality = "F@z1,F@z2,F@z3" set ob_tcp_invited_nodes = '%';
+let $tenant3 = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = 't3', tenant_id, 1);
+connect(t3_conn, $proxy_ip, root@t3,,test, $proxy_port);
+connection t3_conn;
+let $resource_pool_id = deploy_get_value(ob1.select select resource_pool_id from __all_resource_pool where tenant_id = $tenant3, resource_pool_id, 1);
+let $unit_id1 = deploy_get_value(ob1.select select unit_id from oceanbase.__all_unit where svr_ip = '$obs0_ip' and svr_port = '$obs0_port' and resource_pool_id = $resource_pool_id, unit_id, 1);
+let $unit_id2 = deploy_get_value(ob1.select select unit_id from oceanbase.__all_unit where svr_ip = '$obs1_ip' and svr_port = '$obs1_port' and resource_pool_id = $resource_pool_id, unit_id, 1);
+let $unit_id3 = deploy_get_value(ob1.select select unit_id from oceanbase.__all_unit where svr_ip = '$obs2_ip' and svr_port = '$obs2_port' and resource_pool_id = $resource_pool_id, unit_id, 1);
+let $unit_id4 = deploy_get_value(ob1.select select unit_id from oceanbase.__all_unit where svr_ip = '$obs3_ip' and svr_port = '$obs3_port' and resource_pool_id = $resource_pool_id, unit_id, 1);
+let $unit_id5 = deploy_get_value(ob1.select select unit_id from oceanbase.__all_unit where svr_ip = '$obs4_ip' and svr_port = '$obs4_port' and resource_pool_id = $resource_pool_id, unit_id, 1);
+let $unit_id6 = deploy_get_value(ob1.select select unit_id from oceanbase.__all_unit where svr_ip = '$obs5_ip' and svr_port = '$obs5_port' and resource_pool_id = $resource_pool_id, unit_id, 1);
+let $unit_id7 = deploy_get_value(ob1.select select unit_id from oceanbase.__all_unit where svr_ip = '$obs6_ip' and svr_port = '$obs6_port' and resource_pool_id = $resource_pool_id, unit_id, 1);
+let $unit_id8 = deploy_get_value(ob1.select select unit_id from oceanbase.__all_unit where svr_ip = '$obs7_ip' and svr_port = '$obs7_port' and resource_pool_id = $resource_pool_id, unit_id, 1);
+let $unit_id9 = deploy_get_value(ob1.select select unit_id from oceanbase.__all_unit where svr_ip = '$obs8_ip' and svr_port = '$obs8_port' and resource_pool_id = $resource_pool_id, unit_id, 1);
+    
+#建9张表，每个unit上2个F，1个L，1个leader
+let $count = 0;
+while($count < 9)
+{
+  eval create table t_$count (value int);
+  inc $count;
+}
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where unit_id = $unit_id1, 3, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where unit_id = $unit_id2, 3, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where unit_id = $unit_id3, 3, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where role = 1 and unit_id = $unit_id1, 1, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where role = 1 and unit_id = $unit_id2, 1, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where role = 1 and unit_id = $unit_id3, 1, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where unit_id = $unit_id4, 3, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where unit_id = $unit_id5, 3, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where unit_id = $unit_id6, 3, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where role = 1 and unit_id = $unit_id4, 1, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where role = 1 and unit_id = $unit_id5, 1, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where role = 1 and unit_id = $unit_id6, 1, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where unit_id = $unit_id7, 3, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where unit_id = $unit_id8, 3, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where unit_id = $unit_id9, 3, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where role = 1 and unit_id = $unit_id7, 1, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where role = 1 and unit_id = $unit_id8, 1, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where role = 1 and unit_id = $unit_id9, 1, 10;
+#创建分区表是否有影响
+let $count = 0;
+while($count < 9)
+{
+  eval CREATE TABLE t11_$count (pk int primary key) partition by hash(pk) partitions 10;
+  inc $count;
+}
+ob1.mysql drop tenant t3 force;
+ob1.mysql drop resource pool pool3;
+#case 5 正常模式 F,R{all_server}, F,R{all_server}, F,R{all_server}
+connection sys_conn;
+ob1.mysql CREATE RESOURCE POOL pool4 UNIT = 'unit_1', unit_num = 3, zone_list = ('z1', 'z2', 'z3');
+ob1.mysql CREATE TENANT t4 primary_zone = 'RANDOM', resource_pool_list = ('pool4'), locality = "F,R{all_server}@z1, F,R{all_server}@z2, F,R{all_server}@z3" set ob_tcp_invited_nodes = '%';
+let $tenant4 = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = 't4', tenant_id, 1);
+connect(t4_conn, $proxy_ip, root@t4,,test, $proxy_port);
+connection t4_conn;
+let $resource_pool_id = deploy_get_value(ob1.select select resource_pool_id from __all_resource_pool where tenant_id = $tenant4, resource_pool_id, 1);
+let $unit_id1 = deploy_get_value(ob1.select select unit_id from oceanbase.__all_unit where svr_ip = '$obs0_ip' and svr_port = '$obs0_port' and resource_pool_id = $resource_pool_id, unit_id, 1);
+let $unit_id2 = deploy_get_value(ob1.select select unit_id from oceanbase.__all_unit where svr_ip = '$obs1_ip' and svr_port = '$obs1_port' and resource_pool_id = $resource_pool_id, unit_id, 1);
+let $unit_id3 = deploy_get_value(ob1.select select unit_id from oceanbase.__all_unit where svr_ip = '$obs2_ip' and svr_port = '$obs2_port' and resource_pool_id = $resource_pool_id, unit_id, 1);
+let $unit_id4 = deploy_get_value(ob1.select select unit_id from oceanbase.__all_unit where svr_ip = '$obs3_ip' and svr_port = '$obs3_port' and resource_pool_id = $resource_pool_id, unit_id, 1);
+let $unit_id5 = deploy_get_value(ob1.select select unit_id from oceanbase.__all_unit where svr_ip = '$obs4_ip' and svr_port = '$obs4_port' and resource_pool_id = $resource_pool_id, unit_id, 1);
+let $unit_id6 = deploy_get_value(ob1.select select unit_id from oceanbase.__all_unit where svr_ip = '$obs5_ip' and svr_port = '$obs5_port' and resource_pool_id = $resource_pool_id, unit_id, 1);
+let $unit_id7 = deploy_get_value(ob1.select select unit_id from oceanbase.__all_unit where svr_ip = '$obs6_ip' and svr_port = '$obs6_port' and resource_pool_id = $resource_pool_id, unit_id, 1);
+let $unit_id8 = deploy_get_value(ob1.select select unit_id from oceanbase.__all_unit where svr_ip = '$obs7_ip' and svr_port = '$obs7_port' and resource_pool_id = $resource_pool_id, unit_id, 1);
+let $unit_id9 = deploy_get_value(ob1.select select unit_id from oceanbase.__all_unit where svr_ip = '$obs8_ip' and svr_port = '$obs8_port' and resource_pool_id = $resource_pool_id, unit_id, 1);
+#建9张表，每个unit上3个F，6个R，1个leader
+let $count = 0;
+while($count < 9)
+{
+  eval create table t_$count (value int);
+  inc $count;
+}
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where unit_id = $unit_id1, 9, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where unit_id = $unit_id2, 9, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where unit_id = $unit_id3, 9, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where role = 1 and unit_id = $unit_id1, 1, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where role = 1 and unit_id = $unit_id2, 1, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where role = 1 and unit_id = $unit_id3, 1, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where replica_type = 16 and unit_id = $unit_id1, 6, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where replica_type = 16 and unit_id = $unit_id2, 6, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where replica_type = 16 and unit_id = $unit_id3, 6, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where unit_id = $unit_id4, 9, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where unit_id = $unit_id5, 9, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where unit_id = $unit_id6, 9, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where role = 1 and unit_id = $unit_id4, 1, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where role = 1 and unit_id = $unit_id5, 1, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where role = 1 and unit_id = $unit_id6, 1, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where replica_type = 16 and unit_id = $unit_id4, 6, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where replica_type = 16 and unit_id = $unit_id5, 6, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where replica_type = 16 and unit_id = $unit_id6, 6, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where unit_id = $unit_id7, 9, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where unit_id = $unit_id8, 9, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where unit_id = $unit_id9, 9, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where role = 1 and unit_id = $unit_id7, 1, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where role = 1 and unit_id = $unit_id8, 1, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where role = 1 and unit_id = $unit_id9, 1, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where replica_type = 16 and unit_id = $unit_id7, 6, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where replica_type = 16 and unit_id = $unit_id8, 6, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where replica_type = 16 and unit_id = $unit_id9, 6, 10;
+#创建分区表是否有影响
+let $count = 0;
+while($count < 9)
+{
+  eval CREATE TABLE t11_$count (pk int primary key) partition by hash(pk) partitions 10;
+  inc $count;
+}
+
+ob1.z2.force_stop;
+sleep 5;
+connection sys_conn;
+set ob_create_table_strict_mode = off;
+create table t1(c1 int);
+set ob_create_table_strict_mode = on;
+sleep 5;
+--error 4624
+create table t2(c1 int);

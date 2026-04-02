@@ -1,0 +1,414 @@
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+# owner: laibingzheng.lbz
+# owner group: SQL1
+# description: foobar
+# tags: dml
+#
+# test of batch stmt update optimization
+#
+
+--disable_warnings
+drop table if exists t1,t2, t_overlap, t_no_pk, test1;
+--enable_warnings
+--enable_info
+--result_format 4
+
+--disable_query_log
+--disable_result_log
+let $def_plan_cache_percentage = query_get_value(show variables like 'ob_plan_cache_percentage', Value, 1);
+set global ob_plan_cache_percentage=10;
+connect (obsys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection obsys;
+alter system flush plan cache global;
+sleep 3;
+connection default;
+alter system set _rowsets_enabled=false;
+sleep 3;
+--enable_result_log
+--enable_query_log
+
+set autocommit = false;
+alter system set ob_enable_batched_multi_statement=true;
+sleep 5;
+create table t1(a int, b int, c int, primary key(a,b)) partition by hash(a) partitions 4;
+insert into t1 values(1, 1, 1), (2, 2, 2), (3, 3, 3);
+delimiter //;
+update t1 set b = 2 where a = 1 and b = 1;update t1 set b = 1 where a = 2 and b = 2;//
+delimiter ;//
+commit;
+select * from t1 order by a, b;
+## test to hit the plan cache
+delimiter //;
+update t1 set b = 2 where a = 1 and b = 1;update t1 set b = 1 where a = 2 and b = 2;//
+update t1 set b = 3 where a = 1 and b = 2;update t1 set b = 4 where a = 2 and b = 1;//
+delimiter ;//
+commit;
+select * from t1 order by a, b;
+delimiter //;
+update t1 set b = 5 where a = 1 and b = 3;update t1 set b = 6 where a = 2 and b = 4;update t1 set b = 7 where a = 3 and b = 3;//
+delimiter ;//
+commit;
+select * from t1 order by a, b;
+delimiter //;
+update t1 set b = 5 where a = 1 and b = 3;update t1 set b = '6' where a = 2 and b = 4;update t1 set b = 7 where a = '3' and b = '3';//
+delimiter ;//
+rollback;
+delimiter //;
+## batch multi stmt will forbid px sql
+update /*+parallel(2)*/ t1 set c = c+5 where a = 1 and b = 5;update /*+parallel(2)*/ t1 set c = c+6 where a = 2 and b = 6;update /*+parallel(2)*/ t1 set c = c+7 where a = 3 and b = 7;//
+delimiter ;//
+select * from t1 order by a, b;
+rollback;
+delimiter //;
+## test plan cache hit with parallel hints
+update /*+parallel(2)*/ t1 set c = c+5 where a = 1 and b = 5;update /*+parallel(2)*/ t1 set c = c+6 where a = 2 and b = 6;update /*+parallel(2)*/ t1 set c = c+7 where a = 3 and b = 7;//
+delimiter ;//
+select * from t1 order by a, b;
+rollback;
+--echo // expect 3
+--disable_warnings
+select hit_count, is_batched_multi_stmt, statement, query_sql from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'update%t1 set %' and query_sql not like '%?%' order by hit_count;
+--enable_warnings
+drop table t1;
+
+--disable_warnings
+drop table if exists t_concat;
+--enable_warnings
+create table t_concat (c1 int, c2 int, c3 int);
+create index idx_c1 on t_concat(c1);
+create index idx_c2 on t_concat(c2);
+## test or expansion
+delimiter //;
+update t_concat set c3 = 1 where c1 = 1 or c2 = 1;update t_concat set c3 = 2 where c1 = 2 or c2 = 2;//
+delimiter ;//
+delimiter //;
+update /*+USE_CONCAT*/ t_concat set c3 = 1 where c1 = 1 or c2 = 1;update /*+USE_CONCAT*/ t_concat set c3 = 2 where c1 = 2 or c2 = 2;//
+delimiter ;//
+rollback;
+--disable_warnings
+select hit_count, is_batched_multi_stmt, statement, query_sql from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'update%t_concat set c3%' and query_sql not like '%?%' order by hit_count;
+--enable_warnings
+drop table t_concat;
+
+--disable_warnings
+drop table if exists t_fullscan;
+--enable_warnings
+create table t_fullscan(c1 int, c2 int, c3 int);
+insert into t_fullscan values(1, 1, 2);
+insert into t_fullscan values(2, 2, 3); 
+## test fullscan batch execution
+delimiter //;
+update t_fullscan set c3 = c1;update t_fullscan set c3 = c1;//
+delimiter ;//
+commit;
+--disable_warnings
+select hit_count, is_batched_multi_stmt, statement, query_sql from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where query_sql like 'update t_fullscan set c3%' and query_sql not like '%?%' order by hit_count;
+--enable_warnings
+select * from t_fullscan;
+drop table t_fullscan;
+
+--disable_warnings
+drop table if exists t_subquery1, t_subquery2;
+--enable_warnings
+create table t_subquery1(a int primary key, b int);
+create table t_subquery2(a int primary key, b int);
+## test update with subquery, not supported to batch it newly
+delimiter //;
+update t_subquery1 set b=1 where a=(select b from t_subquery2 where a=1);update t_subquery1 set b=2 where a=(select b from t_subquery2 where a=2);//
+delimiter ;//
+rollback;
+--disable_warnings
+select hit_count, is_batched_multi_stmt, statement, query_sql from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'update t_subquery1 set b%' and query_sql not like '%?%' order by hit_count;
+--enable_warnings
+drop table t_subquery1, t_subquery2;
+
+create table t_overlap(a int primary key, b int);
+insert into t_overlap values(1, 1);
+delimiter //;
+## test the situation update the same row continuously
+update t_overlap set a=2 where a=1;update t_overlap set a=3 where a=2;update t_overlap set a=4 where a=3;//
+delimiter ;//
+select * from t_overlap;
+delimiter //;
+## hit the plan cache
+update t_overlap set a=3 where a=4;update t_overlap set a=2 where a=3;update t_overlap set a=1 where a=2;//
+delimiter ;//
+select * from t_overlap;
+commit;
+drop table t_overlap;
+
+## test batch update with non primary key table 
+create table t_no_pk(a int, b varchar(10), c blob);
+insert into t_no_pk values(1, 'abc', 'abcabc'), (2, 'bbb', 'ccc');
+delimiter //;
+update t_no_pk set b='aaa' where a=1;update t_no_pk set b='cc' where a=2;//
+select * from t_no_pk;//
+update t_no_pk set b='ee' where a=1;update t_no_pk set b='dd' where a=2;//
+select * from t_no_pk;//
+update t_no_pk set c='a' where a=1;update t_no_pk set c='b' where a=2;//
+select * from t_no_pk;//
+delimiter ;//
+commit;
+--disable_warnings
+select hit_count, is_batched_multi_stmt, statement, query_sql from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'update t_no_pk set%' and query_sql not like '%?%' order by hit_count;
+--enable_warnings
+drop table t_no_pk;
+
+--disable_query_log
+--disable_result_log
+connection obsys;
+let $old_primary_zone=query_get_value(select primary_zone from oceanbase.__all_tenant where tenant_name='mysql',primary_zone,1);
+alter tenant sys set primary_zone='RANDOM';
+sleep 3;
+connection default;
+--enable_result_log
+--enable_query_log
+
+create table t1(a int primary key, b int) partition by hash(a) partitions 2;
+insert into t1 values(1, 1), (2, 2), (3, 3), (4, 4);
+set autocommit = false;
+alter system set ob_enable_batched_multi_statement=true;
+sleep 3;
+delimiter //;
+update t1 set b=2 where a=1;update t1 set b=3 where a=2;update t1 set b=4 where a=3;update t1 set b=5 where a=4;//
+delimiter ;//
+commit;
+select * from t1 order by a;
+drop table t1;
+
+create table t1(a int, b int, c int, primary key(a,b)) partition by hash(a) partitions 4;
+create index gkey on t1(b);
+insert into t1 values(1, 1, 1), (2, 2, 2), (3, 3, 3);
+delimiter //;
+update t1 set b = 2 where a = 1 and b = 1;update t1 set b = 1 where a = 2 and b = 2;//
+delimiter ;//
+commit;
+select * from t1 order by a, b;
+drop table t1;
+
+create table t1(a int primary key, b int) partition by hash(a) partitions 2;
+create index gkey on t1(b);
+insert into t1 values(1, 1), (2, 2), (3, 3), (4, 4);
+delimiter //;
+update t1 set b=2 where a=1;update t1 set b=3 where a=2;update t1 set b=4 where a=3;update t1 set b=5 where a=4;//
+delimiter ;//
+commit;
+select * from t1 order by a;
+drop table t1;
+
+--disable_warnings
+drop table if exists sbtest_hash1;
+--enable_warnings
+CREATE TABLE `sbtest_hash1` (
+  `id` varchar(20) NOT NULL,
+  `k` int(11) DEFAULT NULL,
+  `c1` varchar(8) DEFAULT '',
+  `c2` varchar(8) DEFAULT '',
+  `c3` varchar(8) DEFAULT '',
+  `pad` char(60) NOT NULL DEFAULT '',
+  PRIMARY KEY (`id`)
+) partition by key(id) partitions 3;
+
+insert into sbtest_hash1 values('0190000653580000', 1, 'c1', 'c2', 'c3', 'pad'), ('0190000653580003', 2, 'c1', 'c2', 'c3', 'pad');
+insert into sbtest_hash1 values('0190000653580004', 3, 'c1', 'c2', 'c3', 'pad'), ('0190000653580007', 4, 'c1', 'c2', 'c3', 'pad');
+insert into sbtest_hash1 values('0190000653580009', 5, 'c1', 'c2', 'c3', 'pad'), ('0190000653580008', 6, 'c1', 'c2', 'c3', 'pad');
+insert into sbtest_hash1 values('1', 7, 'c1', 'c2', 'c3', 'pad'), ('0190000653580010', 8, 'c1', 'c2', 'c3', 'pad');
+commit;
+delimiter //;
+UPDATE sbtest_hash1 SET c1='30181417' WHERE id='0190000653580000';UPDATE sbtest_hash1 SET c1='30181417' WHERE id='0190000653580001';UPDATE sbtest_hash1 SET c1='30181417' WHERE id='0190000653580002';UPDATE sbtest_hash1 SET c1='30181417' WHERE id='0190000653580003';UPDATE sbtest_hash1 SET c1='30181417' WHERE id='0190000653580004';UPDATE sbtest_hash1 SET c1='30181417' WHERE id='0190000653580005';UPDATE sbtest_hash1 SET c1='30181417' WHERE id='0190000653580006';UPDATE sbtest_hash1 SET c1='30181417' WHERE id='0190000653580007';//
+delimiter ;//
+commit;
+select * from sbtest_hash1 order by id;
+drop table sbtest_hash1;
+
+--disable_warnings
+drop table if exists sbtest_hash1;
+--enable_warnings
+CREATE TABLE `sbtest_hash1` (
+  `id` varchar(20) NOT NULL,
+  `k` int(11) DEFAULT NULL,
+  `c1` varchar(8) DEFAULT '',
+  `c2` varchar(8) DEFAULT '',
+  `c3` varchar(8) DEFAULT '',
+  `pad` char(60) NOT NULL DEFAULT '',
+  PRIMARY KEY (`id`)
+) partition by key(id) partitions 3;
+CREATE INDEX gkey ON sbtest_hash1(c1);
+
+insert into sbtest_hash1 values('0190000653580000', 1, 'c1', 'c2', 'c3', 'pad'), ('0190000653580003', 2, 'c1', 'c2', 'c3', 'pad');
+insert into sbtest_hash1 values('0190000653580004', 3, 'c1', 'c2', 'c3', 'pad'), ('0190000653580007', 4, 'c1', 'c2', 'c3', 'pad');
+insert into sbtest_hash1 values('0190000653580009', 5, 'c1', 'c2', 'c3', 'pad'), ('0190000653580008', 6, 'c1', 'c2', 'c3', 'pad');
+insert into sbtest_hash1 values('1', 7, 'c1', 'c2', 'c3', 'pad'), ('0190000653580010', 8, 'c1', 'c2', 'c3', 'pad');
+commit;
+delimiter //;
+UPDATE sbtest_hash1 SET c1='30181417' WHERE id='0190000653580000';UPDATE sbtest_hash1 SET c1='30181417' WHERE id='0190000653580001';UPDATE sbtest_hash1 SET c1='30181417' WHERE id='0190000653580002';UPDATE sbtest_hash1 SET c1='30181417' WHERE id='0190000653580003';UPDATE sbtest_hash1 SET c1='30181417' WHERE id='0190000653580004';UPDATE sbtest_hash1 SET c1='30181417' WHERE id='0190000653580005';UPDATE sbtest_hash1 SET c1='30181417' WHERE id='0190000653580006';UPDATE sbtest_hash1 SET c1='30181417' WHERE id='0190000653580007';//
+delimiter ;//
+commit;
+select * from sbtest_hash1 order by id;
+drop table sbtest_hash1;
+
+create table t1(a int, b int, c int, primary key(a,b));
+create index gkey on t1(b) partition by hash(b) partitions 2;
+insert into t1 values(1, 1, 1), (2, 2, 2), (3, 3, 3);
+delimiter //;
+update t1 set b = 2 where a = 1 and b = 1;update t1 set b = 1 where a = 2 and b = 2;//
+delimiter ;//
+commit;
+select * from t1 order by a, b;
+drop table t1;
+
+#test single partition batch stmt update
+create table t1(a int, b int, c int, primary key(a,b));
+insert into t1 values(1, 1, 1), (2, 2, 2), (3, 3, 3);
+delimiter //;
+update t1 set b = 2 where a = 1 and b = 1;update t1 set b = 1 where a = 2 and b = 2;//
+delimiter ;//
+commit;
+select * from t1 order by a, b;
+drop table t1;
+
+create table t1(a int primary key, b int);
+insert into t1 values(1, 1), (2, 2), (3, 3), (4, 4);
+set autocommit = false;
+alter system set ob_enable_batched_multi_statement=true;
+delimiter //;
+update t1 set b=2 where a=1;update t1 set b=3 where a=2;update t1 set b=4 where a=3;update t1 set b=5 where a=4;//
+delimiter ;//
+commit;
+select * from t1 order by a;
+drop table t1;
+
+create table t1(a int, b int, c int, primary key(a,b));
+create index gkey on t1(b);
+insert into t1 values(1, 1, 1), (2, 2, 2), (3, 3, 3);
+delimiter //;
+update t1 set b = 2 where a = 1 and b = 1;update t1 set b = 1 where a = 2 and b = 2;//
+delimiter ;//
+commit;
+select * from t1 order by a, b;
+drop table t1;
+
+create table t1(a int primary key, b int);
+create index gkey on t1(b);
+insert into t1 values(1, 1), (2, 2), (3, 3), (4, 4);
+delimiter //;
+update t1 set b=2 where a=1;update t1 set b=3 where a=2;update t1 set b=4 where a=3;update t1 set b=5 where a=4;//
+delimiter ;//
+commit;
+select * from t1 order by a;
+drop table t1;
+
+##Test scenarios where the number of partitions on the server is different
+create table t1(a int primary key, b int) partition by hash(a) partitions 4;
+insert into t1 values(1, 1), (2, 2), (3, 3), (4, 4);
+delimiter //;
+update t1 set b=2 where a=1;update t1 set b=3 where a=2;update t1 set b=4 where a=3;update t1 set b=5 where a=4;//
+delimiter ;//
+commit;
+select * from t1 order by a;
+drop table t1;
+
+## test have same rowkey, batch execution will rollback
+--disable_warnings
+drop table if exists t_bad;
+--enable_warnings
+create table t_bad(a int primary key, b int);
+insert into t_bad values(1, 1), (2, 2), (3, 3), (4, 4);
+delimiter //;
+update t_bad set b=2 where a=1;update t_bad set b=3 where a=1;update t_bad set b=4 where a=2;//
+delimiter ;//
+commit ;
+select * from t_bad order by a;
+--echo // expact is_batched_multi_stmt=1 and hit_count=0 and have two single stmt hit record
+--disable_warnings
+select hit_count, is_batched_multi_stmt, statement, query_sql from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'UPDATE t_bad SET b=%' and query_sql not like 'UPDATE t_bad SET b=?%' order by hit_count;
+--enable_warnings
+drop table t_bad;
+
+--disable_warnings
+drop table if exists sbtest_hash1;
+--enable_warnings
+CREATE TABLE `sbtest_hash1` (
+  `id` varchar(20) NOT NULL,
+  `k` int(11) DEFAULT NULL,
+  `c1` varchar(8) DEFAULT '',
+  `c2` varchar(8) DEFAULT '',
+  `c3` varchar(8) DEFAULT '',
+  `pad` char(60) NOT NULL DEFAULT '',
+  PRIMARY KEY (`id`)
+) partition by key(id) partitions 3;
+
+insert into sbtest_hash1 values('0190000653580000', 1, 'c1', 'c2', 'c3', 'pad'), ('0190000653580003', 2, 'c1', 'c2', 'c3', 'pad');
+insert into sbtest_hash1 values('0190000653580004', 3, 'c1', 'c2', 'c3', 'pad'), ('0190000653580007', 4, 'c1', 'c2', 'c3', 'pad');
+insert into sbtest_hash1 values('0190000653580009', 5, 'c1', 'c2', 'c3', 'pad'), ('0190000653580008', 6, 'c1', 'c2', 'c3', 'pad');
+insert into sbtest_hash1 values('1', 7, 'c1', 'c2', 'c3', 'pad'), ('0190000653580010', 8, 'c1', 'c2', 'c3', 'pad');
+commit;
+delimiter //;
+UPDATE sbtest_hash1 SET c1='30181417' WHERE id='0190000653580000';UPDATE sbtest_hash1 SET c1='30181417' WHERE id='0190000653580001';UPDATE sbtest_hash1 SET c1='30181417' WHERE id='0190000653580002';UPDATE sbtest_hash1 SET c1='30181417' WHERE id='0190000653580003';UPDATE sbtest_hash1 SET c1='30181417' WHERE id='0190000653580004';UPDATE sbtest_hash1 SET c1='30181417' WHERE id='0190000653580005';UPDATE sbtest_hash1 SET c1='30181417' WHERE id='0190000653580006';UPDATE sbtest_hash1 SET c1='30181417' WHERE id='0190000653580007';//
+delimiter ;//
+commit;
+select * from sbtest_hash1 order by id;
+drop table sbtest_hash1;
+
+--disable_warnings
+drop table if exists sbtest_hash1;
+--enable_warnings
+alter system flush plan cache global;
+sleep 3;
+CREATE TABLE `sbtest_hash1` (
+  `id` varchar(20) NOT NULL,
+  `k` int(11) DEFAULT NULL,
+  `c1` varchar(8) DEFAULT '',
+  `c2` varchar(8) DEFAULT '',
+  `c3` varchar(8) DEFAULT '',
+  `pad` char(60) NOT NULL DEFAULT '',
+  PRIMARY KEY (`id`)
+) partition by key(id) partitions 3;
+CREATE INDEX gkey ON sbtest_hash1(c1);
+
+insert into sbtest_hash1 values('0190000653580000', 1, 'c1', 'c2', 'c3', 'pad'), ('0190000653580003', 2, 'c1', 'c2', 'c3', 'pad');
+insert into sbtest_hash1 values('0190000653580004', 3, 'c1', 'c2', 'c3', 'pad'), ('0190000653580007', 4, 'c1', 'c2', 'c3', 'pad');
+insert into sbtest_hash1 values('0190000653580009', 5, 'c1', 'c2', 'c3', 'pad'), ('0190000653580008', 6, 'c1', 'c2', 'c3', 'pad');
+insert into sbtest_hash1 values('1', 7, 'c1', 'c2', 'c3', 'pad'), ('0190000653580010', 8, 'c1', 'c2', 'c3', 'pad');
+commit;
+delimiter //;
+UPDATE sbtest_hash1 SET c1='30181417' WHERE id='0190000653580000';UPDATE sbtest_hash1 SET c1='30181417' WHERE id='0190000653580001';UPDATE sbtest_hash1 SET c1='30181417' WHERE id='0190000653580002';UPDATE sbtest_hash1 SET c1='30181417' WHERE id='0190000653580003';UPDATE sbtest_hash1 SET c1='30181417' WHERE id='0190000653580004';UPDATE sbtest_hash1 SET c1='30181417' WHERE id='0190000653580005';UPDATE sbtest_hash1 SET c1='30181417' WHERE id='0190000653580006';UPDATE sbtest_hash1 SET c1='30181417' WHERE id='0190000653580007';//
+delimiter ;//
+commit;
+select * from sbtest_hash1 order by id;
+delimiter //;
+UPDATE sbtest_hash1 SET c1='30181418' WHERE id='0190000653580000';UPDATE sbtest_hash1 SET c1='30181418' WHERE id='0190000653580001';UPDATE sbtest_hash1 SET c1='30181418' WHERE id='0190000653580002';UPDATE sbtest_hash1 SET c1='30181418' WHERE id='0190000653580003';UPDATE sbtest_hash1 SET c1='30181418' WHERE id='0190000653580004';UPDATE sbtest_hash1 SET c1='30181418' WHERE id='0190000653580005';UPDATE sbtest_hash1 SET c1='30181418' WHERE id='0190000653580006';UPDATE sbtest_hash1 SET c1='30181418' WHERE id='0190000653580007';//
+delimiter ;//
+commit;
+select * from sbtest_hash1 order by id;
+--echo // expect 1
+--disable_warnings
+select hit_count, is_batched_multi_stmt, statement from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'UPDATE sbtest_hash1 SET c1=%' and query_sql not like '%?%' order by hit_count;
+--enable_warnings
+
+create table test1(h1 int,h2 char(10));
+insert into test1 values(-5,'柳树');
+insert into test1 values(0,'垂杨柳');
+insert into test1 values(10,'杨柳');
+select * from test1 order by h1 asc;
+delimiter //;
+UPDATE test1 SET h2 = CASE WHEN h2 = '杨柳' THEN '向日葵花' ELSE h2 END;UPDATE test1 SET h2 = CASE WHEN h2 = '向日葵花' THEN '玫瑰花' ELSE h2 END;//
+UPDATE test1 SET h2 = CASE WHEN h2 = '玫瑰花' THEN '国花' ELSE h2 END;//
+delimiter ;//
+select * from test1 order by h1 asc;
+drop table test1;
+
+alter system set ob_enable_batched_multi_statement=false;
+drop table sbtest_hash1;
+
+--disable_query_log
+--disable_result_log
+connection obsys;
+eval alter tenant sys set primary_zone='zone1';
+connection default;
+eval set global ob_plan_cache_percentage = $def_plan_cache_percentage;
+alter system set _rowsets_enabled=true;
+--enable_result_log
+--enable_query_log

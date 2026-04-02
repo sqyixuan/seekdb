@@ -1,0 +1,168 @@
+#
+# owner: 修铭
+# owner group:liboblog
+# description:
+# 测试点:
+#   验证动态创建租户、添加已存在的租户，回拉动态创建的租户
+##
+
+ob1=OBI(cluster=1);
+ob1.reboot;
+ob1.create_client;
+
+let $ip=deploy_get_value(ob1.proxy0.ip);
+let $port=deploy_get_value(ob1.proxy0.port);
+connect (oblog_conn_sys,$ip,root@sys,,oceanbase,$port);
+
+# 连接sys租户
+connection oblog_conn_sys;
+# query start_tstamp_usec in case of obcdc time is not consist with observer and locate start_ts with wrong  start_lsn
+let $start_tstamp_usec = query_get_value(select time_to_usec(now(6)) as now, now, 1);
+## 启动liboblog
+ob1.oblog.gen_conf tb_white_list=sys.oblog*.*|oblog_tt.*.* log_level=TLOG.*:DEBUG skip_ob_version_compat_check=1;
+ob1.oblog.set_start_tstamp_usec $start_tstamp_usec;
+ob1.oblog.restart;
+
+create resource unit oblog_box max_cpu=2, memory_size='10G';
+create resource pool oblog_pool unit = 'oblog_box', unit_num = 1, zone_list = ('z1');
+create tenant oblog_tt replica_num = 1, primary_zone='z1', resource_pool_list=('oblog_pool') set ob_tcp_invited_nodes='%';
+ob1.oblog.next;
+
+# 获取创建租户之前的时间戳
+let $before_add_tenant_tstamp = query_get_value(select max(schema_version) - 1 as s from __all_ddl_operation where operation_type = 107, s, 1);
+# ADD_TENANT_START schema version, operation_type为107
+let $add_tenant_start_schema_version = query_get_value(select max(schema_version) as s from __all_ddl_operation where operation_type = 107, s, 1);
+# ADD_TENANT_START 事务结束schema_version
+let $add_tenant_start_trans_end_schema_version = query_get_value(select min(schema_version) as s from __all_ddl_operation where schema_version > $add_tenant_start_schema_version, s, 1);
+
+# ADD_TENANT_END schema version
+let $add_tenant_end_schema_version = query_get_value(select max(schema_version) as s from __all_ddl_operation where operation_type = 108, s, 1);
+# ADD_TENANT_END 事务结束schema version
+let $add_tenant_end_trans_end_schema_version = query_get_value(select max(schema_version) as s from __all_ddl_operation, s, 1);
+
+sleep 2;
+
+let $DATA_COUNT = 0;
+
+# 在oblog_tt租户下操作
+connect (oblog_conn_tt,$ip,root@oblog_tt,,oceanbase,$port);
+connection oblog_conn_tt;
+
+create database oblog_db;
+ob1.oblog.next;
+inc $DATA_COUNT;
+
+use oblog_db;
+create table t1 (pk int primary key);
+ob1.oblog.next;
+inc $DATA_COUNT;
+
+insert into t1 values (1);
+ob1.oblog.next;
+inc $DATA_COUNT;
+
+ob1.oblog.stop;
+
+###############################
+# 场景一：从添加租户之前的时间戳启动
+# 可以看到创建租户DDL
+let $start_tstamp = $before_add_tenant_tstamp;
+ob1.oblog.set_start_tstamp_usec $start_tstamp;
+ob1.oblog.restart;
+
+# 输出create tenant DDL
+ob1.oblog.next;
+
+let $cnt = 0;
+while ($cnt < $DATA_COUNT)
+{
+  ob1.oblog.next;
+  inc $cnt;
+}
+
+# 启动时，添加的租户只有SYS，看不到还没创建完成的租户
+ob1.oblog.check_log "[ADD_ALL_TENANTS] DONE(ret=0, ret=\"OB_SUCCESS\", chosen_tenant_count=1,";
+ob1.oblog.stop;
+
+###############################
+# 场景二：从ADD_TENANT_START DDL启动
+# 创建租户DDL记录在ADD_TENANT_START DDL，因此正好可以看到
+let $start_tstamp = $add_tenant_start_schema_version;
+ob1.oblog.set_start_tstamp_usec $start_tstamp;
+ob1.oblog.restart;
+
+# 输出create tenant DDL
+ob1.oblog.next;
+
+let $cnt = 0;
+while ($cnt < $DATA_COUNT)
+{
+  ob1.oblog.next;
+  inc $cnt;
+}
+
+# 启动时，添加的租户只有SYS，看不到还没创建完成的租户
+# OB4.0中，在拉不到ADD_TENANT_START的情况下，可能在建立租户后发生位点会退的问题
+ob1.oblog.check_log "[ADD_ALL_TENANTS] DONE(ret=0, ret=\"OB_SUCCESS\", chosen_tenant_count=1,";
+ob1.oblog.stop;
+
+###############################
+# 场景三：从ADD_TENANT_START DDL结束时启动
+# 看不到创建租户DDL
+#let $start_tstamp = $add_tenant_start_trans_end_schema_version;
+#ob1.oblog.set_start_tstamp_usec  $start_tstamp;
+#ob1.oblog.restart;
+
+#let $cnt = 0;
+#while ($cnt < $DATA_COUNT)
+#{
+#  ob1.oblog.next;
+#  inc $cnt;
+#}
+
+# 启动时，添加的租户只有SYS，看不到还没创建完成的租户
+#ob1.oblog.check_log "[ADD_ALL_TENANTS] DONE(ret=0, ret=\"OB_SUCCESS\", chosen_tenant_count=1,";
+#ob1.oblog.stop;
+
+###############################
+# 场景四：从ADD_TENANT_END DDL结束前启动
+# 看不到创建租户DDL
+# OB4.0中，在拉不到ADD_TENANT_START的情况下，可能在建立租户后发生位点会退的问题
+let $start_tstamp = $add_tenant_end_schema_version;
+ob1.oblog.set_start_tstamp_usec $start_tstamp;
+ob1.oblog.restart;
+
+let $cnt = 0;
+while ($cnt < $DATA_COUNT)
+{
+  ob1.oblog.next;
+  inc $cnt;
+}
+
+# 启动时，添加的租户只有SYS，看不到还没创建完成的租户
+ob1.oblog.check_log "[ADD_ALL_TENANTS] DONE(ret=0, ret=\"OB_SUCCESS\", chosen_tenant_count=1,";
+ob1.oblog.stop;
+
+###############################
+# 场景四：从ADD_TENANT_END DDL结束之后启动
+# 看不到创建租户DDL
+let $start_tstamp = $add_tenant_end_trans_end_schema_version;
+ob1.oblog.gen_conf tb_white_list=sys.oblog*.*|oblog_tt.*.* log_level=TLOG.*:DEBUG skip_ob_version_compat_check=1;
+ob1.oblog.set_start_tstamp_usec $start_tstamp;
+ob1.oblog.restart;
+
+let $cnt = 0;
+while ($cnt < $DATA_COUNT)
+{
+  ob1.oblog.next;
+  inc $cnt;
+}
+
+# 启动时，因为租户已经添加完成，可以看到两个租户
+ob1.oblog.check_log "[ADD_ALL_TENANTS] DONE(ret=0, ret=\"OB_SUCCESS\", chosen_tenant_count=2,";
+
+connection oblog_conn_sys;
+drop tenant oblog_tt;
+ob1.oblog.next;
+
+ob1.oblog.stop;

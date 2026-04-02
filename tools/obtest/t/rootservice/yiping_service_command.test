@@ -1,0 +1,239 @@
+ob1=OBI(cluster=1:1:1,proxy_num=0);
+let $proxy_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $proxy_port = deploy_get_value(ob1.z1.obs0.mysql_port);
+let $z2_ip = deploy_get_value(ob1.z2.obs0.ip);
+let $z2_port = deploy_get_value(ob1.z2.obs0.port);
+
+ob1.reboot;
+
+ob1.mysql CREATE RESOURCE UNIT 1c2g MAX_CPU 1, MEMORY_SIZE '2G';
+ob1.mysql CREATE RESOURCE POOL pool1 UNIT='1c2g',UNIT_NUM=1,ZONE_LIST=('z1','z2','z3');
+ob1.mysql CREATE TENANT IF NOT EXISTS test_tenant_mysql RESOURCE_POOL_LIST=('pool1') set ob_tcp_invited_nodes='%', ob_compatibility_mode='mysql';
+connect(sys_conn, $proxy_ip, root@sys,,oceanbase, $proxy_port);
+connection sys_conn;
+
+--echo ### service_name长度为65，不可插入
+--error 1210
+ALTER SYSTEM CREATE SERVICE service_mysql__service_mysql__service_mysql__service_mysql__12345 tenant = test_tenant_mysql;
+
+--echo ### service_name数字开头，不可插入
+--error 1210
+ALTER SYSTEM CREATE SERVICE 5dd tenant = test_tenant_mysql;
+
+--echo ### service_name有不允许的字符，不可插入
+--error 1210
+ALTER SYSTEM CREATE SERVICE d$d tenant = test_tenant_mysql;
+
+--echo ### 有temp offline server的情况下create可以但会显示NOT_FULLY_STARTED
+ob1.z2.obs0.force_stop;
+ob1.check_until_timeout select count(*) from __all_server where svr_ip='$z2_ip' and svr_port=$z2_port and status='INACTIVE' and start_service_time = 0 and last_offline_time > 0,1,120;
+
+alter system change tenant tenant_id = 1001;
+select tenant_id, name, value from __all_service_epoch where name="service_name_epoch";
+alter system change tenant tenant_id = 1;
+--error 4781
+ALTER SYSTEM CREATE SERVICE service_mysql__service_mysql__service_mysql__service_mysql__1234 tenant = test_tenant_mysql;
+select tenant_id, service_name_id, service_name, service_status from __all_virtual_service where tenant_id=1002;
+
+alter system change tenant tenant_id = 1001;
+select tenant_id, name, value from __all_service_epoch where name="service_name_epoch";
+alter system change tenant tenant_id = 1;
+--echo ### 机器永久下线
+alter system set server_permanent_offline_time = '20s';
+sleep 12;
+
+--echo ### 检查打印的日志
+ob1.z1.obs0.check_log_until_success "finish refresh_service_name"
+ob1.z3.obs0.check_log_until_success "finish refresh_service_name"
+--echo ### 不允许插入第二个service_name
+--error 4179
+ALTER SYSTEM CREATE SERVICE test_service_2 tenant = test_tenant_mysql;
+
+--echo ### 确认系统租户和meta租户不可修改
+--error 1235
+ALTER SYSTEM CREATE SERVICE test_service tenant = META$1002;
+--error 1235
+ALTER SYSTEM CREATE SERVICE test_service tenant = sys;
+
+ob1.z2.obs0.start;
+ob1.check_until_timeout select count(*) from __all_server where svr_ip='$z2_ip' and svr_port=$z2_port and start_service_time > 0,1,120;
+--echo ### so_status不为normal, stop service不成功;
+connection sys_conn;
+ALTER SYSTEM SWITCHOVER TO STANDBY TENANT test_tenant_mysql;
+alter system set_tp tp_name = ERRSIM_TENANT_ROLE_TRANS_WAIT_SYNC_ERROR, error_code = 1044, frequency = 1;
+--error 4179
+ALTER SYSTEM SWITCHOVER TO PRIMARY TENANT test_tenant_mysql;
+alter system set_tp tp_name = ERRSIM_TENANT_ROLE_TRANS_WAIT_SYNC_ERROR, error_code = 1044, frequency = 0;
+
+--error 4179
+ALTER SYSTEM STOP SERVICE service_mysql__service_mysql__service_mysql__service_mysql__1234 tenant = test_tenant_mysql;
+
+ALTER SYSTEM SWITCHOVER TO PRIMARY TENANT test_tenant_mysql;
+
+--echo ### service不是stop状态 delete 不成功
+--error 4179
+ALTER SYSTEM DELETE SERVICE service_mysql__service_mysql__service_mysql__service_mysql__1234 tenant = test_tenant_mysql;
+
+--echo ### stop service
+ALTER SYSTEM STOP SERVICE service_mysql__service_mysql__service_mysql__service_mysql__1234 tenant = test_tenant_mysql;
+select tenant_id, service_name_id, service_name, service_status from __all_virtual_service where tenant_id=1002;
+alter system change tenant tenant_id = 1001;
+select tenant_id, name, value from __all_service_epoch where name="service_name_epoch";
+alter system change tenant tenant_id = 1;
+
+--echo ### start service
+ALTER SYSTEM START SERVICE service_mysql__service_mysql__service_mysql__service_mysql__1234 tenant = test_tenant_mysql;
+select tenant_id, service_name_id, service_name, service_status from __all_virtual_service where tenant_id=1002;
+alter system change tenant tenant_id = 1001;
+select tenant_id, name, value from __all_service_epoch where name="service_name_epoch";
+alter system change tenant tenant_id = 1;
+
+--echo ### stop service 但是有tmp offline server
+ob1.z2.obs0.force_stop;
+ob1.check_until_timeout select count(*) from __all_server where svr_ip='$z2_ip' and svr_port=$z2_port and status='INACTIVE' and start_service_time = 0 and last_offline_time > 0,1,120;
+alter system set server_permanent_offline_time = '2000000s';
+sleep 3;
+--error 4179
+ALTER SYSTEM STOP SERVICE service_mysql__service_mysql__service_mysql__service_mysql__1234 tenant = test_tenant_mysql;
+alter system change tenant tenant_id = 1001;
+select tenant_id, name, value from __all_service_epoch where name="service_name_epoch";
+alter system change tenant tenant_id = 1;
+
+--echo ### start again,但是有tmp offline server
+--error 4781
+ALTER SYSTEM START SERVICE service_mysql__service_mysql__service_mysql__service_mysql__1234 tenant = test_tenant_mysql;
+alter system change tenant tenant_id = 1001;
+select tenant_id, name, value from __all_service_epoch where name="service_name_epoch";
+alter system change tenant tenant_id = 1;
+
+--echo ### start again, 没有tmp offline server
+alter system set server_permanent_offline_time = '20s';
+sleep 10;
+ALTER SYSTEM START SERVICE service_mysql__service_mysql__service_mysql__service_mysql__1234 tenant = test_tenant_mysql;
+select tenant_id, service_name_id, service_name, service_status from __all_virtual_service where tenant_id=1002;
+
+alter system change tenant tenant_id = 1001;
+select tenant_id, name, value from __all_service_epoch where name="service_name_epoch";
+alter system change tenant tenant_id = 1;
+
+ob1.z2.obs0.start;
+ob1.check_until_timeout select count(*) from __all_server where svr_ip='$z2_ip' and svr_port=$z2_port and start_service_time > 0,1,120;
+
+--echo ### stop service
+ob1.mysql ALTER SYSTEM STOP SERVICE service_mysql__service_mysql__service_mysql__service_mysql__1234 tenant = test_tenant_mysql;
+select tenant_id, service_name_id, service_name, service_status from __all_virtual_service where tenant_id=1002;
+
+alter system change tenant tenant_id = 1001;
+select tenant_id, name, value from __all_service_epoch where name="service_name_epoch";
+alter system change tenant tenant_id = 1;
+
+--echo ### delete service
+ALTER SYSTEM DELETE SERVICE service_mysql__service_mysql__service_mysql__service_mysql__1234 tenant = test_tenant_mysql;
+select count(*) from __all_virtual_service where tenant_id=1002;
+
+alter system change tenant tenant_id = 1001;
+select tenant_id, name, value from __all_service_epoch where name="service_name_epoch";
+alter system change tenant tenant_id = 1;
+
+--echo ### failover
+ALTER SYSTEM SWITCHOVER TO STANDBY TENANT test_tenant_mysql;
+ALTER SYSTEM CREATE SERVICE test_service tenant = test_tenant_mysql;
+select tenant_id, service_name_id, service_name, service_status from __all_virtual_service where tenant_id=1002;
+ALTER SYSTEM ACTIVATE STANDBY TENANT test_tenant_mysql;
+select tenant_id, service_name_id, service_name, service_status from __all_virtual_service where tenant_id=1002;
+
+--echo ### 建连接
+ob1.mysql ALTER SYSTEM CREATE SERVICE TEST_service tenant = test_tenant_mysql;
+ob1.mysql alter system set_tp tp_name = ERRSIM_MOCK_SERVICE_NAME, error_code = 4018, frequency = 1;
+sleep 3;
+ob_connect(mysql_ob_conn, ob1.z1.obs0,root@test_tenant_mysql,,test,,USE_MYSQL_CONNECTOR);
+ob1.check_until_timeout select count(*) from __all_virtual_processlist where service_name="test_service" and tenant_id=1002, 1, 3;
+
+--echo ### stop service
+ob1.mysql ALTER SYSTEM STOP SERVICE Test_SERvice tenant = test_tenant_mysql;
+--echo ### stop service后连接都被kill掉 建连接
+ob1.check_until_timeout select count(*) from CDB_OB_TENANT_EVENT_HISTORY where tenant_id=1002 and event ='KILL CONNECTIONS OF SERVICE NAME' and VALUE2 = 1 and VALUE3 != '', 1 ,3;
+ob1.check_until_timeout select count(*) from __all_virtual_processlist where service_name="test_service" and tenant_id=1002, 0, 3;
+
+--disable_all_result_log
+--error 4783
+connect(mysql_conn, $proxy_ip, root@test_tenant_mysql,,oceanbase, $proxy_port);
+--enable_all_result_log
+
+--echo ### delete service 验证缓存可以在__all_service表为空的情况下看到service_epoch更新
+ob1.mysql ALTER SYSTEM DELETE SERVICE Test_SERvice tenant = test_tenant_mysql;
+sleep 3;
+--disable_all_result_log
+--error 4780
+connect(mysql_conn, $proxy_ip, root@test_tenant_mysql,,oceanbase, $proxy_port);
+--enable_all_result_log
+ob1.mysql alter system set_tp tp_name = ERRSIM_MOCK_SERVICE_NAME, error_code = 1044, frequency = 0;
+ob1.mysql ALTER SYSTEM CREATE SERVICE TEST_service tenant = test_tenant_mysql;
+ob1.mysql ALTER SYSTEM STOP SERVICE Test_SERvice tenant = test_tenant_mysql;
+#########不允许系统租户下不填写租户名做 service name 运维命令#########
+connection sys_conn;
+--error 1235
+ALTER SYSTEM DELETE SERVICE test_service;
+ALTER SYSTEM DELETE SERVICE tesT_service tenant = test_tenant_mysql;
+
+#########不允许不存在的租户做 service name 运维命令#########
+--error 5157
+ALTER SYSTEM CREATE SERVICE test_service tenant = trytry;
+
+#########删除不存在的 service_name#########
+--error 4780
+ALTER SYSTEM DELETE SERVICE ssssss tenant = test_tenant_mysql;
+
+#########启动不存在的 service_name#########
+--error 4780
+ALTER SYSTEM START SERVICE ssssss tenant = test_tenant_mysql;
+
+#########停止不存在的 service_name#########
+--error 4780
+ALTER SYSTEM STOP SERVICE ssssss tenant = test_tenant_mysql;
+
+#########stop service 起始状态为stopping + 错误码覆盖#######
+ALTER SYSTEM CREATE SERVICE test_service tenant = test_tenant_mysql;
+alter system change tenant tenant_id=1001;
+update oceanbase.__all_service set service_status="STOPPING";
+select service_name, service_status from oceanbase.__all_service;
+alter system change tenant tenant_id=1;
+--disable_all_result_log
+--error 4783
+connect(mysql_conn, $proxy_ip, root@test_tenant_mysql,,oceanbase, $proxy_port);
+--enable_all_result_log
+connect(sys_conn, $proxy_ip, root@sys,,oceanbase, $proxy_port);
+SELECT SERVICE_NAME_ID, SERVICE_NAME, SERVICE_STATUS FROM OCEANBASE.CDB_OB_SERVICES;
+ALTER SYSTEM STOP SERVICE test_service tenant = test_tenant_mysql;
+SELECT SERVICE_NAME_ID, SERVICE_NAME, SERVICE_STATUS FROM OCEANBASE.CDB_OB_SERVICES;
+ALTER SYSTEM DELETE SERVICE test_service tenant = test_tenant_mysql;
+SELECT SERVICE_NAME_ID, SERVICE_NAME, SERVICE_STATUS FROM OCEANBASE.CDB_OB_SERVICES;
+####################################错误码覆盖####################################
+ob1.mysql alter system set_tp tp_name = ERRSIM_MOCK_SERVICE_NAME, error_code = 4018, frequency = 1;
+# 租户当前没有指定的service_name，无法建立session
+--disable_all_result_log
+--error 4780
+connect(mysql_conn, $proxy_ip, root@test_tenant_mysql,,oceanbase, $proxy_port);
+--enable_all_result_log
+connect(sys_conn, $proxy_ip, root@sys,,oceanbase, $proxy_port);
+ALTER SYSTEM CREATE SERVICE test_service tenant = test_tenant_mysql;
+
+# 先建立session，然后主切备，且为备后查表返回OB_TENANT_NOT_PRIMARY
+connect(mysql_conn, $proxy_ip, root@test_tenant_mysql,,oceanbase, $proxy_port);
+connection mysql_conn;
+ob1.mysql ALTER SYSTEM SWITCHOVER TO STANDBY TENANT test_tenant_mysql;
+--error 4782
+select ls_id from __all_ls;
+
+# 不是主租户，无法建立session
+--disable_all_result_log
+--error 4782
+connect(mysql_conn, $proxy_ip, root@test_tenant_mysql,,oceanbase, $proxy_port);
+--enable_all_result_log
+
+ob1.mysql ALTER SYSTEM SWITCHOVER TO PRIMARY TENANT test_tenant_mysql;
+
+connect(mysql_conn, $proxy_ip, root@test_tenant_mysql,,oceanbase, $proxy_port);
+# __all_virtual_processlist 可以查询到是通过service_name建立的连接
+select count(*) from __all_virtual_processlist where service_name="test_service" and command = 'Query';
+select count(*) from GV$OB_PROCESSLIST where service_name="test_service" and command = 'Query';

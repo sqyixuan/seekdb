@@ -1,0 +1,147 @@
+# CASE_OWNER;
+#   @duzhuochen.dzc
+# CASE_DESC:
+#   When a machine is deleted or added, 
+#   the cluster and tenant virtual table can sense the changes in the machine in a timely manner.
+
+ob1=OBI(cluster=1:1:3, proxy_num=0);
+let $extra_conf = "cpu_count=16,memory_limit='20G',system_memory='5G',_hidden_sys_tenant_memory='1G',__min_full_resource_pool_memory='1073741824',cache_wash_threshold='1G',enable_async_syslog=false,_private_buffer_size='16K',_fast_commit_callback_count='1',log_disk_size='20G',diag_syslog_per_error_limit=100000";
+ob1.set extra_config=$extra_conf;
+ob1.z3.obs1.set status=disable;
+ob1.reboot;
+
+sleep 3;
+let $z1_obs0_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $z1_obs0_port = deploy_get_value(ob1.z1.obs0.port);
+let $z2_obs0_ip = deploy_get_value(ob1.z2.obs0.ip);
+let $z2_obs0_port = deploy_get_value(ob1.z2.obs0.port);
+let $z3_obs0_ip = deploy_get_value(ob1.z3.obs0.ip);
+let $z3_obs0_port = deploy_get_value(ob1.z3.obs0.port);
+let $z3_obs1_ip = deploy_get_value(ob1.z3.obs1.ip);
+let $z3_obs1_port = deploy_get_value(ob1.z3.obs1.port);
+let $z3_obs2_ip = deploy_get_value(ob1.z3.obs2.ip);
+let $z3_obs2_port = deploy_get_value(ob1.z3.obs2.port);
+ob_connect(conn_sys, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+
+ob1.mysql alter tenant sys set primary_zone = 'z3';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_core_meta_table where svr_ip = '$z3_obs0_ip' and svr_port = $z3_obs0_port and role = 1, 1, 30;
+
+connection conn_sys;
+set @@session.ob_query_timeout = 1000000000;
+eval CREATE RESOURCE UNIT if not exists unit_1 MAX_CPU 2, MEMORY_SIZE='2G';
+eval CREATE RESOURCE POOL if not exists pool_1 UNIT = 'unit_1', UNIT_NUM = 1, ZONE_LIST = ('z2', 'z3');
+eval CREATE TENANT mysql RESOURCE_POOL_LIST = ('pool_1'), primary_zone='z2', locality="F@z2, F@z3" set ob_tcp_invited_nodes='%';
+let $mysql_tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.dba_ob_tenants where tenant_name = 'mysql', tenant_id, 1);
+let $mysql_leader_ip_port=deploy_get_value(ob1.select select concat(svr_ip,':',svr_port) as host from oceanbase.cdb_ob_ls_locations where tenant_id = $mysql_tenant_id and ls_id =  1 and role like '%LEADER%' limit 1, host, 1);
+let $mysql_leader_obs =deploy_get_value(ob1.get_obs_by_addr $mysql_leader_ip_port);
+ob_connect(conn_mysql, $mysql_leader_obs, root@mysql, , test, , USE_MYSQL_CONNECTOR);
+
+ob1.check_until_timeout select count(*) from __all_server where start_service_time = 0, 0, 60;
+
+# cluster
+ob1.check_until_timeout select count(*) > 0 from oceanbase.__all_virtual_disk_stat where svr_ip = '$z3_obs2_ip' and svr_port = $z3_obs2_port, 1, 8;
+ob1.check_until_timeout select count(*) > 0 from oceanbase.__all_virtual_disk_stat where svr_ip = '$z3_obs1_ip' and svr_port = $z3_obs1_port, 0, 8;
+# tenant
+# 其实系统租户下查找tenant分类的表会转化为cluter分类
+ob1.check_until_timeout select count(*) > 0 from oceanbase.__all_virtual_tenant_memstore_info where tenant_id = $mysql_tenant_id and svr_ip = '$z3_obs2_ip' and svr_port = $z3_obs2_port, 1, 8;
+ob1.check_until_timeout select count(*) > 0 from oceanbase.__all_virtual_tenant_memstore_info where tenant_id = $mysql_tenant_id and svr_ip = '$z3_obs1_ip' and svr_port = $z3_obs1_port, 0, 8;
+connection conn_mysql;
+--disable_query_log
+# 为1
+eval select count(*) from oceanbase.__all_virtual_tenant_memstore_info where svr_ip = '$z2_obs0_ip' and svr_port = $z2_obs0_port;
+# 为1
+eval select count(*) from oceanbase.__all_virtual_tenant_memstore_info where svr_ip = '$z3_obs2_ip' and svr_port = $z3_obs2_port;
+# 应该为2 z2_obs0, z3_obs2
+select count(*) from oceanbase.__all_virtual_tenant_memstore_info;
+# select * from oceanbase.__all_virtual_tenant_memstore_info;
+--enable_query_log
+
+ob1.z3.obs2.delete;
+ob1.check_until_timeout select count(*) from __all_server where svr_ip = '$z3_obs2_ip' and svr_port = $z3_obs2_port, 0, 120;
+ob1.check_until_timeout select count(*) from __all_rootservice_job where svr_ip='$z3_obs2_ip' and svr_port= $z3_obs2_port and job_type = 'DELETE_SERVER' and job_status = 'SUCCESS',1,60;
+
+# cluster
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_disk_stat where svr_ip = '$z3_obs2_ip' and svr_port = $z3_obs2_port, 0, 8;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_disk_stat where svr_ip = '$z3_obs1_ip' and svr_port = $z3_obs1_port, 0, 8;
+#tenant 
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tenant_memstore_info where tenant_id = $mysql_tenant_id and svr_ip = '$z3_obs2_ip' and svr_port = $z3_obs2_port, 0, 8;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tenant_memstore_info where tenant_id = $mysql_tenant_id and svr_ip = '$z3_obs1_ip' and svr_port = $z3_obs1_port, 0, 8;
+connection conn_mysql;
+sleep 8;
+--disable_query_log
+# 能够查询到已经把z3_obs2_ip数据迁移到z3_obs0_ip
+# 为1
+eval select count(*) from oceanbase.__all_virtual_tenant_memstore_info where svr_ip = '$z3_obs0_ip' and svr_port = $z3_obs0_port;
+# 为1
+eval select count(*) from oceanbase.__all_virtual_tenant_memstore_info where svr_ip = '$z2_obs0_ip' and svr_port = $z2_obs0_port;
+# 为0
+eval select count(*) from oceanbase.__all_virtual_tenant_memstore_info where svr_ip = '$z3_obs2_ip' and svr_port = $z3_obs2_port;
+# 应该为2 即z3_obs0_ip 和 z2_obs0_ip
+select count(*) from oceanbase.__all_virtual_tenant_memstore_info;
+# select * from oceanbase.__all_virtual_tenant_memstore_info;
+--enable_query_log
+
+ob1.z3.obs2.force_stop;
+ob1.z3.obs2.rmdir;
+
+ob1.z3.obs1.set status=enable;
+ob1.z3.obs1.start;
+ob1.z3.obs1.check_log_until_success -c "weak read service thread start";
+ob1.z3.obs1.add;
+ob1.check_until_timeout select count(*) from __all_server where svr_ip= '$z3_obs1_ip' and svr_port= $z3_obs1_port and status='ACTIVE' and start_service_time > 0 and last_offline_time = 0,1,120;
+
+#cluster
+ob1.check_until_timeout select count(*) > 0 from oceanbase.__all_virtual_disk_stat where svr_ip = '$z3_obs1_ip' and svr_port = $z3_obs1_port, 1, 8;
+#tenant
+ob1.check_until_timeout select count(*) > 0 from oceanbase.__all_virtual_tenant_memstore_info where tenant_id = $mysql_tenant_id and svr_ip = '$z3_obs1_ip' and svr_port = $z3_obs1_port, 1, 8;
+connection conn_mysql;
+sleep 8;
+--disable_query_log
+# 为1
+eval select count(*) from oceanbase.__all_virtual_tenant_memstore_info where svr_ip = '$z3_obs1_ip' and svr_port = $z3_obs1_port;
+# 为1
+eval select count(*) from oceanbase.__all_virtual_tenant_memstore_info where svr_ip = '$z2_obs0_ip' and svr_port = $z2_obs0_port;
+# 可能有中间状态 unit迁移如果没有完成就3个数据 z3_obs1_ip, z3_obs0_ip, z2_obs0_ip，如果unit迁移完成了只有两条数据 z3_obs1_ip, z2_obs0_ip
+select count(*) >= 2 from oceanbase.__all_virtual_tenant_memstore_info;
+select count(*) <= 3 from oceanbase.__all_virtual_tenant_memstore_info;
+# select * from oceanbase.__all_virtual_tenant_memstore_info;
+--enable_query_log
+
+# 等待unit迁移结束，数据全部迁移到z3_obs1_ip 没有 z3_obs0_ip
+ob1.check_until_timeout select count(*) from oceanbase.__all_unit where migrate_from_svr_ip != "" or migrate_from_svr_port != "", 0, 60;
+sleep 8;
+--disable_query_log
+select count(*) = 2 from oceanbase.__all_virtual_tenant_memstore_info;
+# select * from oceanbase.__all_virtual_tenant_memstore_info;
+--enable_query_log
+
+let $resource_pool_id = deploy_get_value(ob1.select select resource_pool_id from __all_resource_pool where name = 'pool_1', resource_pool_id, 1);
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tenant_memstore_info where tenant_id = $mysql_tenant_id and svr_ip = '$z1_obs0_ip' and svr_port = $z1_obs0_port, 0, 8;
+ob1.mysql ALTER RESOURCE POOL pool_1 ZONE_LIST=('z1','z2','z3');
+ob1.mysql ALTER TENANT mysql locality="F@z1,F@z2,F@z3";
+ob1.check_until_timeout select count(*) from __all_rootservice_job where tenant_id = $mysql_tenant_id and job_type = 'ALTER_TENANT_LOCALITY' and job_status = 'SUCCESS',1,60;
+ob1.check_until_timeout select count(*) > 0 from __all_unit where resource_pool_id = $resource_pool_id and svr_ip = '$z1_obs0_ip' and svr_port = $z1_obs0_port, 1, 60;
+ob1.check_until_timeout select count(*) > 0 from oceanbase.__all_virtual_tenant_memstore_info where tenant_id = $mysql_tenant_id and svr_ip = '$z1_obs0_ip' and svr_port = $z1_obs0_port, 1, 8;
+connection conn_mysql;
+sleep 8;
+--disable_query_log
+# 为1
+eval select count(*) from oceanbase.__all_virtual_tenant_memstore_info where svr_ip = '$z1_obs0_ip' and svr_port = $z1_obs0_port;
+# 为1
+eval select count(*) from oceanbase.__all_virtual_tenant_memstore_info where svr_ip = '$z2_obs0_ip' and svr_port = $z2_obs0_port;
+# 为1
+eval select count(*) from oceanbase.__all_virtual_tenant_memstore_info where svr_ip = '$z3_obs1_ip' and svr_port = $z3_obs1_port;
+# 应该是3个 z1_obs0_ip, z2_obs0_ip, z3_obs1_ip
+select count(*) from oceanbase.__all_virtual_tenant_memstore_info;
+# select * from oceanbase.__all_virtual_tenant_memstore_info;
+--enable_query_log
+
+ob1.mysql alter tenant sys set primary_zone = 'z3';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_core_meta_table where svr_ip = '$z3_obs0_ip' and svr_port = $z3_obs0_port and role = 1, 1, 30;
+ob1.z3.obs0.delete;
+ob1.check_until_timeout select count(*) from __all_server where svr_ip = '$z3_obs0_ip' and svr_port = $z3_obs0_port, 0, 120;
+ob1.check_until_timeout select count(*) from __all_rootservice_job where svr_ip = '$z3_obs0_ip' and svr_port= $z3_obs0_port and job_type = 'DELETE_SERVER' and job_status = 'SUCCESS',1,60;
+
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_core_meta_table where svr_ip = '$z3_obs1_ip' and svr_port = $z3_obs1_port and role = 1, 1, 2;
+
+

@@ -1,0 +1,91 @@
+# owner: rongxuan.lc
+# description: 本case是为了测试主备库运行过程中，备库记录的主库信息完全不能访问时，通过运维命令解决；
+
+
+ob1=OBI(cluster=2:2:2,proxy_num=1);
+ob2=OBI(cluster=1,leaderob=ob1,proxy_num=0);
+ob1.reboot;
+sleep 3;
+ob2.reboot;
+
+let $cpu = 1;
+let $memory = 1073741824;
+let $min_memory = 1073741824;
+let $disk = 536870912;
+let $iops = 100000;
+let $session = 64;
+let $case_index = 1;
+
+ob_connect(sys1_conn, ob1.z1.obs0, root, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection sys1_conn;
+set ob_query_timeout = 30000000;
+eval  CREATE RESOURCE UNIT unit_1 MAX_CPU $cpu, MAX_MEMORY $memory, MAX_IOPS $iops, MAX_DISK_SIZE $disk, MAX_SESSION_NUM $session, MIN_CPU=1, MIN_MEMORY=$min_memory, MIN_IOPS=128;
+eval  CREATE RESOURCE POOL pool_1 UNIT = 'unit_1', UNIT_NUM = 1, ZONE_LIST = ('z1');
+eval  CREATE TENANT tenant_$case_index RESOURCE_POOL_LIST = ('pool_1'), primary_zone='z1' set ob_tcp_invited_nodes='%';
+sleep 3;
+
+ob_connect(tt1_conn, ob1.proxy0, root@tenant_1, , test, , USE_MYSQL_CONNECTOR);
+connection tt1_conn;
+create table t(c1 int primary key, c2 int);
+insert into t values (1,2),(3,4),(5,6);
+select * from t;
+
+ob_connect(tt2_conn, ob1.z1.obs0, root, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection tt2_conn;
+sleep 3;
+alter system set balancer_idle_time = '10s';
+alter system set server_data_copy_out_concurrency = 30;
+alter system set server_data_copy_in_concurrency = 30;
+alter system set data_copy_concurrency = 60;
+
+ob_connect(tt2_conn, ob2.z1.obs0, root, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection tt2_conn;
+sleep 3;
+alter system set balancer_idle_time = '10s';
+alter system set server_data_copy_out_concurrency = 30;
+alter system set server_data_copy_in_concurrency = 30;
+alter system set data_copy_concurrency = 60;
+ob1.check_until_timeout select count(*) from v\$ob_cluster where switchover_status='TO STANDBY', 1, 360;
+ob1.mysql alter system set obconfig_url = "";
+ob2.mysql alter system set obconfig_url = "";
+sleep 5;
+ob1.mysql alter tenant sys set primary_zone = 'z3';
+ob1.check_until_timeout select count(*) from __all_virtual_core_meta_table where role = 1 and zone = 'z3', 1, 60;
+##备库宕机的情况下，修改主库的rs_list;
+ob2.force_stop;
+sleep 5;
+###迁移系统租户的unit;
+let $svr_1 = deploy_get_value(ob1.select select concat(svr_ip, ":", svr_port) addr  from __all_unit where unit_id = 1, addr, 1);
+ob1.mysql alter system delete server '$svr_1';
+ob1.check_until_timeout select count(*) from __all_server, 5, 400;
+ob1.z1.obs0.force_stop;
+let $svr_2 = deploy_get_value(ob1.select select concat(svr_ip, ":", svr_port) addr  from __all_unit where unit_id = 2, addr, 1);
+ob1.mysql alter system delete server '$svr_2';
+ob1.check_until_timeout select count(*) from __all_server, 4, 400;
+ob1.z2.obs0.force_stop;
+ob1.mysql alter tenant sys set primary_zone = 'z2';
+ob1.check_until_timeout select count(*) from __all_virtual_core_meta_table where role = 1 and zone = 'z2', 1, 60;
+ob1.check_until_timeout select count(*) >1200 from __all_root_table where role = 1 and zone = 'z2', 1, 60;
+sleep 3;
+let $svr_3 = deploy_get_value(ob1.select select concat(svr_ip, ":", svr_port) addr  from __all_unit where unit_id = 3, addr, 1);
+ob1.mysql alter system delete server '$svr_3';
+ob1.check_until_timeout select count(*) from __all_server, 3, 400;
+ob1.z3.obs0.force_stop;
+sleep 5;
+##启动备库；验证备库不同步；
+ob2.start;
+connection tt1_conn;
+create table t2(c1 int primary key, c2 int);
+sleep 5;
+ob2.check_until_timeout select count(*) from __all_virtual_core_meta_table, 1, 120;
+ob1.z1.obs1.check_until_timeout select count(*) from oceanbase.v\$ob_cluster where switchover_status='TO STANDBY', 0, 360;
+##主动在备库上运行运维命令；
+let $rs_list = deploy_get_value(ob1.z1.obs1.select select concat(svr_ip,":",svr_port) addr from oceanbase.__all_server where with_rootserver =1, addr, 1);
+let $cluster_name = deploy_get_value(ob1.z1.obs1.select select info from oceanbase.__all_zone where name = 'cluster', info, 1);
+let $cluster_id = deploy_get_value(ob1.z1.obs1.select select value from oceanbase.__all_virtual_sys_parameter_stat where name = 'cluster_id', value, 1); 
+ob_connect(sys2_conn, ob2.z1.obs0, root, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection sys2_conn;
+--disable_query_log
+eval alter system change cluster '$cluster_name' cluster_id $cluster_id set rootservice_list = '$rs_list';
+--enable_query_log
+ob1.z1.obs1.check_until_timeout select count(*) from oceanbase.v\$ob_cluster where switchover_status='TO STANDBY', 1, 60;

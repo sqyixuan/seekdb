@@ -1,0 +1,343 @@
+# owner: cxf262476
+# owner group: transaction
+# description: basic test for lock function
+
+--disable_warnings
+--error 0,600,1396
+drop user table_lock;
+--enable_warnings
+
+create user table_lock IDENTIFIED BY "table_lock";
+grant all on *.* to table_lock;
+
+--source mysql_test/include/check_schema_sync.inc
+connect (conn_sys,$OBMYSQL_MS0,root,"",oceanbase,$OBMYSQL_PORT);
+connection conn_sys;
+--disable_abort_on_error
+--disable_query_log
+--disable_result_log
+alter proxyconfig set client_session_id_version=2;
+alter proxyconfig set enable_single_leader_node_routing=false;
+--enable_abort_on_error
+--enable_query_log
+--enable_result_log
+sleep 3;
+
+connect (conn1,$OBMYSQL_MS0,table_lock,table_lock,test,$OBMYSQL_PORT);
+connect (conn2,$OBMYSQL_MS0,table_lock,table_lock,test,$OBMYSQL_PORT);
+
+connection conn1;
+--disable_query_log
+set SESSION ob_trx_timeout = 10000000000;
+set SESSION ob_query_timeout = 10000000; #-- 10s
+set SESSION ob_trx_idle_timeout = 10000000000;
+
+# 1. LOCK FUNC GRAMMAR CHECK
+# 1.1 CHECK BEFORE LOCK
+--echo "STEP: before lock"
+--echo "STEP: check invalid argument: get_lock"
+--error 1582
+SELECT GET_LOCK("hello", 1, 2);
+--error 1582
+SELECT GET_LOCK("hello");
+--error 1582
+SELECT GET_LOCK();
+--error 1582
+SELECT GET_LOCK(null, 1, 2);
+--error 1210
+SELECT GET_LOCK(null, 1);
+--error 1210
+SELECT GET_LOCK(null, null);
+--error 1210
+SELECT GET_LOCK('', 1);
+
+--echo "STEP: check invalid argument: is_free_lock"
+--error 1582
+SELECT IS_FREE_LOCK('hello', 1);
+--error 1582
+SELECT IS_FREE_LOCK();
+--error 1210
+SELECT IS_FREE_LOCK(null);
+--error 1210
+SELECT IS_FREE_LOCK('');
+
+--echo "STEP: check invalid argument: is_used_lock"
+--error 1582
+SELECT IS_USED_LOCK('hello', 1);
+--error 1582
+SELECT IS_USED_LOCK();
+--error 1210
+SELECT IS_USED_LOCK(null);
+--error 1210
+SELECT IS_USED_LOCK('');
+
+--echo "STEP: check invalid argument: release_lock"
+--error 1582
+SELECT RELEASE_LOCK("hello", 1);
+--error 1582
+SELECT RELEASE_LOCK();
+--error 1210
+SELECT RELEASE_LOCK(null);
+--error 1210
+SELECT RELEASE_LOCK('');
+
+--echo "STEP: check invalid argument: release_all_lock"
+--error 1582
+SELECT RELEASE_ALL_LOCKS('hello');
+
+--echo "STEP: check valid argument"
+SELECT IS_FREE_LOCK("hello");
+SELECT IS_USED_LOCK("hello");
+SELECT RELEASE_LOCK("hello");
+SELECT RELEASE_ALL_LOCKS();
+SELECT GET_LOCK("hello", 1);
+
+# 1.2 CHECK AFTER LOCK
+--echo "STEP: after lock"
+SELECT IS_FREE_LOCK("hello");
+let $ssid=query_get_value(SELECT client_session_id FROM oceanbase.__all_client_to_server_session_info, client_session_id, 1);
+let $used_ssid = `SELECT IS_USED_LOCK("hello")`;
+if ($ssid == $used_ssid)
+{
+  --echo "USED LOCK CHECK PASSED"
+}
+if ($ssid != $used_ssid)
+{
+  --echo "USED LOCK CHECK FAILED"
+}
+SELECT RELEASE_LOCK("hello");
+SELECT GET_LOCK("hello", 1);
+SELECT RELEASE_ALL_LOCKS();
+SELECT GET_LOCK("hello", 1);
+
+# 1.3 CHECK AT ANOTHER SESSION
+--echo "STEP: check at another session"
+connection conn2;
+--disable_query_log
+SELECT IS_FREE_LOCK("hello");
+let $ssid=query_get_value(SELECT client_session_id FROM oceanbase.__all_client_to_server_session_info, client_session_id, 1);
+let $used_ssid = `SELECT IS_USED_LOCK("hello")`;
+if ($ssid == $used_ssid)
+{
+  --echo "USED LOCK CHECK PASSED"
+}
+if ($ssid != $used_ssid)
+{
+  --echo "USED LOCK CHECK FAILED"
+}
+SELECT RELEASE_LOCK("hello");
+SELECT RELEASE_ALL_LOCKS();
+SELECT GET_LOCK("hello", 1);
+
+# 1.4 CHECK VIRTUAL TABLE
+--echo "STEP: check virtual table"
+eval SELECT task_type, obj_type, lock_mode, cnt, detect_func_no FROM oceanbase.__all_detect_lock_info_v2;
+eval SELECT count(*) FROM oceanbase.__all_client_to_server_session_info;
+let $lock_id=query_get_value(select lockid from oceanbase.__all_dbms_lock_allocated where name = 'hello', lockid, 1);
+eval SELECT ls_id,lock_mode,op_type,op_status,extra_info FROM oceanbase.__all_virtual_obj_lock WHERE lock_id like '%$lock_id%' group by (lock_mode) order by lock_mode;
+
+# 1.5 RELEASE ALL LOCKS AND CHECK
+--echo "STEP: release all locks and check"
+connection conn1;
+SELECT RELEASE_ALL_LOCKS();
+eval SELECT task_type, obj_type, lock_mode, cnt, detect_func_no FROM oceanbase.__all_detect_lock_info_v2;
+eval SELECT count(*) FROM oceanbase.__all_client_to_server_session_info;
+eval SELECT ls_id,lock_mode,op_type,op_status,extra_info FROM oceanbase.__all_virtual_obj_lock WHERE lock_id like '%$lock_id%' group by (lock_mode) order by lock_mode;
+
+# 1.6 LOCK WITH THE NAME IN TABLE
+--echo "STEP: lock with name in table"
+connection conn1;
+--disable_warnings
+--error 0,1051
+DROP TABLE IF EXISTS tlock_name;
+--enable_warnings
+CREATE TABLE tlock_name(name int);
+--source mysql_test/include/check_schema_sync.inc
+connection conn1;
+INSERT INTO tlock_name VALUES(1), (2), (3);
+SELECT * FROM tlock_name;
+
+# When the client connect to the follower of tlock_name directly,
+# we will throw OB_NOT_SUPPORTED error. Becasue this situation
+# will lead to abnormal lock releasing
+--disable_result_log
+--disable_warnings
+--error 0, 1235
+SELECT GET_LOCK(name, 1) FROM tlock_name;
+--enable_warnings
+--enable_result_log
+
+let $detect_lock_cnt=query_get_value(SELECT count(obj_id) FROM oceanbase.__all_detect_lock_info_v2, count(obj_id), 1);
+let $session_cnt=query_get_value(SELECT count(*) FROM oceanbase.__all_client_to_server_session_info, count(*), 1);
+if ($detect_lock_cnt == 3)
+{
+  if ($session_cnt == 1)
+  {
+    let $lock_cnt=query_get_value(select count(lockid) as cnt from oceanbase.__all_dbms_lock_allocated where name = '1' or name = '2' or name = '3', cnt, 1);
+    if ($lock_cnt == 3)
+    {
+      --echo "GET_LOCK WITH NAME IN TABLE SUCCESSFULLY"
+    }
+  }
+}
+
+if ($detect_lock_cnt == 0)
+{
+  if ($session_cnt == 0)
+  {
+    --echo "GET_LOCK WITH NAME IN TABLE SUCCESSFULLY"
+  }
+}
+
+# 1.7 RELEASE ALL LOCKS
+--echo "STEP: release all locks and check 2"
+let $result=query_get_value(SELECT RELEASE_ALL_LOCKS(), RELEASE_ALL_LOCKS(), 1);
+if ($result == 0)
+{
+  --echo "RELEASE_ALL_LOCKS SUCCESSFULLY"
+  sleep 20;  # to avoid that lock hasn't been GC
+}
+if ($result == 3)
+{
+  --echo "RELEASE_ALL_LOCKS SUCCESSFULLY"
+}
+eval SELECT task_type, obj_type, lock_mode, cnt, detect_func_no FROM oceanbase.__all_detect_lock_info_v2;
+eval SELECT count(*) FROM oceanbase.__all_client_to_server_session_info;
+
+# 2. CONFLICT CHECK.
+--echo "STEP: conflict check"
+# 2.1 LOCK X
+connection conn1;
+set SESSION ob_query_timeout = 20000000; #-- 20s
+SELECT GET_LOCK("hello", 1);
+
+# 2.3 CHECK CONFLICT WITH OTHERS
+connection conn2;
+set autocommit =0;
+set SESSION ob_trx_timeout = 5000000;
+set SESSION ob_query_timeout = 2000000; #-- 2s
+set SESSION ob_trx_idle_timeout = 10000000000;
+# get lock timeout but statement not timeout
+SELECT GET_LOCK("hello", 1);
+# statement timeout
+--error 1317
+SELECT GET_LOCK("hello", 4);
+# transaction timeout
+--error 1317
+SELECT GET_LOCK("hello", 10);
+
+# 3. DETECT LIVE CHECK
+--echo "STEP: detect live check"
+# 3.1 CLOSE SESSION BY DISCONNECTION
+disconnect conn1;
+
+# 3.2 CHECK ALL LOCKS ON CONN1 HAS BEEN CLEANED
+connection conn2;
+sleep 20;  # wait GC thread to detect and clean it
+eval SELECT task_type, obj_type, lock_mode, cnt, detect_func_no FROM oceanbase.__all_detect_lock_info_v2;
+eval SELECT obj_type, obj_id, lock_mode FROM oceanbase.__all_virtual_obj_lock;
+
+# 4. CHECK TIMEOUT
+--echo "STEP: check timeout"
+# 4.1 LOCK X
+connect (conn1,$OBMYSQL_MS0,table_lock,table_lock,test,$OBMYSQL_PORT);
+connection conn1;
+SELECT GET_LOCK("hello", 2);
+
+# 4.2 WAIT UNTIL LOCK_NAME TO LOCK_ID TIMEOUT,
+# AND LOCK WITH A NEW LOCK_NAME
+sleep 3;
+SELECT GET_LOCK("world", 2);
+
+# 4.3 MAKE LOCK CONFLICT
+connection conn2;
+SELECT GET_LOCK("hello", 2);
+
+# 4.4 WAIT UNTIL LOCK_NAME TO LOCK_ID TIMEOUT,
+# AND LOCK WITH THE SAME LOCK_NAME
+sleep 3;
+SELECT GET_LOCK("hello", 2);
+
+# 4.5 CLEAN LOCKS
+connection conn1;
+SELECT RELEASE_ALL_LOCKS();
+
+# 5. CHECK GET 2 DIFFERENT LOCK IN THE SAME SESSION AND RELEASE THEM
+# 5.1 LOCK 1
+SELECT GET_LOCK("hello", 2);
+
+# 5.2 LOCK 2
+SELECT GET_LOCK("world", 2);
+
+# 5.3 CHECK INNER TABLE
+eval SELECT task_type, obj_type, lock_mode, cnt, detect_func_no FROM oceanbase.__all_detect_lock_info_v2;
+eval SELECT count(*) FROM oceanbase.__all_client_to_server_session_info;
+
+# 5.4 RELEASE 1
+SELECT RELEASE_LOCK("hello");
+
+# 5.5 CHECK INNER TABLE
+# record in client_to_server_session_info should not be removed
+eval SELECT task_type, obj_type, lock_mode, cnt, detect_func_no FROM oceanbase.__all_detect_lock_info_v2;
+eval SELECT count(*) FROM oceanbase.__all_client_to_server_session_info;
+
+# 5.6 RELEASE 2
+SELECT RELEASE_LOCK("world");
+
+# 5.7 CHECK INNER TABLE
+# should empty
+eval SELECT task_type, obj_type, lock_mode, cnt, detect_func_no FROM oceanbase.__all_detect_lock_info_v2;
+eval SELECT count(*) FROM oceanbase.__all_client_to_server_session_info;
+
+# 6. CHECK GET 2 SAME LOCK IN THE SAME SESSION AND RELEASE THEM
+# 6.1 LOCK 1
+SELECT GET_LOCK("hello", 2);
+
+# 6.2 LOCK 2
+SELECT GET_LOCK("hello", 2);
+
+# 6.3 CHECK INNER TABLE
+eval SELECT task_type, obj_type, lock_mode, cnt, detect_func_no FROM oceanbase.__all_detect_lock_info_v2;
+eval SELECT count(*) FROM oceanbase.__all_client_to_server_session_info;
+
+# 6.4 RELEASE 1
+SELECT RELEASE_LOCK("hello");
+
+# 6.5 CHECK INNER TABLE
+# record in client_to_server_session_info should not be removed
+eval SELECT task_type, obj_type, lock_mode, cnt, detect_func_no FROM oceanbase.__all_detect_lock_info_v2;
+eval SELECT count(*) FROM oceanbase.__all_client_to_server_session_info;
+
+# 6.6 RELEASE 2
+SELECT RELEASE_LOCK("hello");
+
+# 6.7 CHECK INNER TABLE
+# should empty
+eval SELECT task_type, obj_type, lock_mode, cnt, detect_func_no FROM oceanbase.__all_detect_lock_info_v2;
+eval SELECT count(*) FROM oceanbase.__all_client_to_server_session_info;
+
+# 6.7 RELEASE NOT EXISTED LOCK
+SELECT RELEASE_LOCK("hello");
+SELECT RELEASE_LOCK("world");
+
+# 7. CLEAN
+--echo "STEP: clean"
+--disable_warnings
+--echo "STEP: drop table"
+drop table tlock_name;
+--echo "STEP: drop user"
+--error 0,942
+drop user table_lock;
+--enable_warnings
+
+connection conn_sys;
+--disable_abort_on_error
+--disable_query_log
+--disable_result_log
+alter proxyconfig set client_session_id_version=1;
+alter proxyconfig set enable_single_leader_node_routing=true;
+--enable_abort_on_error
+--enable_query_log
+--enable_result_log
+
+sleep 3;  # configuration should take time to take effect

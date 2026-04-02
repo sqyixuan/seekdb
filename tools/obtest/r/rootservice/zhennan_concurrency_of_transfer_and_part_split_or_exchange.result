@@ -1,0 +1,166 @@
+ob1=OBI(cluster=1:1,init_unit_cpu=0,proxy_num=0);
+ob1.z1.obs0.set extra_config=$extra_conf;
+ob1.z2.obs0.set extra_config=$extra_conf;
+ob1.reboot;
+ob1.mysql alter system set _transfer_start_trans_timeout = '10s';
+ob1.mysql alter system set debug_sync_timeout = '1000s';
+ob1.mysql set @@session.ob_query_timeout = 1000000000;
+ob1.mysql CREATE RESOURCE UNIT if not exists unit_1 MAX_CPU 2, MEMORY_SIZE='4G';
+ob1.mysql CREATE RESOURCE POOL if not exists pool_1 UNIT = 'unit_1', UNIT_NUM = 1;
+ob1.mysql CREATE TENANT mysql RESOURCE_POOL_LIST = ('pool_1'), primary_zone='z1', locality="F@z1, F@z2" set ob_tcp_invited_nodes='%';
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_server_schema_info as a join oceanbase.__all_virtual_server_schema_info as b on a.tenant_id = b.tenant_id  where a.refreshed_schema_version != b.refreshed_schema_version, 0, 60;
+
+## prepare data
+create table t_split (k int primary key, c1 int, c2 longtext) partition by range(k) (
+partition p0 values less than (10),
+partition p1 values less than (20)
+);
+create index t_local_idx_split on t_split(k);
+select table_id, object_id, tablet_id, table_name, partition_name, ls_id from oceanbase.DBA_OB_TABLE_LOCATIONS where table_id > 500000 and role = 'LEADER';
+table_id	object_id	tablet_id	table_name	partition_name	ls_id
+500002	500005	200001	t_split	p0	1001
+500002	500006	200002	t_split	p1	1001
+500003	500007	1152921504606846977	__AUX_LOB_META_500003_	p0	1001
+500003	500008	1152921504606846978	__AUX_LOB_META_500003_	p1	1001
+500004	500009	1152921504606846979	__AUX_LOB_PIECE_500004_	p0	1001
+500004	500010	1152921504606846980	__AUX_LOB_PIECE_500004_	p1	1001
+500013	500011	1152921504606846981	__idx_500002_t_local_idx_split	p0	1001
+500013	500012	1152921504606846982	__idx_500002_t_local_idx_split	p1	1001
+
+##################### 1. split partition when transfer getting related table schema #####################
+
+## 1.1 block transfer when transfer getting related table schema
+ob1.mysql set ob_global_debug_sync = "BEFORE_TRANSFER_GET_RELATED_TABLE_SCHEMAS wait_for signal_get_related";
+ob1.mysql alter system set _transfer_process_lock_tx_timeout = '1000s' tenant mysql;
+ob1.mysql alter tenant mysql set primary_zone = 'z1,z2';
+ob1.check_until_timeout select count(*) from CDB_OB_BALANCE_JOBS where tenant_id=$mysql_tenant_id, 1, 60;
+ob1.check_until_timeout select count(*) from CDB_OB_TRANSFER_TASKS where tenant_id=$mysql_tenant_id, 1, 60;
+
+## 1.2. split partition
+alter table t_split reorganize partition p0 into(
+partition p0_0 values less than (5),
+partition p0_1 values less than (10)
+);
+ob1.check_until_timeout select count(*) from CDB_OB_TABLE_LOCATIONS where tenant_id=$mysql_tenant_id and table_name like '%AUX_LOB_META%' and data_table_id = $t_split_id and role = 'LEADER' and partition_name = 'p0_1', 1, 60;
+
+## 1.3. verify transfer is correct
+ob1.mysql set ob_global_debug_sync = "now signal signal_get_related";
+ob1.check_until_timeout select count(*) from CDB_OB_TRANSFER_TASKS where tenant_id=$mysql_tenant_id, 0, 100;
+ob1.check_until_timeout select count(*) from CDB_OB_TRANSFER_TASK_HISTORY where tenant_id=$mysql_tenant_id and tablet_list like "%$p1_tablet_id%$p1_lob_meta_tablet_id%", 1, 1;
+select table_id, object_id, tablet_id, table_name, partition_name, ls_id from oceanbase.DBA_OB_TABLE_LOCATIONS where table_id > 500000 and role = 'LEADER';
+table_id	object_id	tablet_id	table_name	partition_name	ls_id
+500002	500006	200002	t_split	p1	1002
+500002	500014	200003	t_split	p0_0	1001
+500002	500015	200004	t_split	p0_1	1001
+500003	500008	1152921504606846978	__AUX_LOB_META_500003_	p1	1002
+500003	500018	1152921504606846985	__AUX_LOB_META_500003_	p0_0	1001
+500003	500019	1152921504606846986	__AUX_LOB_META_500003_	p0_1	1001
+500004	500010	1152921504606846980	__AUX_LOB_PIECE_500004_	p1	1002
+500004	500020	1152921504606846987	__AUX_LOB_PIECE_500004_	p0_0	1001
+500004	500021	1152921504606846988	__AUX_LOB_PIECE_500004_	p0_1	1001
+500013	500012	1152921504606846982	__idx_500002_t_local_idx_split	p1	1002
+500013	500016	1152921504606846983	__idx_500002_t_local_idx_split	p0_0	1001
+500013	500017	1152921504606846984	__idx_500002_t_local_idx_split	p0_1	1001
+
+##################### 2. split target partition after transfer adding table lock #####################
+
+## 2.1 block transfer after transfer adding table lock
+ob1.mysql set ob_global_debug_sync = "AFTER_TRANSFER_LOCK_TABLE_FOR_NORMAL_TABLE wait_for signal_target_split";
+ob1.mysql alter system transfer partition table_id = $t_split_id, object_id=$p0_1_object_id to LS 1002 tenant mysql;
+ob1.check_until_timeout select count(*) from CDB_OB_BALANCE_JOBS where tenant_id=$mysql_tenant_id, 1, 60;
+ob1.check_until_timeout select count(*) from CDB_OB_TRANSFER_TASKS where tenant_id=$mysql_tenant_id, 1, 60;
+
+## 2.2 split target partition
+alter table t_split reorganize partition p0_1 into(
+partition p0_1_0 values less than (8),
+partition p0_1_1 values less than (10)
+);
+
+## 2.3. verify transfer is correct
+ob1.mysql set ob_global_debug_sync = "now signal signal_target_split";
+ob1.check_until_timeout select count(*) from CDB_OB_TRANSFER_TASKS where tenant_id=$mysql_tenant_id, 0, 100;
+select src_ls, dest_ls, part_list, not_exist_part_list, lock_conflict_part_list, tablet_list, status, comment from oceanbase.DBA_OB_TRANSFER_TASK_HISTORY where task_id = 2;
+src_ls	dest_ls	part_list	not_exist_part_list	lock_conflict_part_list	tablet_list	status	comment
+1001	1002	NULL	500002:500015	NULL	NULL	COMPLETED	Task completed as no valid partition
+
+##################### 3. split other partition after transfer adding table lock #####################
+
+## 3.1 block transfer after transfer adding table lock
+ob1.mysql set ob_global_debug_sync = "AFTER_TRANSFER_LOCK_TABLE_FOR_NORMAL_TABLE wait_for signal_other_split";
+ob1.mysql alter system transfer partition table_id = $t_split_id, object_id=$p0_1_0_object_id to LS 1002 tenant mysql;
+ob1.check_until_timeout select count(*) from CDB_OB_BALANCE_JOBS where tenant_id=$mysql_tenant_id, 1, 60;
+ob1.check_until_timeout select count(*) from CDB_OB_TRANSFER_TASKS where tenant_id=$mysql_tenant_id, 1, 60;
+
+## 3.2 split other partition
+alter table t_split reorganize partition p0_0 into(
+partition p0_0_0 values less than (3),
+partition p0_0_1 values less than (5)
+);
+
+## 3.3. verify transfer is correct
+ob1.mysql set ob_global_debug_sync = "now signal signal_other_split";
+ob1.check_until_timeout select count(*) from CDB_OB_TRANSFER_TASKS where tenant_id=$mysql_tenant_id, 0, 100;
+ob1.check_until_timeout select count(*) from CDB_OB_BALANCE_JOBS where tenant_id=$mysql_tenant_id, 0, 100;
+ob1.check_until_timeout select count(*) from CDB_OB_TRANSFER_TASK_HISTORY where tenant_id=$mysql_tenant_id and task_id = $last_task_id and tablet_list like "%$p0_1_0_tablet_id%$p0_1_0_local_index_tablet_id%$p0_1_0_lob_meta_tablet_id%$p0_1_0_lob_piece_tablet_id%", 1, 1;
+select src_ls, dest_ls, part_list, not_exist_part_list, lock_conflict_part_list, tablet_list, status, comment from oceanbase.DBA_OB_TRANSFER_TASK_HISTORY where task_id = 3;
+src_ls	dest_ls	part_list	not_exist_part_list	lock_conflict_part_list	tablet_list	status	comment
+1001	1002	500002:500022	NULL	NULL	200005:0,1152921504606846989:0,1152921504606846991:0,1152921504606846993:0	COMPLETED	
+
+##################### 4. exchange partition tablet after transfer adding table lock #####################
+
+## 4.1 prepare data
+alter table t_split drop index t_local_idx_split;
+create table t_ex_non_part (k int primary key, c1 int, c2 longtext);
+
+## 4.2 block transfer after transfer adding table lock
+ob1.mysql set ob_global_debug_sync = "BEFORE_TRANSFER_LOCK_TABLE_AND_PART wait_for signal_transfer";
+ob1.mysql alter system transfer partition table_id = $t_split_id, object_id=$p1_object_id to LS 1001 tenant mysql;
+ob1.check_until_timeout select count(*) from CDB_OB_BALANCE_JOBS where tenant_id=$mysql_tenant_id, 1, 60;
+ob1.check_until_timeout select count(*) from CDB_OB_TRANSFER_TASKS where tenant_id=$mysql_tenant_id, 1, 60;
+ob1.mysql set ob_global_debug_sync = "TABLE_LOCK_AFTER_LOCK_TABLE_BEFORE_LOCK_TABLET wait_for signal_exchange";
+ob1.mysql set ob_global_debug_sync = "now signal signal_transfer";
+
+## 4.3 try exchange target partition
+alter table t_split exchange partition p1 with table t_ex_non_part WITHOUT VALIDATION;
+
+## 4.4. verify transfer is correct
+ob1.mysql set ob_global_debug_sync = "now signal signal_exchange";
+ob1.check_until_timeout select count(*) from CDB_OB_TRANSFER_TASKS where tenant_id=$mysql_tenant_id, 0, 100;
+ob1.check_until_timeout select count(*) from CDB_OB_BALANCE_JOBS where tenant_id=$mysql_tenant_id, 0, 100;
+select src_ls, dest_ls, part_list, not_exist_part_list, lock_conflict_part_list, tablet_list, status, comment from oceanbase.DBA_OB_TRANSFER_TASK_HISTORY where task_id >= 4;
+src_ls	dest_ls	part_list	not_exist_part_list	lock_conflict_part_list	tablet_list	status	comment
+1002	1001	NULL	500002:500006	NULL	NULL	COMPLETED	Task completed as no valid partition
+
+##################### 5. exchange target tablet after transfer adding table lock #####################
+
+## 5.1 prepare data
+create table t1 (c1 int primary key, c2 int);
+create table t2 (c1 int primary key, c2 int)
+partition by range(c1)
+subpartition by hash(c1) subpartitions 2
+(
+partition p0 values less than (10),
+Partition p1 values less than (MAXVALUE)
+);
+insert into t1 values (1, 10), (2, 20), (11, 110), (12, 120);
+
+## 5.2 block transfer after transfer adding table lock
+ob1.mysql set ob_global_debug_sync = "BEFORE_TRANSFER_LOCK_TABLE_AND_PART wait_for signal_transfer";
+ob1.mysql alter system transfer partition table_id = $t2_table_id, object_id=$t2_sub_part_id_before to LS 1002 tenant mysql;
+ob1.check_until_timeout select count(*) from CDB_OB_BALANCE_JOBS where tenant_id=$mysql_tenant_id, 1, 60;
+ob1.check_until_timeout select count(*) from CDB_OB_TRANSFER_TASKS where tenant_id=$mysql_tenant_id, 1, 60;
+ob1.mysql set ob_global_debug_sync = "TABLE_LOCK_AFTER_LOCK_TABLE_BEFORE_LOCK_TABLET wait_for signal_exchange";
+ob1.mysql set ob_global_debug_sync = "now signal signal_transfer";
+
+## 5.3 try exchange target tablet while part_id not changed
+insert overwrite t2 partition (p0sp1) select * from t1 where c1 = 1;
+ERROR HY000: Timeout, query has reached the maximum query timeout: 10000000(us), maybe you can adjust the session variable ob_query_timeout or query_timeout hint, and try again.
+insert /*+ direct(true, 0, 'inc') enable_parallel_dml(2) parallel(2) */ into t2 partition (p0sp1) select * from t1 where c1 = 1;
+
+## 5.4. verify transfer is correct
+ob1.mysql set ob_global_debug_sync = "now signal signal_exchange";
+ob1.check_until_timeout select count(*) from CDB_OB_TRANSFER_TASKS where tenant_id=$mysql_tenant_id, 0, 100;
+ob1.check_until_timeout select count(*) from CDB_OB_BALANCE_JOBS where tenant_id=$mysql_tenant_id, 0, 100;
+select src_ls, dest_ls, part_list, not_exist_part_list, lock_conflict_part_list, tablet_list, status, comment from oceanbase.DBA_OB_TRANSFER_TASK_HISTORY where task_id >= 5;
+src_ls	dest_ls	part_list	not_exist_part_list	lock_conflict_part_list	tablet_list	status	comment
+1001	1002	500045:500049	NULL	NULL	200012:0	COMPLETED	

@@ -1,0 +1,77 @@
+# owner: rongxuan.lc
+# description: 
+# 场景： 每个 zone 3 个 unit, 即 zone 有 u1,u2,u3 unit
+#        z3.obs0@u1 上的 READONLY 永久下线，会被 gc 回收 READONLY 副本
+#        z3.obs1@u3 上是 FULL 副本，正常
+#        然后副本补充逻辑会尝试在 u2 上补充 READONLY 副本
+# 预期： 对于上述场景，希望 rs 能激活补充副本逻辑，在 u2 上成功补充只读副本
+# 测试： (1) 构建 3:3:3 集群， 创建租户 F@z1,F@z2,F@z3,R@z3，且 unit_num = 3
+#        (2) 查询 __my_dummy 表的 R 副本位于 z3 的哪个 unit 中，关闭该 unit 对应的 server，使其永久下线 
+#        (3) 等待 rs 激活副本补充逻辑
+#        (4) 检查__all_root_table 中 __my_dummy 副本数，确认副本在 z3 的另一个 unit 补充成功
+#
+ob1=OBI(cluster=3:3:3, proxy_num=0, init_unit_cpu=2);
+ob1.reboot;
+
+
+ob1.mysql alter system set resource_hard_limit=900;
+ob1.mysql alter system set resource_soft_limit=800;
+ob1.mysql alter system set enable_rebalance = 'false';
+ob1.mysql alter system set enable_rereplication = 'false';
+ob1.mysql alter system set debug_sync_timeout = '100s';
+ob1.mysql alter system set enable_auto_leader_switch = 'False';
+ob1.mysql alter system set balancer_idle_time = '10s';
+ob1.mysql alter system set server_permanent_offline_time = '20s';
+ob1.mysql alter system set replica_safe_remove_time='1m';
+ob1.mysql alter system set server_data_copy_out_concurrency = 5;
+ob1.mysql alter system set server_data_copy_in_concurrency = 5;
+sleep 4;
+
+let $cpu = 1;
+let $memory = 1073741824;
+let $min_memory = 1073741824;
+let $disk = 536870912;
+let $iops = 100000;
+let $session = 64;
+
+ob1.mysql CREATE RESOURCE UNIT unit_1 MAX_CPU $cpu, MAX_MEMORY $memory, MAX_IOPS $iops, MAX_DISK_SIZE $disk, MAX_SESSION_NUM $session, MIN_CPU=1, MIN_MEMORY=$min_memory, MIN_IOPS=128;
+ob1.mysql CREATE RESOURCE POOL pool_1 UNIT = 'unit_1', UNIT_NUM = 2, ZONE_LIST = ('z1', 'z2', 'z3');
+ob1.mysql CREATE TENANT tenant_1 RESOURCE_POOL_LIST = ('pool_1'), locality='F@z1,F@z2,F@z3,R{all_server}@z3' set ob_tcp_invited_nodes='%';
+
+ob1.create_client tenant=tenant_1,user=root,passwd=,database=test;
+use test;
+CREATE TABLE __my_dummy (pk int primary key, val int);
+sleep 1;
+
+ob1.create_client tenant=sys,user=root,passwd=,database=oceanbase;
+let $tenant_id = query_get_value(select tenant_id from __all_tenant where tenant_name = 'tenant_1' LIMIT 1, tenant_id, 1);
+# 干掉 R 副本，期望迁移到同 zone 的 new_unit_id 上去
+let $table_id = query_get_value(select table_id from __all_virtual_table where table_name = '__my_dummy' and tenant_id = $tenant_id limit 1, table_id, 1);
+
+#eval select svr_ip, replica_type, zone, unit_id from __all_virtual_meta_table where table_id = $table_id order by zone, unit_id;
+
+let $f_svr_host = query_get_value(select concat(svr_ip, ':', svr_port) host from __all_virtual_meta_table where table_id = $table_id and replica_type = 0 and zone = 'z3', host, 1);
+let $f_unit_id = query_get_value(select unit_id from __all_virtual_meta_table where table_id = $table_id and replica_type = 0  and zone = 'z3', unit_id, 1);
+
+let $r_obi = deploy_get_value(ob1.get_obs_by_addr $f_svr_host);
+
+# 确认迁移源端server上有unit
+ob1.check_until_timeout select count(*) c from __all_virtual_meta_table where zone='z3' and replica_type = 0 and concat(svr_ip, ':', svr_port) = '$f_svr_host', 1, 180; 
+echo 'check full exists at old unit ok';
+# 确认迁移目标server上没有 unit
+ob1.check_until_timeout select count(*) c from __all_virtual_meta_table where zone='z3' and replica_type = 0 and concat(svr_ip, ':', svr_port) != '$f_svr_host', 0, 180; 
+echo 'check full not exists at anywhere else ok';
+# 关闭迁移源端server 
+$r_obi.force_stop;
+echo 'server stopped, trigger unit migration to idle server';
+ob1.mysql alter system set enable_rereplication = 'true';
+ob1.mysql alter system set enable_rebalance = 'true';
+# 等待迁移
+sleep 30;
+# 检查副本迁移到了新的unit
+echo 'check if lost replica migrated to new server';
+ob1.check_until_timeout select count(*) c from __all_virtual_meta_table where zone='z3' and replica_type = 0 and concat(svr_ip, ':', svr_port) != '$f_svr_host', 1, 1600; 
+echo 'replica migrated to new server ok';
+# 确认z3上有一个F一个R，共计两个副本
+ob1.check_until_timeout select count(*) c from __all_virtual_meta_table where zone='z3', 2, 10; 
+echo 'check system in new stable state ok';

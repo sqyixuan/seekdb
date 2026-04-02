@@ -1,0 +1,86 @@
+# owner: zg410411
+# owner group: mv
+# tags: 
+# descriotion: support rename mv
+#
+
+# 0. prepare
+connect (sys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection sys;
+alter system set debug_sync_timeout = '100000s';
+sleep 3;
+set ob_global_debug_sync = 'reset';
+connection default;
+set recyclebin = OFF;
+set ob_query_timeout = 10000000000;
+
+--disable_warnings
+drop database if exists test_rename_mv;
+drop database if exists test_rename_mv2;
+--enable_warnings
+create database test_rename_mv;
+create database test_rename_mv2;
+use test_rename_mv;
+let $db1_id = query_get_value(select database_id from oceanbase.__all_database where database_name = 'test_rename_mv', database_id, 1);
+let $db2_id = query_get_value(select database_id from oceanbase.__all_database where database_name = 'test_rename_mv2', database_id, 1);
+
+# 1. basic test
+create table t1(c1 int, c2 int);
+insert into t1 values(1,1);
+create materialized view mv1 refresh complete as select * from t1;
+let $mv1_tid = query_get_value(select a.table_id from oceanbase.__all_table a join oceanbase.__all_database b on a.database_id = b.database_id where b.database_name = 'test_rename_mv' and table_name = 'mv1', table_id, 1);
+let $old_mv1_version = query_get_value(select schema_version from oceanbase.__all_table where table_id = $mv1_tid, schema_version, 1);
+rename table mv1 to mv2;
+let $new_mv1_version = query_get_value(select schema_version from oceanbase.__all_table where table_id = $mv1_tid, schema_version, 1);
+--disable_query_log
+eval select $old_mv1_version < $new_mv1_version as res;
+eval select ddl_stmt_str from oceanbase.__all_ddl_operation where table_id = $mv1_tid and ddl_stmt_str like '%RENAME TABLE%';
+--enable_query_log
+select * from mv2;
+--error 1146
+select * from mv1;
+
+# 2. swap mv names
+create table t3(c1 int, c2 int);
+create table t4(c1 int, c2 int);
+insert into t3 values(1,1);
+insert into t4 values(2,2);
+create materialized view mv3 refresh complete on demand as select * from t3;
+let $mv3_tid = query_get_value(select a.table_id from oceanbase.__all_table a join oceanbase.__all_database b on a.database_id = b.database_id where b.database_name = 'test_rename_mv' and table_name = 'mv3', table_id, 1);
+create materialized view mv4 refresh complete on demand as select * from t4;
+let $mv4_tid = query_get_value(select a.table_id from oceanbase.__all_table a join oceanbase.__all_database b on a.database_id = b.database_id where b.database_name = 'test_rename_mv' and table_name = 'mv4', table_id, 1);
+select * from mv3;
+select * from mv4;
+rename table mv3 to tmpmv, mv4 to mv3, tmpmv to mv4;
+select * from mv3;
+select * from mv4;
+--disable_query_log
+eval select ddl_stmt_str from oceanbase.__all_ddl_operation where table_id = $mv3_tid and ddl_stmt_str like '%RENAME TABLE%';
+eval select (select ora_rowscn from oceanbase.__all_table where table_id = $mv3_tid) = (select ora_rowscn from oceanbase.__all_table where table_id = $mv4_tid) as res;
+--enable_query_log
+
+# 3. rename mv with mlog
+create table t5(c1 int, c2 int);
+create materialized view mv5 refresh complete as select c1, c2 from t5;
+create materialized view log on mv5 with (c1);
+desc mlog$_mv5;
+rename table mv5 to mv6;
+--error 1146
+desc mlog$_mv5;
+desc mlog$_mv6;
+--error 9756
+create materialized view log on mv6 with (c2);
+drop materialized view log on mv6;
+create materialized view log on mv6 with (c2);
+create index idx1 on mv6(c2);
+rename table test_rename_mv.mv6 to test_rename_mv2.mv7;
+desc test_rename_mv2.mv7;
+desc test_rename_mv2.mlog$_mv7;
+--disable_query_log
+# mv, mv container, mlog and the index should all be moved to the new database
+eval select table_type from oceanbase.__all_table where database_id = $db2_id order by 1;
+--enable_query_log
+
+# 4. clean up
+drop database test_rename_mv;
+drop database test_rename_mv2;

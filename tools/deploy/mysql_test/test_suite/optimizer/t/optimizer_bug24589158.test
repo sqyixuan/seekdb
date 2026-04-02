@@ -1,0 +1,191 @@
+# owner: link.zt
+# owner group: SQL1
+# tags: optimizer
+
+--disable_warnings
+drop table if exists tpart, spart, t, s, v1, v2, t1, t2, t3, s1, s2, s3;
+drop view if exists v1, v2;
+--enable_warnings
+
+create table tpart (c1 int) partition by hash(c1) partitions 4;
+create table spart (c1 int) partition by hash(c1) partitions 4;
+create table t (c1 int);
+create table s (c1 int);
+
+create table t1 (c1 int, c2 int) partition by hash(c1) partitions 5;
+create table t2 (d1 int, d2 int) partition by hash(d1) partitions 5;
+create table t3 (e1 int, e2 int) partition by hash(e1) partitions 5;
+
+create table s1 (c1 int, c2 int);
+create table s2 (d1 int, d2 int);
+create table s3 (e1 int, e2 int);
+
+--disable_query_log
+insert into tpart values (1), (2), (3), (4);
+insert into t     values (1), (2), (3), (4);
+
+insert into t1 values (1, 2);
+insert into t1 values (2, 2);
+insert into t3 values (2, 3);
+
+insert into s1 values (1, 2);
+insert into s1 values (2, 2);
+insert into s3 values (2, 3);
+--disable_result_log
+select count(*) from t, tpart, s, spart;
+--enable_result_log
+--enable_query_log
+
+--explain_protocol 2
+--result_format 4
+
+select distinct spart.c1 from tpart left join spart on tpart.c1 = spart.c1;
+select distinct s.c1 from t left join s on t.c1 = s.c1;
+
+select spart.c1, count(*) from tpart left join spart on tpart.c1 = spart.c1 group by spart.c1;
+select s.c1, count(*) from t left join s on t.c1 = s.c1 group by s.c1;
+
+select sum(tpart.c1) over (partition by spart.c1) from tpart left join spart on tpart.c1 = spart.c1;
+select sum(t.c1) over (partition by s.c1) from t left join s on t.c1 = s.c1;
+
+create view v1 as (select tpart.c1 as a, spart.c1 as b from tpart left join spart on tpart.c1 = spart.c1);
+create view v2 as (select t.c1 as a, s.c1 as b from t left join s on t.c1 = s.c1);
+
+select * from v1 t1 left join v1 t2 on t1.b <=> t2.b order by t1.a, t1.b, t2.a, t2.b;
+select * from v2 t1 left join v2 t2 on t1.b <=> t2.b order by t1.a, t1.b, t2.a, t2.b;
+
+select * from v1 t1 left join v1 t2 on t1.b = t2.b order by t1.a, t1.b, t2.a, t2.b;
+select * from v2 t1 left join v2 t2 on t1.b = t2.b order by t1.a, t1.b, t2.a, t2.b;
+
+select /*+no_rewrite*/ * from v1 t1 where exists (select 1 from v1 t2 where t1.b <=> t2.b);
+select /*+no_rewrite*/ * from v2 t1 where exists (select 1 from v2 t2 where t1.b <=> t2.b);
+select /*+no_rewrite*/ * from v1 t1 where exists (select /*+no_rewrite, no_pred_deduce(@SEL$4)*/ 1 from v1 t2 where t1.b = t2.b);
+select /*+no_rewrite*/ * from v2 t1 where exists (select /*+no_rewrite, no_pred_deduce(@SEL$4)*/ 1 from v2 t2 where t1.b = t2.b);
+
+select b from v1 union select b from v1;
+select b from v2 union select b from v2;
+
+select a from v1 union select a from v1;
+select a from v2 union select a from v2;
+
+## bug: inherit partition expr from the outer join's right table
+## the sharding info may take spart.c1 as the partition expr
+## and we found the distinct expr is the same as the partition expr
+## As a consequnce, no exchange operator is allocated.
+select /*+leading(spart tpart)*/ distinct spart.c1 from tpart left join spart on tpart.c1 = spart.c1;
+select distinct s.c1 from t left join s on t.c1 = s.c1;
+
+## bug: convert partition expr from the outer join's right table
+## spart.c1 is converted as view V's partition expr
+select /*+no_rewrite*/ distinct V.c1 from (select /*+no_rewrite*/ spart.c1 from tpart left join spart on tpart.c1 = spart.c1) V;
+
+## bug: deducing invalid sharding equal sets
+## records are not partition by t1.c2 even though there is t1.c1 = t1.c2;
+select distinct t1.c2, t2.d1 + 1 from t1 left join t2 on t1.c1 = t1.c2 and t1.c1 = t2.d1;
+select distinct s1.c2, s2.d1 + 1 from s1 left join s2 on s1.c1 = s1.c2 and s1.c1 = s2.d1;
+
+select * from t1 left join t2 on t1.c1 = t1.c2 and t1.c1 = t2.d1 left join t3 on t1.c2 = t3.e1;
+select * from s1 left join s2 on s1.c1 = s1.c2 and s1.c1 = s2.d1 left join s3 on s1.c2 = s3.e1;
+
+select * from t1 left join t2 on t1.c1 = t2.d1 and t1.c2 = t2.d1 left join t3 on t1.c2 = t3.e1;
+select * from s1 left join s2 on s1.c1 = s2.d1 and s1.c2 = s2.d1 left join s3 on s1.c2 = s3.e1;
+
+select * from t1 left join t2 on t2.d1 = t2.d2 and t1.c1 = t2.d1 left join t3 on t2.d2 = t3.e1;
+select * from s1 left join s2 on s2.d1 = s2.d2 and s1.c1 = s2.d1 left join s3 on s2.d2 = s3.e1;
+
+drop view v1, v2;
+drop table t, s, tpart, spart, t1, t2, t3, s1, s2, s3;
+
+--disable_warnings
+drop table if exists d, f;
+--enable_warnings
+
+CREATE TABLE d (
+col_varchar_100_key varchar(100),
+col_int_signed_key int signed,
+col_varchar_100 varchar(100),
+col_varchar_30 varchar(30),
+col_int_unsigned int unsigned,
+col_varchar_30_key varchar(30),
+col_int_signed int signed,
+col_int_unsigned_key int unsigned,
+pk integer auto_increment,
+/*Indices*/
+key idx5(pk, col_varchar_100_key ),
+key idx1(pk, col_int_signed_key ),
+key idx7(pk, col_varchar_30_key ),
+key idx3(pk, col_int_unsigned_key ),
+primary key (pk) )     ; 
+INSERT INTO d VALUES  ('english', 2, 'b', 'y', 8, 'english', NULL, 6, NULL) ,  ('i', NULL, 'q', 'english', 4, 'w', 1, NULL, NULL) ,  ('english', NULL, 'english', 'english', 9, 'x', NULL, NULL, NULL) ,  ('english', 0, 'english', 'z', NULL, 'english', NULL, 4, NULL) ,  ('r', NULL, 'english', 'b', NULL, 'x', 3, 6, NULL) ,  ('english', 8, 'english', 'english', NULL, 'english', 4, 4, NULL) ,  ('z', NULL, 'w', 'w', NULL, 'english', 8, NULL, NULL) ,  ('english', 7, 'english', 'x', NULL, 'g', 1, 1, NULL) ,  ('e', 7, 'english', 'd', 1, 'english', NULL, NULL, NULL) ,  ('f', NULL, 'english', 'm', 3, 'w', 4, 0, NULL) ,  ('english', NULL, 'english', 'english', 7, 'g', 2, NULL, NULL) ,  ('english', 6, 'english', 'm', NULL, 'english', 0, 6, NULL) ,  ('g', NULL, 'p', 'g', 0, 'z', 6, 5, NULL) ,  ('english', NULL, 'h', 'english', NULL, 'english', NULL, 6, NULL) ,  ('english', 5, 'c', 'english', 7, 'r', 4, NULL, NULL) ,  ('english', NULL, 'english', 'v', 8, 'g', 9, 6, NULL) ,  ('english', NULL, 'l', 'english', 9, 'u', 2, 5, NULL) ,  ('p', NULL, 'english', 's', 3, 'y', 4, 5, NULL) ,  ('f', NULL, 'h', 'english', 2, 'english', 8, NULL, NULL) ,  ('y', 7, 'english', 'l', 0, 's', 2, NULL, NULL) ,  ('d', 5, 'u', 'english', NULL, 't', NULL, 6, NULL) ,  ('d', 0, 'english', 'w', 9, 'english', 1, 3, NULL) ,  ('x', NULL, 'english', 'english', 9, 'c', 9, 1, NULL) ,  ('english', NULL, 'english', 'english', 1, 'i', NULL, 8, NULL) ,  ('e', NULL, 'j', 'english', NULL, 'i', NULL, 6, NULL) ,  ('english', NULL, 'english', 'english', NULL, 'c', NULL, 8, NULL) ,  ('english', NULL, 'a', 'english', 3, 'f', NULL, NULL, NULL) ,  ('english', NULL, 'english', 'r', 8, 'a', NULL, NULL, NULL) ,  ('english', 8, 'q', 'z', 7, 'y', 1, NULL, NULL) ,  ('english', NULL, 'english', 'english', NULL, 'f', NULL, NULL, NULL) ;
+CREATE TABLE f (
+col_varchar_30 varchar(30),
+col_varchar_100_key varchar(100),
+col_int_unsigned_key int unsigned,
+col_int_signed int signed,
+col_varchar_100 varchar(100),
+pk integer auto_increment,
+col_int_unsigned int unsigned,
+col_varchar_30_key varchar(30),
+col_int_signed_key int signed,
+/*Indices*/
+key idx5(pk, col_varchar_100_key ),
+key idx3(pk, col_int_unsigned_key ),
+primary key (pk) ,
+key idx7(pk, col_varchar_30_key ),
+key idx1(pk, col_int_signed_key ))     ; 
+INSERT INTO f VALUES  ('u', 'english', NULL, 3, 'u', NULL, NULL, 'english', NULL) ,  ('u', 'english', NULL, NULL, 'english', NULL, 8, 'a', NULL) ,  ('l', 'p', 4, 0, 'english', NULL, NULL, 'v', NULL) ,  ('english', 'english', 5, NULL, 'english', NULL, NULL, 'e', 4) ,  ('english', 'english', NULL, NULL, 'l', NULL, NULL, 'english', 8) ,  ('h', 'english', 1, 2, 'english', NULL, 9, 'p', 5) ,  ('english', 's', 6, NULL, 't', NULL, NULL, 'english', 6) ,  ('q', 'english', 5, 6, 'v', NULL, NULL, 'english', NULL) ,  ('english', 'english', NULL, NULL, 'a', NULL, NULL, 'z', NULL) ,  ('l', 'd', NULL, NULL, 'english', NULL, NULL, 'h', 6) ,  ('english', 'english', 6, NULL, 'h', NULL, NULL, 'english', NULL) ,  ('l', 'english', 0, 3, 'q', NULL, 9, 'english', 0) ,  ('english', 'k', 3, NULL, 'z', NULL, 8, 's', 8) ,  ('english', 'english', 7, NULL, 'english', NULL, NULL, 's', NULL) ,  ('english', 's', NULL, NULL, 'f', NULL, NULL, 'english', NULL) ,  ('k', 'english', 0, 1, 'english', NULL, 3, 't', NULL) ,  ('j', 'english', 9, NULL, 'm', NULL, NULL, 'english', 5) ,  ('english', 'g', 9, NULL, 'q', NULL, NULL, 'x', NULL) ,  ('english', 'english', NULL, 7, 'english', NULL, 1, 'english', NULL) ,  ('n', 'd', 6, NULL, 'english', NULL, 0, 'u', 3) ,  ('e', 'english', 3, 1, 'f', NULL, NULL, 'f', 5) ,  ('english', 'english', 9, 9, 'english', NULL, 4, 'english', NULL) ,  ('english', 'i', 4, NULL, 'english', NULL, NULL, 'english', NULL) ,  ('r', 'english', 7, 3, 'd', NULL, NULL, 'q', NULL) ,  ('h', 'e', NULL, 7, 'english', NULL, NULL, 'q', NULL) ,  ('v', 'a', NULL, 4, 'english', NULL, NULL, 'english', 2) ,  ('i', 'english', NULL, NULL, 'english', NULL, NULL, 'english', NULL) ,  ('c', 'english', 6, NULL, 't', NULL, NULL, 'd', 4) ,  ('z', 'w', 6, NULL, 'm', NULL, NULL, 'english', NULL) ,  ('english', 'english', NULL, 0, 'b', NULL, 3, 'english', 7) ,  ('english', 'k', 2, NULL, 'english', NULL, 4, 'english', 4) ,  ('english', 'z', NULL, NULL, 'c', NULL, NULL, 'english', NULL) ,  ('english', 'english', 0, 9, 'a', NULL, 8, 'i', NULL) ,  ('y', 'english', 4, 2, 'english', NULL, 4, 'e', 8) ,  ('english', 'h', NULL, NULL, 'v', NULL, NULL, 'o', 9) ,  ('english', 'd', 3, 2, 'english', NULL, 8, 'english', 8) ,  ('english', 'o', 0, 0, 'english', NULL, 8, 'x', NULL) ,  ('english', 'g', 8, 6, 'english', NULL, 1, 'english', 8) ,  ('english', 'y', NULL, 2, 'g', NULL, 9, 'e', NULL) ,  ('r', 'b', 1, NULL, 'i', NULL, NULL, 'english', 6) ,  ('english', 'f', NULL, NULL, 'u', NULL, 7, 'english', NULL) ,  ('e', 'english', 8, NULL, 'english', NULL, NULL, 'b', NULL) ,  ('english', 'g', NULL, NULL, 'english', NULL, 4, 'g', 6) ,  ('h', 'k', NULL, NULL, 'd', NULL, NULL, 'c', NULL) ,  ('r', 'i', NULL, NULL, 'j', NULL, 5, 'english', 1) ,  ('english', 'english', NULL, 7, 'b', NULL, 2, 'english', NULL) ,  ('english', 'y', 1, NULL, 'english', NULL, 8, 'english', 4) ,  ('k', 'p', NULL, NULL, 'b', NULL, 4, 'english', NULL) ,  ('english', 'english', NULL, 4, 'english', NULL, 9, 'u', 6) ,  ('english', 'p', 8, NULL, 'english', NULL, NULL, 'english', NULL) ;
+INSERT INTO f VALUES  ('p', 'english', NULL, 4, 'r', NULL, NULL, 'english', 2) ,  ('english', 'english', NULL, NULL, 'english', NULL, NULL, 'english', 6) ,  ('english', 'english', NULL, 4, 'english', NULL, NULL, 'english', NULL) ,  ('english', 'r', NULL, NULL, 'english', NULL, 3, 'a', 4) ,  ('p', 'o', 4, 0, 'english', NULL, 2, 'p', 1) ,  ('k', 'english', 6, NULL, 'english', NULL, NULL, 'english', NULL) ,  ('english', 'english', NULL, NULL, 'english', NULL, NULL, 'j', NULL) ,  ('english', 't', NULL, 7, 'o', NULL, 4, 'english', NULL) ,  ('english', 't', 3, NULL, 'k', NULL, NULL, 'english', NULL) ,  ('i', 'english', 2, NULL, 'english', NULL, NULL, 'x', 3) ,  ('english', 'english', NULL, NULL, 'm', NULL, 1, 'english', NULL) ,  ('b', 'english', 4, 5, 'h', NULL, 1, 'n', NULL) ,  ('english', 'english', 8, NULL, 'j', NULL, 0, 'english', 1) ,  ('english', 'y', NULL, 7, 'd', NULL, NULL, 'english', 2) ,  ('d', 'english', NULL, NULL, 'q', NULL, 7, 'english', NULL) ,  ('l', 'q', NULL, NULL, 'w', NULL, 1, 'c', 0) ,  ('english', 'z', 7, 0, 'k', NULL, 7, 's', 9) ,  ('j', 'english', NULL, 3, 'english', NULL, 7, 'v', 5) ,  ('english', 'f', 8, NULL, 'g', NULL, 8, 'w', 2) ,  ('g', 'd', NULL, NULL, 'e', NULL, 3, 'l', NULL) ,  ('u', 'p', NULL, 7, 'english', NULL, NULL, 'g', 7) ,  ('english', 'english', 3, NULL, 'english', NULL, NULL, 'english', NULL) ,  ('english', 'd', 3, 3, 't', NULL, NULL, 'english', 2) ,  ('x', 'u', NULL, NULL, 'x', NULL, 7, 'p', NULL) ,  ('english', 'english', NULL, 6, 'english', NULL, 8, 'h', NULL) ,  ('l', 'english', 9, NULL, 'x', NULL, NULL, 'english', NULL) ,  ('t', 'english', NULL, 4, 'english', NULL, NULL, 'english', NULL) ,  ('q', 'english', 9, NULL, 'english', NULL, 3, 'i', 7) ,  ('english', 'z', NULL, NULL, 'english', NULL, 7, 'english', NULL) ,  ('english', 'english', NULL, 3, 'english', NULL, NULL, 'english', NULL) ,  ('english', 'c', NULL, NULL, 'english', NULL, NULL, 'english', 8) ,  ('f', 'm', NULL, 1, 'english', NULL, NULL, 'english', NULL) ,  ('q', 'english', 6, NULL, 'b', NULL, 0, 'v', NULL) ,  ('u', 'r', NULL, 7, 'c', NULL, NULL, 'o', 4) ,  ('z', 's', NULL, NULL, 'i', NULL, NULL, 'x', NULL) ,  ('q', 'english', NULL, 2, 'u', NULL, NULL, 'english', NULL) ,  ('english', 'english', NULL, NULL, 'w', NULL, NULL, 'english', 1) ,  ('g', 'r', 6, 5, 'q', NULL, NULL, 'english', NULL) ,  ('english', 'english', NULL, 2, 'english', NULL, NULL, 'l', NULL) ,  ('r', 'english', NULL, NULL, 'u', NULL, NULL, 'english', 7) ,  ('english', 'english', NULL, NULL, 'g', NULL, NULL, 'english', NULL) ,  ('t', 'e', 0, 8, 'english', NULL, 0, 't', NULL) ,  ('y', 'english', 8, NULL, 'english', NULL, NULL, 'l', 4) ,  ('l', 'english', NULL, NULL, 'english', NULL, 6, 'g', 7) ,  ('english', 'english', 7, NULL, 'english', NULL, 3, 'english', 1) ,  ('english', 'r', NULL, NULL, 's', NULL, NULL, 'english', NULL) ,  ('k', 'english', 9, 5, 't', NULL, NULL, 'j', 7) ,  ('english', 'w', 4, NULL, 'l', NULL, 4, 'c', NULL) ,  ('h', 's', 7, 3, 'english', NULL, 0, 'english', NULL) ,  ('z', 'english', NULL, NULL, 'english', NULL, 6, 'english', 5) ;
+
+WITH t0 AS (
+    (WITH cte1 AS
+        (
+            SELECT *
+            FROM   d
+            WHERE     col_int_unsigned_key >
+            		(
+                    SELECT col_int_unsigned_key
+                    FROM   (
+                        (
+                            SELECT   *
+                            FROM     f
+                            WHERE    1 = 0)
+                        UNION ALL
+                        (
+                            SELECT   *
+                            FROM     (
+                            SELECT *
+                            FROM   f) t1
+                    				ORDER BY 1 DESC limit 0)) vt4
+                    ORDER BY  1 limit 1))
+    SELECT 1
+    FROM   cte1)
+    UNION ALL
+        (WITH cte5 AS 
+        		(WITH cte AS
+        				(
+                    SELECT *
+                    FROM   d )
+            SELECT 1
+            FROM   cte a,
+                cte b
+            WHERE  1
+            AND    b.pk < 744488960)
+        SELECT *
+        FROM   cte5))
+SELECT
+       /*+ ENABLE_PARALLEL_DML PARALLEL(5) no_rewrite */
+       count(*)
+FROM   t0;
+drop table if exists d, f;
+
+--disable_warnings
+drop table if exists t1;
+drop function if exists a;
+--enable_warnings
+
+create table t1(c int);
+create function a() returns int return 42+13;
+
+SELECT * FROM t1 WHERE a IN (SELECT a FROM t1 UNION SELECT SQL_CACHE a FROM t1);
+drop table if exists t1;
+drop function if exists a;

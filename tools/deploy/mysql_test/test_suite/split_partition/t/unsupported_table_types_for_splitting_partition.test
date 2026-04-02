@@ -1,0 +1,325 @@
+#owner: lihongqin.lhq
+#owner group: 底层引擎部-存储-索引与DDL
+#description: 分区分裂不支持的表类型测试
+#tags: split_partition
+
+connect (obsys,$OBMYSQL_MS0,root@sys,,oceanbase,$OBMYSQL_PORT);
+connect (conn1,$OBMYSQL_MS0,root,,test,$OBMYSQL_PORT);
+connection default;
+--disable_warnings
+drop table if exists t22;
+drop table if exists t1;
+drop table if exists t2;
+drop database if exists db1;
+--enable_warnings
+purge recyclebin;
+
+--echo
+--echo # vector index
+--disable_warnings
+alter system set ob_vector_memory_limit_percentage = 44;
+drop table if exists t1;
+--enable_warnings
+create table t1(c1 vector(3), c2 int primary key, vector index idx_1(c1) with (distance=l2, type=hnsw)) partition by range(c2) (partition p0 values less than (maxvalue));
+--error 1235
+alter table t1 reorganize partition p0 into (partition p01 values less than (5), partition p01 values less than (maxvalue));
+drop table t1;
+
+--echo
+--echo # column store replica
+let $unit1 = unit_split_cs_replica;
+let $pool1 = pool_split_cs_replica;
+connection obsys;
+--disable_warnings
+#drop tenant if exists tenant1 purge;
+#eval DROP RESOURCE POOL if exists $pool1;
+#eval DROP RESOURCE UNIT if exists $unit1;
+#--disable_query_log
+#let $z1 = query_get_value(select distinct zone from oceanbase.__all_zone where zone != '' limit 3, zone, 1);
+#let $z2 = query_get_value(select distinct zone from oceanbase.__all_zone where zone != '' limit 3, zone, 2);
+#eval CREATE RESOURCE UNIT if not exists $unit1 MAX_CPU=1, MEMORY_SIZE='2G';
+#eval create resource pool if not exists $pool1 unit='$unit1', unit_num = 1, zone_list = ('$z1', '$z2');
+#eval create tenant tenant1 resource_pool_list=('$pool1'), replica_num=2, zone_list=('$z1','$z2'), locality = 'F@$z1, C@$z2' set ob_tcp_invited_nodes='%';
+--enable_query_log
+--source mysql_test/include/check_tenant_sync.inc
+--enable_query_log
+--enable_warnings
+connection obsys;
+alter system set_tp tp_name = "EN_AUTO_SPLIT_TABLET_SIZE", error_code = 1048576, frequency = 1;
+connect (conn_cs,$OBMYSQL_MS0,root,,test,$OBMYSQL_PORT);
+connection conn_cs;
+create table t1(c1 int primary key, c2 varchar(1024) not null) PARTITION BY RANGE COLUMNS(c1) (
+  PARTITION p1 VALUES LESS THAN(10),
+  PARTITION p2 VALUES LESS THAN(20),
+  PARTITION p3 VALUES LESS THAN(30),
+  PARTITION p4 VALUES LESS THAN(MAXVALUE)
+);
+#--error 1235
+#ALTER TABLE t1 REORGANIZE PARTITION p1 INTO (PARTITION p1_new VALUES LESS THAN(5), PARTITION p1_new2 VALUES LESS THAN(10));
+alter system set global_index_auto_split_policy = 'all';
+create index i1 on t1(c2) global;
+insert into t1 select row_number() over (), randstr(1024, random()) from table(generator(2000));
+alter system minor freeze;
+--source mysql_test/include/wait_minor_merge.inc
+connection conn_cs;
+let $part_cnt = query_get_value(select count(*) as cnt from oceanbase.__all_part where table_id = (select table_id from oceanbase.__all_table where data_table_id = (select table_id from oceanbase.__all_table where table_name = 't1' order by gmt_modified desc limit 1)),cnt,1);
+while ($part_cnt <= 1) {
+  let $part_cnt = query_get_value(select count(*) as cnt from oceanbase.__all_part where table_id = (select table_id from oceanbase.__all_table where data_table_id = (select table_id from oceanbase.__all_table where table_name = 't1' order by gmt_modified desc limit 1)),cnt,1);
+  sleep 1;
+}
+alter system reset global_index_auto_split_policy;
+
+
+connection obsys;
+drop tenant tenant1 purge;
+eval DROP RESOURCE POOL $pool1;
+eval DROP RESOURCE UNIT $unit1;
+connection default;
+
+--source mysql_test/test_suite/geometry/t/import_default_srs_data_mysql.inc
+connection default;
+create database db1;
+use db1;
+
+
+SET wait_timeout=30000000;
+SET ob_trx_timeout = 100000000;
+SET ob_query_timeout = 100000000;
+
+--disable_query_log
+alter system SET enable_auto_split = false;
+let $enable_auto_split = query_get_value(show parameters where name='enable_auto_split',value,1);
+--sleep 5
+while ($enable_auto_split == 1)
+{
+  sleep 5;
+  let $enable_auto_split = query_get_value(show parameters where name='enable_auto_split',value,1);
+}
+--enable_query_log
+
+drop table if exists t_range_columns;
+
+--echo
+--echo # 支持用户分区表进行手动分区分裂
+
+create table t_range_columns(
+c1 int primary key,
+c2 varchar(30) not null
+);
+
+insert into t_range_columns values (6,'AA');
+insert into t_range_columns values (9,'AA');
+insert into t_range_columns values (16,'AA');
+insert into t_range_columns values (12,'AA');
+insert into t_range_columns values (26,'AA');
+insert into t_range_columns values (36,'AA');
+
+ALTER TABLE t_range_columns PARTITION BY RANGE COLUMNS(c1)
+(PARTITION p1 VALUES LESS THAN(10),
+ PARTITION p2 VALUES LESS THAN(20),
+ PARTITION p3 VALUES LESS THAN(30),
+ PARTITION p4 VALUES LESS THAN(40)
+ );
+
+ALTER TABLE t_range_columns REORGANIZE PARTITION p1 INTO
+(PARTITION p1_new VALUES LESS THAN(5),
+ PARTITION p1_new2 VALUES LESS THAN(10));
+
+ --replace_regex /REPLICA_NUM = [0-9]*/REPLICA_NUM = replica_num/g
+show create table t_range_columns;
+
+drop table t_range_columns;
+
+--echo
+--echo # 不支持列存表进行分区分裂
+create table t_range_columns(
+c1 int primary key,
+c2 varchar(30) not null
+) PARTITION BY RANGE COLUMNS(c1)
+(PARTITION p1 VALUES LESS THAN(10),
+ PARTITION p2 VALUES LESS THAN(20),
+ PARTITION p3 VALUES LESS THAN(30)
+);
+
+alter table t_range_columns add column group(each column);
+
+--error 1235
+ALTER TABLE t_range_columns REORGANIZE PARTITION p1 INTO
+(PARTITION p1_new VALUES LESS THAN(5),
+ PARTITION p1_new2 VALUES LESS THAN(10));
+
+alter table t_range_columns drop column group(each column);
+alter table t_range_columns add column group(all columns, each column);
+
+--error 1235
+ALTER TABLE t_range_columns REORGANIZE PARTITION p1 INTO
+(PARTITION p1_new VALUES LESS THAN(5),
+ PARTITION p1_new2 VALUES LESS THAN(10));
+
+drop table t_range_columns;
+
+--echo
+--echo # 临时表不支持创建分区
+
+--echo
+--echo # 不支持对物化视图进行分区分裂
+create table t_range_columns(
+c1 int primary key,
+c2 varchar(30) not null
+) PARTITION BY RANGE COLUMNS(c1)
+(PARTITION p1 VALUES LESS THAN(10),
+ PARTITION p2 VALUES LESS THAN(20),
+ PARTITION p3 VALUES LESS THAN(30)
+);
+
+create materialized view mv1 PARTITION BY RANGE(c1)
+     (PARTITION p1 VALUES LESS THAN(10),
+      PARTITION p2 VALUES LESS THAN(20),
+      PARTITION p3 VALUES LESS THAN(30)) as select * from t_range_columns;
+
+--error 1235
+ALTER TABLE mv1 REORGANIZE PARTITION p1 INTO
+(PARTITION p1_new VALUES LESS THAN(5),
+ PARTITION p1_new2 VALUES LESS THAN(10)
+ );
+drop table t_range_columns;
+
+--echo
+--echo # 不支持分区分裂的主表含有空间索引
+# import_default_srs_data_mysql.inc
+connection conn_admin;
+--disable_warnings
+drop table if exists t_range_columns;
+--enable_warnings
+create table t_range_columns(
+c1 int primary key,
+c2 varchar(30) not null,
+g GEOMETRY NOT NULL SRID 4326, SPATIAL INDEX(g)
+) PARTITION BY RANGE COLUMNS(c1)
+(PARTITION p1 VALUES LESS THAN(10),
+ PARTITION p2 VALUES LESS THAN(20),
+ PARTITION p3 VALUES LESS THAN(30)
+);
+--error 1235
+ALTER TABLE t_range_columns REORGANIZE PARTITION p1 INTO
+(PARTITION p1_new VALUES LESS THAN(5),
+ PARTITION p1_new2 VALUES LESS THAN(10));
+drop table t_range_columns;
+connection default;
+
+--echo
+--echo # 不支持分区分裂的主表含有全文索引
+create table t_range_columns(
+c1 int primary key,
+c2 varchar(30) not null,
+fulltext(c2)
+) PARTITION BY RANGE COLUMNS(c1)
+(PARTITION p1 VALUES LESS THAN(10),
+ PARTITION p2 VALUES LESS THAN(20),
+ PARTITION p3 VALUES LESS THAN(30)
+);
+
+--error 1235
+ALTER TABLE t_range_columns REORGANIZE PARTITION p1 INTO (PARTITION p1_new VALUES LESS THAN(5),  PARTITION p1_new2 VALUES LESS THAN(10));
+drop table t_range_columns;
+
+--echo
+--echo # 不支持分区分裂的主表含有多值索引
+create table t_range_columns(
+c1 int primary key,
+c2 varchar(30) not null,
+custinfo JSON,
+INDEX json_multivalue( (CAST(custinfo->'$.zipcode' AS double ARRAY)))
+) PARTITION BY RANGE COLUMNS(c1)
+(PARTITION p1 VALUES LESS THAN(10),
+ PARTITION p2 VALUES LESS THAN(20),
+ PARTITION p3 VALUES LESS THAN(30)
+);
+--error 1235
+ALTER TABLE t_range_columns REORGANIZE PARTITION p1 INTO (PARTITION p1_new VALUES LESS THAN(5),  PARTITION p1_new2 VALUES LESS THAN(10));
+drop table t_range_columns;
+
+--echo
+--echo # 不支持inc major分裂
+--source mysql_test/test_suite/direct_load_data/include/set_direct_load_allow_fallback_false.inc
+create table t1 (c1 int, c2 int);
+create table t2 (c1 int primary key, c2 int) partition by range (c1) (partition p1 values less than (10));
+insert into t1 values (1, 11), (2, 22), (3, 33), (4, 44);
+insert /*+ direct(true, 0, 'inc_replace') enable_parallel_dml parallel(2) */ into t2 select * from t1;
+select * from t2 order by c1,c2;
+--error 1235
+alter table t2 reorganize partition p1 into (partition p1_new values less than(5), partition p1_new2 values less than(10));
+drop table t1;
+drop table t2;
+--source mysql_test/test_suite/direct_load_data/include/set_direct_load_allow_fallback_true.inc
+
+--echo
+--echo # 正常的自动分区的场景
+--disable_warnings
+drop table if exists t22;
+--enable_warnings
+alter system set enable_auto_split = true;
+--sleep 5
+set session ob_query_timeout=1000000000000;	
+create table t22(a int, b VARCHAR(150), c int, d VARCHAR(4000),primary key(a,b)) partition by range(a) (partition p1 values less than (50000000), partition p2 values less than MAXVALUE);
+select count(*) from oceanbase.__all_part where table_id = (select table_id from oceanbase.__all_table where table_name = 't22' order by gmt_modified desc limit 1);
+insert into t22(a,b,c,d) select row_number() over (), 'x', null, randstr(1024, random()) from table(generator(2000));
+alter system minor freeze;
+--source mysql_test/include/wait_minor_merge.inc
+--disable_query_log
+let $t22_id = query_get_value(select table_id from oceanbase.__all_table where table_name = 't22' order by gmt_modified desc limit 1, table_id, 1);
+let $times_check = 0;
+while ($times_check < 10)
+{
+  sleep 10;
+  --inc $times_check
+  let $partition_count = query_get_value(select count(1) as count from oceanbase.__all_part where table_id = $t22_id, count, 1);
+  if ($partition_count > 2) 
+  {
+    let $times_check = 11;
+  }
+}
+--replace_regex /table_id = [0-9]*/table_id = table_id/g
+eval select count(1) > 2 from oceanbase.__all_part where table_id = $t22_id;
+--enable_query_log
+drop table t22;
+
+--echo
+--echo # 主表是列存表的自动分区场景
+create table t22(a int, b VARCHAR(150), c int, d VARCHAR(4000),primary key(a,b)) partition by range(a) (partition p1 values less than (50000000), partition p2 values less than MAXVALUE);
+alter table t22 add column group(each column);
+select count(*) from information_schema.partitions where table_name = 't22';
+insert into t22(a,b,c,d) select row_number() over (), 'x', null, randstr(1024, random()) from table(generator(2000));
+alter system minor freeze;
+--source mysql_test/include/wait_minor_merge.inc
+sleep 30;
+select count(*) from information_schema.partitions where table_name = 't22';
+drop table t22;
+
+--echo
+--echo # 主表带有全文索引的自动分区的场景
+create table t22(a int, b VARCHAR(150), c int, d VARCHAR(4000),primary key(a,b), fulltext(d)) partition by range(a) (partition p1 values less than (50000000), partition p2 values less than MAXVALUE);
+select count(*) from information_schema.partitions where table_name = 't22';
+insert into t22(a,b,c,d) select row_number() over (), 'x', null, randstr(1024, random()) from table(generator(2000));
+alter system minor freeze;
+--source mysql_test/include/wait_minor_merge.inc
+sleep 30;
+select count(*) from information_schema.partitions where table_name = 't22';
+drop table t22;
+
+--echo
+--echo # 主表带有多值索引的自动分区的场景
+create table t22(a int, b VARCHAR(150), c int, d VARCHAR(4000), custinfo JSON, INDEX json_multivalue( (CAST(custinfo->'$.zipcode' AS double ARRAY))), primary key(a,b)) partition by range(a) (partition p1 values less than (50000000), partition p2 values less than MAXVALUE);
+select count(*) from information_schema.partitions where table_name = 't22';
+insert into t22(a,b,c,d) select row_number() over (), 'x', null, randstr(1024, random()) from table(generator(2000));
+alter system minor freeze;
+--source mysql_test/include/wait_minor_merge.inc
+sleep 30;
+select count(*) from information_schema.partitions where table_name = 't22';
+drop table t22;
+
+alter system reset enable_auto_split;
+connection obsys;
+alter system set_tp tp_name = "EN_AUTO_SPLIT_TABLET_SIZE", error_code = 0, frequency = 0;
+sleep 5;
+

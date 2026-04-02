@@ -1,0 +1,395 @@
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+#owner:sean.yyj
+#owner group: sql2
+#tags: optimizer, privilege
+#test create grant revoke
+#未来用于权限更多的测试，可写更多的case，不用太在意case自身执行时间
+
+#create user
+#--disable_abort_on_error
+connect (conn1,$OBMYSQL_MS0,$OBMYSQL_USR,$OBMYSQL_PWD,oceanbase,$OBMYSQL_PORT);
+connection conn1;
+--error 1044
+drop database mysql;
+
+--error 0,1396
+drop user yangze;
+--error 0,1396
+drop user mianren;
+--error 0,1396
+drop user zhan1;
+--error 0,1396
+drop user yzpwd;
+
+# test for bug#17910286 
+connect (conn_test_bug_root,$OBMYSQL_MS0,root,,,$OBMYSQL_PORT);
+connection conn_test_bug_root;
+--disable_warnings
+drop database if exists jianhua_pdb0;
+--enable_warnings
+create database jianhua_pdb0;
+--error 0,1396
+drop user xiaofeng;
+create user xiaofeng;
+# 测试不授予 drop 权限不可以删 db
+grant select, create on *.* to xiaofeng;
+--source mysql_test/include/check_schema_sync.inc
+connect (conn_test_bug_xiaofeng,$OBMYSQL_MS0,xiaofeng,,,$OBMYSQL_PORT);
+connection conn_test_bug_xiaofeng;
+--error 1044
+drop database jianhua_pdb0;
+disconnect conn_test_bug_xiaofeng;
+connection conn_test_bug_root;
+# 测试授予 drop 权限才可以删 db
+grant drop on *.* to xiaofeng;
+--source mysql_test/include/check_schema_sync.inc
+connect (conn_test_bug_xiaofeng,$OBMYSQL_MS0,xiaofeng,,,$OBMYSQL_PORT);
+connection conn_test_bug_xiaofeng;
+drop database jianhua_pdb0;
+disconnect conn_test_bug_xiaofeng;
+connection conn1;
+
+create user yangze identified by '123';
+create user mianren identified by 'pass1';
+create user zhan1 identified by password '*23AE809DDACAF96AF0FD78ED04B6A265E05AA257';
+create user yzpwd identified by 'yzpwd';
+--error 1827
+create user zhan identified by password '123';
+#--error 1470
+create user 'user_name_longer_than_16' identified by 'pass1', 'u12' identified by 'pass2';
+drop user user_name_longer_than_16, u12;
+
+#set password
+set password for zhan1 = password('123');
+set password for zhan1 = '123';
+set password for zhan1 = '*23AE809DDACAF96AF0FD78ED04B6A265E05AA257';
+
+#grant
+grant all on *.* to mianren with grant option;
+grant all on mysql.* to mianren with grant option;
+grant select on mysql.user to mianren;
+grant select on noexistdb.* to mianren;
+--error 1146
+grant select on mysql.noexisttable to mianren;
+grant select, create on mysql.noexisttable to mianren;
+sleep 30;
+--sorted_result
+show grants for mianren;
+grant usage on *.* to zhan2 identified by password '*23AE809DDACAF96AF0FD78ED04B6A265E05AA257';
+--error 1827
+grant usage on *.* to zhan3 identified by password '123';
+
+grant select on test.* to 'yzpwd' identified by 'yzpwd', 'yj' identified by 'yj';
+#bug 8824951
+--source mysql_test/include/check_schema_sync.inc
+connect (connpwd,$OBMYSQL_MS0,yzpwd,yzpwd,test,$OBMYSQL_PORT);
+connection connpwd;
+show grants;
+
+connection conn1;
+drop user yzpwd, yj;
+
+#revoke
+revoke select on mysql.user from mianren;
+revoke all on mysql.* from mianren;
+sleep 30;
+--sorted_result
+show grants for mianren;
+revoke all, grant option from mianren;
+sleep 30;
+--sorted_result
+show grants for mianren;
+
+#syntax error
+--error 1064
+revoke all privilege, from mianren;
+--error 1064
+revoke all , grant option on mysql.* from mianren;
+--error 1064
+grant all, select on *.* to mianren;
+
+--error 1235
+revoke select on *.* from root;
+revoke select on mysql.* from root;
+grant select on mysql.* to root;
+
+#privilege check
+use test;
+--disable_warnings
+drop table if exists t_priv;
+drop view if exists t_view;
+--enable_warnings
+--disable_warnings
+drop table if exists privilege_table;
+--enable_warnings
+create table t_priv(c1 int primary key, c2 int);
+connection conn1;
+create view t_view as select user from mysql.user where user = 'yangze';
+grant select on t_view to yangze;
+grant select on test.t_priv to yangze with grant option;
+grant drop on test.t_priv to yangze;
+grant create on `jianhua_pdb%`.* to yangze;
+grant create on `test%`.* to yangze;
+
+
+--source mysql_test/include/check_schema_sync.inc
+connect (conn2,$OBMYSQL_MS0,yangze,123,test,$OBMYSQL_PORT);
+connection conn2;
+set sql_mode='STRICT_ALL_TABLES,NO_ZERO_IN_DATE';
+--error 1410
+grant select on test.t_priv to priv_user_not_exist;
+--error 1410
+grant select on test.t_priv to priv_user_not_exist identified by '123';
+select * from test.t_priv;
+show databases like 'jianhua_pdb%';
+--error 1142
+select user from mysql.user;
+--error 1142
+show create table mysql.user;
+--error 1142
+explain select user from mysql.user;
+select * from test.t_view;
+--error 1044
+use mysql;
+use test;
+--sorted_result
+show grants;
+--error 1142
+show grants for admin;
+show databases like 'jianhua_pdb%';
+create table if not exists privilege_table(c1 int primary key, c2 int);
+create database jianhua_pdb1;
+set password = password('');
+--error 1142
+replace into t_priv values(1, 2);
+
+connection conn1;
+grant insert,delete on test.t_priv to yangze;
+
+connection conn2;
+replace into t_priv values(1, 2);
+--error 1142
+insert into t_priv values(1,2) on duplicate key update c2 =3;
+
+#insert on duplicate
+connection conn1;
+grant update on test.t_priv to yangze;
+connection conn2;
+insert into t_priv values(1,2) on duplicate key update c2 =3;
+#drop table now
+drop table test.t_priv;
+
+connection conn1;
+drop user yangze, mianren, zhan1, zhan2;
+drop table test.privilege_table;
+drop view test.t_view;
+drop database jianhua_pdb1;
+drop tablegroup if exists OceanBase2;
+create tablegroup OceanBase2;
+--error 5151
+drop tablegroup oceanbase2;
+drop tablegroup OceanBase2;
+
+
+#
+## 这个Bug是create_view_resolver代码逻辑顺序调整及rpc_arg未初始化导致未定义行为 
+#
+use test;
+--disable_warnings
+drop table if exists t1, t2;
+drop view if exists v;
+--error 0,1396
+drop user nijia;
+--enable_warnings
+create table test.t1(c1 int);
+create user nijia;
+grant create view, create on test.* to nijia;
+--source mysql_test/include/check_schema_sync.inc
+connect (conn3,$OBMYSQL_MS0,nijia,,test,$OBMYSQL_PORT);
+connection conn3;
+
+--error 1142
+truncate table test.t1;
+--error 1142
+create view test.v as select * from t1;
+--error 1142
+create table test.t5 like test.t1;
+connection conn1;
+grant drop on test.t1 to nijia;
+grant select on test.t1 to nijia;
+
+--sleep 2
+connection conn3;
+#truncate test
+truncate table test.t1;
+let $is_truncate_table = 1;
+let $is_truncate_table = 0;
+connection conn3;
+create table test.t2 like test.t1;
+connection conn1;
+
+drop table test.t1;
+drop user nijia;
+
+
+connect (obsys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection obsys;
+
+let $zone_name=query_get_value(select zone from oceanbase.DBA_OB_ZONES where zone != '' limit 1, zone, 1);
+#bug 8131982 缺少普通租户权限的验证case
+--disable_warnings
+--disable_query_log
+#call oceanbase.drop_tenant_force('t0');
+#call oceanbase.create_mysql_tenant_1c2g('t0');
+--source mysql_test/include/check_tenant_sync.inc
+--enable_query_log
+--enable_warnings
+
+let $__tenant_name__ = 'sys';
+
+disconnect obsys;
+--source mysql_test/include/get_tenant_server.inc
+
+--sleep 1
+
+connect (obsys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connect (conn4,$TE_SERVER_IP,root,,*NO-ONE*,$TE_SERVER_PORT);
+
+select effective_tenant();
+--error 1227
+alter tenant t0 replica_num = 3;
+set @@global.read_only = on;
+--error 1227
+alter tenant sys read only;
+set @@global.read_only = off;
+eval alter tenant t0 primary_zone = '$zone_name';
+eval alter tenant t0 primary_zone = '$zone_name';
+set @@global.read_only = on;
+eval alter tenant t0 primary_zone = '$zone_name';
+set @@global.read_only = off;
+--error 1227
+eval alter tenant t0 primary_zone = '$zone_name', replica_num = 3;
+--error 1227
+eval alter tenant t0 primary_zone = '$zone_name', replica_num = 3;
+--error 1044
+drop database oceanbase;
+--error 1044
+eval alter database oceanbase replica_num = 4;
+--error 1227
+drop tablegroup oceanbase;
+create tablegroup OceanBase;
+drop tablegroup OceanBase;
+--error 1044
+alter database oceanbase replica_num = 4;
+--error 1044
+drop database information_schema;
+--error 0, 1396
+drop user yz;
+create user yz;
+grant select on oceanbse.* to yz;
+--error 1044
+grant select on information_schema.* to yz;
+--error 1044
+grant index, select on information_schema.* to yz;
+--error 1044
+grant insert on oceanbase.* to yz;
+--error 1044
+grant update,select on oceanbase.* to yz;
+--error 1142
+grant delete on mysql.user to yz;
+--error 1142
+grant insert on mysql.db to yz;
+--error 1142
+grant index, select on mysql.db to yz;
+#truncate information_schema's table
+--error 1044
+truncate table information_schema.schemata;
+--error 1044
+rename table information_schema.schemata to test.t3;
+grant select on mysql.user to yz;
+grant select on mysql.db to yz;
+#alter tenant sys set primary_zone='';
+alter tenant t0 set primary_zone=RANDOM;
+use test;
+create table t(c1 int);
+connection conn4;
+#rename stmt check
+--error 1044
+rename table t to information_schema.t4;
+--error 1044
+rename table t to oceanbase.t4;
+create table t1(c1 int);
+connection conn4;
+--error 1044
+alter table t rename to information_schema.t;
+grant alter, drop on t to yz;
+grant create on test.t4 to yz;
+create database jianhua_pdb2;
+
+--source mysql_test/include/check_schema_sync.inc
+connect (conn5,$TE_SERVER_IP,yz@t0,,*NO-ONE*,$TE_SERVER_PORT);
+--error 1227
+create tablegroup OceanBase;
+--error 1227
+drop tablegroup oceanbase;
+use test;
+alter table t add c2 int;
+connection conn5;
+--error 1142
+alter table t add c3 int, rename to t1;
+#normal tenant truncate table check
+--error 1142
+truncate table t1;
+truncate table t;
+let $is_truncate_table = 1;
+let $is_truncate_table = 0;
+connection conn5;
+#rename stmt check
+--error 1142
+rename table t to t4;
+#create table like
+--error 1142
+create table t4 like t;
+#show databases  check
+show databases like 'jianhua_pdb%';
+
+connection conn4;
+
+grant insert on test.* to yz;
+grant create, alter, drop on *.* to yz;
+--source mysql_test/include/check_schema_sync.inc
+connect (conn6,$TE_SERVER_IP,yz@t0,,*NO-ONE*,$TE_SERVER_PORT);
+
+use test;
+rename table t to t4;
+connection conn4;
+create tablegroup OceanBase;
+alter tablegroup OceanBase add t4;
+drop table t4;
+drop tablegroup OceanBase;
+
+connection conn4;
+
+use test;
+drop table t1;
+
+connection conn1;
+
+disconnect conn3;
+connection obsys;
+
+--disable_query_log
+call oceanbase.drop_tenant_force('t0');
+--enable_query_log
+
+--echo #issue 
+grant select on `db\_1`.* to admin;
+select * from mysql.db where db like 'db%';
+revoke select on `db\_1`.* from admin;
+select * from mysql.db where db like 'db%';
+
+#--enable_abort_on_error
+
+flush privileges;

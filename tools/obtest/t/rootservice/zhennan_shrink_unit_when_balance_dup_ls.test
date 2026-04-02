@@ -1,0 +1,295 @@
+#####################
+# owner : wangzhennan.wzn
+# owner group : RS
+# description : duplicate LS migration when shrinking unit
+#####################
+
+ob1=OBI(cluster=2:2:2,proxy_num=0,init_unit_cpu=0);
+let $extra_conf = "cpu_count=10,memory_limit='20G',system_memory='5G',__min_full_resource_pool_memory='1073741824',stack_size='1536K',cache_wash_threshold='1G',enable_async_syslog=false,_private_buffer_size='16K',_fast_commit_callback_count='1',log_disk_size='40G'";
+ob1.z1.obs0.set extra_config=$extra_conf;
+ob1.z1.obs1.set extra_config=$extra_conf;
+ob1.z2.obs0.set extra_config=$extra_conf;
+ob1.z2.obs1.set extra_config=$extra_conf;
+ob1.reboot;
+
+ob1.mysql alter system set debug_sync_timeout = '1000s';
+ob_connect(conn_sys, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+
+--echo ##################################################
+--echo # 0. prepare data
+--echo # create mysql tenant
+CREATE RESOURCE UNIT if not exists unit_1 MAX_CPU 2, MEMORY_SIZE='3G';
+CREATE RESOURCE POOL if not exists pool_1 UNIT = 'unit_1', UNIT_NUM = 2;
+CREATE TENANT mysql RESOURCE_POOL_LIST = ('pool_1'), primary_zone='z1', locality="F@z1, F@z2, F@z3" set ob_tcp_invited_nodes='%';
+
+let $mysql_tenant_id = deploy_get_value(ob1.select select tenant_id from DBA_OB_TENANTS where tenant_name = 'mysql', tenant_id, 1);
+let $mysql_leader_ip_port=deploy_get_value(ob1.select select concat(svr_ip,':',svr_port) as host from CDB_OB_LS_LOCATIONS where tenant_id = $mysql_tenant_id and ls_id =  1 and role = 'LEADER' limit 1, host, 1);
+let $mysql_leader_obs =deploy_get_value(ob1.get_obs_by_addr $mysql_leader_ip_port);
+ob_connect(conn_mysql, $mysql_leader_obs, root@mysql, , test, , USE_MYSQL_CONNECTOR);
+ob1.mysql alter system set _transfer_task_retry_interval = '1s' tenant all_user;
+
+--echo # trun off the actual duplicate_scope conversion
+ob1.mysql alter system set partition_balance_schedule_interval = '0s' tenant all_user;
+--echo # create table
+eval create table normal_part_zero(c1 int, c2 int, c3 longtext, index(c1) local, index(c2) global);
+eval create table normal_part_one(c1 int, c2 int, c3 longtext, index(c1) local, index(c2) global) partition by hash(c1) partitions 6;
+eval create table dup_part_zero_1(c1 int, c2 int, c3 longtext, index(c1) local, index(c2) global) duplicate_scope = 'cluster';
+eval create table dup_part_zero_2(c1 int, c2 int, c3 longtext, index(c1) local, index(c2) global) duplicate_scope = 'cluster';
+
+
+let $dup_ls_id = deploy_get_value(ob1.select select ls_id from CDB_OB_LS where tenant_id = $mysql_tenant_id and flag like "%duplicate%" order by ls_id limit 1, ls_id, 1);
+let $normal_ls_id = deploy_get_value(ob1.select select ls_id from CDB_OB_LS where tenant_id = $mysql_tenant_id and ls_id > 1 and flag not like "%duplicate%" order by ls_id desc limit 1, ls_id, 1);
+let $normal_ls_group_id = deploy_get_value(ob1.select select ls_group_id from CDB_OB_LS where tenant_id = $mysql_tenant_id and ls_id = $normal_ls_id limit 1, ls_group_id, 1);
+let $normal_unit_group_id = deploy_get_value(ob1.select select unit_group_id from CDB_OB_LS where tenant_id = $mysql_tenant_id and ls_id = $normal_ls_id limit 1, unit_group_id, 1);
+
+--echo # all normal tables are on normal LS
+ob1.check_until_timeout select count(*) from CDB_OB_TABLE_LOCATIONS where tenant_id = $mysql_tenant_id and table_name like "%normal_part_%" and ls_id = $dup_ls_id, 0, 3;
+--echo # all dup tables are on dup LS
+ob1.check_until_timeout select count(*) from CDB_OB_TABLE_LOCATIONS where tenant_id = $mysql_tenant_id and table_name like "%dup_part_%" and ls_id != $dup_ls_id, 0, 3;
+let $unit_gc_times = 0;
+
+--echo ##################################################
+--echo # 1. shrink unit when transfer partition is doing
+--echo ######
+--echo # 1.1. dup ls dest unit is deleting
+--echo ##
+--echo # 1.1.1. stuck transfer partition from dup table to normal ls
+connection conn_mysql;
+ob1.mysql set ob_global_debug_sync = 'BEFORE_PROCESS_BALANCE_TASK_INIT wait_for signal_1 execute 10000';
+eval alter table dup_part_zero_1 duplicate_scope = 'none';
+let $table_id = deploy_get_value(ob1.select select table_id from CDB_OB_TABLE_LOCATIONS where tenant_id = $mysql_tenant_id and table_name = 'dup_part_zero_1', table_id, 1);
+eval ALTER SYSTEM TRANSFER PARTITION TABLE_ID $table_id, OBJECT_ID $table_id TO LS $normal_ls_id;
+ob1.check_until_timeout select count(*) from CDB_OB_BALANCE_JOBS where tenant_id = $mysql_tenant_id and status = 'DOING' and job_type = 'TRANSFER_PARTITION', 1, 60;
+--echo ##
+--echo # 1.1.2. shrink dup ls dest unit
+ob1.check_until_timeout select count(*) > 0 from CDB_OB_LS_LOCATIONS where tenant_id = $mysql_tenant_id and ls_id = $dup_ls_id and concat(svr_ip,':',svr_port) in (select concat(svr_ip,':',svr_port) from __all_unit where unit_group_id=$normal_unit_group_id), 1, 3;
+let $unit_gc_times = math($unit_gc_times + 1);
+ob1.mysql alter resource tenant mysql unit_num = 1 delete unit_group ($normal_unit_group_id);
+ob1.check_until_timeout select count(*) from __all_unit where unit_group_id = $normal_unit_group_id and status = 'DELETING', 3, 60;
+--echo ##
+--echo # 1.1.3. continue transfer partition
+ob1.mysql set ob_global_debug_sync = 'BEFORE_PROCESS_BALANCE_TASK_INIT clear';
+ob1.mysql set ob_global_debug_sync = 'now signal signal_1';
+ob1.check_until_timeout select count(*) from CDB_OB_BALANCE_JOBS where tenant_id = $mysql_tenant_id and job_type = 'TRANSFER_PARTITION', 0, 120;
+ob1.check_until_timeout select count(*) from CDB_OB_TABLE_LOCATIONS where tenant_id = $mysql_tenant_id and table_name = 'dup_part_zero_1' and ls_id != $normal_ls_id, 0, 3;
+ob1.check_until_timeout select count(*) from CDB_OB_BALANCE_JOBS where tenant_id = $mysql_tenant_id and balance_strategy = 'LS balance by shrink', 0, 120;
+ob1.check_until_timeout select count(*) from __all_virtual_ls_meta_table where unit_id in (select unit_id from __all_unit where unit_group_id = $normal_unit_group_id), 0, 120;
+ob1.check_until_timeout select count(*) from __all_unit where unit_group_id = $normal_unit_group_id, 0, 120;
+let $unit_gc_history_cnt = math($unit_gc_times * 6);
+ob1.check_until_timeout select count(*) from __all_server_event_history where event = 'start unit gc' and value1 in (1001, 1002), $unit_gc_history_cnt, 120;
+ob1.check_until_timeout select count(*) from __all_server_event_history where event = 'finish unit gc' and value1 in (1001, 1002), $unit_gc_history_cnt, 120;
+--echo ##
+--echo # 1.1.4. reset tenant unit_num to 2
+ob1.mysql alter resource tenant mysql unit_num = 2;
+ob1.check_until_timeout select count(*) from CDB_OB_BALANCE_JOBS where tenant_id = $mysql_tenant_id and balance_strategy = 'LS balance by expand', 1, 60;
+ob1.check_until_timeout select count(*) from CDB_OB_BALANCE_JOBS where tenant_id = $mysql_tenant_id, 0, 120;
+let $mysql_leader_ip_port=deploy_get_value(ob1.select select concat(svr_ip,':',svr_port) as host from CDB_OB_LS_LOCATIONS where tenant_id = $mysql_tenant_id and ls_id =  1 and role = 'LEADER' limit 1, host, 1);
+let $mysql_leader_obs =deploy_get_value(ob1.get_obs_by_addr $mysql_leader_ip_port);
+ob_connect(conn_mysql, $mysql_leader_obs, root@mysql, , test, , USE_MYSQL_CONNECTOR);
+--echo ######
+--echo # 1.2. dup ls current unit is deleting
+--echo ##
+--echo # 1.2.1. stuck transfer partition from dup table to normal ls
+connection conn_mysql;
+ob1.mysql set ob_global_debug_sync = 'BEFORE_PROCESS_BALANCE_TASK_TRANSFER wait_for signal_2 execute 10000';
+eval alter table dup_part_zero_2 duplicate_scope = 'none';
+let $table_id = deploy_get_value(ob1.select select table_id from CDB_OB_TABLE_LOCATIONS where tenant_id = $mysql_tenant_id and table_name = 'dup_part_zero_2', table_id, 1);
+let $normal_ls_id = deploy_get_value(ob1.select select ls_id from CDB_OB_LS where tenant_id = $mysql_tenant_id and ls_id > 1 and flag not like "%duplicate%" order by ls_id limit 1, ls_id, 1);
+eval ALTER SYSTEM TRANSFER PARTITION TABLE_ID $table_id, OBJECT_ID $table_id TO LS $normal_ls_id;
+ob1.check_until_timeout select count(*) from CDB_OB_BALANCE_JOBS where tenant_id = $mysql_tenant_id and status = 'DOING' and job_type = 'TRANSFER_PARTITION', 1, 60;
+--echo ##
+--echo # 1.2.2. shrink dup ls current unit
+let $unit_gc_times = math($unit_gc_times + 1);
+let $delete_unit_group_id = deploy_get_value(ob1.select select unit_group_id from __all_unit where unit_group_id > 1 and concat(svr_ip,':',svr_port) = (select concat(svr_ip,':',svr_port) from __all_virtual_ls_meta_table where tenant_id=$mysql_tenant_id and ls_id=$dup_ls_id and replica_type=0 limit 1), unit_group_id, 1);
+ob1.mysql alter resource tenant mysql unit_num = 1 delete unit_group ($delete_unit_group_id);
+ob1.check_until_timeout select count(*) from __all_unit where unit_group_id = $delete_unit_group_id and status = 'DELETING', 3, 60;
+--echo ##
+--echo # 1.2.3. continue transfer partition
+ob1.mysql set ob_global_debug_sync = 'BEFORE_PROCESS_BALANCE_TASK_TRANSFER clear';
+ob1.mysql set ob_global_debug_sync = 'now signal signal_2';
+ob1.check_until_timeout select count(*) from CDB_OB_BALANCE_JOBS where tenant_id = $mysql_tenant_id and job_type = 'TRANSFER_PARTITION', 0, 120;
+ob1.check_until_timeout select count(*) from CDB_OB_TABLE_LOCATIONS where tenant_id = $mysql_tenant_id and table_name = 'dup_part_zero_2' and ls_id != $normal_ls_id, 0, 3;
+ob1.check_until_timeout select count(*) from CDB_OB_BALANCE_JOBS where tenant_id = $mysql_tenant_id and balance_strategy = 'LS balance by shrink', 0, 120;
+ob1.check_until_timeout select count(*) from __all_virtual_ls_meta_table where unit_id in (select unit_id from __all_unit where unit_group_id = $normal_unit_group_id), 0, 120;
+ob1.check_until_timeout select count(*) from __all_unit where unit_group_id = $normal_unit_group_id, 0, 120;
+let $unit_gc_history_cnt = math($unit_gc_times * 6);
+ob1.check_until_timeout select count(*) from __all_server_event_history where event = 'start unit gc' and value1 in (1001, 1002), $unit_gc_history_cnt, 120;
+ob1.check_until_timeout select count(*) from __all_server_event_history where event = 'finish unit gc' and value1 in (1001, 1002), $unit_gc_history_cnt, 120;
+--echo ##
+--echo # 1.2.4. reset tenant unit_num to 2
+ob1.mysql alter resource tenant mysql unit_num = 2;
+ob1.check_until_timeout select count(*) from CDB_OB_BALANCE_JOBS where tenant_id = $mysql_tenant_id and balance_strategy = 'LS balance by expand', 1, 60;
+ob1.check_until_timeout select count(*) from CDB_OB_BALANCE_JOBS where tenant_id = $mysql_tenant_id, 0, 120;
+let $mysql_leader_ip_port=deploy_get_value(ob1.select select concat(svr_ip,':',svr_port) as host from CDB_OB_LS_LOCATIONS where tenant_id = $mysql_tenant_id and ls_id =  1 and role = 'LEADER' limit 1, host, 1);
+let $mysql_leader_obs =deploy_get_value(ob1.get_obs_by_addr $mysql_leader_ip_port);
+ob_connect(conn_mysql, $mysql_leader_obs, root@mysql, , test, , USE_MYSQL_CONNECTOR);
+
+--echo ##################################################
+--echo # 2. shrink unit when redundant dup ls is shrinking
+--echo ######
+--echo # 2.1. create redundant dup ls manually
+ob1.mysql alter system set enable_rebalance = false tenant mysql;
+ob1.check_until_timeout select count(*) from CDB_OB_LS where tenant_id = $mysql_tenant_id and flag like "%DUPLICATE%" and status = 'NORMAL' and ls_group_id = 0, 1, 5;
+connection conn_sys;
+alter system change tenant mysql;
+let $redundant_dup_ls_id = 1999;
+--disable_query_log
+eval insert into __all_ls (ls_id, ls_group_id, status, flag, create_scn) values ($redundant_dup_ls_id, 0, 'CREATING', 'DUPLICATE', timestamp_to_scn(now()));
+--enable_query_log
+alter system change tenant sys;
+ob1.check_until_timeout select count(*) from CDB_OB_LS where tenant_id = $mysql_tenant_id and flag like "%DUPLICATE%" and status = 'NORMAL', 2, 60;
+--echo ######
+--echo # 2.2. stuck shrink redundant dup ls when dup ls ls_group_id is not 0
+ob1.mysql set ob_global_debug_sync = 'BEFORE_PROCESS_BALANCE_TASK_TRANSFER wait_for signal_3 execute 10000';
+ob1.mysql alter system set enable_rebalance = true tenant mysql;
+ob1.check_until_timeout select count(*) from CDB_OB_BALANCE_JOBS where tenant_id = $mysql_tenant_id and status = 'DOING' and job_type = 'LS_BALANCE', 1, 60;
+ob1.check_until_timeout select count(*) from CDB_OB_LS where tenant_id = $mysql_tenant_id and ls_id = $dup_ls_id and ls_group_id != 0, 1, 60;
+--echo ######
+--echo # 2.3. shrink tenant unit
+let $unit_gc_times = math($unit_gc_times + 1);
+let $delete_unit_group_id = deploy_get_value(ob1.select select unit_group_id from CDB_OB_LS where tenant_id = $mysql_tenant_id and ls_id = $dup_ls_id, unit_group_id, 1);
+ob1.mysql alter resource tenant mysql unit_num = 1 delete unit_group ($delete_unit_group_id);
+ob1.check_until_timeout select count(*) from __all_unit where unit_group_id = $delete_unit_group_id and status = 'DELETING', 3, 60;
+--echo ######
+--echo # 2.4. continue shrink redundant dup ls
+ob1.mysql set ob_global_debug_sync = 'BEFORE_PROCESS_BALANCE_TASK_TRANSFER clear';
+ob1.mysql set ob_global_debug_sync = 'now signal signal_3';
+ob1.check_until_timeout select count(*) from CDB_OB_LS where tenant_id = $mysql_tenant_id and ls_id > 1 and ls_id != $dup_ls_id, 1, 120;
+ob1.check_until_timeout select count(*) from CDB_OB_BALANCE_JOBS where tenant_id = $mysql_tenant_id and balance_strategy = 'LS balance by shrink', 0, 120;
+ob1.check_until_timeout select count(*) from __all_virtual_ls_meta_table where unit_id in (select unit_id from __all_unit where unit_group_id = $normal_unit_group_id), 0, 120;
+ob1.check_until_timeout select count(*) from __all_unit where unit_group_id = $delete_unit_group_id, 0, 120;
+let $unit_gc_history_cnt = math($unit_gc_times * 6);
+ob1.check_until_timeout select count(*) from __all_server_event_history where event = 'start unit gc' and value1 in (1001, 1002), $unit_gc_history_cnt, 120;
+ob1.check_until_timeout select count(*) from __all_server_event_history where event = 'finish unit gc' and value1 in (1001, 1002), $unit_gc_history_cnt, 120;
+--echo ######
+--echo # 2.5. reset tenant unit_num to 2
+ob1.mysql alter resource tenant mysql unit_num = 2;
+ob1.check_until_timeout select count(*) from CDB_OB_BALANCE_JOBS where tenant_id = $mysql_tenant_id and balance_strategy = 'LS balance by expand', 1, 60;
+ob1.check_until_timeout select count(*) from CDB_OB_BALANCE_JOBS where tenant_id = $mysql_tenant_id, 0, 120;
+let $mysql_leader_ip_port=deploy_get_value(ob1.select select concat(svr_ip,':',svr_port) as host from CDB_OB_LS_LOCATIONS where tenant_id = $mysql_tenant_id and ls_id =  1 and role = 'LEADER' limit 1, host, 1);
+let $mysql_leader_obs =deploy_get_value(ob1.get_obs_by_addr $mysql_leader_ip_port);
+ob_connect(conn_mysql, $mysql_leader_obs, root@mysql, , test, , USE_MYSQL_CONNECTOR);
+
+--echo ##################################################
+--echo # 3. shrink unit when trun off enable_transfer
+--echo #####
+--echo # 3.1. shrink dup ls dest unit
+--echo ##
+--echo # 3.1.1. stuck alter duplicate_scope
+ob1.check_until_timeout select count(*) from CDB_OB_LS where tenant_id = $mysql_tenant_id and ls_id = $dup_ls_id and ls_group_id = 0, 1, 3;
+let $normal_ls_id = deploy_get_value(ob1.select select ls_id from CDB_OB_TABLE_LOCATIONS where tenant_id = $mysql_tenant_id and table_name = 'dup_part_zero_1', ls_id, 1);
+ob1.mysql alter system set partition_balance_schedule_interval = '10s' tenant mysql;
+ob1.mysql set ob_global_debug_sync = 'BEFORE_PROCESS_BALANCE_TASK_TRANSFER wait_for signal_4 execute 10000';
+connection conn_mysql;
+eval alter table dup_part_zero_1 duplicate_scope = 'cluster';
+ob1.check_until_timeout select count(*) from CDB_OB_BALANCE_JOBS where tenant_id = $mysql_tenant_id and job_type = 'PARTITION_BALANCE' and status = 'DOING', 1, 60;
+ob1.check_until_timeout select count(*) from CDB_OB_LS where tenant_id = $mysql_tenant_id and ls_id = $dup_ls_id and ls_group_id != 0, 1, 60;
+--echo ##
+--echo # 3.1.2. shrink dup ls dest unit group
+let $unit_gc_times = math($unit_gc_times + 1);
+let $delete_unit_group_id = deploy_get_value(ob1.select select unit_group_id from CDB_OB_LS where tenant_id = $mysql_tenant_id and ls_id = $normal_ls_id, unit_group_id, 1);
+ob1.mysql alter resource tenant mysql unit_num = 1 delete unit_group ($delete_unit_group_id);
+ob1.check_until_timeout select count(*) from __all_unit where unit_group_id = $delete_unit_group_id and status = 'DELETING', 3, 60;
+--echo ##
+--echo # 3.1.3. disable enable_transfer and continue balance job
+ob1.mysql alter system set enable_transfer = 'false' tenant mysql;
+ob1.check_until_timeout select count(*) from __all_virtual_tenant_parameter_stat where tenant_id = $mysql_tenant_id and name = 'enable_transfer' and value = 'true', 0, 5;
+ob1.mysql set ob_global_debug_sync = 'BEFORE_PROCESS_BALANCE_TASK_TRANSFER clear';
+ob1.mysql set ob_global_debug_sync = 'now signal signal_4';
+ob1.check_until_timeout select count(*) from CDB_OB_BALANCE_JOBS where tenant_id = $mysql_tenant_id and job_type = 'PARTITION_BALANCE', 0, 120;
+--echo ##
+--echo # 3.1.4. shrink unit successfully
+ob1.check_until_timeout select count(*) from __all_virtual_ls_meta_table where unit_id in (select unit_id from __all_unit where unit_group_id = $normal_unit_group_id), 0, 120;
+ob1.check_until_timeout select count(*) from __all_unit where unit_group_id = $delete_unit_group_id, 0, 120;
+let $unit_gc_history_cnt = math($unit_gc_times * 6);
+ob1.check_until_timeout select count(*) from __all_server_event_history where event = 'start unit gc' and value1 in (1001, 1002), $unit_gc_history_cnt, 120;
+ob1.check_until_timeout select count(*) from __all_server_event_history where event = 'finish unit gc' and value1 in (1001, 1002), $unit_gc_history_cnt, 120;
+ob1.check_until_timeout select count(*) from CDB_OB_LS where tenant_id = $mysql_tenant_id and flag like "%duplicate%", 2, 3;
+--echo ##
+--echo # 3.1.5. reset tenant unit_num to 2
+ob1.mysql alter resource tenant mysql unit_num = 2;
+ob1.mysql alter system set enable_transfer = 'true' tenant mysql;
+ob1.check_until_timeout select count(*) from CDB_OB_LS where tenant_id = $mysql_tenant_id and status = 'NORMAL' and ls_id != 1 and ls_id != $dup_ls_id, 2, 120;
+ob1.check_until_timeout select count(*) from CDB_OB_BALANCE_JOBS where tenant_id = $mysql_tenant_id, 0, 120;
+let $mysql_leader_ip_port=deploy_get_value(ob1.select select concat(svr_ip,':',svr_port) as host from CDB_OB_LS_LOCATIONS where tenant_id = $mysql_tenant_id and ls_id =  1 and role = 'LEADER' limit 1, host, 1);
+let $mysql_leader_obs =deploy_get_value(ob1.get_obs_by_addr $mysql_leader_ip_port);
+ob_connect(conn_mysql, $mysql_leader_obs, root@mysql, , test, , USE_MYSQL_CONNECTOR);
+--echo #####
+--echo # 3.2. shrink dup ls current unit
+--echo ##
+--echo # 3.2.1. stuck alter duplicate_scope
+ob1.check_until_timeout select count(*) from CDB_OB_LS where tenant_id = $mysql_tenant_id and ls_id = $dup_ls_id and ls_group_id = 0, 1, 3;
+ob1.mysql alter system set partition_balance_schedule_interval = '10s' tenant mysql;
+ob1.mysql set ob_global_debug_sync = 'BEFORE_PROCESS_BALANCE_TASK_TRANSFER wait_for signal_5 execute 10000';
+connection conn_mysql;
+eval alter table dup_part_zero_2 duplicate_scope = 'cluster';
+ob1.check_until_timeout select count(*) from CDB_OB_BALANCE_JOBS where tenant_id = $mysql_tenant_id and job_type = 'PARTITION_BALANCE' and status = 'DOING', 1, 60;
+ob1.check_until_timeout select count(*) from CDB_OB_LS where tenant_id = $mysql_tenant_id and ls_id = $dup_ls_id and ls_group_id != 0, 1, 60;
+--echo ##
+--echo # 3.2.2. shrink dup ls current unit group
+let $unit_gc_times = math($unit_gc_times + 1);
+let $delete_unit_group_id = deploy_get_value(ob1.select select unit_group_id from __all_unit where unit_group_id > 1 and concat(svr_ip,':',svr_port) = (select concat(svr_ip,':',svr_port) from __all_virtual_ls_meta_table where tenant_id=$mysql_tenant_id and ls_id=$dup_ls_id and replica_type=0 limit 1), unit_group_id, 1);
+ob1.mysql alter resource tenant mysql unit_num = 1 delete unit_group ($delete_unit_group_id);
+ob1.check_until_timeout select count(*) from __all_unit where unit_group_id = $delete_unit_group_id and status = 'DELETING', 3, 60;
+--echo ##
+--echo # 3.2.3. disable enable_transfer and continue balance job
+ob1.mysql alter system set enable_transfer = 'false' tenant mysql;
+ob1.check_until_timeout select count(*) from __all_virtual_tenant_parameter_stat where tenant_id = $mysql_tenant_id and name = 'enable_transfer' and value = 'true', 0, 5;
+ob1.mysql set ob_global_debug_sync = 'BEFORE_PROCESS_BALANCE_TASK_TRANSFER clear';
+ob1.mysql set ob_global_debug_sync = 'now signal signal_5';
+ob1.check_until_timeout select count(*) from CDB_OB_BALANCE_JOBS where tenant_id = $mysql_tenant_id and job_type = 'PARTITION_BALANCE', 0, 120;
+--echo ##
+--echo # 3.2.4. shrink unit successfully
+ob1.check_until_timeout select count(*) from __all_virtual_ls_meta_table where unit_id in (select unit_id from __all_unit where unit_group_id = $normal_unit_group_id), 0, 120;
+ob1.check_until_timeout select count(*) from __all_unit where unit_group_id = $delete_unit_group_id, 0, 300;
+let $unit_gc_history_cnt = math($unit_gc_times * 6);
+ob1.check_until_timeout select count(*) from __all_server_event_history where event = 'start unit gc' and value1 in (1001, 1002), $unit_gc_history_cnt, 120;
+ob1.check_until_timeout select count(*) from __all_server_event_history where event = 'finish unit gc' and value1 in (1001, 1002), $unit_gc_history_cnt, 120;
+ob1.check_until_timeout select count(*) from CDB_OB_LS where tenant_id = $mysql_tenant_id and flag like "%duplicate%", 2, 3;
+--echo ##
+--echo # 3.2.5. reset tenant unit_num to 2
+ob1.mysql alter resource tenant mysql unit_num = 2;
+ob1.mysql alter system set enable_transfer = 'true' tenant mysql;
+ob1.check_until_timeout select count(*) from CDB_OB_LS where tenant_id = $mysql_tenant_id and status = 'NORMAL' and ls_id != 1 and ls_id != $dup_ls_id, 2, 120;
+ob1.check_until_timeout select count(*) from CDB_OB_BALANCE_JOBS where tenant_id = $mysql_tenant_id, 0, 120;
+let $mysql_leader_ip_port=deploy_get_value(ob1.select select concat(svr_ip,':',svr_port) as host from CDB_OB_LS_LOCATIONS where tenant_id = $mysql_tenant_id and ls_id =  1 and role = 'LEADER' limit 1, host, 1);
+let $mysql_leader_obs =deploy_get_value(ob1.get_obs_by_addr $mysql_leader_ip_port);
+ob_connect(conn_mysql, $mysql_leader_obs, root@mysql, , test, , USE_MYSQL_CONNECTOR);
+
+--echo ##################################################
+--echo # 4. shrink dup ls dest unit when transfer partition is doing for FFR
+--echo #####
+--echo # 4.1. alter tenant locality to FFR
+ob1.mysql alter tenant mysql locality = 'F@z1, F@z2, R@z3';
+ob1.check_until_timeout select count(*) from __all_tenant where previous_locality != '', 0, 120;
+ob1.check_until_timeout select count(*) from CDB_OB_BALANCE_JOBS where tenant_id = $mysql_tenant_id, 0, 120;
+--echo #####
+--echo # 4.2. stuck transfer partition from dup table to normal ls
+ob1.mysql alter system set partition_balance_schedule_interval = '0s' tenant all_user;
+ob1.mysql set ob_global_debug_sync = 'BEFORE_PROCESS_BALANCE_TASK_INIT wait_for signal_6 execute 10000';
+connection conn_mysql;
+eval alter table normal_part_zero duplicate_scope = 'cluster';
+let $table_id = deploy_get_value(ob1.select select table_id from CDB_OB_TABLE_LOCATIONS where tenant_id = $mysql_tenant_id and table_name = 'normal_part_zero', table_id, 1);
+eval ALTER SYSTEM TRANSFER PARTITION TABLE_ID $table_id, OBJECT_ID $table_id TO LS $dup_ls_id;
+ob1.check_until_timeout select count(*) from CDB_OB_BALANCE_JOBS where tenant_id = $mysql_tenant_id and status = 'DOING' and job_type = 'TRANSFER_PARTITION', 1, 60;
+--echo #####
+--echo # 4.3. shrink transfer partition dest unit
+let $unit_gc_times = math($unit_gc_times + 1);
+let $delete_unit_group_id = deploy_get_value(ob1.select select unit_group_id from __all_unit where unit_group_id > 1 and concat(svr_ip,':',svr_port) = (select concat(svr_ip,':',svr_port) from __all_virtual_ls_meta_table where tenant_id=$mysql_tenant_id and ls_id=$dup_ls_id and replica_type=0 limit 1), unit_group_id, 1);
+ob1.mysql alter resource tenant mysql unit_num = 1 delete unit_group ($delete_unit_group_id);
+ob1.check_until_timeout select count(*) from __all_unit where unit_group_id = $delete_unit_group_id and status = 'DELETING', 3, 60;
+--echo # R replica of dup ls on z3 has been removed
+ob1.check_until_timeout select count(*) from __all_virtual_ls_meta_table where tenant_id = $mysql_tenant_id and ls_id = $dup_ls_id and zone = 'z3' and unit_id = (select unit_id from __all_unit where unit_group_id = $delete_unit_group_id and zone = 'z3'), 0, 300;
+--echo #####
+--echo # 4.4. continue transfer partition
+ob1.mysql set ob_global_debug_sync = 'BEFORE_PROCESS_BALANCE_TASK_INIT clear';
+ob1.mysql set ob_global_debug_sync = 'now signal signal_6';
+ob1.check_until_timeout select count(*) from CDB_OB_BALANCE_JOBS where tenant_id = $mysql_tenant_id and job_type = 'TRANSFER_PARTITION', 0, 120;
+ob1.check_until_timeout select count(*) from CDB_OB_TABLE_LOCATIONS where tenant_id = $mysql_tenant_id and table_name = 'normal_part_zero' and ls_id != $dup_ls_id, 0, 3;
+ob1.check_until_timeout select count(*) from CDB_OB_BALANCE_JOBS where tenant_id = $mysql_tenant_id and balance_strategy = 'LS balance by shrink', 1, 60;
+ob1.check_until_timeout select count(*) from CDB_OB_BALANCE_JOBS where tenant_id = $mysql_tenant_id and balance_strategy = 'LS balance by shrink', 0, 120;
+ob1.check_until_timeout select count(*) from __all_virtual_ls_meta_table where unit_id in (select unit_id from __all_unit where unit_group_id = $delete_unit_group_id), 0, 120;
+ob1.check_until_timeout select count(*) from __all_unit where unit_group_id = $delete_unit_group_id, 0, 120;
+let $unit_gc_history_cnt = math($unit_gc_times * 6);
+ob1.check_until_timeout select count(*) from __all_server_event_history where event = 'start unit gc' and value1 in (1001, 1002), $unit_gc_history_cnt, 120;
+ob1.check_until_timeout select count(*) from __all_server_event_history where event = 'finish unit gc' and value1 in (1001, 1002), $unit_gc_history_cnt, 120;

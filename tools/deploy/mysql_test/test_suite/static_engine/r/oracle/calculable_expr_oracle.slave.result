@@ -1,0 +1,499 @@
+result_format: 4
+
+alter system flush plan cache global;
+
+
+drop table t;
+
+create table t (pk int primary key, a int) partition by hash(pk) partitions 2;
+
+insert into t values (1, 1), (2, 2), (3, 3), (4, 4);
+
+>>>>>>>> Simple Case
+select 1 + 1 from t;
++-----+
+| 1+1 |
++-----+
+|   2 |
+|   2 |
+|   2 |
+|   2 |
++-----+
+// hit plan ans pre calculated
+select 1 + 1 from t;
++-----+
+| 1+1 |
++-----+
+|   2 |
+|   2 |
+|   2 |
+|   2 |
++-----+
+explain select 1 + 1 from t;
+Query Plan
+=============================================================
+|ID|OPERATOR                 |NAME    |EST.ROWS|EST.TIME(us)|
+-------------------------------------------------------------
+|0 |PX COORDINATOR           |        |4       |5           |
+|1 |└─EXCHANGE OUT DISTR     |:EX10000|4       |5           |
+|2 |  └─PX PARTITION ITERATOR|        |4       |5           |
+|3 |    └─TABLE FULL SCAN    |T       |4       |5           |
+=============================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(1 + 1)]), filter(nil), rowset=16
+  1 - output(nil), filter(nil), rowset=16
+      dop=1
+  2 - output(nil), filter(nil), rowset=16
+      force partition granule
+  3 - output(nil), filter(nil), rowset=16
+      access(nil), partitions(p[0-1])
+      is_index_back=false, is_global_index=false, 
+      range_key([T.PK]), range(MIN ; MAX)always true
+select hit_count from sys.GV$OB_PLAN_CACHE_PLAN_STAT where to_char(statement) = 'select ? + ? from t';
++-----------+
+| HIT_COUNT |
++-----------+
+|         1 |
++-----------+
+
+select * from t where pk = 1 + 1;
++----+------+
+| PK | A    |
++----+------+
+|  2 |    2 |
++----+------+
+select * from t where pk = 2 + 1;
++----+------+
+| PK | A    |
++----+------+
+|  3 |    3 |
++----+------+
+explain select * from t where pk = 2 + 1;
+Query Plan
+=====================================================
+|ID|OPERATOR             |NAME|EST.ROWS|EST.TIME(us)|
+-----------------------------------------------------
+|0 |EXCHANGE IN REMOTE   |    |1       |7           |
+|1 |└─EXCHANGE OUT REMOTE|    |1       |6           |
+|2 |  └─TABLE GET        |T   |1       |5           |
+=====================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([T.PK], [T.A]), filter(nil)
+  1 - output([T.PK], [T.A]), filter(nil)
+  2 - output([T.PK], [T.A]), filter(nil), rowset=16
+      access([T.PK], [T.A]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([T.PK]), range[3 ; 3], 
+      range_cond([T.PK = cast(2 + 1, NUMBER(-1, -85))])
+select hit_count from sys.GV$OB_PLAN_CACHE_PLAN_STAT where to_char(statement) = 'select * from t where pk = ? + ?';
++-----------+
+| HIT_COUNT |
++-----------+
+|         1 |
+|         1 |
++-----------+
+
+explain select * from t where pk = '1' + 1;
+Query Plan
+=====================================================
+|ID|OPERATOR             |NAME|EST.ROWS|EST.TIME(us)|
+-----------------------------------------------------
+|0 |EXCHANGE IN REMOTE   |    |1       |7           |
+|1 |└─EXCHANGE OUT REMOTE|    |1       |6           |
+|2 |  └─TABLE GET        |T   |1       |5           |
+=====================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([T.PK], [T.A]), filter(nil)
+  1 - output([T.PK], [T.A]), filter(nil)
+  2 - output([T.PK], [T.A]), filter(nil), rowset=16
+      access([T.PK], [T.A]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([T.PK]), range[2 ; 2], 
+      range_cond([T.PK = cast('1', NUMBER(-1, -85)) + cast(1, NUMBER(-1, -85))])
+
+>>>>>>>> Pre Calc exprs generate by rewrite
+select * from t where pk = 1 + 0 + (select 2 from dual);
++----+------+
+| PK | A    |
++----+------+
+|  3 |    3 |
++----+------+
+select * from t where pk = 1 + 1 + (select 1 from dual);
++----+------+
+| PK | A    |
++----+------+
+|  3 |    3 |
++----+------+
+
+explain select * from t where pk = 1 + 1 + (select 1 from dual);
+Query Plan
+=====================================================
+|ID|OPERATOR             |NAME|EST.ROWS|EST.TIME(us)|
+-----------------------------------------------------
+|0 |EXCHANGE IN REMOTE   |    |1       |7           |
+|1 |└─EXCHANGE OUT REMOTE|    |1       |6           |
+|2 |  └─TABLE GET        |T   |1       |5           |
+=====================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([T.PK], [T.A]), filter(nil)
+  1 - output([T.PK], [T.A]), filter(nil)
+  2 - output([T.PK], [T.A]), filter(nil), rowset=16
+      access([T.PK], [T.A]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([T.PK]), range[3 ; 3], 
+      range_cond([T.PK = cast(1 + 1 + 1, NUMBER(-1, 0))])
+
+select hit_count from sys.GV$OB_PLAN_CACHE_PLAN_STAT where to_char(statement) = 'select * from t where pk = ? + ? + (select ? from dual)';
++-----------+
+| HIT_COUNT |
++-----------+
+|         1 |
+|         1 |
++-----------+
+
+select * from t where pk = (1 * 1) + (select 2 + 1 from dual);
++----+------+
+| PK | A    |
++----+------+
+|  4 |    4 |
++----+------+
+select * from t where pk = (1 * 1) + (select 1 + 2 from dual);
++----+------+
+| PK | A    |
++----+------+
+|  4 |    4 |
++----+------+
+explain select * from t where pk = (1 * 1) + (select 1 + 2 from dual);
+Query Plan
+=====================================================
+|ID|OPERATOR             |NAME|EST.ROWS|EST.TIME(us)|
+-----------------------------------------------------
+|0 |EXCHANGE IN REMOTE   |    |1       |7           |
+|1 |└─EXCHANGE OUT REMOTE|    |1       |6           |
+|2 |  └─TABLE GET        |T   |1       |5           |
+=====================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([T.PK], [T.A]), filter(nil)
+  1 - output([T.PK], [T.A]), filter(nil)
+  2 - output([T.PK], [T.A]), filter(nil), rowset=16
+      access([T.PK], [T.A]), partitions(p1)
+      is_index_back=false, is_global_index=false, 
+      range_key([T.PK]), range[4 ; 4], 
+      range_cond([T.PK = cast(1 * 1 + 1 + 2, NUMBER(-1, 0))])
+select hit_count from sys.GV$OB_PLAN_CACHE_PLAN_STAT where to_char(statement) = 'select * from t where pk = (? * ?) + (select ? + ? from dual)';
++-----------+
+| HIT_COUNT |
++-----------+
+|         1 |
+|         1 |
++-----------+
+
+>>>>>>>> Incompatible behavior with oracle
+select case when a = 1 then 1 else 1 / 0 end from t;
+ERROR HY000: divisor is equal to zero
+select case when a = 1 then 1 else 1 / 0 end from t;
+ERROR HY000: divisor is equal to zero
+explain select case when a = 1 then 1 else 1 / 0 end from t;
+Query Plan
+=============================================================
+|ID|OPERATOR                 |NAME    |EST.ROWS|EST.TIME(us)|
+-------------------------------------------------------------
+|0 |PX COORDINATOR           |        |4       |9           |
+|1 |└─EXCHANGE OUT DISTR     |:EX10000|4       |7           |
+|2 |  └─PX PARTITION ITERATOR|        |4       |5           |
+|3 |    └─TABLE FULL SCAN    |T       |4       |5           |
+=============================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(CASE WHEN T.A = cast(1, NUMBER(-1, -85)) THEN cast(1, NUMBER(-1, -85)) ELSE cast(1, NUMBER(-1, -85)) / cast(0, NUMBER(-1,
+       -85)) END)]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(CASE WHEN T.A = cast(1, NUMBER(-1, -85)) THEN cast(1, NUMBER(-1, -85)) ELSE cast(1, NUMBER(-1, -85)) / cast(0, NUMBER(-1,
+       -85)) END)]), filter(nil), rowset=16
+      dop=1
+  2 - output([T.A]), filter(nil), rowset=16
+      force partition granule
+  3 - output([T.A]), filter(nil), rowset=16
+      access([T.A]), partitions(p[0-1])
+      is_index_back=false, is_global_index=false, 
+      range_key([T.PK]), range(MIN ; MAX)always true
+
+>>>>>>>> Test Always True or False
+select * from t where 1 + 1 = 2;
++----+------+
+| PK | A    |
++----+------+
+|  2 |    2 |
+|  3 |    3 |
+|  1 |    1 |
+|  4 |    4 |
++----+------+
+select * from t where 1 + 0 = 2;
++----+------+
+| PK | A    |
++----+------+
++----+------+
+select * from t where 1 + 2 = 3;
++----+------+
+| PK | A    |
++----+------+
+|  2 |    2 |
+|  3 |    3 |
+|  1 |    1 |
+|  4 |    4 |
++----+------+
+select * from t where 1 + 2 = 4;
++----+------+
+| PK | A    |
++----+------+
++----+------+
+
+explain select * from t where 1 + 1 = 2;
+Query Plan
+=============================================================
+|ID|OPERATOR                 |NAME    |EST.ROWS|EST.TIME(us)|
+-------------------------------------------------------------
+|0 |PX COORDINATOR           |        |4       |12          |
+|1 |└─EXCHANGE OUT DISTR     |:EX10000|4       |10          |
+|2 |  └─PX PARTITION ITERATOR|        |4       |5           |
+|3 |    └─TABLE FULL SCAN    |T       |4       |5           |
+=============================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(T.PK, T.A)]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(T.PK, T.A)]), filter(nil), rowset=16
+      dop=1
+  2 - output([T.PK], [T.A]), filter(nil), rowset=16
+      force partition granule
+  3 - output([T.PK], [T.A]), filter(nil), rowset=16
+      access([T.PK], [T.A]), partitions(p[0-1])
+      is_index_back=false, is_global_index=false, 
+      range_key([T.PK]), range(MIN ; MAX)always true
+explain select * from t where 1 + 0 = 2;
+Query Plan
+===========================================================
+|ID|OPERATOR                   |NAME|EST.ROWS|EST.TIME(us)|
+-----------------------------------------------------------
+|0 |DISTRIBUTED TABLE FULL SCAN|T   |0       |3           |
+===========================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([T.PK], [T.A]), filter(nil), startup_filter([0]), rowset=16
+      access([T.PK], [T.A]), partitions(p0)
+      is_index_back=false, is_global_index=false, keep_ordering=true, 
+      range_key([T.PK]), range(MAX ; MIN)always false
+select hit_count from sys.GV$OB_PLAN_CACHE_PLAN_STAT where to_char(statement) = 'select * from t where ? + ? = ?';
++-----------+
+| HIT_COUNT |
++-----------+
+|         1 |
+|         1 |
++-----------+
+
+drop table t;
+
+>>>>>>>> // Pre Calc Expr generated by Cost rewrite
+create table t (pk int primary key, c1 int, c2 int);
+create index idx_c1 on t(c1) local;
+create index idx_c2 on t(c2) local;
+
+insert into t values (1001, 1001, 1);
+insert into t values (1002, 1, 1001);
+
+select /*+use_concat*/* from t where c1 = (select 1001 from dual) or c2 = (1 + 1) + (select 999 from dual);
++------+------+------+
+| PK   | C1   | C2   |
++------+------+------+
+| 1001 | 1001 |    1 |
+| 1002 |    1 | 1001 |
++------+------+------+
+select /*+use_concat*/* from t where c1 = (select 1001 from dual) or c2 = (1 + 0) + (select 1000 from dual);
++------+------+------+
+| PK   | C1   | C2   |
++------+------+------+
+| 1001 | 1001 |    1 |
+| 1002 |    1 | 1001 |
++------+------+------+
+explain select /*+use_concat*/* from t where c1 = (select 1001 from dual) or c2 = (1 + 0) + (select 1000 from dual);
+Query Plan
+===========================================================
+|ID|OPERATOR              |NAME     |EST.ROWS|EST.TIME(us)|
+-----------------------------------------------------------
+|0 |EXCHANGE IN REMOTE    |         |2       |20          |
+|1 |└─EXCHANGE OUT REMOTE |         |2       |18          |
+|2 |  └─UNION ALL         |         |2       |14          |
+|3 |    ├─TABLE RANGE SCAN|T(IDX_C1)|1       |7           |
+|4 |    └─TABLE RANGE SCAN|T(IDX_C2)|1       |7           |
+===========================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([UNION([1])], [UNION([2])], [UNION([3])]), filter(nil)
+  1 - output([UNION([1])], [UNION([2])], [UNION([3])]), filter(nil)
+  2 - output([UNION([1])], [UNION([2])], [UNION([3])]), filter(nil), rowset=16
+  3 - output([T.PK], [T.C1], [T.C2]), filter(nil), rowset=16
+      access([T.PK], [T.C1], [T.C2]), partitions(p0)
+      is_index_back=true, is_global_index=false, 
+      range_key([T.C1], [T.PK]), range(1001,MIN ; 1001,MAX), 
+      range_cond([T.C1 = cast(1001, NUMBER(-1, 0))])
+  4 - output([T.PK], [T.C1], [T.C2]), filter([lnnvl(cast(T.C1 = cast(1001, NUMBER(-1, 0)), TINYINT(-1, 0)))]), rowset=16
+      access([T.PK], [T.C1], [T.C2]), partitions(p0)
+      is_index_back=true, is_global_index=false, filter_before_indexback[false], 
+      range_key([T.C2], [T.PK]), range(1001,MIN ; 1001,MAX), 
+      range_cond([T.C2 = cast(1 + 0 + 1000, NUMBER(-1, 0))])
+
+select hit_count from sys.GV$OB_PLAN_CACHE_PLAN_STAT where to_char(statement) = 'select /*+use_concat*/* from t where c1 = (select ? from dual) or c2 = (? + ?) + (select ? from dual)';
++-----------+
+| HIT_COUNT |
++-----------+
+|         0 |
+|         0 |
+|         0 |
+|         0 |
++-----------+
+drop table t;
+
+// ROWNUM Expr
+drop table t1;
+drop table t2;
+create table t1(c1 int primary key, c2 int);
+insert into t1 values (1, 1);
+insert into t1 values (2, 5);
+insert into t1 values (3, 2);
+insert into t1 values (4, 6);
+insert into t1 values (5, 4);
+insert into t1 values (6, 7);
+
+create table t2(c1 int primary key, c2 int, c3 varchar(32));
+insert into t2 values (1, 1, 'o');
+insert into t2 values (2, 5, 'c');
+insert into t2 values (3, 5, 'b');
+insert into t2 values (4, 6, 'o');
+insert into t2 values (5, 7, 'd');
+insert into t2 values (6, 8, 'c');
+
+select /*+no_rewrite*/t1.c1 from t1, t2 where t1.c1 = t2.c1 and rownum <= 100;
++----+
+| C1 |
++----+
+|  1 |
+|  2 |
+|  3 |
+|  4 |
+|  5 |
+|  6 |
++----+
+select /*+no_rewrite*/t1.c1 from t1, t2 where t1.c1 = t2.c1 and rownum <= 100;
++----+
+| C1 |
++----+
+|  1 |
+|  2 |
+|  3 |
+|  4 |
+|  5 |
+|  6 |
++----+
+explain select /*+no_rewrite*/t1.c1 from t1, t2 where t1.c1 = t2.c1 and rownum <= 100;
+Query Plan
+==========================================================
+|ID|OPERATOR                 |NAME |EST.ROWS|EST.TIME(us)|
+----------------------------------------------------------
+|0 |EXCHANGE IN REMOTE       |     |6       |11          |
+|1 |└─EXCHANGE OUT REMOTE    |     |6       |10          |
+|2 |  └─SUBPLAN SCAN         |VIEW1|6       |6           |
+|3 |    └─LIMIT              |     |6       |6           |
+|4 |      └─MERGE JOIN       |     |6       |6           |
+|5 |        ├─TABLE FULL SCAN|T1   |6       |3           |
+|6 |        └─TABLE FULL SCAN|T2   |6       |3           |
+==========================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([VIEW1.T1.C1]), filter(nil)
+  1 - output([VIEW1.T1.C1]), filter(nil)
+  2 - output([VIEW1.T1.C1]), filter(nil), rowset=16
+      access([VIEW1.T1.C1])
+  3 - output([T1.C1]), filter(nil), rowset=16
+      limit(cast(FLOOR(cast(100, NUMBER(-1, -85))), BIGINT(-1, 0))), offset(nil)
+  4 - output([T1.C1]), filter(nil), rowset=16
+      equal_conds([T1.C1 = T2.C1]), other_conds(nil)
+      merge_directions([ASC])
+  5 - output([T1.C1]), filter(nil), rowset=16
+      access([T1.C1]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([T1.C1]), range(MIN ; MAX)always true
+  6 - output([T2.C1]), filter(nil), rowset=16
+      access([T2.C1]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([T2.C1]), range(MIN ; MAX)always true
+select hit_count from sys.GV$OB_PLAN_CACHE_PLAN_STAT where to_char(statement) = 'select /*+no_rewrite*/t1.c1 from t1, t2 where t1.c1 = t2.c1 and rownum <= ?';
++-----------+
+| HIT_COUNT |
++-----------+
+|         1 |
++-----------+
+
+select t1.c1 from t1, t2 where t1.c1 = t2.c1 and rownum <= 100;
++----+
+| C1 |
++----+
+|  1 |
+|  2 |
+|  3 |
+|  4 |
+|  5 |
+|  6 |
++----+
+select t1.c1 from t1, t2 where t1.c1 = t2.c1 and rownum <= 100;
++----+
+| C1 |
++----+
+|  1 |
+|  2 |
+|  3 |
+|  4 |
+|  5 |
+|  6 |
++----+
+explain select t1.c1 from t1, t2 where t1.c1 = t2.c1 and rownum <= 100;
+Query Plan
+=======================================================
+|ID|OPERATOR               |NAME|EST.ROWS|EST.TIME(us)|
+-------------------------------------------------------
+|0 |EXCHANGE IN REMOTE     |    |6       |11          |
+|1 |└─EXCHANGE OUT REMOTE  |    |6       |10          |
+|2 |  └─LIMIT              |    |6       |6           |
+|3 |    └─MERGE JOIN       |    |6       |6           |
+|4 |      ├─TABLE FULL SCAN|T1  |6       |3           |
+|5 |      └─TABLE FULL SCAN|T2  |6       |3           |
+=======================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([T1.C1]), filter(nil)
+  1 - output([T1.C1]), filter(nil)
+  2 - output([T1.C1]), filter(nil), rowset=16
+      limit(cast(FLOOR(cast(100, NUMBER(-1, -85))), BIGINT(-1, 0))), offset(nil)
+  3 - output([T1.C1]), filter(nil), rowset=16
+      equal_conds([T1.C1 = T2.C1]), other_conds(nil)
+      merge_directions([ASC])
+  4 - output([T1.C1]), filter(nil), rowset=16
+      access([T1.C1]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([T1.C1]), range(MIN ; MAX)always true
+  5 - output([T2.C1]), filter(nil), rowset=16
+      access([T2.C1]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([T2.C1]), range(MIN ; MAX)always true
+select hit_count from sys.GV$OB_PLAN_CACHE_PLAN_STAT where to_char(statement) = 'select t1.c1 from t1, t2 where t1.c1 = t2.c1 and rownum <= ?';
++-----------+
+| HIT_COUNT |
++-----------+
+|         1 |
++-----------+
+
+drop table t1;
+drop table t2;
+

@@ -1,0 +1,201 @@
+##########################
+#owner :  qianxi
+#owner group: liboblog
+#description:
+# 测试点：
+# 1. varchar
+# 2. varchar2
+# 3. char
+#    补充测试char padding
+#
+
+##########################
+
+ob1=OBI(cluster=1,init_unit_cpu=2);
+ob1.reboot;
+
+ob1.mysql alter system set resource_hard_limit= 800;
+sleep 2;
+ob_connect(conn_sys, ob1.proxy0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+
+###create oracle tenant
+ob1.mysql create resource unit box1 max_cpu=2, memory_size='10G';
+ob1.mysql create resource pool pool1 unit = 'box1', unit_num = 1;
+ob1.mysql create tenant oracle replica_num = 1, resource_pool_list=('pool1') set ob_tcp_invited_nodes='%', ob_compatibility_mode='oracle';
+sleep 2;
+ob_connect(conn_oracle, ob1.z1.obs0, SYS@oracle, ,SYS, , USE_OB_CONNECTOR);
+
+create user obtest IDENTIFIED BY "obtest";
+grant all on *.* to obtest WITH GRANT OPTION;
+grant dba to obtest;
+ob_connect(conn_oracle_obtest,ob1.z1.obs0,OBTEST@oracle,obtest,obtest,,USE_OB_CONNECTOR);
+
+create user oblog_db identified by "passwd";
+grant dba to oblog_db;
+grant dba to ORAAUDITOR;
+alter session set current_schema = oblog_db;
+# 启动oblog
+ob1.oblog.gen_conf tb_white_list=oracle.*.* log_level=DEBUG skip_ob_version_compat_check=1;
+#ob1.oblog.gen_conf tb_white_list=oracle.*.* skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+
+# oracle
+#1.比较的类型都为Char类型时，字符串后面空格不参与比较。因此对于结尾一个或者多个空格, 底层存储直接忽略,结尾空格不存储
+#  同时对于char类型在oracle模式下会补全空格，比如char(10), 插入'a', sql-select会补全9个空格，达到长度10
+#  同步出数据目前忽略空格
+#2.比较类型有Varchar时，字符串后面空格参与比较。 结尾空格不可以忽略
+#3.Oracle目前会将CHAR和VARCHAR2类型的空串处理为NULL
+#4.VARCHAR类型目前作为VARCHAR2的同义词，但作为与ANSI标准兼容的保留, 目前空串也为NULL
+#
+# mysql
+# 字符串比较，只有一种规则，结尾空格不参与比较。即忽略结尾连续的空格, 'a' = 'a ' = 'a  ' ... ='a       '
+
+create table simple_varchar(c0 int, c1 varchar(10), c2 varchar2(10), c3 char(10), c4 char(10));
+ob1.oblog.next;
+
+insert into simple_varchar values(1, 'a ', 'a ', 'a ', 'a ');
+ob1.oblog.next;
+
+insert into simple_varchar values(2, 'a         ', 'a  ', 'a ', 'a  ');
+ob1.oblog.next;
+
+insert into simple_varchar values(3, '', '', '', '');
+ob1.oblog.next;
+
+insert into simple_varchar values(4, '', '', '', '');
+ob1.oblog.next;
+
+insert into simple_varchar values(5, 'a       ', 'a  ', 'a ', 'a  ');
+ob1.oblog.next;
+
+insert into simple_varchar(c0, c1) values(6, 'a '), (7, 'a '), (8, 'a ');
+ob1.oblog.next;
+
+insert into simple_varchar values(9, 'a', 'a ', 'a        ', 'a  ');
+ob1.oblog.next;
+
+delete from simple_varchar where c0=9;
+ob1.oblog.next;
+
+## varchar作为主键
+create table simple_varchar_pk(c1 varchar(10) primary key);
+ob1.oblog.next;
+
+insert into simple_varchar_pk values('a');
+ob1.oblog.next;
+
+insert into simple_varchar_pk values('a ');
+ob1.oblog.next;
+
+insert into simple_varchar_pk values('a  ');
+ob1.oblog.next;
+
+update simple_varchar_pk set C1='a    ' where C1='a  ';
+ob1.oblog.next;
+
+## varchar2作为主键
+create table simple_varchar2_pk(c1 varchar2(10) primary key);
+ob1.oblog.next;
+
+insert into simple_varchar2_pk values('a');
+ob1.oblog.next;
+
+insert into simple_varchar2_pk values('a ');
+ob1.oblog.next;
+
+insert into simple_varchar2_pk values('a  ');
+ob1.oblog.next;
+
+update simple_varchar2_pk set C1='a    ' where C1='a  ';
+ob1.oblog.next;
+
+sleep 1;
+
+## char作为主键
+create table simple_char_pk(c1 char(10) primary key, c2 int);
+ob1.oblog.next;
+
+# sys-mysql租户获取
+ob_connect(conn_sys, ob1.proxy0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+let $start_tstamp = query_get_value(select round(time_to_usec(now()) / 1000000) as now, now, 1);
+
+ob_connect(conn_oracle_obtest,ob1.z1.obs0,OBTEST@oracle,obtest,obtest,,USE_OB_CONNECTOR);
+alter session set current_schema = oblog_db;
+
+insert into simple_char_pk values('a', 1);
+delete from simple_char_pk;
+insert into simple_char_pk values('a ', 2);
+delete from simple_char_pk;
+insert into simple_char_pk values('a  ', 3);
+delete from simple_char_pk;
+insert into simple_char_pk values('a   ', 4);
+delete from simple_char_pk;
+
+let $CHAR_PK_DML_CNT = 8;
+while ($CHAR_PK_DML_CNT > 0)
+{
+  ob1.oblog.next;
+  dec $CHAR_PK_DML_CNT;
+}
+
+# stop liboblog
+ob1.oblog.stop;
+
+# 回拉历史
+ob1.oblog.set_start_tstamp $start_tstamp;
+ob1.oblog.gen_conf tb_white_list=oracle.*.* log_level=DEBUG skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+
+let $CHAR_PK_DML_CNT = 8;
+while ($CHAR_PK_DML_CNT > 0)
+{
+  ob1.oblog.next_dml;
+  dec $CHAR_PK_DML_CNT;
+}
+
+ob1.oblog.gen_conf tb_white_list=oracle.*.* log_level=DEBUG skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+
+create table padding_char(c0 int primary key, c1 int, c2 char(11));
+ob1.oblog.next;
+
+insert into padding_char values(1, 1, 'a');
+ob1.oblog.next;
+update padding_char set c1 = 10 where c0=1;
+ob1.oblog.next;
+
+insert into padding_char values(2, 2, 'a ');
+ob1.oblog.next;
+delete from padding_char where c0=2;
+ob1.oblog.next;
+
+insert into padding_char values(3, 3, 'a  ');
+ob1.oblog.next;
+update padding_char set c2 = 'ab' where c0=3;
+ob1.oblog.next;
+
+insert into padding_char values(4, 4, 'ab   ');
+ob1.oblog.next;
+update padding_char set c2 = 'abc' where c0=4;
+ob1.oblog.next;
+
+insert into padding_char values(5, 5, 'abc    ');
+ob1.oblog.next;
+update padding_char set c2 = 'abcd' where c0=5;
+ob1.oblog.next;
+
+insert into padding_char values(6, 6, '');
+# 输出NULL, 和oracle行为一致
+select * from padding_char where c0=6;
+ob1.oblog.next;
+
+insert into padding_char values(7, 7, ' ');
+# 输出空格
+select * from padding_char where c0=7;
+ob1.oblog.next;
+
+drop user oblog_db cascade;
+ob1.oblog.next;
+
+# stop liboblog
+ob1.oblog.stop;

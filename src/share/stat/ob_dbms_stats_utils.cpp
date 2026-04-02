@@ -306,9 +306,6 @@ bool ObDbmsStatsUtils::is_no_stat_virtual_table(const int64_t table_id)
          table_id == share::OB_ALL_VIRTUAL_MDS_NODE_STAT_TID ||
          table_id == share::OB_ALL_VIRTUAL_CHECKPOINT_DIAGNOSE_MEMTABLE_INFO_TID ||
          table_id == share::OB_ALL_VIRTUAL_CHECKPOINT_DIAGNOSE_CHECKPOINT_UNIT_INFO_TID ||
-#ifdef __APPLE__
-         table_id == share::OB_ALL_VIRTUAL_THREAD_TID ||
-#endif
          table_id == share::OB_TENANT_VIRTUAL_SHOW_CREATE_LOCATION_TID ||
          table_id == share::OB_TENANT_VIRTUAL_LIST_FILE_TID;
 }
@@ -2025,7 +2022,7 @@ int ObDbmsStatsUtils::get_max_work_area_size(uint64_t tenant_id, int64_t &max_wa
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected null", K(ret));
   } else {
-    int64_t worker_cnt = std::max(static_cast<const omt::ObTenant *>(tenant)->min_worker_cnt(), static_cast<int64_t>(4L));
+    int64_t worker_cnt = std::max(static_cast<const omt::ObTenant *>(tenant)->min_worker_cnt(), 4L);
     max_wa_memory_size = lib::get_tenant_memory_limit(tenant_id) / worker_cnt;
     if (lib::ObMallocAllocator::get_instance() != NULL) {
       ObTenantCtxAllocatorGuard ta = lib::ObMallocAllocator::get_instance()->get_tenant_ctx_allocator(tenant_id, common::ObCtxIds::WORK_AREA);

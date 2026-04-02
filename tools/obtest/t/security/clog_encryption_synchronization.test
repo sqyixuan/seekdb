@@ -1,0 +1,189 @@
+##########################
+# owner : wuyuefei.wyf
+# owner group: transaction
+# description: test for encrypted redo log sync
+# 测试点：
+# 1. 多副本加密日志同步;
+# 2. 连续做切主、插入、修改、查询.
+##########################
+
+ob1=OBI(cluster=1:1:1, proxy_num=0);
+
+let $extra_conf = "cpu_count=8,memory_limit='50G',system_memory='5G',__min_full_resource_pool_memory='1073741824',cache_wash_threshold='1G',log_disk_size=100G";
+ob1.z1.obs0.set extra_config=_enable_defensive_check=0,$extra_conf;
+ob1.z2.obs0.set extra_config=_enable_defensive_check=0,$extra_conf;
+ob1.z3.obs0.set extra_config=_enable_defensive_check=0,$extra_conf;
+
+# case 1. 验证bootstrap
+ob1.reboot;
+sleep 3;
+
+#ob1.mysql alter system set resource_soft_limit=100;
+ob1.mysql alter system set enable_rebalance='false';
+
+# case 2. 验证建租户
+let $cpu = 1;
+let $memory = 10737418240;
+let $min_memory = 1073741824;
+let $disk = 536870912;
+let $iops = 100000;
+let $session = 64;
+
+ob_connect(conn_sys, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+set @@session.ob_query_timeout = 1000000000;
+# mysql tenant
+eval CREATE RESOURCE UNIT unit_1 MAX_CPU $cpu, MEMORY_SIZE $memory, MIN_CPU=1;
+eval CREATE RESOURCE POOL pool_1 UNIT = 'unit_1', UNIT_NUM = 1, zone_list = ('z1', 'z2', 'z3');
+eval CREATE TENANT mysql RESOURCE_POOL_LIST = ('pool_1'), primary_zone='z1;z2;z3' set ob_tcp_invited_nodes='%';
+
+source include/check_schema_sync.inc;
+
+let $mysql_tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = 'mysql', tenant_id, 1);
+
+# case 3. 验证mysql租户下加密表的DML/SELECT
+ob_connect(conn_mysql, ob1.z1.obs0, root@mysql, , test, , USE_MYSQL_CONNECTOR);
+# wait leader takeover
+sleep 3;
+--disable_warnings
+--error 0,4354
+DROP TABLESPACE sectest_ts1;
+DROP TABLE if exists et1;
+--enable_warnings
+#设置tde_method 
+#inernal模式仅用作测试，实际不建议使用该模式用于clog加密
+ALTER SYSTEM SET tde_method='internal';
+#SHOW PARAMETERS LIKE 'tde_method';
+#生成主密钥
+ALTER INSTANCE ROTATE INNODB MASTER KEY;
+sleep 60;
+#创建加密表空间
+CREATE TABLESPACE sectest_ts1 encryption = 'y';
+#创建加密表et1
+CREATE TABLE et1 (c1 int, c2 int) TABLESPACE sectest_ts1;
+source include/check_schema_sync.inc;
+#确认表是否加密
+select table_name,encryptionalg,encrypted from oceanbase.V$OB_ENCRYPTED_TABLES;
+insert into et1 values (1, 1), (2, 2), (3, 3), (4, 4), (5, 5);
+select * from et1;
+select count(*) from et1;
+
+ob_connect(conn_sys, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection conn_sys;
+
+# 确认leader已经汇报成功
+ob1.check_until_timeout select count(*) from __all_virtual_ls_meta_table where tenant_id = '$mysql_tenant_id' and ls_id = 1001 and role = 1, 1, 60;
+# 获取第一个follower
+let $follower_ip_port=deploy_get_value(ob1.select select concat(svr_ip,':',svr_port) as host from __all_virtual_ls_meta_table where tenant_id = $mysql_tenant_id and ls_id = 1001 and role = 2 order by svr_ip, svr_port limit 1, host, 1);
+let $follower_obs=deploy_get_value(ob1.get_obs_by_addr $follower_ip_port);
+# 获取第二个follower
+let $follower_2_ip_port=deploy_get_value(ob1.select select concat(svr_ip,':',svr_port) as host from __all_virtual_ls_meta_table where tenant_id = $mysql_tenant_id and ls_id = 1001 and role = 2 and concat(svr_ip,':',svr_port) not like "%$follower_ip_port%" limit 1, host, 1);
+let $follower_2_obs=deploy_get_value(ob1.get_obs_by_addr $follower_2_ip_port);
+# 获取当前leader
+let $leader_ip_port=deploy_get_value(ob1.select select concat(svr_ip,':',svr_port) as host from __all_virtual_ls_meta_table where tenant_id = $mysql_tenant_id and ls_id = 1001 and role = 1 order by svr_ip, svr_port limit 1, host, 1);
+let $leader_obs=deploy_get_value(ob1.get_obs_by_addr $leader_ip_port);
+
+ob_connect(conn_mysql, $follower_2_obs, root@mysql, , test, , USE_MYSQL_CONNECTOR);
+# 写入数据, 查询
+--disable_query_log
+let $cnt=200;
+while($cnt>0)
+{
+  eval insert into et1 values ($cnt, $cnt);
+  dec $cnt;
+}
+--enable_query_log
+select count(*) from et1;
+
+#切主到follower_1上
+ob_connect(conn_sys, $leader_obs, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection conn_sys;
+source include/check_schema_sync.inc;
+--disable_query_log
+eval alter system switch replica leader ls=1001 server='$follower_ip_port' tenant='mysql';
+# 确认切主成功
+ob1.check_until_timeout select count(*) from __all_virtual_ls_meta_table where tenant_id = '$mysql_tenant_id' and concat(svr_ip,':',svr_port) = '$follower_ip_port' and ls_id = 1001 and role = 1, 1, 60;
+--enable_query_log
+
+ob_connect(conn_mysql, ob1.z1.obs0, root@mysql, , test, , USE_MYSQL_CONNECTOR);
+# 查询已有数据
+select count(*) from et1;
+select * from et1 limit 5;
+# 修改已有数据
+--disable_query_log
+let $cnt=5;
+while($cnt>0)
+{
+  eval update et1 set c2=c2+1 where c1=$cnt;
+  dec $cnt;
+}
+# 插入数据
+let $cnt=400;
+while($cnt>200)
+{
+  eval insert into et1 values ($cnt, $cnt);
+  dec $cnt;
+}
+--enable_query_log
+select count(*) from et1;
+
+# 切主到follower_2上
+ob_connect(conn_sys, $leader_obs, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection conn_sys;
+--disable_query_log
+eval alter system switch replica leader ls=1001 server='$follower_2_ip_port' tenant='mysql';
+# 确认切主成功
+ob1.check_until_timeout select count(*) from __all_virtual_ls_meta_table where tenant_id = '$mysql_tenant_id' and concat(svr_ip,':',svr_port) = '$follower_2_ip_port' and ls_id = 1001 and role = 1, 1, 60;
+--enable_query_log
+
+ob_connect(conn_mysql, ob1.z1.obs0, root@mysql, , test, , USE_MYSQL_CONNECTOR);
+# 查询已有数据
+select count(*) from et1;
+select * from et1 limit 5;
+# 修改已有数据
+--disable_query_log
+let $cnt=5;
+while($cnt>0)
+{
+  eval update et1 set c2=c2+1 where c1=$cnt;
+  dec $cnt;
+}
+# 插入数据
+let $cnt=600;
+while($cnt>400)
+{
+  eval insert into et1 values ($cnt, $cnt);
+  dec $cnt;
+}
+--enable_query_log
+select count(*) from et1;
+
+# 切主到第一任leader上
+ob_connect(conn_sys, $leader_obs, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection conn_sys;
+--disable_query_log
+eval alter system switch replica leader ls=1001 server='$leader_ip_port' tenant='mysql';
+# 确认切主成功
+ob1.check_until_timeout select count(*) from __all_virtual_ls_meta_table where tenant_id = '$mysql_tenant_id' and concat(svr_ip,':',svr_port) = '$leader_ip_port' and ls_id = 1001 and role = 1, 1, 60;
+--enable_query_log
+
+ob_connect(conn_mysql, ob1.z1.obs0, root@mysql, , test, , USE_MYSQL_CONNECTOR);
+# 查询已有数据
+select count(*) from et1;
+select * from et1 limit 5;
+# 修改已有数据
+--disable_query_log
+let $cnt=5;
+while($cnt>0)
+{
+  eval update et1 set c1=c1+1 where c1=$cnt;
+  dec $cnt;
+}
+# 插入数据
+let $cnt=800;
+while($cnt>600)
+{
+  eval insert into et1 values ($cnt, $cnt);
+  dec $cnt;
+}
+--enable_query_log
+select count(*) from et1;

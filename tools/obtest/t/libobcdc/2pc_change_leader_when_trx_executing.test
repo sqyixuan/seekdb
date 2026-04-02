@@ -1,0 +1,74 @@
+#
+# owner:千溪
+# owner group:liboblog
+# description:
+# 测试点:
+# 测试点：改选过程中的事务迁移
+#
+##
+##
+
+ob1=OBI(cluster=1:1:1,init_unit_cpu=5);
+ob1.reboot;
+ob1.create_client;
+sleep 5;
+
+# 准备环境
+source include/liboblog/create_tenant_multiple_zone.inc;
+
+set ob_query_timeout=90000000;
+set ob_trx_timeout=1200000000;
+
+ob1.oblog.gen_conf tb_white_list=oblog_tt.*.* sort_trans_participants=1 skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+let $start_tstamp = query_get_value(select round(time_to_usec(now()) / 1000000) as now, now, 1);
+
+create database oblog_tt;
+ob1.oblog.next;
+use oblog_tt;
+
+## 建表
+# TODO 给t1/t2分配到不同zone上
+create table t1(id1 int, id2 int);
+ob1.oblog.next;
+create table t2(id1 int, id2 int);
+ob1.oblog.next;
+
+set autocommit=0;
+insert into t1 values(1, 10);
+insert into t2 values(2, 20);
+
+update t1 set id2=11 where id1 = 1;
+update t2 set id2=21 where id1 = 2;
+
+let $ls_id = 1001;
+let $tenant_name = "oblog_tt";
+source include/liboblog/switch_replica_leader.inc;
+sleep 5;
+connection oblog_conn_tt;
+
+update t1 set id2=12 where id1 = 1;
+update t2 set id2=22 where id1 = 2;
+
+source include/liboblog/switch_replica_leader.inc;
+sleep 5;
+connection oblog_conn_tt;
+
+update t1 set id2=13 where id1 = 1;
+update t2 set id2=23 where id1 = 2;
+commit;
+ob1.oblog.next;
+ob1.oblog.stop;
+
+# 回拉历史, 测试read missing log 逻辑
+ob1.oblog.set_start_tstamp $start_tstamp;
+ob1.oblog.gen_conf tb_white_list=oblog_tt.*.* log_level=TLOG.*:DEBUG sort_trans_participants=1 test_mode_on=1 test_mode_ignore_redo_count=1 skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+ob1.oblog.next_dml;
+
+drop table t1;
+ob1.oblog.next;
+drop table t2;
+ob1.oblog.next;
+
+ob1.oblog.stop;

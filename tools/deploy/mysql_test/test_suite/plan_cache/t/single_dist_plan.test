@@ -1,0 +1,236 @@
+#owner: luofan.zp
+#owner group: sql2
+
+#tags: optimizer
+
+--result_format 4
+--enable_sorted_result
+connect (conn_admin, $OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection conn_admin;
+
+alter system set large_query_threshold = '1s';
+alter system set resource_hard_limit = 500;
+
+alter system flush plan cache global;
+
+connection default;
+set autocommit = 0;
+set ob_trx_timeout = 1000000000;
+--disable_warnings
+drop table if exists dist_t;
+--enable_warnings
+
+create table dist_t (pk int primary key, a int, b int) partition by hash(pk) partitions 2;
+insert into dist_t values (1, 2, 3), (2, 3, 4), (3, 4, 5), (4, 5, 6);
+
+connection conn_admin;
+
+let $dist_tid = query_get_value(select table_id from oceanbase.__all_virtual_table where table_name = 'dist_t', table_id, 1);
+let $tenant_id = query_get_value(select tenant_id from oceanbase.__all_virtual_table where table_name like 'dist_t' order by table_id desc limit 1,tenant_id, 1);
+let $ls_id = query_get_value(select ls_id from oceanbase.__all_virtual_tablet_to_ls where table_id = $dist_tid order by table_id desc limit 1,ls_id, 1);
+let $part1_ip_main = query_get_value(select svr_ip from oceanbase.__all_virtual_ls_meta_table a where ls_id = $ls_id and tenant_id = $tenant_id and role = 1 limit 1, svr_ip, 1);
+let $part1_port_main = query_get_value(select svr_port from oceanbase.__all_virtual_ls_meta_table a where ls_id = $ls_id and tenant_id = $tenant_id and role = 1 limit 1, svr_port, 1);
+let $part1_ip_bkp = query_get_value(select svr_ip from oceanbase.__all_virtual_ls_meta_table a where ls_id = $ls_id and tenant_id = $tenant_id and role = 2 limit 1, svr_ip, 1);
+let $part1_port_bkp = query_get_value(select svr_port from oceanbase.__all_virtual_ls_meta_table a where ls_id = $ls_id and tenant_id = $tenant_id and role = 2 limit 1, svr_port, 1);
+
+
+connection default;
+--echo // >>>>>>>>>>>>>>>> Case#1 Normal dist plan with single table
+
+select * from dist_t;
+select * from dist_t;
+
+explain select * from dist_t;
+--disable_warnings
+select hit_count from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'select * from dist_t';
+
+connection conn_admin;
+--echo // move part1's leader to backup server
+--disable_query_log
+#eval alter system switch replica leader ls=$ls_id server='$part1_ip_bkp:$part1_port_bkp' tenant='sys';
+--enable_query_log
+
+connection default;
+select * from dist_t;
+select * from dist_t;
+
+explain select * from dist_t;
+--echo // expect hit_count = 3
+select hit_count from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'select * from dist_t';
+
+--echo // >>>>>>>>>>>>>>>> Case#2 Single table dist plan with global index
+
+create index idx_dist_t on dist_t(a) global partition by hash(a) partitions 2;
+
+select /*+ index(dist_t idx_dist_t) */* from dist_t;
+select /*+ index(dist_t idx_dist_t) */* from dist_t;
+explain select /*+ index(dist_t idx_dist_t) */* from dist_t;
+
+select /*+ index(dist_t idx_dist_t) */* from dist_t where a = 2;
+select /*+ index(dist_t idx_dist_t) */* from dist_t where a = 2;
+
+explain select /*+ index(dist_t idx_dist_t) */* from dist_t where a = 2;
+
+select hit_count from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'select /*+ index(dist_t idx_dist_t) */* from dist_t';
+select hit_count from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'select /*+ index(dist_t idx_dist_t) */* from dist_t where a = ?';
+--enable_warnings
+
+connection conn_admin;
+--echo // move idx_dist_t part1's leader to backup
+let $dist_tid = query_get_value(select table_id from oceanbase.__all_virtual_table where table_name like '%idx_dist_t%', table_id, 1);
+let $tenant_id = query_get_value(select tenant_id from oceanbase.__all_virtual_table where table_name like '%idx_dist_t%' order by table_id desc limit 1,tenant_id, 1);
+let $ls_id = query_get_value(select ls_id from oceanbase.__all_virtual_tablet_to_ls where table_id = $dist_tid order by table_id desc limit 1,ls_id, 1);
+let $idx_part1_ip_main = query_get_value(select svr_ip from oceanbase.__all_virtual_ls_meta_table a where ls_id = $ls_id and tenant_id = $tenant_id and role = 1 limit 1, svr_ip, 1);
+let $idx_part1_port_main = query_get_value(select svr_port from oceanbase.__all_virtual_ls_meta_table a where ls_id = $ls_id and tenant_id = $tenant_id and role = 1 limit 1, svr_port, 1);
+let $idx_part1_ip_bkp = query_get_value(select svr_ip from oceanbase.__all_virtual_ls_meta_table a where ls_id = $ls_id and tenant_id = $tenant_id and role = 2 limit 1, svr_ip, 1);
+let $idx_part1_port_bkp = query_get_value(select svr_port from oceanbase.__all_virtual_ls_meta_table a where ls_id = $ls_id and tenant_id = $tenant_id and role = 2 limit 1, svr_port, 1);
+
+--disable_query_log
+#eval alter system switch replica leader ls=$ls_id server='$idx_part1_ip_bkp:$idx_part1_port_bkp' tenant='mysql';
+--enable_query_log
+--sleep 10
+
+--enable_query_log
+connection default;
+select /*+ index(dist_t idx_dist_t) */* from dist_t;
+select /*+ index(dist_t idx_dist_t) */* from dist_t;
+explain select /*+ index(dist_t idx_dist_t) */* from dist_t;
+
+select /*+ index(dist_t idx_dist_t) */* from dist_t where a = 2;
+select /*+ index(dist_t idx_dist_t) */* from dist_t where a = 2;
+explain select /*+ index(dist_t idx_dist_t) */* from dist_t where a = 2;
+
+--echo // expect hit_count = 3
+--disable_warnings
+select hit_count from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'select /*+ index(dist_t idx_dist_t) */* from dist_t';
+--echo // expect hit_count = 1, 1
+select hit_count from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'select /*+ index(dist_t idx_dist_t) */* from dist_t where a = ?';
+
+--echo // >>>>>>>>>>>>>>>> Case#3 Single table dist plan with dop > 1
+drop table dist_t;
+create table dist_t (pk int primary key, a int) partition by hash(pk) partitions 2;
+insert into dist_t values (1, 1), (2, 2), (3, 3), (4, 4);
+
+select /*+ use_px parallel(2) */* from dist_t where pk >= 1 and pk <= 4;
+select /*+ use_px parallel(2) */* from dist_t where pk >= 1 and pk <= 4;
+
+select * from dist_t where pk = 2;
+explain select * from dist_t where pk = 2;
+
+explain select /*+ use_px parallel(2) */* from dist_t where pk >= 1 and pk <= 4;
+select hit_count from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'select /*+ use_px parallel(2) */* from dist_t where pk >= ? and pk <= ?';
+--enable_warnings
+
+connection conn_admin;
+let $dist_tid = query_get_value(select table_id from oceanbase.__all_virtual_table where table_name = 'dist_t', table_id, 1);
+let $tenant_id = query_get_value(select tenant_id from oceanbase.__all_virtual_table where table_name like 'dist_t' order by table_id desc limit 1,tenant_id, 1);
+let $ls_id = query_get_value(select ls_id from oceanbase.__all_virtual_tablet_to_ls where table_id = $dist_tid order by table_id desc limit 1,ls_id, 1);
+let $part1_ip_main = query_get_value(select svr_ip from oceanbase.__all_virtual_ls_meta_table a where ls_id = $ls_id and tenant_id = $tenant_id and role = 1 limit 1, svr_ip, 1);
+let $part1_port_main = query_get_value(select svr_port from oceanbase.__all_virtual_ls_meta_table a where ls_id = $ls_id and tenant_id = $tenant_id and role = 1 limit 1, svr_port, 1);
+let $part1_ip_bkp = query_get_value(select svr_ip from oceanbase.__all_virtual_ls_meta_table a where ls_id = $ls_id and tenant_id = $tenant_id and role = 2 limit 1, svr_ip, 1);
+let $part1_port_bkp = query_get_value(select svr_port from oceanbase.__all_virtual_ls_meta_table a where ls_id = $ls_id and tenant_id = $tenant_id and role = 2 limit 1, svr_port, 1);
+
+--echo // move part1's leader to backup server
+--disable_query_log
+#eval alter system switch replica leader ls=$ls_id server='$part1_ip_bkp:$part1_port_bkp' tenant='mysql';
+--enable_query_log
+
+connection default;
+select * from dist_t where pk = 2;
+explain select * from dist_t where pk = 2;
+
+select /*+ use_px parallel(2) */* from dist_t where pk >= 1 and pk <= 4;
+select /*+ use_px parallel(2) */* from dist_t where pk >= 1 and pk <= 1;
+select /*+ use_px parallel(2) */* from dist_t where pk >= 2 and pk <= 2;
+
+explain select /*+ use_px parallel(2) */* from dist_t where pk >= 1 and pk <= 4;
+explain select /*+ use_px parallel(2) */* from dist_t where pk >= 1 and pk <= 1;
+explain select /*+ use_px parallel(2) */* from dist_t where pk >= 2 and pk <= 2;
+
+--echo // expect hit_count = 1, 2
+--disable_warnings
+select hit_count from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'select /*+ use_px parallel(2) */* from dist_t where pk >= ? and pk <= ?';
+
+--echo // >>>>>>>>>>>>>>>> Case#4 Mixing global index with parallel execution
+drop table dist_t;
+
+create table dist_t (pk int primary key, a int, b int) partition by hash(pk) partitions 2;
+insert into dist_t values (1, 2, 3), (2, 3, 4), (3, 4, 5), (4, 5, 6);
+create index idx_dist_t on dist_t(a) global partition by hash(a) partitions 2;
+
+select /*+ index(dist_t idx_dist_t), use_px parallel(2) */* from dist_t;
+select /*+ index(dist_t idx_dist_t), use_px parallel(2) */* from dist_t;
+
+explain select /*+ index(dist_t idx_dist_t), use_px parallel(2) */* from dist_t;
+
+select /*+ index(dist_t idx_dist_t), use_px parallel(2) */* from dist_t where a = 2 or a = 4;
+select /*+ index(dist_t idx_dist_t), use_px parallel(2) */* from dist_t where a = 2 or a = 4;
+
+explain select /*+ index(dist_t idx_dist_t), use_px parallel(2) */* from dist_t where a = 2 or a = 4;
+
+select /*+ index(dist_t idx_dist_t) */* from dist_t where a = 2 or a = 4;
+select /*+ index(dist_t idx_dist_t) */* from dist_t where a = 2 or a = 4;
+
+explain select /*+ index(dist_t idx_dist_t) */* from dist_t where a = 2 or a = 4;
+
+select hit_count from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'select /*+ index(dist_t idx_dist_t), use_px parallel(2) */* from dist_t';
+
+select hit_count from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'select /*+ index(dist_t idx_dist_t), use_px parallel(2) */* from dist_t where a = ? or a = ?';
+
+select hit_count from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'select /*+ index(dist_t idx_dist_t) */* from dist_t where a = ? or a = ?';
+--enable_warnings
+
+connection conn_admin;
+let $dist_tid = query_get_value(select table_id from oceanbase.__all_virtual_table where table_name = 'dist_t', table_id, 1);
+let $tenant_id = query_get_value(select tenant_id from oceanbase.__all_virtual_table where table_name like 'dist_t' order by table_id desc limit 1,tenant_id, 1);
+let $ls_id = query_get_value(select ls_id from oceanbase.__all_virtual_tablet_to_ls where table_id = $dist_tid order by table_id desc limit 1,ls_id, 1);
+let $part1_ip_main = query_get_value(select svr_ip from oceanbase.__all_virtual_ls_meta_table a where ls_id = $ls_id and tenant_id = $tenant_id and role = 1 limit 1, svr_ip, 1);
+let $part1_port_main = query_get_value(select svr_port from oceanbase.__all_virtual_ls_meta_table a where ls_id = $ls_id and tenant_id = $tenant_id and role = 1 limit 1, svr_port, 1);
+let $part1_ip_bkp = query_get_value(select svr_ip from oceanbase.__all_virtual_ls_meta_table a where ls_id = $ls_id and tenant_id = $tenant_id and role = 2 limit 1, svr_ip, 1);
+let $part1_port_bkp = query_get_value(select svr_port from oceanbase.__all_virtual_ls_meta_table a where ls_id = $ls_id and tenant_id = $tenant_id and role = 2 limit 1, svr_port, 1);
+
+let $idx_dist_tid = query_get_value(select table_id from oceanbase.__all_virtual_table where table_name like '%idx_dist_t%', table_id, 1);
+let $idx_tenant_id = query_get_value(select tenant_id from oceanbase.__all_virtual_table where table_name like '%idx_dist_t%' order by table_id desc limit 1,tenant_id, 1);
+let $idx_ls_id = query_get_value(select ls_id from oceanbase.__all_virtual_tablet_to_ls where table_id = $idx_dist_tid order by table_id desc limit 1,ls_id, 1);
+let $idx_part1_ip_main = query_get_value(select svr_ip from oceanbase.__all_virtual_ls_meta_table a where ls_id = $idx_ls_id and tenant_id = $idx_tenant_id and role = 1 limit 1, svr_ip, 1);
+let $idx_part1_port_main = query_get_value(select svr_port from oceanbase.__all_virtual_ls_meta_table a where ls_id = $idx_ls_id and tenant_id = $idx_tenant_id and role = 1 limit 1, svr_port, 1);
+let $idx_part1_ip_bkp = query_get_value(select svr_ip from oceanbase.__all_virtual_ls_meta_table a where ls_id = $idx_ls_id and tenant_id = $idx_tenant_id and role = 2 limit 1, svr_ip, 1);
+let $idx_part1_port_bkp = query_get_value(select svr_port from oceanbase.__all_virtual_ls_meta_table a where ls_id = $idx_ls_id and tenant_id = $idx_tenant_id and role = 2 limit 1, svr_port, 1);
+
+--echo // move part1's leader to backup server
+--disable_query_log
+#eval alter system switch replica leader ls=$ls_id server='$part1_ip_bkp:$part1_port_bkp' tenant='mysql';
+--echo // move idx part1's leader to backup server
+#eval alter system switch replica leader ls=$idx_ls_id server='$idx_part1_ip_bkp:$idx_part1_port_bkp' tenant='mysql';
+--enable_query_log
+connection default;
+
+select /*+ index(dist_t idx_dist_t), use_px parallel(2) */* from dist_t;
+select /*+ index(dist_t idx_dist_t), use_px parallel(2) */* from dist_t;
+explain select /*+ index(dist_t idx_dist_t), use_px parallel(2) */* from dist_t;
+
+select /*+ index(dist_t idx_dist_t), use_px parallel(2) */* from dist_t where a = 2 or a = 4;
+select /*+ index(dist_t idx_dist_t), use_px parallel(2) */* from dist_t where a = 2 or a = 4;
+
+explain select /*+ index(dist_t idx_dist_t), use_px parallel(2) */* from dist_t where a = 2 or a = 4;
+
+select /*+ index(dist_t idx_dist_t) */* from dist_t where a = 2 or a = 4;
+select /*+ index(dist_t idx_dist_t) */* from dist_t where a = 2 or a = 4;
+
+explain select /*+ index(dist_t idx_dist_t) */* from dist_t where a = 2 or a = 4;
+
+--echo // expect hit_count = 3
+--disable_warnings
+select hit_count from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'select /*+ index(dist_t idx_dist_t), use_px parallel(2) */* from dist_t';
+
+--echo // expect hit_count = 1, 1
+select hit_count from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'select /*+ index(dist_t idx_dist_t), use_px parallel(2) */* from dist_t where a = ? or a = ?';
+
+--echo // expect hit_count = 3
+select hit_count from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'select /*+ index(dist_t idx_dist_t) */* from dist_t where a = ? or a = ?';
+--enable_warnings
+connection default;
+drop table dist_t;
+commit;
+connection conn_admin;
+alter system set large_query_threshold = '100ms';

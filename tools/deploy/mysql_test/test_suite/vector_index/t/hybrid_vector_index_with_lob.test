@@ -1,0 +1,380 @@
+#
+# owner: xiongjingpan.xjp
+# owner group: shenzhen
+# description: LOB类型与hybrid vector index结合的DML测试
+##
+
+# 设置向量索引内存限制
+alter system set ob_vector_memory_limit_percentage = 20;
+set global max_allowed_packet=1073741824;
+sleep 2;
+
+--error 0,11112
+call DBMS_AI_SERVICE.DROP_AI_MODEL_ENDPOINT ('ob_embed_endpoint');
+--error 0,11118
+call DBMS_AI_SERVICE.DROP_AI_MODEL ('ob_embed');
+
+call DBMS_AI_SERVICE.CREATE_AI_MODEL(
+'ob_embed', '{
+    "type": "dense_embedding",
+    "model_name": "qwen3-embedding"
+  }');
+
+--disable_query_log
+eval call DBMS_AI_SERVICE.CREATE_AI_MODEL_ENDPOINT (
+'ob_embed_endpoint', '{
+    "ai_model_name": "ob_embed",
+    "scope": "all",
+    "url": "$OB_API_HOST",
+    "access_key": "$OB_API_KEY",
+    "request_model_name": "$OB_MODEL_NAME",
+    "provider": "$OB_MODEL_PROVIDER"
+  }');
+--enable_query_log
+
+# 设置事务超时时间: 100秒
+set ob_trx_timeout=100000000;
+set ob_query_timeout=1000000000;
+
+# 创建包含LOB字段和hybrid vector index的表
+--disable_warnings
+drop table if exists t1;
+--enable_warnings
+create table t1(
+    pk int primary key, 
+    tiny_text tinytext, 
+    tiny_blob tinyblob, 
+    text_type text, 
+    blob_type blob, 
+    medium_text mediumtext, 
+    medium_blob mediumblob, 
+    long_text longtext, 
+    long_blob longblob,
+    doc_content varchar(1000),
+    vector index idx_doc(doc_content) with (distance=l2, type=hnsw, model=ob_embed, dim=1024, sync_mode=immediate)
+);
+
+# NULL值测试
+insert into t1 values (1, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
+
+# 空值测试
+insert into t1 values (2, "", "", "", "", "", "", "", "", "");
+select md5(tiny_text) from t1 where pk = 2;
+
+# 达到单列和单行限制 + hybrid vector index测试
+set global max_allowed_packet=1073741824;
+sleep 2;
+insert into t1 values (3, repeat('1', 255), repeat('2', 255), repeat('3', 65535), repeat('4', 65535), repeat('5', 16777215), repeat('6', 16777215), "", "", 'This is a test document for vector search with LOB data');
+select md5(tiny_text), md5(tiny_blob), md5(text_type), md5(blob_type), md5(medium_text), md5(medium_blob), md5(long_text), md5(long_blob) from t1 where pk = 3;
+
+# longtext达到48M限制 + longblob 11M = 59M + vector content
+insert into t1 values (4, "", "", "", "", "", "", repeat('a', 50331647), repeat('b', 11534336), 'Large LOB document with vector search capabilities for similarity matching');
+select md5(long_text), md5(long_blob)  from t1 where pk = 4;
+
+# longtext 11M + longblob 48M = 59M + vector content
+insert into t1 values (5, "", "", "", "", "", "", repeat('c',11534336), repeat('d', 50331647), 'Another large document for testing hybrid vector index with LOB fields');
+select md5(long_text), md5(long_blob)  from t1 where pk = 5;
+
+# update 把longtext的值与longblob的值交换 + 更新vector content
+update t1 set long_text=repeat('d', 50331647), long_blob=repeat('c', 11534336), doc_content='Updated document content for vector search testing' where pk = 5;
+select md5(long_text), md5(long_blob) from t1 where pk = 5;
+
+# update LOB字段和vector content
+update t1 set medium_text=repeat('e', 11534336), medium_blob=repeat('f', 16777215), long_text=repeat('g', 16777215), long_blob=repeat('h', 16777215), doc_content='Modified document with updated LOB data and vector content' where pk=5;
+select md5(medium_text), md5(medium_blob), md5(long_text), md5(long_blob) from t1 where pk = 5;
+
+# 単分区事务多行 + vector content
+begin;
+# 小行
+insert into t1 values (100, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 'Small document for transaction testing');
+# 大行 2M
+update t1 set long_blob=repeat('1', 2097152), doc_content='Updated with large LOB data in transaction' where pk = 100;
+select md5(long_blob) from t1 where pk = 100;
+
+# 小行 16K
+insert into t1 (pk, text_type, doc_content) values (200, repeat('2', 16384), 'Medium size document with text LOB field');
+select md5(text_type) from t1 where pk = 200;
+
+# 大行 8M
+update t1 set medium_text=repeat('3', 8388608), doc_content='Large medium text document for vector search' where pk = 200;
+select md5(medium_text) from t1 where pk = 200;
+
+# 大行 48M + 8M
+update t1 set long_text=repeat('4', 50331647), doc_content='Very large document with maximum LOB size for comprehensive testing' where pk = 200;
+select md5(long_text) from t1 where pk = 200;
+commit;
+
+# delete测试
+delete from t1;
+
+# 分布式事务 + hybrid vector index
+create table t2(
+    pk int primary key, 
+    tiny_text tinytext, 
+    tiny_blob tinyblob, 
+    text_type text, 
+    blob_type blob, 
+    medium_text mediumtext, 
+    medium_blob mediumblob, 
+    long_text longtext, 
+    long_blob longblob,
+    doc_content varchar(1000),
+    vector index idx_doc2(doc_content) with (distance=l2, type=hnsw, model=ob_embed, dim=1024, sync_mode=immediate)
+);
+
+begin;
+# 普通行
+insert into t1 (pk, doc_content) values (1, 'Simple document for distributed transaction');
+insert into t2 (pk, doc_content) values (1, 'Simple document in second table');
+
+# 2M LOB行 + vector content
+insert into t1 values (2, repeat('1', 255), repeat('2', 255), repeat('3', 65535), repeat('4', 65535), repeat('5', 1048576), repeat('6', 1048576), "", "", 'Distributed transaction document with LOB data');
+insert into t2 values (2, repeat('1', 255), repeat('2', 255), repeat('3', 65535), repeat('4', 65535), repeat('5', 1048576), repeat('6', 1048576), "", "", 'Second table document with LOB data');
+select md5(tiny_text),  md5(tiny_blob), md5(text_type), md5(blob_type), md5(medium_text), md5(medium_blob), md5(long_text), md5(long_blob) from t1 where pk = 2;
+
+# 普通行
+insert into t1 values (3, 'a', 'bb', 'ccc', 'dddd', 'eeee', 'fffff', 'gggggg', 'hhhhhhh', 'Normal document with small LOB fields');
+insert into t2 values (3, 'a', 'bb', 'ccc', 'dddd', 'eeee', 'fffff', 'gggggg', 'hhhhhhh', 'Normal document in second table');
+select md5(tiny_text),  md5(tiny_blob), md5(text_type), md5(blob_type), md5(medium_text), md5(medium_blob), md5(long_text), md5(long_blob) from t1 where pk = 3;
+
+# 16 M LOB行 + vector content
+insert into t1 values (4, repeat('1', 255), repeat('2', 255), repeat('3', 65535), repeat('4', 65535), repeat('5', 1048576), repeat('6', 1048576), repeat('7', 6291456), repeat('8', 6291456), 'Large LOB document for distributed transaction testing');
+insert into t2 values (4, repeat('1', 255), repeat('2', 255), repeat('3', 65535), repeat('4', 65535), repeat('5', 1048576), repeat('6', 1048576), repeat('7', 6291456), repeat('8', 6291456), 'Large LOB document in second table');
+select md5(tiny_text),  md5(tiny_blob), md5(text_type), md5(blob_type), md5(medium_text), md5(medium_blob), md5(long_text), md5(long_blob) from t1 where pk = 4;
+
+# 60 M LOB行 + vector content
+insert into t1 values (5, repeat('1', 255), repeat('2', 255), repeat('3', 65535), repeat('4', 65535), repeat('5', 16777215), repeat('6', 16777215), repeat('7', 13631488), repeat('8', 13631488), 'Maximum size LOB document for comprehensive distributed transaction testing');
+insert into t2 values (5, repeat('1', 255), repeat('2', 255), repeat('3', 65535), repeat('4', 65535), repeat('5', 16777215), repeat('6', 16777215), repeat('7', 13631488), repeat('8', 13631488), 'Maximum size LOB document in second table');
+select md5(tiny_text),  md5(tiny_blob), md5(text_type), md5(blob_type), md5(medium_text), md5(medium_blob), md5(long_text), md5(long_blob) from t1 where pk = 5;
+commit;
+
+begin;
+update t1 set long_blob="clear longblob", doc_content='Cleared LOB with updated vector content' where pk = 1;
+select md5(long_blob) from t1 where pk = 1;
+
+update t2 set medium_blob="clear mediumblob", doc_content='Cleared medium blob in second table' where pk = 1;
+select md5(medium_blob) from t2 where pk = 1;
+
+update t2 set medium_blob="clear mediumblob", doc_content='Updated medium blob again' where pk = 1;
+select md5(medium_blob) from t2 where pk = 1;
+
+# 更新主键
+update t1 set pk = 6, doc_content='Updated primary key with new vector content' where pk = 5;
+commit;
+
+begin;
+delete from t1 where pk = 1;
+delete from t1 where pk = 4;
+delete from t1 where pk = 3;
+delete from t2 where pk = 2;
+delete from t2 where pk = 5;
+commit;
+
+# 测试merge_engine = delete_insert的表
+create table lob_t1(
+    a int primary key, 
+    c2 longtext,
+    doc_content varchar(1000),
+    vector index idx_lob_doc(doc_content) with (distance=l2, type=hnsw, model=ob_embed, dim=1024, sync_mode=immediate)
+) merge_engine = delete_insert;
+insert into lob_t1 values(123456, repeat('1', 1024*10), 'Merge engine document with LOB data');
+update lob_t1 set c2 = repeat('2', 1024*10), doc_content='Updated merge engine document' where a = 123456;
+
+# JSON字段测试 + hybrid vector index
+CREATE TABLE t1_json(
+    pk int primary key, 
+    json_col_1 JSON,
+    doc_content varchar(1000),
+    vector index idx_json_doc(doc_content) with (distance=l2, type=hnsw, model=ob_embed, dim=1024, sync_mode=immediate)
+) merge_engine = delete_insert;
+SET @a:=CONCAT('[',REPEAT('"a",',200000),'"a"]');
+INSERT INTO t1_json VALUES(3, @a, 'JSON document with large array for vector search testing');
+select md5(json_col_1) from t1_json where pk = 3;
+SET @b:=CONCAT('[',REPEAT('"b",',200000),'"b"]');
+update t1_json set json_col_1 = @b, doc_content='Updated JSON document with new array data' where pk = 3;
+select md5(json_col_1) from t1_json where pk = 3;
+
+# ===== DDL操作测试 =====
+# 测试添加LOB列
+--echo 添加新的LOB列
+alter table t1 add column new_text text, add column new_blob blob;
+show create table t1;
+
+# 插入数据测试新列
+insert into t1 values (10, 'test', 'test', 'test', 'test', 'test', 'test', 'test', 'test', 'New LOB columns test document', 'new_text_content', 'new_blob_content');
+select md5(new_text), md5(new_blob) from t1 where pk = 10;
+
+# 测试修改LOB列类型
+--echo 修改LOB列类型
+alter table t1 modify column new_text mediumtext, modify column new_blob mediumblob;
+show create table t1;
+
+# 更新数据测试修改后的列
+update t1 set new_text=repeat('medium_text', 1000), new_blob=repeat('medium_blob', 1000), doc_content='Updated with medium LOB types' where pk = 10;
+select md5(new_text), md5(new_blob) from t1 where pk = 10;
+
+# 测试重命名LOB列
+--echo 重命名LOB列
+alter table t1 rename column new_text to renamed_text, rename column new_blob to renamed_blob;
+show create table t1;
+
+# 更新数据测试重命名后的列
+update t1 set renamed_text=repeat('renamed_text', 2000), renamed_blob=repeat('renamed_blob', 2000), doc_content='Updated with renamed LOB columns' where pk = 10;
+select md5(renamed_text), md5(renamed_blob) from t1 where pk = 10;
+
+# 测试删除LOB列
+--echo 删除LOB列
+alter table t1 drop column renamed_text, drop column renamed_blob;
+show create table t1;
+
+# 更新数据测试删除列后的表
+update t1 set doc_content='Updated after dropping LOB columns' where pk = 10;
+
+--echo === 测试hybrid vector index相关的DDL操作 ===
+
+# 测试添加新的hybrid vector index
+--echo 添加新的hybrid vector index
+alter table t1 add column doc_content2 varchar(1000);
+# --error 1064
+# create vector index idx_doc2 on t1(doc_content2) with (distance=cosine, type=hnsw, model=ob_embed, dim=1024, sync_mode=immediate);
+show create table t1;
+
+# 插入数据测试新索引
+insert into t1 values (11, 'test', 'test', 'test', 'test', 'test', 'test', 'test', 'test', 'Original vector content', 'Second vector content');
+
+# 测试重命名hybrid vector index
+--echo 重命名hybrid vector index
+alter table t1 rename index idx_doc to renamed_vector_idx;
+show create table t1;
+
+# 测试删除hybrid vector index
+--echo 删除hybrid vector index
+alter table t1 drop index renamed_vector_idx;
+show create table t1;
+
+# 测试重新添加hybrid vector index
+--echo 重新添加hybrid vector index
+--error 1064
+alter table t1 add vector index idx_doc2(doc_content2) with (distance=ip, type=hnsw, model=ob_embed, dim=1024, sync_mode=async, sync_interval=5s);
+show create table t1;
+
+--echo === 测试表级别的DDL操作 ===
+
+# 测试添加普通索引
+--echo 添加普通索引
+alter table t1 add index idx_pk(pk);
+show create table t1;
+
+# 测试添加唯一索引
+--echo 添加唯一索引
+alter table t1 add unique index idx_doc_content(doc_content);
+show create table t1;
+
+# 测试删除普通索引
+--echo 删除普通索引
+alter table t1 drop index idx_pk;
+show create table t1;
+
+# 测试修改表注释
+--echo 修改表注释
+alter table t1 comment='Table with LOB fields and hybrid vector index for DDL testing';
+show create table t1;
+
+# 测试修改列注释
+--echo 修改列注释
+--error 1064
+alter table t1 modify column doc_content varchar(1000) comment='Document content for vector search';
+show create table t1;
+
+--echo === 测试分区表DDL操作 ===
+
+# 创建分区表
+--echo 创建分区表
+create table t_partitioned(
+    pk int primary key,
+    doc_content varchar(1000),
+    long_text longtext,
+    vector index idx_part_doc(doc_content) with (distance=l2, type=hnsw, model=ob_embed, dim=1024, sync_mode=immediate)
+) partition by range(pk) (
+    partition p0 values less than (100),
+    partition p1 values less than (200),
+    partition p2 values less than maxvalue
+);
+show create table t_partitioned;
+
+# 插入数据到分区表
+insert into t_partitioned values (50, 'Partition 0 document', repeat('partition0', 1000));
+insert into t_partitioned values (150, 'Partition 1 document', repeat('partition1', 2000));
+insert into t_partitioned values (250, 'Partition 2 document', repeat('partition2', 3000));
+
+# 测试添加分区
+--echo 添加分区
+--error 1493
+alter table t_partitioned add partition (partition p3 values less than (300));
+show create table t_partitioned;
+
+# 测试删除分区
+--echo 删除分区
+alter table t_partitioned drop partition p0;
+show create table t_partitioned;
+
+# 测试截断分区
+--echo 截断分区
+alter table t_partitioned truncate partition p1;
+show create table t_partitioned;
+
+--echo === 测试TRUNCATE TABLE操作 ===
+
+# 测试截断表
+--echo 截断表
+truncate table t_partitioned;
+show create table t_partitioned;
+
+# 重新插入数据验证
+insert into t_partitioned values (100, 'After truncate document', repeat('after_truncate', 1000));
+
+--echo === 测试复杂的DDL组合操作 ===
+
+# 测试多列同时操作
+--echo 多列同时操作
+alter table t1 add column temp_text text, add column temp_blob blob, modify column doc_content2 varchar(2000);
+show create table t1;
+
+# 插入数据测试多列操作
+insert into t1 values (12, 'test', 'test', 'test', 'test', 'test', 'test', 'test', 'test', 'Complex DDL test document', 'Updated doc_content2', 'temp_text_content', 'temp_blob_content');
+
+# 测试同时操作索引和列
+--echo 同时操作索引和列
+--error 1235
+alter table t1 drop column temp_text, drop column temp_blob, add index idx_doc_content2(doc_content2);
+show create table t1;
+
+# 最终验证
+--echo 最终验证所有DDL操作
+select count(*) as total_rows from t1;
+select count(*) as partitioned_rows from t_partitioned;
+drop table t_partitioned;
+
+# 测试异步模式
+drop table if exists t1, t2, lob_t1, t1_json;
+
+create table t1_async(
+    pk int primary key,
+    doc_content varchar(1000),
+    long_text longtext,
+    vector index idx_async_doc(doc_content) with (distance=l2, type=hnsw, model=ob_embed, dim=1024, sync_mode=async, sync_interval=10s)
+);
+
+insert into t1_async values(1, 'Async sync document 1', repeat('async1', 1000));
+insert into t1_async values(2, 'Async sync document 2', repeat('async2', 2000));
+insert into t1_async values(3, 'Async sync document 3', repeat('async3', 3000));
+
+update t1_async set doc_content='Updated async document', long_text=repeat('updated_async', 1500) where pk = 1;
+delete from t1_async where pk = 2;
+drop table t1_async;
+
+# 清理AI模型
+--error 0,11112
+call DBMS_AI_SERVICE.DROP_AI_MODEL_ENDPOINT ('ob_embed_endpoint');
+--error 0,11118
+call DBMS_AI_SERVICE.DROP_AI_MODEL ('ob_embed');

@@ -299,9 +299,7 @@ public:
         }
         refresh_ns_ = cur_ns;
       } else {
-#ifndef __APPLE__
         assert(false);
-#endif
       }
       return candinate_req_;
   }

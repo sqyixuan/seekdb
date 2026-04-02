@@ -1,0 +1,240 @@
+# owner: zhanyue.zzy
+# description: 物化视图 session 固化
+# tags: mv_optimizer,mview
+
+--result_format 4
+ 
+--error 0,1008
+drop DATABASE test;
+CREATE DATABASE test;
+use test;
+
+--echo ##设置相同sql_mode;
+SET @@sql_mode='';
+
+SET time_zone='+08:00';
+SET query_rewrite_enabled= true;
+set QUERY_REWRITE_INTEGRITY = stale_tolerated;
+
+--error 0,1146
+DROP MATERIALIZED VIEW LOG ON t1;
+--error 0,1051
+drop table t1;
+create table t1(c1 bigint(20) NOT NULL COMMENT '用户ID',
+c2 varchar(256) COLLATE utf8mb4_bin NOT NULL,
+c3 timestamp(6) NULL DEFAULT NULL COMMENT '时间', 
+c4 DATE,
+c5 DATETIME(4),
+c6 TIMESTAMP(4),
+c7 TIME(3),
+c8 YEAR(4),
+c10 BIT(2),
+c11 BINARY(2),
+gen_v1 DATETIME(0) GENERATED ALWAYS AS (CAST(c5 AS char(100))) virtual,
+gen_v2 TIMESTAMP(2) GENERATED ALWAYS AS (CAST(c6 AS char(100))) stored,
+primary key(c1, c2),
+index t1_ind1(c2),
+index t1_ind2(c1,c4),
+unique index t1_ind3(c1));
+
+INSERT INTO t1 
+(c1, c2, c3, c4, c5, c6, c7, c8, c10, c11) 
+VALUES 
+(1, 'example1', '2023-01-01 12:34:56.123456', '2023-01-01', '2023-01-01 12:34:56.1234', '2023-01-01 12:34:56.1234', '12:34:56.123', '2023', b'01', _binary '01');
+
+INSERT INTO t1 
+(c1, c2, c3, c4, c5, c6, c7, c8, c10, c11) 
+VALUES 
+(2, 'example2', '2023-02-01 12:34:56.654321', '2023-02-01', '2023-02-01 12:34:56.6543', '2023-02-01 12:34:56.6543', '12:34:56.654', '2024', b'10', _binary '10');
+
+INSERT INTO t1 
+(c1, c2, c3, c4, c5, c6, c7, c8, c10, c11) 
+VALUES 
+(3, 'example3', '2023-03-01 12:34:56.000000', '2023-03-01', '2023-03-01 12:34:56.0000', '2023-03-01 12:34:56.0000', '12:34:56.000', '2025', b'11', _binary '11');
+
+select * from t1 order by c1;
+
+--error 0,1146
+DROP MATERIALIZED VIEW LOG ON t2;
+--error 0,1051
+drop table t2;
+create table t2(c1 bigint(20) NOT NULL COMMENT '用户ID',
+c2 varchar(256) COLLATE utf8mb4_bin NOT NULL,
+c3 timestamp(6) NULL DEFAULT NULL COMMENT '时间', 
+c4 DATE,
+c5 DATETIME(4),
+c6 TIMESTAMP(4),
+c7 TIME(3),
+c8 YEAR(4),
+c10 BIT(2),
+c11 BINARY(2),
+gen_v1 DATETIME(0) GENERATED ALWAYS AS (CAST(c5 AS char(100))) virtual,
+gen_v2 TIMESTAMP(2) GENERATED ALWAYS AS (CAST(c6 AS char(100))) stored,
+primary key(c1, c2),
+index t1_ind1(c2),
+index t1_ind2(c1,c4),
+unique index t1_ind3(c1));
+
+INSERT INTO t2 
+(c1, c2, c3, c4, c5, c6, c7, c8, c10, c11) 
+VALUES 
+(1, 'example1', '2023-01-01 12:34:56.123456', '2023-01-01', '2023-01-01 12:34:56.1234', '2023-01-01 12:34:56.1234', '12:34:56.123', '2023', b'01', _binary '01');
+
+INSERT INTO t2 
+(c1, c2, c3, c4, c5, c6, c7, c8, c10, c11) 
+VALUES 
+(2, 'example2', '2023-02-01 12:34:56.654321', '2023-02-01', '2023-02-01 12:34:56.6543', '2023-02-01 12:34:56.6543', '12:34:56.654', '2024', b'10', _binary '10');
+
+INSERT INTO t2 
+(c1, c2, c3, c4, c5, c6, c7, c8, c10, c11) 
+VALUES 
+(3, 'example3', '2023-03-01 12:34:56.000000', '2023-03-01', '2023-03-01 12:34:56.0000', '2023-03-01 12:34:56.0000', '12:34:56.000', '2025', b'11', _binary '11');
+
+select * from t2 order by c1;
+
+
+--echo 全量刷新有group by的实时物化视图。
+--echo 在time_zone='+08:00'下创建
+--echo time_zone='-08:00'查询 
+
+SET time_zone='+08:00';
+--error 0,9755
+DROP MATERIALIZED VIEW LOG ON t1;
+create materialized view log on t1 parallel 9 with PRIMARY KEY,rowid,sequence(c3,c4,c5,c6,c7,c8,c10,c11) including new values ;
+
+--error 0,9757
+drop materialized view mv1;
+create materialized view mv1
+REFRESH COMPLETE ON DEMAND
+ENABLE QUERY REWRITE
+ENABLE ON QUERY COMPUTATION
+AS select c3,c4,c6,count(*) a from t1 group by c3,c4,c6;
+
+--echo 变量参数设置一致时，原始查询/经过物化视图改写/直接使用物化视图的查询结果一致
+select c3,c4,c6 from t1 group by c3,c4,c6 order by c4;
+select /*+no_mv_rewrite*/ c4 from t1 group by c4 order by c4;
+select /*+mv_rewrite(mv1)*/ c4 from t1 where CAST(c3 AS char(100)) >= '2023-01-01 12:34:56.123456' group by c4 order by c4;
+select c3,c4,c6 from mv1  order by c4;
+
+explain basic select c3,c4,c6 from t1 group by c3,c4,c6 order by c4;
+explain basic select /*+no_mv_rewrite*/ c4 from t1 group by c4 order by c4;
+explain basic select /*+mv_rewrite(mv1)*/ c4 from t1 where CAST(c3 AS char(100)) >= '2023-01-01 12:34:56.123456' group by c4 order by c4;
+
+
+--echo 修改变量查询 
+
+SET time_zone='-08:00';
+select c3,c4,c6 from t1 group by c3,c4,c6 order by c4;
+select /*+no_mv_rewrite*/ c4 from t1 group by c4 order by c4;
+select /*+mv_rewrite(mv1)*/ c4 from t1 where CAST(c3 AS char(100)) >= '2023-01-01 12:34:56.123456' group by c4 order by c4;
+select c3,c4,c6 from mv1  order by c4;
+
+explain basic select c3,c4,c6 from t1 group by c3,c4,c6 order by c4;
+explain basic select /*+no_mv_rewrite*/ c4 from t1 group by c4 order by c4;
+explain basic select /*+mv_rewrite(mv1)*/ c4 from t1 where CAST(c3 AS char(100)) >= '2023-01-01 12:34:56.123456' group by c4 order by c4;
+
+
+
+--echo 增量刷新有主键，2表inner join的实时物化视图
+--echo 在time_zone='+08:00'下创建
+--echo time_zone='-08:00'查询 
+
+SET time_zone='+08:00';
+--error 0,9755
+DROP MATERIALIZED VIEW LOG ON t1;
+create materialized view log on t1 parallel 9 with PRIMARY KEY,rowid,sequence(c3,c4,c5,c6,c7,c8,c10,c11) including new values ;
+
+--error 0,9755
+DROP MATERIALIZED VIEW LOG ON t2;
+create materialized view log on t2 parallel 2 with PRIMARY KEY,rowid,sequence(c3,c4,c5,c6,c7,c8,c10,c11) including new values ;
+
+--error 0,12003
+drop materialized view mv1;
+create materialized view mv1(c1, cc1 ,c2, cc2 , c3, c4, c6, PRIMARY KEY(c3))
+REFRESH FAST ON DEMAND
+ENABLE QUERY REWRITE
+ENABLE ON QUERY COMPUTATION
+AS select t1.c1 as aa, t2.c1 as bb,t1.c2 as aaa, t2.c2 as bbb,t1.c3 as a,t2.c4 as b ,t2.c6 as c from t1 inner join t2 on t1.c1 = t2.c1 ;
+
+
+--echo 变量参数设置一致时，原始查询/经过物化视图改写/直接使用物化视图的查询结果一致
+select /*+no_mv_rewrite*/ t1.c3 as a,t2.c4 as b ,t2.c6 as c from t1 inner join t2 on t1.c1 = t2.c1 order by t2.c4;
+select t1.c3 as a,t2.c4 as b ,t2.c6 as c from t1 inner join t2 on t1.c1 = t2.c1 order by t2.c4;
+select /*+mv_rewrite(mv1)*/  t1.c3 as a,t2.c4 as b ,t2.c6 as c from t1 inner join t2 on t1.c1 = t2.c1 order by t2.c4;
+select c3, c4, c6 from mv1 order by c4;
+
+explain basic select /*+no_mv_rewrite*/ t1.c3 as a,t2.c4 as b ,t2.c6 as c from t1 inner join t2 on t1.c1 = t2.c1 order by t2.c4;
+explain basic select t1.c3 as a,t2.c4 as b ,t2.c6 as c from t1 inner join t2 on t1.c1 = t2.c1 order by t2.c4;
+explain basic select /*+mv_rewrite(mv1)*/  t1.c3 as a,t2.c4 as b ,t2.c6 as c from t1 inner join t2 on t1.c1 = t2.c1 order by t2.c4;
+
+--echo 修改time_zone='-08:00'查询 
+
+SET time_zone='-08:00';
+select /*+no_mv_rewrite*/ t1.c3 as a,t2.c4 as b ,t2.c6 as c from t1 inner join t2 on t1.c1 = t2.c1 order by t2.c4;
+select t1.c3 as a,t2.c4 as b ,t2.c6 as c from t1 inner join t2 on t1.c1 = t2.c1 order by t2.c4;
+select /*+mv_rewrite(mv1)*/  t1.c3 as a,t2.c4 as b ,t2.c6 as c from t1 inner join t2 on t1.c1 = t2.c1 order by t2.c4;
+select c3, c4, c6 from mv1 order by c4;
+
+explain basic select /*+no_mv_rewrite*/ t1.c3 as a,t2.c4 as b ,t2.c6 as c from t1 inner join t2 on t1.c1 = t2.c1 order by t2.c4;
+explain basic select t1.c3 as a,t2.c4 as b ,t2.c6 as c from t1 inner join t2 on t1.c1 = t2.c1 order by t2.c4;
+explain basic select /*+mv_rewrite(mv1)*/  t1.c3 as a,t2.c4 as b ,t2.c6 as c from t1 inner join t2 on t1.c1 = t2.c1 order by t2.c4;
+
+
+--echo 增量刷新有主键，2表join+group by的实时物化视图。
+--echo 在time_zone='+08:00'下创建
+--echo time_zone='-08:00'查询 
+
+SET time_zone='+08:00';
+--error 0,9755
+DROP MATERIALIZED VIEW LOG ON t1;
+create materialized view log on t1 parallel 9 with PRIMARY KEY,rowid,sequence(c3,c4,c5,c6,c7,c8,c10,c11) including new values ;
+
+--error 0,9755
+DROP MATERIALIZED VIEW LOG ON t2;
+create materialized view log on t2 parallel 2 with PRIMARY KEY,rowid,sequence(c3,c4,c5,c6,c7,c8,c10,c11) including new values ;
+
+--error 0,12003
+drop materialized view mv1;
+create materialized view mv1(c3, c4, c6,a, PRIMARY KEY(c3))
+REFRESH FAST ON DEMAND
+ENABLE QUERY REWRITE
+ENABLE ON QUERY COMPUTATION
+AS select t1.c3 as a,t2.c4 as b ,t2.c6 as c,count(*) a from t1 inner join t2 on t1.c1 = t2.c1 group by t1.c3,t2.c4,t2.c6;
+
+
+--echo 变量参数设置一致时，原始查询/经过物化视图改写/直接使用物化视图的查询结果一致
+select /*+no_mv_rewrite*/ t1.c3 as a,t2.c4 as b ,t2.c6 as c from t1 inner join t2 on t1.c1 = t2.c1 group by t1.c3,t2.c4,t2.c6 order by t2.c4;
+select t1.c3 as a,t2.c4 as b ,t2.c6 as c from t1 inner join t2 on t1.c1 = t2.c1 group by t1.c3,t2.c4,t2.c6 order by t2.c4;
+select /*+mv_rewrite(mv1)*/  t1.c3 as a,t2.c4 as b from t1 inner join t2 on t1.c1 = t2.c1 group by t1.c3,t2.c4 order by t2.c4;
+select c3, c4, c6 from mv1 order by c4;
+
+explain basic select /*+no_mv_rewrite*/ t1.c3 as a,t2.c4 as b ,t2.c6 as c from t1 inner join t2 on t1.c1 = t2.c1 group by t1.c3,t2.c4,t2.c6 order by t2.c4;
+explain basic select t1.c3 as a,t2.c4 as b ,t2.c6 as c from t1 inner join t2 on t1.c1 = t2.c1 group by t1.c3,t2.c4,t2.c6 order by t2.c4;
+explain basic select /*+mv_rewrite(mv1)*/  t1.c3 as a,t2.c4 as b from t1 inner join t2 on t1.c1 = t2.c1 group by t1.c3,t2.c4 order by t2.c4;
+
+--echo 修改time_zone='-08:00'查询 
+
+SET time_zone='-08:00';
+select /*+no_mv_rewrite*/ t1.c3 as a,t2.c4 as b ,t2.c6 as c from t1 inner join t2 on t1.c1 = t2.c1 group by t1.c3,t2.c4,t2.c6 order by t2.c4;
+select t1.c3 as a,t2.c4 as b ,t2.c6 as c from t1 inner join t2 on t1.c1 = t2.c1 group by t1.c3,t2.c4,t2.c6 order by t2.c4;
+select /*+mv_rewrite(mv1)*/  t1.c3 as a,t2.c4 as b from t1 inner join t2 on t1.c1 = t2.c1 group by t1.c3,t2.c4 order by t2.c4;
+select c3, c4, c6 from mv1 order by c4;
+
+explain basic select /*+no_mv_rewrite*/ t1.c3 as a,t2.c4 as b ,t2.c6 as c from t1 inner join t2 on t1.c1 = t2.c1 group by t1.c3,t2.c4,t2.c6 order by t2.c4;
+explain basic select t1.c3 as a,t2.c4 as b ,t2.c6 as c from t1 inner join t2 on t1.c1 = t2.c1 group by t1.c3,t2.c4,t2.c6 order by t2.c4;
+explain basic select /*+mv_rewrite(mv1)*/  t1.c3 as a,t2.c4 as b from t1 inner join t2 on t1.c1 = t2.c1 group by t1.c3,t2.c4 order by t2.c4;
+
+
+
+--error 0,9755
+DROP MATERIALIZED VIEW LOG ON t1;
+--error 0,9755
+DROP MATERIALIZED VIEW LOG ON t2;
+--error 0,1051
+drop table t1;
+--error 0,1051
+drop table t2;
+--error 0,9757
+drop materialized view mv1;
+
+

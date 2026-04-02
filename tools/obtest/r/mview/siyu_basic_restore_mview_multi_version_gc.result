@@ -1,0 +1,111 @@
+ob1=OBI(cluster=1:1:1, proxy_num=0);
+ob1.set extra_config=$mini_ob_config;
+ob1.z1.obs0.set extra_config = "cache_wash_threshold='1G',_ob_minor_merge_schedule_interval='3s'";
+ob1.z2.obs0.set extra_config = "cache_wash_threshold='1G',_ob_minor_merge_schedule_interval='3s'";
+ob1.z3.obs0.set extra_config = "cache_wash_threshold='1G',_ob_minor_merge_schedule_interval='3s'";
+ob1.force_stop;
+ob1.clean_backup_dest;
+ob1.reboot;
+ob1.mysql alter resource unit sys_unit_config memory_size='2G';
+use oceanbase;
+alter system set resource_hard_limit = 1000;
+alter system set _restore_idle_time = '10s';
+CREATE RESOURCE UNIT small_unit MIN_CPU=1, MAX_CPU=1, MEMORY_SIZE='4G';
+CREATE RESOURCE POOL small_pool_1 UNIT small_unit, UNIT_NUM 1, ZONE_LIST ('z1','z2','z3');
+CREATE RESOURCE POOL small_pool_2 UNIT small_unit, UNIT_NUM 1, ZONE_LIST ('z1','z2','z3');
+ob1.mysql alter system set _backup_idle_time = '10s';
+ob1.mysql alter system set enable_async_syslog = false;
+ob1.mysql alter system set ob_compaction_schedule_interval = '10s' tenant all_user;
+alter system set ob_compaction_schedule_interval='5s' tenant=all;
+alter system set merger_check_interval='10s' tenant=all;
+alter system set ob_compaction_schedule_interval = '10s' tenant = all;
+===============================================================
+==================     create tenant   ========================
+===============================================================
+ob1.mysql CREATE RESOURCE POOL resource_pool UNIT = "small_unit", UNIT_NUM = 1, ZONE_LIST = ('z1', 'z2');
+ob1.mysql CREATE TENANT backup_mysql_tenant resource_pool_list=('resource_pool'), locality = "F@z1,F@z2", primary_zone = "z1" set ob_tcp_invited_nodes='%', ob_compatibility_mode='mysql';
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_server_schema_info as a join oceanbase.__all_virtual_server_schema_info as b on a.tenant_id = b.tenant_id  where a.refreshed_schema_version != b.refreshed_schema_version, 0, 60;
+create tenant finished
+ob1.mysql alter system set ob_compaction_schedule_interval = '10s' tenant backup_mysql_tenant;
+ob1.mysql alter system set undo_retention = 86400;
+===============================================================
+==================     create table ===========================
+===============================================================
+set global wait_timeout = 288000;
+create user test IDENTIFIED BY "test";
+grant all on *.* to test WITH GRANT OPTION;
+create table t1(a int, b int, c int, PRIMARY KEY (a));
+insert into t1(a, b) values(1, 1);
+insert into t1(a, b) values(2, 2);
+insert into t1(a, b) values(3, 3);
+insert into t1(a, b) values(4, 4);
+create tablegroup tg1 sharding='PARTITION';
+create table mv_tt(c1 int,c2 int, primary key(c1,c2)) tablegroup='tg1' partition by hash(c1) partitions 2;
+create table mv_tg(c2 int, c3 int, primary key(c2)) duplicate_scope = 'cluster' duplicate_read_consistency='weak';
+insert into mv_tt values(1,1), (2,1),(3,1);
+insert into mv_tg values(1,1), (2,1),(3,2);
+create materialized view mv1 (primary key(mv_tt_c1,mv_tt_c2)) tablegroup='tg1' partition by hash(mv_tt_c1) partitions 2 REFRESH FAST ON DEMAND  ENABLE QUERY REWRITE ENABLE ON QUERY COMPUTATION as select /*+read_consistency(weak) use_nl(mv_tt mv_tg) leading(mv_tt mv_tg) use_das(mv_tg) no_use_nl_materialization(mv_tg)*/ mv_tt.c1 mv_tt_c1,mv_tt.c2 mv_tt_c2,mv_tg.c2 mv_tg_c2,mv_tg.c3 mv_tg_c3 from mv_tt join mv_tg on mv_tt.c2=mv_tg.c2;
+select /*+read_consistency(weak) use_nl(mv_tt mv_tg) leading(mv_tt mv_tg) use_das(mv_tg) no_use_nl_materialization(mv_tg)*/ mv_tt.c1 mv_tt_c1,mv_tt.c2 mv_tt_c2,mv_tg.c2 mv_tg_c2,mv_tg.c3 mv_tg_c3 from mv_tt join mv_tg on mv_tt.c2=mv_tg.c2;
+mv_tt_c1	mv_tt_c2	mv_tg_c2	mv_tg_c3
+2	1	1	1
+1	1	1	1
+3	1	1	1
+===============================================================
+==================     start archive   ========================
+===============================================================
+ob1.mysql alter system archivelog;
+ob1.check_until_timeout select status from oceanbase.CDB_OB_ARCHIVELOG where tenant_id=$backup_mysql_tenant_id, DOING, 600;
+ob1.mysql alter system major freeze tenant = '$backup_mysql_tenant';
+ob1.check_until_timeout select min(mv_major_merge_scn) = $major_merge_scn from oceanbase.__all_virtual_ls_info where tenant_id = $backup_mysql_tenant_id and ls_id not like 1, 1 , 180;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_core_table where column_name = 'major_refresh_mv_merge_scn' and tenant_id = $backup_mysql_tenant_id, 1, 120;
+ob1.check_until_timeout select column_value = $major_merge_scn as tenant_mv_merge_scn_check from oceanbase.__all_virtual_core_table where column_name = 'major_refresh_mv_merge_scn' and tenant_id = $backup_mysql_tenant_id, 1, 60;
+insert into t1(a, b) values(5, 5);
+insert into t1(a, b) values(6, 6);
+create table t2(a int, b int, c int, PRIMARY KEY (a));
+===============================================================
+==================     start backup data   ====================
+===============================================================
+begin;
+insert into t1(a, b) values(7, 7);
+insert into t1(a, b) values(8, 8);
+update t1 set c=1;
+update t1 set b=b+1;
+commit;
+begin;
+update t1 set c=2;
+delete from t1 where a=1;
+commit;
+create table t3(a int, b int, c int, PRIMARY KEY (a));
+insert into t3(a, b, c) values(1, 1, 1);
+insert into t3(a, b, c) values(2, 2, 1);
+begin;
+insert into t3(a, b, c) values(3, 3, 3);
+insert into t3(a, b, c) values(4, 4, 4);
+update t3 set c=1;
+update t3 set b=b+1;
+commit;
+insert into t3(a, b, c) values(5, 5, 5);
+insert into t3(a, b, c) values(6, 6, 6);
+commit;
+create materialized view mv2 (primary key(mv_tt_c1,mv_tt_c2)) tablegroup='tg1' partition by hash(mv_tt_c1) partitions 2 REFRESH FAST ON DEMAND  ENABLE QUERY REWRITE ENABLE ON QUERY COMPUTATION as select /*+read_consistency(weak) use_nl(mv_tt mv_tg) leading(mv_tt mv_tg) use_das(mv_tg) no_use_nl_materialization(mv_tg)*/ mv_tt.c1 mv_tt_c1,mv_tt.c2 mv_tt_c2,mv_tg.c2 mv_tg_c2,mv_tg.c3 mv_tg_c3 from mv_tt join mv_tg on mv_tt.c2=mv_tg.c2;
+ob1.mysql alter system major freeze tenant = '$backup_mysql_tenant';
+ob1.mysql alter system major freeze tenant = '$backup_mysql_tenant';
+use oceanbase;
+ob1.mysql alter system backup database;
+ob1.check_until_timeout select count(*) c from __all_backup_job_history where tenant_id = 1, 1, 600;
+ob1.check_until_timeout select result from oceanbase.CDB_OB_BACKUP_JOB_HISTORY where tenant_id = $backup_mysql_tenant_id, 0, 10;
+ob1.check_until_timeout select result from oceanbase.CDB_OB_BACKUP_TASK_HISTORY where tenant_id = $backup_mysql_tenant_id, 0, 10;
+ob1.check_until_timeout select count(*) from __all_virtual_mem_leak_checker_info where mod_name like 'BackupIO', 0, 60;
+===============================================================
+===============  CALC RESTORE POINT  ==========================
+===============================================================
+ob1.check_until_timeout select checkpoint_scn > $now from CDB_OB_ARCHIVELOG where tenant_id = $backup_mysql_tenant_id, 1, 600;
+===============================================================
+===============  FULL RESTORE  ===============================
+===============================================================
+ob1.mysql alter system set_tp tp_name = ERRSIM_WAIT_RESTORE_SAFE_MVIEW, error_code = 4023, frequency = 1;
+ob1.mysql alter system restore $restore_mysql_tenant from '$restore_path' until scn=$now with 'pool_list=small_pool_1&primary_zone=z1&locality=F@z1,F@z2';
+ob1.check_until_timeout SELECT status FROM __all_tenant WHERE tenant_id = 1003, NORMAL, 600;
+ob1.mysql alter system set ob_compaction_schedule_interval = '10s' tenant $restore_mysql_tenant;
+ob1.check_until_timeout select count(*) from __all_virtual_restore_job where tenant_id = 1004 and name = 'status' and value = 'UPGRADE', 1, 600;
+$dst.check_log_until_success -c "exist new mv in restore";

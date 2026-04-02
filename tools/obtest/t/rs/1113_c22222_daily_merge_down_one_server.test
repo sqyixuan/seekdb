@@ -1,0 +1,153 @@
+# owner: rongxuan.lc
+# owner group: SQL3
+# description: 本case是为了测试每日合并过程汇总down了一台机器合并被卡住的问题；
+#
+#case1:在is_merging阶段宕机；
+#case2:全部重启；
+#case3:在合并截断宕机
+#case4:合并超时
+#case5:合并超时后宕机
+#case6:delete server
+#case7:delete zone
+#case7:stop server
+#case8:stop zone
+#case9:永久下线
+
+ob1=OBI(cluster=2:2:2:2:2,proxy_num=0,init_unit_cpu=0, locality=HZ:HZ:HZ:SH:SH);
+ob1.reboot;
+
+ob1.mysql create resource pool rp1 unit = 'sys_unit_config', unit_num = 1, zone_list = ('z1', 'z2', 'z3', 'z4', 'z5');
+ob1.mysql create tenant tt1 replica_num 5, primary_zone 'z2', resource_pool_list ('rp1') set ob_tcp_invited_nodes='%';
+
+let $tt1ip= deploy_get_value(ob1.select select svr_ip from __all_unit where zone='z2' and resource_pool_id = 1001 limit 1, svr_ip, 1);
+let $tt1port = deploy_get_value(ob1.select select inner_port from __all_server where svr_ip='$tt1ip', inner_port, 1);
+
+connect(tt1_conn, $tt1ip, root@tt1,,test, $tt1port);
+connection tt1_conn;
+create table test(c1 int primary key, c2 int);
+insert into test values(1,2);
+let $table_cnt = 10;
+while ($table_cnt > 0)
+{
+  eval create table t_$table_cnt(c1 int primary key, c2 int);
+  eval insert into t_$table_cnt values(1,2);
+  dec $table_cnt;
+}
+
+#ob1.mysql create table oceanbase.test(c1 int primary key, c2 int);
+ob1.mysql alter system set merger_switch_leader_duration_time = '10s';
+ob1.mysql alter system set resource_soft_limit = 100;
+ob1.mysql alter system set resource_hard_limit = 200;
+ob1.mysql alter system set server_data_copy_out_concurrency = 10;
+ob1.mysql alter system set server_data_copy_in_concurrency = 10;
+ob1.mysql alter system set merger_switch_leader_duration_time = '2s';
+ob1.mysql alter system set data_copy_concurrency = 40;
+ob1.mysql alter system major freeze;
+#case1:在is_merging阶段宕机；
+##wait start merge z4
+let $cnt =240;
+while ($cnt > 0)
+{
+  let $start = deploy_get_value(ob1.select select count(*) c from oceanbase.__all_zone where zone = 'z4' and name = "is_merging" and value = 1, c, 1);
+  if ($start == 1) 
+  {
+    let $cnt = 0;
+  }
+  sleep 1;
+  dec $cnt;
+}
+
+##stop z4;
+ob1.z4.force_stop;
+sleep 12;
+ob1.z4.nstart;
+let $version = 2;
+source include/check_leader.inc;
+#case2:全部重启；
+ob1.restart;
+sleep 80;
+ob1.mysql alter system major freeze;
+let $version = 3;
+source include/check_leader.inc;
+
+#case3:在合并截断宕s
+ob1.mysql alter system major freeze;
+let $cnt =240;
+while ($cnt > 0)
+{
+  let $start = deploy_get_value(ob1.select  select count(*) c from oceanbase.__all_zone where name = "broadcast_version" and value = 4 and zone = "z2", c, 1);
+  if ($start == 1) 
+  {
+    let $cnt = 0;
+  }
+  sleep 1;
+  dec $cnt;
+}
+ob1.z2.obs0.force_stop;
+sleep 12;
+ob1.z2.obs0.nstart;
+sleep 12;
+let $version = 4;
+source include/check_leader.inc;
+#case4:合并超时
+ob1.mysql alter system major freeze;
+ob1.mysql alter system set zone_merge_timeout = '20s';
+##wait start merge z1
+let $cnt =240;
+while ($cnt > 0)
+{
+  let $start = deploy_get_value(ob1.select  select count(*) c from oceanbase.__all_zone where name = "broadcast_version" and value = 5 and zone = "z1", c, 1);
+  if ($start == 1) 
+  {
+    let $cnt = 0;
+  }
+  sleep 1;
+  dec $cnt;
+}
+ob1.check_version 5;
+
+#case5:合并超时后宕机
+ob1.mysql alter system major freeze;
+ob1.mysql alter system set zone_merge_timeout = '10s';
+##wait start merge z1
+let $cnt =240;
+while ($cnt > 0)
+{
+  let $start = deploy_get_value(ob1.select  select count(*) c from oceanbase.__all_zone where name = "broadcast_version" and value = 6 and zone = "z1", c, 1);
+  if ($start == 1) 
+  {
+    let $cnt = 0;
+  }
+  sleep 1;
+  dec $cnt;
+}
+sleep 12;
+ob1.z2.force_stop;
+
+ob1.check_version 6;
+ob1.z2.nstart;
+sleep 30;
+
+
+#case6:delete server
+let $obs = deploy_get_value(ob1.z1.obs0.ip);
+let $port = deploy_get_value(ob1.z1.obs0.mysql_port);
+
+let $z4obs = deploy_get_value(ob1.z2.obs0.ip);
+let $z4port = deploy_get_value(ob1.z2.obs0.port);
+
+connect (conn1,$obs,root,,oceanbase,$port);
+connection conn1;
+--disable_query_log
+eval alter system delete server "$z4obs:$z4port"; 
+--enable_query_log
+ob1.mysql alter system major freeze;
+ob1.check_version 7;
+
+--disable_query_log
+eval alter system cancel delete server "$z4obs:$z4port"; 
+ob1.mysql alter system major freeze;
+--enable_query_log
+ob1.check_version 8;
+
+

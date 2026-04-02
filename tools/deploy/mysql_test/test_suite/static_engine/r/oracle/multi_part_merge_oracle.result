@@ -1,0 +1,224 @@
+explain_protocol: 2
+result_format: 4
+
+set autocommit = 0;
+
+drop table t1;
+drop table t2;
+create table t1(c1 int, c2 int, c3 int, primary key(c1, c2));
+create index g_idx on t1(c2, c3);
+create index g_idx_c3 on t1(c3) global partition by hash(c3) partitions 3;
+insert/*trace*/ into t1 values (1, 1, 1);
+insert/*trace*/ into t1 values (2, 1, 2);
+insert/*trace*/ into t1 values (3, 4, 3);
+insert/*trace*/ into t1 values (4, 6, 4);
+insert/*trace*/ into t1 values (5, 7, 5);
+
+create table t2 (c1 int, c2 int, c3 int);
+insert/*trace*/ into t2 values (1, 1, 1);
+insert/*trace*/ into t2 values (3, 4, 4);
+insert/*trace*/ into t2 values (4, 2, 2);
+insert/*trace*/ into t2 values (6, 2, 2);
+commit;
+
+
+######## contain insert
+
+######## contain update
+select/*+index(t1 primary)*/ * from t1 order by c1;
++----+----+------+
+| C1 | C2 | C3   |
++----+----+------+
+|  1 |  1 |    1 |
+|  2 |  1 |    2 |
+|  3 |  4 |    3 |
+|  4 |  6 |    4 |
+|  5 |  7 |    5 |
++----+----+------+
+explain merge into t1 using t2 on (t1.c1 = t2.c1) when matched then update set t1.c2 = t1.c2 * 2 where t1.c1 < 5;
+Query Plan
+=====================================================
+|ID|OPERATOR             |NAME|EST.ROWS|EST.TIME(us)|
+-----------------------------------------------------
+|0 |DISTRIBUTED MERGE    |    |4       |6           |
+|1 |└─MERGE JOIN         |    |4       |6           |
+|2 |  ├─TABLE RANGE SCAN |T1  |4       |3           |
+|3 |  └─SORT             |    |4       |3           |
+|4 |    └─TABLE FULL SCAN|T2  |4       |3           |
+=====================================================
+Outputs & filters:
+-------------------------------------
+  0 - output(nil), filter(nil)
+      columns([{T1: ({T1: (T1.C1, T1.C2, T1.C3)}, {G_IDX_C3: (T1.C3, T1.C1, T1.C2)})}]),
+      update([T1.C2=column_conv(NUMBER,PS:(-1,0),NOT NULL,T1.C2 * 2)]), 
+      insert_conds(nil), update_conds(nil), delete_conds(nil)
+  1 - output([T1.C1], [T1.C2], [T1.C3]), filter(nil), rowset=16
+      equal_conds([T1.C1 = T2.C1]), other_conds(nil)
+      merge_directions([ASC])
+  2 - output([T1.C1], [T1.C2], [T1.C3]), filter(nil), rowset=16
+      access([T1.C1], [T1.C2], [T1.C3]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([T1.C1], [T1.C2]), range(MIN,MIN ; 5,MIN), 
+      range_cond([T1.C1 < 5])
+  3 - output([T2.C1]), filter(nil), rowset=16
+      sort_keys([T2.C1, ASC])
+  4 - output([T2.C1]), filter(nil), rowset=16
+      access([T2.C1]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([T2.__pk_increment]), range(MIN ; MAX)always true
+merge into t1 using t2 on (t1.c1 = t2.c1) when matched then update set t1.c2 = t1.c2 * 2 where t1.c1 < 5;
+select/*+index(t1 primary)*/ * from t1 order by c1;
++----+----+------+
+| C1 | C2 | C3   |
++----+----+------+
+|  1 |  2 |    1 |
+|  2 |  1 |    2 |
+|  3 |  8 |    3 |
+|  4 | 12 |    4 |
+|  5 |  7 |    5 |
++----+----+------+
+select/*+index(t1 g_idx_c3)*/ * from t1 order by c1;
++----+----+------+
+| C1 | C2 | C3   |
++----+----+------+
+|  1 |  2 |    1 |
+|  2 |  1 |    2 |
+|  3 |  8 |    3 |
+|  4 | 12 |    4 |
+|  5 |  7 |    5 |
++----+----+------+
+rollback;
+
+
+######## contain update, insert
+select/*+index(t1 primary)*/ * from t1 order by c1;
++----+----+------+
+| C1 | C2 | C3   |
++----+----+------+
+|  1 |  1 |    1 |
+|  2 |  1 |    2 |
+|  3 |  4 |    3 |
+|  4 |  6 |    4 |
+|  5 |  7 |    5 |
++----+----+------+
+explain merge into t1 using t2 on (t1.c1 = t2.c1) when matched then update set t1.c2 = t1.c2 * 2 where t1.c1 < 5 when not matched then insert values (t2.c1, t2.c2, t2. c3);
+Query Plan
+===================================================
+|ID|OPERATOR           |NAME|EST.ROWS|EST.TIME(us)|
+---------------------------------------------------
+|0 |DISTRIBUTED MERGE  |    |4       |7           |
+|1 |└─HASH OUTER JOIN  |    |4       |7           |
+|2 |  ├─TABLE FULL SCAN|T2  |4       |3           |
+|3 |  └─TABLE FULL SCAN|T1  |5       |3           |
+===================================================
+Outputs & filters:
+-------------------------------------
+  0 - output(nil), filter(nil)
+      columns([{T1: ({T1: (T1.C1, T1.C2, T1.C3)}, {G_IDX_C3: (T1.C3, T1.C1, T1.C2)})}]), partitions(p0), 
+      column_values([column_conv(NUMBER,PS:(-1,0),NOT NULL,T2.C1)], [column_conv(NUMBER,PS:(-1,0),NOT NULL,T2.C2)], [column_conv(NUMBER,PS:(-1,0),NULL,T2.C3)]),
+      
+      update([T1.C2=column_conv(NUMBER,PS:(-1,0),NOT NULL,T1.C2 * 2)]), 
+      insert_conds(nil), update_conds([T1.C1 < 5]), delete_conds(nil)
+  1 - output([T1.C1], [T1.C2], [T1.C3], [T2.C1], [T2.C2], [T2.C3]), filter(nil), rowset=16
+      equal_conds([T1.C1 = T2.C1]), other_conds(nil)
+  2 - output([T2.C1], [T2.C2], [T2.C3]), filter(nil), rowset=16
+      access([T2.C1], [T2.C2], [T2.C3]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([T2.__pk_increment]), range(MIN ; MAX)always true
+  3 - output([T1.C1], [T1.C2], [T1.C3]), filter(nil), rowset=16
+      access([T1.C1], [T1.C2], [T1.C3]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([T1.C1], [T1.C2]), range(MIN,MIN ; MAX,MAX)always true
+merge into t1 using t2 on (t1.c1 = t2.c1) when matched then update set t1.c2 = t1.c2 * 2 where t1.c1 < 5 when not matched then insert values (t2.c1, t2.c2, t2. c3);
+select/*+index(t1 primary)*/ * from t1 order by c1;
++----+----+------+
+| C1 | C2 | C3   |
++----+----+------+
+|  1 |  2 |    1 |
+|  2 |  1 |    2 |
+|  3 |  8 |    3 |
+|  4 | 12 |    4 |
+|  5 |  7 |    5 |
+|  6 |  2 |    2 |
++----+----+------+
+select/*+index(t1 g_idx_c3)*/ * from t1 order by c1;
++----+----+------+
+| C1 | C2 | C3   |
++----+----+------+
+|  1 |  2 |    1 |
+|  2 |  1 |    2 |
+|  3 |  8 |    3 |
+|  4 | 12 |    4 |
+|  5 |  7 |    5 |
+|  6 |  2 |    2 |
++----+----+------+
+rollback;
+
+
+
+######## contain update, insert, delete
+select/*+index(t1 primary)*/ * from t1 order by c1;
++----+----+------+
+| C1 | C2 | C3   |
++----+----+------+
+|  1 |  1 |    1 |
+|  2 |  1 |    2 |
+|  3 |  4 |    3 |
+|  4 |  6 |    4 |
+|  5 |  7 |    5 |
++----+----+------+
+explain merge into t1 using t2 on (t1.c1 = t2.c1) when matched then update set t1.c2 = t1.c2 * 2 where t1.c1 < 5 delete where t1.c3 = 1 when not matched then insert values (t2.c1, t2.c2, t2. c3);
+Query Plan
+===================================================
+|ID|OPERATOR           |NAME|EST.ROWS|EST.TIME(us)|
+---------------------------------------------------
+|0 |DISTRIBUTED MERGE  |    |4       |7           |
+|1 |└─HASH OUTER JOIN  |    |4       |7           |
+|2 |  ├─TABLE FULL SCAN|T2  |4       |3           |
+|3 |  └─TABLE FULL SCAN|T1  |5       |3           |
+===================================================
+Outputs & filters:
+-------------------------------------
+  0 - output(nil), filter(nil)
+      columns([{T1: ({T1: (T1.C1, T1.C2, T1.C3)}, {G_IDX_C3: (T1.C3, T1.C1, T1.C2)})}]), partitions(p0), 
+      column_values([column_conv(NUMBER,PS:(-1,0),NOT NULL,T2.C1)], [column_conv(NUMBER,PS:(-1,0),NOT NULL,T2.C2)], [column_conv(NUMBER,PS:(-1,0),NULL,T2.C3)]),
+      
+      update([T1.C2=column_conv(NUMBER,PS:(-1,0),NOT NULL,T1.C2 * 2)]), 
+      insert_conds(nil), update_conds([T1.C1 < 5]), delete_conds([T1.C3 = 1])
+  1 - output([T1.C1], [T1.C2], [T1.C3], [T2.C1], [T2.C2], [T2.C3]), filter(nil), rowset=16
+      equal_conds([T1.C1 = T2.C1]), other_conds(nil)
+  2 - output([T2.C1], [T2.C2], [T2.C3]), filter(nil), rowset=16
+      access([T2.C1], [T2.C2], [T2.C3]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([T2.__pk_increment]), range(MIN ; MAX)always true
+  3 - output([T1.C1], [T1.C2], [T1.C3]), filter(nil), rowset=16
+      access([T1.C1], [T1.C2], [T1.C3]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([T1.C1], [T1.C2]), range(MIN,MIN ; MAX,MAX)always true
+merge into t1 using t2 on (t1.c1 = t2.c1) when matched then update set t1.c2 = t1.c2 * 2 where t1.c1 < 5 delete where t1.c3 = 1 when not matched then insert values (t2.c1, t2.c2, t2. c3);
+select/*+index(t1 primary)*/ * from t1 order by c1;
++----+----+------+
+| C1 | C2 | C3   |
++----+----+------+
+|  2 |  1 |    2 |
+|  3 |  8 |    3 |
+|  4 | 12 |    4 |
+|  5 |  7 |    5 |
+|  6 |  2 |    2 |
++----+----+------+
+select/*+index(t1 g_idx_c3)*/ * from t1 order by c1;
++----+----+------+
+| C1 | C2 | C3   |
++----+----+------+
+|  2 |  1 |    2 |
+|  3 |  8 |    3 |
+|  4 | 12 |    4 |
+|  5 |  7 |    5 |
+|  6 |  2 |    2 |
++----+----+------+
+rollback;
+
+drop table t1;
+drop table t2;
+
+

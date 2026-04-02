@@ -1,0 +1,122 @@
+# CASE_OWNER:
+#    @cxf262476
+# CASE_DESC:
+# show limit basic test
+
+ob1=OBI(cluster=1:1,proxy_num=0);
+let $extra_conf = "cpu_count=32,memory_limit='50G',system_memory='5G',__min_full_resource_pool_memory='2147483648',cache_wash_threshold='1G',enable_async_syslog=false,_private_buffer_size='16K',_fast_commit_callback_count='1',log_disk_size='20G'";
+ob1.set extra_config=$extra_conf;
+
+ob1.reboot;
+ob1.mysql create resource unit unit_config_small min_cpu 2, max_cpu 2, memory_size '4G';
+ob1.mysql create resource unit unit_config_big min_cpu 2, max_cpu 2, memory_size '10G';
+ob_connect(conn_sys, ob1.z1.obs0, root, , oceanbase, , USE_MYSQL_CONNECTOR);
+# 创建2个租户，一个小规格租户: 4G，一个大规格租户: 10G。
+connection conn_sys;
+CREATE RESOURCE POOL pool_small UNIT = 'unit_config_small', UNIT_NUM = 1, ZONE_LIST = ('z1', 'z2');
+CREATE TENANT t_small RESOURCE_POOL_LIST = ('pool_small'), primary_zone='z1' set ob_tcp_invited_nodes='%';
+
+CREATE RESOURCE POOL pool_big UNIT = 'unit_config_big', UNIT_NUM = 1, ZONE_LIST = ('z1', 'z2');
+CREATE TENANT t_big RESOURCE_POOL_LIST = ('pool_big'), primary_zone='z1' set ob_tcp_invited_nodes='%';
+let $small_tenant_id= deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = 't_small', tenant_id, 1);
+let $big_tenant_id= deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = 't_big', tenant_id, 1);
+
+# 1. 测试展示功能
+--disable_query_log
+--echo "test show"
+eval SELECT TENANT_ID, ZONE, RESOURCE_NAME, CURRENT_UTILIZATION, MAX_UTILIZATION, RESERVED_VALUE, LIMIT_VALUE, EFFECTIVE_LIMIT_TYPE FROM GV\$OB_TENANT_RESOURCE_LIMIT WHERE TENANT_ID=$small_tenant_id OR TENANT_ID=$big_tenant_id ORDER BY TENANT_ID;
+
+# 1.1 日志流测试
+# 1) 测试clog盘和日志流个数的关系
+--echo "test clog disk and ls constraint"
+eval SELECT TENANT_ID, ZONE, LOG_DISK_SIZE/1024/1024/512 FROM __all_virtual_unit WHERE TENANT_ID=$small_tenant_id OR TENANT_ID=$big_tenant_id ORDER BY TENANT_ID;
+eval SELECT TENANT_ID, RESOURCE_NAME, LIMIT_TYPE, LIMIT_VALUE FROM GV\$OB_TENANT_RESOURCE_LIMIT_DETAIL WHERE LIMIT_VALUE !=9223372036854775807 AND LIMIT_TYPE="clog_disk" AND RESOURCE_NAME="ls" AND (TENANT_ID=$small_tenant_id OR TENANT_ID=$big_tenant_id) ORDER BY TENANT_ID;
+
+# 2) 测试内存和日志流个数的关系
+--echo "test memory and ls constraint"
+eval SELECT TENANT_ID, `limit`/1024/1024 FROM __all_virtual_tenant_memory_info WHERE TENANT_ID=$small_tenant_id OR TENANT_ID=$big_tenant_id ORDER BY TENANT_ID;
+eval SELECT TENANT_ID, RESOURCE_NAME, LIMIT_TYPE, LIMIT_VALUE FROM GV\$OB_TENANT_RESOURCE_LIMIT_DETAIL WHERE LIMIT_VALUE !=9223372036854775807 AND LIMIT_TYPE="memory" AND RESOURCE_NAME="ls" AND (TENANT_ID=$small_tenant_id OR TENANT_ID=$big_tenant_id) ORDER BY TENANT_ID;
+
+# 3) 测试配置项和日志流个数的关系
+--echo "test configuration and ls constraint"
+eval SELECT TENANT_ID, SCOPE, NAME, DATA_TYPE, VALUE, SECTION, EDIT_LEVEL FROM GV\$OB_PARAMETERS WHERE name="_max_ls_cnt_per_server" AND (TENANT_ID=$small_tenant_id OR TENANT_ID=$big_tenant_id) ORDER BY TENANT_ID;
+eval SELECT TENANT_ID, RESOURCE_NAME, LIMIT_TYPE, LIMIT_VALUE FROM GV\$OB_TENANT_RESOURCE_LIMIT_DETAIL WHERE LIMIT_VALUE !=9223372036854775807 AND LIMIT_TYPE="configuration" AND RESOURCE_NAME="ls" AND (TENANT_ID=$small_tenant_id OR TENANT_ID=$big_tenant_id) ORDER BY TENANT_ID;
+
+# 1.2 tablet测试
+# 1) 测试配置项和tablet个数的关系
+--echo "test configuration and tablet constraint"
+eval SELECT TENANT_ID, `limit`/1024/1024/1024*20000 as tablet_num FROM __all_virtual_tenant_memory_info WHERE TENANT_ID=$small_tenant_id OR TENANT_ID=$big_tenant_id ORDER BY TENANT_ID;
+eval SELECT TENANT_ID, RESOURCE_NAME, LIMIT_TYPE, LIMIT_VALUE FROM GV\$OB_TENANT_RESOURCE_LIMIT_DETAIL WHERE LIMIT_VALUE !=9223372036854775807 AND LIMIT_TYPE="configuration" AND RESOURCE_NAME="tablet" AND (TENANT_ID=$small_tenant_id OR TENANT_ID=$big_tenant_id) ORDER BY TENANT_ID;
+
+# 2) 测试内存和tablet个数的关系
+--echo "test memory and tablet constraint"
+eval SELECT TENANT_ID, `limit`*0.2/1024/1024/200*20000 as tablet_num FROM __all_virtual_tenant_memory_info WHERE TENANT_ID=$small_tenant_id OR TENANT_ID=$big_tenant_id ORDER BY TENANT_ID;
+eval SELECT TENANT_ID, RESOURCE_NAME, LIMIT_TYPE, LIMIT_VALUE FROM GV\$OB_TENANT_RESOURCE_LIMIT_DETAIL WHERE LIMIT_VALUE !=9223372036854775807 AND LIMIT_TYPE="memory" AND RESOURCE_NAME="tablet" AND (TENANT_ID=$small_tenant_id OR TENANT_ID=$big_tenant_id) ORDER BY TENANT_ID;
+
+# 2. 计算功能
+--echo "test calculator"
+# 2.1 CALCULATE_MIN_PHY_RES_NEEDED_BY_LOGIC_RES
+--echo "test CALCULATE_MIN_PHY_RES_NEEDED_BY_LOGIC_RES invalid argument"
+--error 1210
+CALL DBMS_OB_LIMIT_CALCULATOR.CALCULATE_MIN_PHY_RES_NEEDED_BY_LOGIC_RES();
+--error 1210
+CALL DBMS_OB_LIMIT_CALCULATOR.CALCULATE_MIN_PHY_RES_NEEDED_BY_LOGIC_RES('');
+
+--echo "test CALCULATE_MIN_PHY_RES_NEEDED_BY_LOGIC_RES ls only"
+CALL DBMS_OB_LIMIT_CALCULATOR.CALCULATE_MIN_PHY_RES_NEEDED_BY_LOGIC_RES('ls: -1');
+CALL DBMS_OB_LIMIT_CALCULATOR.CALCULATE_MIN_PHY_RES_NEEDED_BY_LOGIC_RES('ls: 0');
+CALL DBMS_OB_LIMIT_CALCULATOR.CALCULATE_MIN_PHY_RES_NEEDED_BY_LOGIC_RES('ls: 2');
+CALL DBMS_OB_LIMIT_CALCULATOR.CALCULATE_MIN_PHY_RES_NEEDED_BY_LOGIC_RES('ls: 9');
+
+--echo "test CALCULATE_MIN_PHY_RES_NEEDED_BY_LOGIC_RES tablet only"
+CALL DBMS_OB_LIMIT_CALCULATOR.CALCULATE_MIN_PHY_RES_NEEDED_BY_LOGIC_RES('tablet: -1');
+CALL DBMS_OB_LIMIT_CALCULATOR.CALCULATE_MIN_PHY_RES_NEEDED_BY_LOGIC_RES('tablet: 0');
+CALL DBMS_OB_LIMIT_CALCULATOR.CALCULATE_MIN_PHY_RES_NEEDED_BY_LOGIC_RES('tablet: 1');
+CALL DBMS_OB_LIMIT_CALCULATOR.CALCULATE_MIN_PHY_RES_NEEDED_BY_LOGIC_RES('tablet: 60000');
+
+--echo "test CALCULATE_MIN_PHY_RES_NEEDED_BY_LOGIC_RES both ls and tablet"
+CALL DBMS_OB_LIMIT_CALCULATOR.CALCULATE_MIN_PHY_RES_NEEDED_BY_LOGIC_RES('tablet: 100000, ls: 3');
+CALL DBMS_OB_LIMIT_CALCULATOR.CALCULATE_MIN_PHY_RES_NEEDED_BY_LOGIC_RES('tablet: 60000, ls: 9');
+
+# 2.2 CALCULATE_MIN_PHY_RES_NEEDED_BY_UNIT
+let $small_destination = deploy_get_value(ob1.select select concat(svr_ip,':',svr_port) v from oceanbase.__all_virtual_unit where tenant_id = $small_tenant_id, v, 1);
+let $big_destination = deploy_get_value(ob1.select select concat(svr_ip,':',svr_port) v from oceanbase.__all_virtual_unit where tenant_id = $big_tenant_id, v, 1);
+
+--echo "test CALCULATE_MIN_PHY_RES_NEEDED_BY_UNIT invalid argument"
+--error 1318
+CALL DBMS_OB_LIMIT_CALCULATOR.CALCULATE_MIN_PHY_RES_NEEDED_BY_UNIT();
+--error 1318
+CALL DBMS_OB_LIMIT_CALCULATOR.CALCULATE_MIN_PHY_RES_NEEDED_BY_UNIT(TENANT_ID => 1);
+--error 1210
+CALL DBMS_OB_LIMIT_CALCULATOR.CALCULATE_MIN_PHY_RES_NEEDED_BY_UNIT(TENANT_ID => 0, SERVER => '0.0.0.0:1234');
+--error 1210
+CALL DBMS_OB_LIMIT_CALCULATOR.CALCULATE_MIN_PHY_RES_NEEDED_BY_UNIT(TENANT_ID => 1, SERVER => '0.0.0.0:1234');
+
+--echo "test CALCULATE_MIN_PHY_RES_NEEDED_BY_UNIT valid argument"
+--disable_result_log
+eval CALL DBMS_OB_LIMIT_CALCULATOR.CALCULATE_MIN_PHY_RES_NEEDED_BY_UNIT(TENANT_ID => $small_tenant_id, SERVER => "$small_destination");
+eval CALL DBMS_OB_LIMIT_CALCULATOR.CALCULATE_MIN_PHY_RES_NEEDED_BY_UNIT(TENANT_ID => $big_tenant_id, SERVER => "$big_destination");
+--enable_result_log
+
+# 2.3 CALCULATE_MIN_PHY_RES_NEEDED_BY_STANDBY_TENANT
+--echo "test CALCULATE_MIN_PHY_RES_NEEDED_BY_STANDBY_TENANT invalid argument"
+--error 1318
+CALL DBMS_OB_LIMIT_CALCULATOR.CALCULATE_MIN_PHY_RES_NEEDED_BY_STANDBY_TENANT();
+--error 1318
+eval CALL DBMS_OB_LIMIT_CALCULATOR.CALCULATE_MIN_PHY_RES_NEEDED_BY_STANDBY_TENANT(PRIMARY_TENANT_ID => $small_tenant_id);
+--error 1210
+CALL DBMS_OB_LIMIT_CALCULATOR.CALCULATE_MIN_PHY_RES_NEEDED_BY_STANDBY_TENANT(PRIMARY_TENANT_ID => 1, STANDBY_TENANT_UNIT_NUM => 1);
+--error 1210
+eval CALL DBMS_OB_LIMIT_CALCULATOR.CALCULATE_MIN_PHY_RES_NEEDED_BY_STANDBY_TENANT(PRIMARY_TENANT_ID => $small_tenant_id, STANDBY_TENANT_UNIT_NUM => -1);
+--error 1210
+eval CALL DBMS_OB_LIMIT_CALCULATOR.CALCULATE_MIN_PHY_RES_NEEDED_BY_STANDBY_TENANT(PRIMARY_TENANT_ID => $small_tenant_id, STANDBY_TENANT_UNIT_NUM => 0);
+
+--echo "test CALCULATE_MIN_PHY_RES_NEEDED_BY_STANDBY_TENANT valid argument"
+eval CALL DBMS_OB_LIMIT_CALCULATOR.CALCULATE_MIN_PHY_RES_NEEDED_BY_STANDBY_TENANT(PRIMARY_TENANT_ID => $small_tenant_id, STANDBY_TENANT_UNIT_NUM => 1);
+eval CALL DBMS_OB_LIMIT_CALCULATOR.CALCULATE_MIN_PHY_RES_NEEDED_BY_STANDBY_TENANT(PRIMARY_TENANT_ID => $small_tenant_id, STANDBY_TENANT_UNIT_NUM => 2);
+eval CALL DBMS_OB_LIMIT_CALCULATOR.CALCULATE_MIN_PHY_RES_NEEDED_BY_STANDBY_TENANT(PRIMARY_TENANT_ID => $big_tenant_id, STANDBY_TENANT_UNIT_NUM => 1);
+eval CALL DBMS_OB_LIMIT_CALCULATOR.CALCULATE_MIN_PHY_RES_NEEDED_BY_STANDBY_TENANT(PRIMARY_TENANT_ID => $big_tenant_id, STANDBY_TENANT_UNIT_NUM => 2);
+
+DROP TENANT t_small FORCE;
+DROP TENANT t_big FORCE;
+--enable_query_log

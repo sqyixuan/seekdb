@@ -1,0 +1,74 @@
+ob1=OBI(cluster=1:1:2,proxy_num=0,init_unit_cpu=0);
+ob1.set extra_config=$mini_ob_config;
+ob1.reboot;
+ob1.mysql alter system set debug_sync_timeout = '1000s';
+ob1.mysql ALTER SYSTEM SET enable_rebalance = 'false';
+ob1.mysql ALTER SYSTEM SET enable_rereplication = 'true';
+set @@session.ob_query_timeout = 200000000;
+alter system set __min_full_resource_pool_memory=1073741824;
+use oceanbase;
+ob1.mysql CREATE RESOURCE POOL tenant_pool UNIT = "2c2g", UNIT_NUM = 1, ZONE_LIST = ('z1', 'z2', 'z3');
+ob1.mysql CREATE TENANT mysql_tenant RESOURCE_POOL_LIST=('tenant_pool'), LOCALITY = "F@z1, F@z3", PRIMARY_ZONE = "z1" SET ob_tcp_invited_nodes='%';
+create table t1_no_pk (c1 int);
+insert into t1_no_pk values (1), (2), (3);
+select * from t1_no_pk;
+c1
+1
+2
+3
+update t1_no_pk set c1=c1+10;
+select * from t1_no_pk;
+c1
+11
+12
+13
+create table t1_pk (c1 int primary key);
+insert into t1_pk values (1), (2), (3);
+select * from t1_pk;
+c1
+1
+2
+3
+update t1_pk set c1=c1+10;
+select * from t1_pk;
+c1
+11
+12
+13
+create table t1_part (c1 int primary key) partition by hash(c1) partitions 4;
+insert into t1_part values (1), (2), (3), (4);
+select * from t1_part;
+c1
+4
+1
+2
+3
+update t1_part set c1=c1+10;
+select * from t1_part;
+c1
+12
+13
+14
+11
+alter system minor freeze tenant mysql_tenant;
+ob1.z1.obs0.check_log_until_success -c "succeed to release head data memtable";
+ob1.z3.obs1.check_log_until_success -c "succeed to release head data memtable";
+insert into t1_no_pk values (4), (5), (6);
+insert into t1_no_pk values (7), (8), (9);
+insert into t1_no_pk values (10), (11), (12);
+insert into t1_pk values (4), (5), (6);
+insert into t1_pk values (7), (8), (9);
+insert into t1_pk values (10);
+insert into t1_part values (5), (6), (7), (8);
+insert into t1_part values (9), (10), (21), (22);
+alter system minor freeze tenant mysql_tenant;
+ob1.z1.obs0.check_log_until_success -c "succeed to release head data memtable";
+ob1.z3.obs1.check_log_until_success -c "succeed to release head data memtable";
+'prepare finished'
+ob1.mysql set ob_global_debug_sync = 'BEFORE_WAIT_LOG_REPLAY_SYNC wait_for signal';
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_LS_REPLICA_TASK_HISTORY, 2, 60;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_LS_REPLICA_TASKS, 1, 60;
+ob1.mysql set ob_global_debug_sync = 'now signal signal';
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_LS_REPLICA_TASK_HISTORY where tenant_id = $tenant_id_tmp and ls_id = $ls_id_tmp and task_id = '$task_id' and task_status = 'CANCELED', 1, 60;
+task_type	task_status	priority	target_paxos_replica_number	target_replica_type	source_paxos_replica_number	source_replica_type	comment	is_manual
+MIGRATE REPLICA	CANCELED	LOW	2	FULL	2	FULL	migrate replica due to unit not match	FALSE

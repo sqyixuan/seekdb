@@ -1,0 +1,965 @@
+#owner: hr351303
+#owner group: 技术部-SQL-存储过程
+#description: PL 缓存不依赖 INFLUENCE_PLAN
+#tags: pl
+#author:whh01047778
+
+--result_format 4
+
+connect (conn_admin, $OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection conn_admin;
+alter system flush pl cache global;
+alter system flush plan cache global;
+
+connection default;
+
+--disable_warnings
+drop user if exists whh_test0;
+drop user if exists u2;
+drop database if exists whh_test0;
+
+create user 'whh_test0' identified by 'whh_test0';
+create database whh_test0 character set utf8;
+grant all on *.* to 'whh_test0'@'%' with grant option;
+
+create user u2 identified by '123';
+grant all on *.* to u2;
+revoke trigger ON *.* FROM u2;
+--enable_warnings
+
+--source mysql_test/include/check_schema_sync.inc
+connect (conn_user1,$OBMYSQL_MS0,whh_test0,whh_test0,whh_test0,$OBMYSQL_PORT);
+connect (conn_user2, $OBMYSQL_MS0,u2,123,whh_test0, $OBMYSQL_PORT);
+connection conn_user1;
+
+set global ob_plan_cache_percentage = 50;
+
+disconnect conn_user1;
+connect (conn_user1,$OBMYSQL_MS0,whh_test0,whh_test0,whh_test0,$OBMYSQL_PORT);
+connection conn_user1;
+
+set @save_sqlmode = @@global.sql_mode;
+
+--echo #################################################################
+--echo ############ pl 编译
+--error 0,1051
+drop table tab1;
+create table tab1(id int,c1 varchar(2000));
+INSERT INTO tab1 values(1,' 【用户1 表tab1】');
+commit;
+
+--error 0,1051
+drop table tab2;
+create table tab2(id int,c1 varchar(2000));
+INSERT INTO tab1 values(2,' 【用户1 表tab2】');
+commit;
+
+--error 0,1305
+drop PROCEDURE my_pro;
+--error 0,1305
+drop FUNCTION my_fun;
+--error 0,1360
+drop TRIGGER my_tri;
+
+delimiter $;
+CREATE TRIGGER my_tri AFTER INSERT ON tab1 FOR EACH ROW
+BEGIN
+    INSERT INTO tab2 VALUES (NEW.id,new.c1);
+END;
+$
+
+CREATE PROCEDURE my_pro()
+begin
+  declare res1 varchar(2000);
+  PREPARE stmt FROM 'insert into tab1 values(2,concat(CURRENT_USER(),''my_pro 表插入数据 ''))';
+  EXECUTE stmt;
+  DEALLOCATE PREPARE stmt;
+end;
+$
+
+create function my_fun() returns varchar(2000)
+begin
+  declare res1 varchar(2000);
+  SELECT c1 into res1 FROM tab1 where id = 2 limit 1;
+  return concat(CURRENT_USER(),'MY_FUN：',upper(res1),(99/5));
+end;
+$
+delimiter ;$
+
+--echo #### 1、character_set_results(不影响pl缓存，不影响pl编译结果)
+DELIMITER /;
+--error 0,1305
+drop PROCEDURE my_pro01;/
+CREATE PROCEDURE my_pro01()
+BEGIN
+  DECLARE c1 CHAR(100);
+  DECLARE c2 VARCHAR(100);
+  SET c1 = 'Hello World!';
+  SET c2 = 'ऊँचाई ताप प्रदूषण में बिंदु पचास सेंटीमीटर';
+  IF c1 > c2 THEN
+  SELECT CONCAT('output:', c1);
+  ELSEIF c1 < c2 THEN
+  SELECT CONCAT('output:', c2);
+  ELSE
+  SELECT 'output: 相等';
+  END IF;
+END ;
+/
+DELIMITER ;/
+
+connection conn_admin;
+alter system flush pl cache global;
+alter system flush plan cache global;
+connection conn_user1;
+
+set @@session.character_set_results = binary;
+select @@session.character_set_results from dual;
+
+call my_pro01();
+sleep 3;
+select my_fun() from dual;
+sleep 3;
+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_FUN'and OBJECT_TYPE = 'FUNCTION';
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO01'and OBJECT_TYPE = 'PROCEDURE';
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_TRI'and OBJECT_TYPE = 'TRIGGER';
+
+set @@session.character_set_results = gbk;
+select @@session.character_set_results from dual;
+
+call my_pro01();
+select my_fun() from dual;
+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_FUN'and OBJECT_TYPE = 'FUNCTION';
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO01'and OBJECT_TYPE = 'PROCEDURE';
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_TRI'and OBJECT_TYPE = 'TRIGGER';
+
+set @@session.character_set_results = utf8mb4;
+select @@session.character_set_results from dual;
+
+call my_pro01();
+select my_fun() from dual;
+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_FUN'and OBJECT_TYPE = 'FUNCTION';
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO01'and OBJECT_TYPE = 'PROCEDURE';
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_TRI'and OBJECT_TYPE = 'TRIGGER';
+
+--echo #### 2、binlog_row_image(不影响pl缓存，不影响pl编译结果)
+connection conn_admin;
+alter system flush pl cache global;
+alter system flush plan cache global;
+connection conn_user1;
+
+--disable_warnings
+drop table if exists test;
+--enable_warnings
+
+create table test(c1 int primary key ,c2 int, c3 int);
+
+DELIMITER /;
+--error 0,1305
+drop PROCEDURE my_pro01;/
+CREATE PROCEDURE my_pro01()
+BEGIN
+  insert into test values(1,2,3) on duplicate key update c2=c2 +1;
+  insert into test values(1,2,3) on duplicate key update c2=c2 +1;
+END ;
+/
+DELIMITER ;/
+
+set @@session.binlog_row_image = 'MINIMAL';
+select @@session.binlog_row_image from dual;
+
+call my_pro01();
+select my_fun() from dual;
+select  * from test order by 1,2,3;
+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_FUN'and OBJECT_TYPE = 'FUNCTION';
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO01'and OBJECT_TYPE = 'PROCEDURE';
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_TRI'and OBJECT_TYPE = 'TRIGGER';
+
+set @@session.binlog_row_image = 'MINIMAL';
+select @@session.binlog_row_image from dual;
+
+call my_pro01();
+select my_fun() from dual;
+select  * from test order by 1,2,3;
+sleep 3;
+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_FUN'and OBJECT_TYPE = 'FUNCTION';
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO01'and OBJECT_TYPE = 'PROCEDURE';
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_TRI'and OBJECT_TYPE = 'TRIGGER';
+
+set @@session.binlog_row_image = 'FULL';
+select @@session.binlog_row_image from dual;
+
+call my_pro01();
+select my_fun() from dual;
+select  * from test order by 1,2,3;
+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_FUN'and OBJECT_TYPE = 'FUNCTION';
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO01'and OBJECT_TYPE = 'PROCEDURE';
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_TRI'and OBJECT_TYPE = 'TRIGGER';
+
+set @@session.binlog_row_image = 'FULL';
+select @@session.binlog_row_image from dual;
+
+call my_pro01();
+select my_fun() from dual;
+select  * from test order by 1,2,3;
+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_FUN'and OBJECT_TYPE = 'FUNCTION';
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO01'and OBJECT_TYPE = 'PROCEDURE';
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_TRI'and OBJECT_TYPE = 'TRIGGER';
+
+--echo #### 3、explicit_defaults_for_timestamp(不影响pl缓存，不影响pl编译结果)
+--error 0,1051
+drop table tab11;
+create table tab11(id int AUTO_INCREMENT PRIMARY KEY,c1 varchar(2000),c2 timestamp,c3 timestamp null);
+INSERT INTO tab11(id,c1) values(1,' 【用户1 表tab1】');
+commit;
+
+--error 0,1051
+drop table tab22;
+create table tab22(id int,c1 varchar(2000),c2 timestamp,c3 timestamp null);
+INSERT INTO tab22(id,c1) values(2,' 【用户1 表tab2】');
+commit;
+
+--error 0,1305
+drop PROCEDURE my_pro1;
+--error 0,1305
+drop FUNCTION my_fun1;
+--error 0,1360
+drop TRIGGER my_tri1;
+
+delimiter $;
+CREATE TRIGGER my_tri1 AFTER INSERT ON tab11 FOR EACH ROW
+BEGIN
+    INSERT INTO tab22 VALUES (NEW.id,new.c1,new.c2,new.c3);
+END;
+$
+
+CREATE PROCEDURE my_pro1()
+begin
+  insert into tab11 values(null,'my_pro 表插入数据 ',null,null);
+end;
+$
+
+create function my_fun1() returns varchar(2000)
+begin
+  declare res1 varchar(2000);
+  declare res2 timestamp;
+  declare res3 timestamp;
+  SELECT c1,c2,c3 into res1,res2,res3 FROM tab11 order by id desc limit 1;
+  set @a = res2;
+  set @b = res3;
+  return concat(CURRENT_USER(),'MY_FUN：',upper(res1),(99/5));
+end;
+$
+delimiter ;$
+
+connection conn_admin;
+alter system flush pl cache global;
+alter system flush plan cache global;
+connection conn_user1;
+
+set @@session.explicit_defaults_for_timestamp = 0;
+select @@session.explicit_defaults_for_timestamp from dual;
+
+call my_pro1();
+select my_fun1() from dual;
+select @a,@b;
+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_FUN1'and OBJECT_TYPE = 'FUNCTION';
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO1'and OBJECT_TYPE = 'PROCEDURE';
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_TRI1'and OBJECT_TYPE = 'TRIGGER';
+
+set @@session.explicit_defaults_for_timestamp = 0;
+select @@session.explicit_defaults_for_timestamp from dual;
+
+call my_pro1();
+select my_fun1() from dual;
+select @a,@b;
+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_FUN1'and OBJECT_TYPE = 'FUNCTION';
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO1'and OBJECT_TYPE = 'PROCEDURE';
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_TRI1'and OBJECT_TYPE = 'TRIGGER';
+
+set @@session.explicit_defaults_for_timestamp = 1;
+select @@session.explicit_defaults_for_timestamp from dual;
+
+call my_pro1();
+select my_fun1() from dual;
+select @a,@b;
+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_FUN1'and OBJECT_TYPE = 'FUNCTION';
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO1'and OBJECT_TYPE = 'PROCEDURE';
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_TRI1'and OBJECT_TYPE = 'TRIGGER';
+
+set @@session.explicit_defaults_for_timestamp = 1;
+select @@session.explicit_defaults_for_timestamp from dual;
+
+call my_pro1();
+select my_fun1() from dual;
+select @a,@b;
+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_FUN1'and OBJECT_TYPE = 'FUNCTION';
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO1'and OBJECT_TYPE = 'PROCEDURE';
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_TRI1'and OBJECT_TYPE = 'TRIGGER';
+
+--echo #### 4、sql_auto_is_null(不影响pl缓存，不影响pl编译结果)
+connection conn_admin;
+alter system flush pl cache global;
+alter system flush plan cache global;
+connection conn_user1;
+
+--disable_warnings
+drop table if exists t1;
+--enable_warnings
+
+create table t1 (c1 int primary key auto_increment, c2 int);
+insert into t1 (c1, c2) values (null, 1);
+
+DELIMITER /;
+--error 0,1305
+drop PROCEDURE my_pro01;/
+CREATE PROCEDURE my_pro01()
+BEGIN
+  select c1 from t1 where c1 is null;
+  select c1 from t1 where c1 is true;
+END ;
+/
+DELIMITER ;/
+
+set @@session.sql_auto_is_null = 1;
+select @@session.sql_auto_is_null from dual;
+
+call my_pro01();
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO01'and OBJECT_TYPE = 'PROCEDURE';
+
+set @@session.sql_auto_is_null = 1;
+select @@session.sql_auto_is_null from dual;
+
+call my_pro01();
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO01'and OBJECT_TYPE = 'PROCEDURE';
+
+set @@session.sql_auto_is_null = 0;
+select @@session.sql_auto_is_null from dual;
+
+call my_pro01();
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO01'and OBJECT_TYPE = 'PROCEDURE';
+
+set @@session.sql_auto_is_null = 0;
+select @@session.sql_auto_is_null from dual;
+
+call my_pro01();
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO01'and OBJECT_TYPE = 'PROCEDURE';
+
+--echo #### 5、nls_date_format(不影响pl缓存，不影响pl编译结果)
+###### 该变量仅适用于 OceanBase 数据库 Oracle 模式。
+--error 0,1051
+drop table tab1;
+create table tab1(id int,c1 varchar(200),c2 date,c3 DATETIME,c4 TIMESTAMP);
+
+--error 0,1305
+drop PROCEDURE my_pro;
+--error 0,1305
+drop FUNCTION my_fun;
+
+delimiter $;
+CREATE PROCEDURE my_pro(p0 int,p1 varchar(200),p2 date,p3 DATETIME,p4 TIMESTAMP)
+begin
+  insert into tab1 values(p0,p1,p2,p3,p4);
+end;
+$
+
+create function my_fun(p0 int) returns varchar(200)
+begin
+  declare res1 varchar(200);
+  declare res2 date;
+  declare res3 DATETIME;
+  declare res4 TIMESTAMP;
+
+  SELECT c1,c2,c3,c4 into res1,res2,res3,res4 FROM tab1 where id = p0 limit 1;
+  return concat('【MY_FUN】',upper(res1),res2,res3,res4,(99/5));
+end;
+$
+delimiter ;$
+
+call my_pro(2,'my_pro ','2025-03-25','2025-03-25 12:30:00','2025-03-25 12:30:00.123456');
+select my_fun(2) from dual;
+
+connection conn_admin;
+alter system flush pl cache global;
+alter system flush plan cache global;
+connection conn_user1;
+
+set @@session.nls_date_format = 'DD-MON-RR';
+select @@session.nls_date_format from dual;
+
+call my_pro(3,'DD-MON-RR ','2025-03-25','2025-03-25 12:30:00','2025-03-25 12:30:00.123456');
+select my_fun(3) from dual;
+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_FUN'and OBJECT_TYPE = 'FUNCTION';
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO'and OBJECT_TYPE = 'PROCEDURE';
+
+set @@session.nls_date_format = 'DD-MON-RR';
+select @@session.nls_date_format from dual;
+
+call my_pro(4,'DD-MON-RR ','2025-03-25','2025-03-25 12:30:00','2025-03-25 12:30:00.123456');
+select my_fun(4) from dual;
+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_FUN'and OBJECT_TYPE = 'FUNCTION';
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO'and OBJECT_TYPE = 'PROCEDURE';
+
+set @@session.nls_date_format = 'YYYY-MM-DD HH24:MI:SS';
+select @@session.nls_date_format from dual;
+
+call my_pro(5,'YYYY-MM-DD ','2025-03-25','2025-03-25 12:30:00','2025-03-25 12:30:00.123456');
+select my_fun(5) from dual;
+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_FUN'and OBJECT_TYPE = 'FUNCTION';
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO'and OBJECT_TYPE = 'PROCEDURE';
+
+set @@session.nls_date_format = 'YYYY-MM-DD HH24:MI:SS';
+select @@session.nls_date_format from dual;
+
+call my_pro(6,'YYYY-MM-DD ','2025-03-25','2025-03-25 12:30:00','2025-03-25 12:30:00.123456');
+select my_fun(6) from dual;
+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_FUN'and OBJECT_TYPE = 'FUNCTION';
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO'and OBJECT_TYPE = 'PROCEDURE';
+
+--echo #### 6、nls_timestamp_format(不影响pl缓存，不影响pl编译结果)
+connection conn_admin;
+alter system flush pl cache global;
+alter system flush plan cache global;
+connection conn_user1;
+
+set @@session.nls_timestamp_format = 'DD-MON-RR HH.MI.SSXFF AM';
+select @@session.nls_timestamp_format from dual;
+
+call my_pro(7,'DD-MON-RR HH.MI.SSXFF AM ','2025-03-25','2025-03-25 12:30:00','2025-03-25 12:30:00.123456');
+select my_fun(7) from dual;
+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_FUN'and OBJECT_TYPE = 'FUNCTION';
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO'and OBJECT_TYPE = 'PROCEDURE';
+
+set @@session.nls_timestamp_format = 'DD-MON-RR HH.MI.SSXFF AM';
+select @@session.nls_timestamp_format from dual;
+
+call my_pro(8,'DD-MON-RR HH.MI.SSXFF AM ','2025-03-25','2025-03-25 12:30:00','2025-03-25 12:30:00.123456');
+select my_fun(8) from dual;
+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_FUN'and OBJECT_TYPE = 'FUNCTION';
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO'and OBJECT_TYPE = 'PROCEDURE';
+
+set @@session.nls_timestamp_format = 'YYYY-MM-DD HH24:MI:SS.FF';
+select @@session.nls_timestamp_format from dual;
+
+call my_pro(9,'YYYY-MM-DD HH24:MI:SS.FF ','2025-03-25','2025-03-25 12:30:00','2025-03-25 12:30:00.123456');
+select my_fun(9) from dual;
+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_FUN'and OBJECT_TYPE = 'FUNCTION';
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO'and OBJECT_TYPE = 'PROCEDURE';
+
+set @@session.nls_timestamp_format = 'YYYY-MM-DD HH24:MI:SS.FF';
+select @@session.nls_timestamp_format from dual;
+
+call my_pro(10,'YYYY-MM-DD HH24:MI:SS.FF ','2025-03-25','2025-03-25 12:30:00','2025-03-25 12:30:00.123456');
+select my_fun(10) from dual;
+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_FUN'and OBJECT_TYPE = 'FUNCTION';
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO'and OBJECT_TYPE = 'PROCEDURE';
+
+--echo #### 7、nls_timestamp_tz_format(不影响pl缓存，不影响pl编译结果)
+connection conn_admin;
+alter system flush pl cache global;
+alter system flush plan cache global;
+connection conn_user1;
+
+set @@session.nls_timestamp_tz_format = 'DD-MON-RR HH.MI.SSXFF AM TZR';
+select @@session.nls_timestamp_tz_format from dual;
+
+call my_pro(11,'DD-MON-RR HH.MI.SSXFF AM TZR ','2025-03-25','2025-03-25 12:30:00','2025-03-25 12:30:00.123456');
+select my_fun(11) from dual;
+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_FUN'and OBJECT_TYPE = 'FUNCTION';
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO'and OBJECT_TYPE = 'PROCEDURE';
+
+set @@session.nls_timestamp_tz_format = 'DD-MON-RR HH.MI.SSXFF AM TZR';
+select @@session.nls_timestamp_tz_format from dual;
+
+call my_pro(12,'DD-MON-RR HH.MI.SSXFF AM TZR ','2025-03-25','2025-03-25 12:30:00','2025-03-25 12:30:00.123456');
+select my_fun(12) from dual;
+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_FUN'and OBJECT_TYPE = 'FUNCTION';
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO'and OBJECT_TYPE = 'PROCEDURE';
+
+set @@session.nls_timestamp_tz_format = 'yyyy-mm-dd hh24:mi:ss.ff tzr tzd';
+select @@session.nls_timestamp_tz_format from dual;
+
+call my_pro(13,'yyyy-mm-dd hh24:mi:ss.ff tzr tzd ','2025-03-25','2025-03-25 12:30:00','2025-03-25 12:30:00.123456');
+select my_fun(13) from dual;
+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_FUN'and OBJECT_TYPE = 'FUNCTION';
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO'and OBJECT_TYPE = 'PROCEDURE';
+
+set @@session.nls_timestamp_tz_format = 'yyyy-mm-dd hh24:mi:ss.ff tzr tzd';
+select @@session.nls_timestamp_tz_format from dual;
+
+call my_pro(14,'yyyy-mm-dd hh24:mi:ss.ff tzr tzd ','2025-03-25','2025-03-25 12:30:00','2025-03-25 12:30:00.123456');
+select my_fun(14) from dual;
+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_FUN'and OBJECT_TYPE = 'FUNCTION';
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO'and OBJECT_TYPE = 'PROCEDURE';
+
+--echo #### 8、 _nlj_batching_enabled （不影响pl缓存，不影响pl编译结果）
+--error 0,1051
+drop table tab1;
+create table tab1(id int,c1 varchar(2000));
+INSERT INTO tab1 values(1,' 【用户1 表tab1】');
+commit;
+
+--error 0,1051
+drop table tab2;
+create table tab2(id int,c1 varchar(2000));
+INSERT INTO tab2 values(2,' 【用户1 表tab2】');
+commit;
+
+--disable_warnings
+drop table if exists t1, t2;
+--enable_warnings
+
+create table t1(c1 int, c2 int primary key);
+create table t2(c1 int primary key, c2 int);
+insert/*trace*/ into t1 values(1,1), (1, 2), (null, 3), (2, 4), (3,5);
+insert/*trace*/ into t2 values(1, 1), (3, 3), (5,5), (6, null);
+
+--error 0,1305
+drop PROCEDURE my_pro;
+--error 0,1305
+drop FUNCTION my_fun;
+
+delimiter $;
+CREATE PROCEDURE my_pro()
+begin
+  declare res1 varchar(2000);
+  insert into tab1 values(2,concat(CURRENT_USER(),'my_pro 表插入数据 '));
+  select /*+use_merge(t1 t2) leading(t1 t2)*/ * from t1, t2 where t1.c1 = t2.c2 order by 1,2;
+  select /*+use_merge(t1 t2) leading(t1 t2)*/ * from t1 left join t2 on t1.c1 = t2.c2 order by 1,2;
+  select /*+use_merge(t1 t2) leading(t1 t2)*/ * from t1 right join t2 on t1.c1 = t2.c2 order by 1,2;
+  select /*+use_merge(t1 t2) leading(t1 t2)*/ * from t1 full join t2 on t1.c1 = t2.c2 order by 1,2;
+  select /*+use_merge(t1, t2)*/ * from t1 where exists (select 1 from t2 where t1.c1 =  t2.c1) order by 1,2;
+  select /*+use_merge(t1, t2)*/ * from t1 where not exists (select 1 from t2 where t1.c1 =  t2.c1) order by 1,2;
+end;
+$
+
+create function my_fun() returns varchar(2000)
+begin
+  declare res1 varchar(2000);
+  SELECT tab1.c1 into res1 FROM tab1,tab2 where tab1.id=tab2.id and tab1.id = 2 limit 1;
+  return concat(CURRENT_USER(),'MY_FUN：',upper(res1),(99/5));
+end;
+$
+delimiter ;$
+
+connection conn_admin;
+alter system flush pl cache global;
+alter system flush plan cache global;
+connection conn_user1;
+
+set @@session._nlj_batching_enabled = 0;
+select @@session._nlj_batching_enabled from dual;
+
+call my_pro();
+select my_fun() from dual;
+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_FUN'and OBJECT_TYPE = 'FUNCTION';
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO'and OBJECT_TYPE = 'PROCEDURE';
+
+set @@session._nlj_batching_enabled = 0;
+select @@session._nlj_batching_enabled from dual;
+
+call my_pro();
+select my_fun() from dual;
+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_FUN'and OBJECT_TYPE = 'FUNCTION';
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO'and OBJECT_TYPE = 'PROCEDURE';
+
+set @@session._nlj_batching_enabled = 1;
+select @@session._nlj_batching_enabled from dual;
+
+call my_pro();
+select my_fun() from dual;
+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_FUN'and OBJECT_TYPE = 'FUNCTION';
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO'and OBJECT_TYPE = 'PROCEDURE';
+
+set @@session._nlj_batching_enabled = 1;
+select @@session._nlj_batching_enabled from dual;
+
+call my_pro();
+select my_fun() from dual;
+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_FUN'and OBJECT_TYPE = 'FUNCTION';
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO'and OBJECT_TYPE = 'PROCEDURE';
+
+--echo #### 9、 _enable_parallel_dml （影响plan计划，不影响pl缓存，不影响pl编译结果）
+connection conn_admin;
+alter system flush pl cache global;
+alter system flush plan cache global;
+connection conn_user1;
+
+set @@session._enable_parallel_dml = 1;
+select @@session._enable_parallel_dml from dual;
+
+call my_pro();
+select my_fun() from dual;
+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_FUN'and OBJECT_TYPE = 'FUNCTION';
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO'and OBJECT_TYPE = 'PROCEDURE';
+
+set @@session._enable_parallel_dml = 1;
+select @@session._enable_parallel_dml from dual;
+
+call my_pro();
+select my_fun() from dual;
+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_FUN'and OBJECT_TYPE = 'FUNCTION';
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO'and OBJECT_TYPE = 'PROCEDURE';
+
+set @@session._enable_parallel_dml = 0;
+select @@session._enable_parallel_dml from dual;
+
+call my_pro();
+select my_fun() from dual;
+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_FUN'and OBJECT_TYPE = 'FUNCTION';
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO'and OBJECT_TYPE = 'PROCEDURE';
+
+set @@session._enable_parallel_dml = 0;
+select @@session._enable_parallel_dml from dual;
+
+call my_pro();
+select my_fun() from dual;
+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_FUN'and OBJECT_TYPE = 'FUNCTION';
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO'and OBJECT_TYPE = 'PROCEDURE';
+
+--echo #### 10、 _px_min_granules_per_slave（影响plan计划，不影响pl缓存，不影响pl编译结果）
+connection conn_admin;
+alter system flush pl cache global;
+alter system flush plan cache global;
+connection conn_user1;
+
+set @@session._px_min_granules_per_slave = 10;
+select @@session._px_min_granules_per_slave from dual;
+
+call my_pro();
+select my_fun() from dual;
+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_FUN'and OBJECT_TYPE = 'FUNCTION';
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO'and OBJECT_TYPE = 'PROCEDURE';
+
+set @@session._px_min_granules_per_slave = 11;
+select @@session._px_min_granules_per_slave from dual;
+
+call my_pro();
+select my_fun() from dual;
+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_FUN'and OBJECT_TYPE = 'FUNCTION';
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO'and OBJECT_TYPE = 'PROCEDURE';
+
+set @@session._px_min_granules_per_slave = 12;
+select @@session._px_min_granules_per_slave from dual;
+
+call my_pro();
+select my_fun() from dual;
+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_FUN'and OBJECT_TYPE = 'FUNCTION';
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO'and OBJECT_TYPE = 'PROCEDURE';
+
+set @@session._px_min_granules_per_slave = 13;
+select @@session._px_min_granules_per_slave from dual;
+
+call my_pro();
+select my_fun() from dual;
+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_FUN'and OBJECT_TYPE = 'FUNCTION';
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO'and OBJECT_TYPE = 'PROCEDURE';
+
+--echo #### 11、secure_file_priv  ERROR 1235 (0A000): modify SECURE_FILE_PRIV not by unix socket connection not supported
+--error 1235
+set @@GLOBAL.secure_file_priv =  '';
+select @@GLOBAL.secure_file_priv from dual;
+
+--echo #### 12、 _enable_parallel_query （影响plan计划，不影响pl缓存，不影响pl编译结果）
+connection conn_admin;
+alter system flush pl cache global;
+alter system flush plan cache global;
+connection conn_user1;
+
+--disable_warnings
+drop table if exists p1, p2, p3, p4;
+--enable_warnings
+
+create table p1(c1 int primary key, c2 int) parallel 1;
+create table p2(c1 int primary key, c2 int) parallel 1 partition by hash(c1) partitions 4;
+create table p3(c1 int primary key, c2 int) parallel 3;
+create table p4(c1 int primary key, c2 int) parallel 4;
+
+DELIMITER $;
+--error 0,1305
+drop PROCEDURE my_pro01;$
+CREATE PROCEDURE my_pro01()
+BEGIN
+  select /*+leading(p2,p1,p3,p4)*/ * from p1,p2,p3,p4 where p1.c1 = p2.c1 and p2.c1 = p3.c1 and p3.c1 = p4.c1;
+  select * from t1,t2 where t1.c1 = t2.c1;
+  #insert /*+use_px*/ into t2 select * from t1;
+  select /*+index (t1 t1_i1)*/ c2 from t1;
+END;
+$
+DELIMITER ;$
+
+set @@session._enable_parallel_query = 0;
+select @@session._enable_parallel_query from dual;
+
+call my_pro01();
+sleep 3;
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO01'and OBJECT_TYPE = 'PROCEDURE';
+
+set @@session._enable_parallel_query = 0;
+select @@session._enable_parallel_query from dual;
+
+call my_pro01();
+sleep 3;
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO01'and OBJECT_TYPE = 'PROCEDURE';
+
+set @@session._enable_parallel_query = 1;
+select @@session._enable_parallel_query from dual;
+
+call my_pro01();
+sleep 3;
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO01'and OBJECT_TYPE = 'PROCEDURE';
+
+set @@session._enable_parallel_query = 1;
+select @@session._enable_parallel_query from dual;
+
+call my_pro01();
+sleep 3;
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO01'and OBJECT_TYPE = 'PROCEDURE';
+
+--echo #### 13、 _force_parallel_query_dop（影响plan计划，不影响pl缓存，不影响pl编译结果）
+connection conn_admin;
+alter system flush pl cache global;
+alter system flush plan cache global;
+connection conn_user1;
+
+--disable_warnings
+drop table if exists t1;
+--enable_warnings
+
+create table t1(a int primary key, b int, c int) partition by hash(a) partitions 4;
+create index i1 on t1(b) global partition by hash(b) partitions 4;
+create index i2 on t1(b) global partition by key(b) partitions 17;
+insert into t1 values(1, 1, 1), (2, 2, 2), (3, 3, 3), (4, 4, 4), (5, 4, 4), (6, 4, 4), (7, 4, 4), (8, 4, 4);
+
+DELIMITER $;
+--error 0,1305
+drop PROCEDURE my_pro01;$
+CREATE PROCEDURE my_pro01()
+BEGIN
+  delete /*+index(t1 i1)*/ from t1 where b = 1;
+  select /*+index(t1 i1)*/ * from t1 where b>1 and b <10 order by 1,2,3;
+  select /*+index(t1 i1), parallel(3)*/ * from t1 where b>1 and b<10 order by 1,2,3;
+END ;
+$
+DELIMITER ;$
+
+set @@session._force_parallel_query_dop = 4;
+select @@session._force_parallel_query_dop from dual;
+
+call my_pro01();
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO01'and OBJECT_TYPE = 'PROCEDURE';
+
+set @@session._force_parallel_query_dop = 3;
+select @@session._force_parallel_query_dop from dual;
+
+call my_pro01();
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO01'and OBJECT_TYPE = 'PROCEDURE';
+
+set @@session._force_parallel_query_dop = 2;
+select @@session._force_parallel_query_dop from dual;
+
+call my_pro01();
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO01'and OBJECT_TYPE = 'PROCEDURE';
+
+set @@session._force_parallel_query_dop = 1;
+select @@session._force_parallel_query_dop from dual;
+
+call my_pro01();
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO01'and OBJECT_TYPE = 'PROCEDURE';
+
+--echo #### 14、 _force_parallel_dml_dop（影响plan计划，不影响pl缓存，不影响pl编译结果）
+--error 0,1051
+drop table tab2;
+--error 0,1051
+drop table t1;
+create table t1 (c1 int, c2 int) partition by hash(c1) partitions 3;
+insert into t1 values (1,1),(2,2),(3,3),(4,4),(5,5);
+
+--error 0,1305
+drop PROCEDURE my_pro01;
+--error 0,1305
+drop PROCEDURE my_pro02;
+
+delimiter $;
+CREATE PROCEDURE my_pro01()
+begin
+  PREPARE stmt FROM 'CREATE TABLE tab2 as select 1 c1,1 c2 from dual';
+  EXECUTE stmt;
+  PREPARE stmt FROM 'insert into tab2 values(1,1)';
+  EXECUTE stmt;
+  DEALLOCATE PREPARE stmt;
+end;
+$
+CREATE PROCEDURE my_pro02()
+begin
+  insert into t1 values (1,1),(2,2),(3,3),(4,4),(5,5);
+end;
+$
+delimiter ;$
+
+connection conn_admin;
+alter system flush pl cache global;
+alter system flush plan cache global;
+connection conn_user1;
+
+set @@session._force_parallel_dml_dop = 4;
+select @@session._force_parallel_dml_dop from dual;
+
+call my_pro01();
+sleep 3;
+call my_pro02();
+sleep 3;
+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO01'and OBJECT_TYPE = 'PROCEDURE';
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO02'and OBJECT_TYPE = 'PROCEDURE';
+
+set @@session._force_parallel_dml_dop = 3;
+select @@session._force_parallel_dml_dop from dual;
+
+drop table tab2;
+call my_pro01();
+call my_pro02();
+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO01'and OBJECT_TYPE = 'PROCEDURE';
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO02'and OBJECT_TYPE = 'PROCEDURE';
+
+set @@session._force_parallel_dml_dop = 2;
+select @@session._force_parallel_dml_dop from dual;
+
+drop table tab2;
+call my_pro01();
+call my_pro02();
+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO01'and OBJECT_TYPE = 'PROCEDURE';
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO02'and OBJECT_TYPE = 'PROCEDURE';
+
+set @@session._force_parallel_dml_dop = 1;
+select @@session._force_parallel_dml_dop from dual;
+
+drop table tab2;
+call my_pro01();
+call my_pro02();
+select * from t1 order by 1,2;
+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO01'and OBJECT_TYPE = 'PROCEDURE';
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO02'and OBJECT_TYPE = 'PROCEDURE';
+
+--echo #### 15、 _enable_parallel_ddl （不影响pl缓存，不影响pl编译结果）
+--error 0,1051
+drop table tab2;
+--error 0,1305
+drop PROCEDURE my_pro;
+--error 0,1305
+drop function my_fun;
+
+delimiter $;
+CREATE PROCEDURE my_pro()
+begin
+  PREPARE stmt FROM 'CREATE TABLE tab2 (c1 INT, c2 INT) PARALLEL = 3';
+  EXECUTE stmt;
+  PREPARE stmt FROM 'insert into tab2 values(1,1)';
+  EXECUTE stmt;
+  DEALLOCATE PREPARE stmt;
+end;
+$
+create function my_fun() returns varchar(200)
+begin
+  declare res1 INT;
+  declare res2 INT;
+  SELECT c1,c2 into res1,res2 FROM tab2 where c1 = 1 limit 1;
+  return concat('【MY_FUN】',res1,res2);
+end;
+$
+delimiter ;$
+
+connection conn_admin;
+alter system flush pl cache global;
+alter system flush plan cache global;
+connection conn_user1;
+
+set @@session._enable_parallel_ddl = 1;
+select @@session._enable_parallel_ddl from dual;
+
+call my_pro();
+select my_fun() from dual;
+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_FUN'and OBJECT_TYPE = 'FUNCTION';
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO'and OBJECT_TYPE = 'PROCEDURE';
+
+set @@session._enable_parallel_ddl = 1;
+select @@session._enable_parallel_ddl from dual;
+
+drop table tab2;
+call my_pro();
+select my_fun() from dual;
+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_FUN'and OBJECT_TYPE = 'FUNCTION';
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO'and OBJECT_TYPE = 'PROCEDURE';
+
+set @@session._enable_parallel_ddl = 0;
+select @@session._enable_parallel_ddl from dual;
+
+drop table tab2;
+call my_pro();
+select my_fun() from dual;
+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_FUN'and OBJECT_TYPE = 'FUNCTION';
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO'and OBJECT_TYPE = 'PROCEDURE';
+
+set @@session._enable_parallel_ddl = 0;
+select @@session._enable_parallel_ddl from dual;
+
+drop table tab2;
+call my_pro();
+select my_fun() from dual;
+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_FUN'and OBJECT_TYPE = 'FUNCTION';
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO'and OBJECT_TYPE = 'PROCEDURE';
+
+set @@global.sql_mode = @save_sqlmode;
+
+connection conn_admin;
+alter system flush pl cache global;
+alter system flush plan cache global;
+
+connection default;
+
+--disable_warnings
+drop user if exists whh_test0;
+--enable_warnings
+
+purge recyclebin;

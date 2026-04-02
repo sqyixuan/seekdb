@@ -1,0 +1,282 @@
+##owner: ly435438
+##owner group: 底层引擎部-存储-索引与DDL
+##description: 自动分区分裂全局索引测试
+##tags: split_partition
+
+
+connect (obsys,$OBMYSQL_MS0,root@sys,,oceanbase,$OBMYSQL_PORT);
+connect (conn1,$OBMYSQL_MS0,$OBMYSQL_USR,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+--sleep 2
+
+connection obsys;
+let $new_primary_zone = query_get_value(select GROUP_CONCAT(zone) from __all_server, GROUP_CONCAT(zone), 1); 
+let $tenant_id = query_get_value(select tenant_id from oceanbase.__all_tenant where tenant_name = 'sys', tenant_id, 1);
+let $origin_primary_zone = query_get_value(select primary_zone from __all_tenant where tenant_name = 'sys', primary_zone, 1);
+--replace_regex /PRIMARY_ZONE = '.*'/PRIMARY_ZONE = "new_primary_zone"/g
+eval alter tenant sys PRIMARY_ZONE = '$new_primary_zone';
+
+let $ls_num = query_get_value(select count(1) as count from (select distinct(LS_ID) as num from oceanbase.DBA_OB_LS_LOCATIONS), count, 1);
+let $times_check = 0;
+while ($times_check < 5) 
+{
+  --sleep 5
+  --inc $times_check
+  let $ls_num = query_get_value(select count(1) as count from (select distinct(LS_ID) as num from oceanbase.DBA_OB_LS_LOCATIONS), count, 1);
+  if ($ls_num > 2) 
+  {
+    let $times_check = 5;
+  }
+}
+
+let $OB_DDL_CREATE_GLOBAL_INDEX = 40;
+let $OB_DDL_MODIFY_GLOBAL_INDEX_STATUS = 44;
+let $OB_DDL_SPLIT_PARTITION = 46;
+let $OB_DDL_MODIFY_TABLE_SCHEMA_VERSION = 14;
+
+#test global index key with range key 
+connection conn1;
+--disable_warnings
+drop table if exists t22;
+--enable_warnings
+alter system set enable_auto_split = true;
+alter system set auto_split_tablet_size = '128mb';
+--sleep 5
+set session ob_query_timeout=1000000000000;	
+create table t22(a int, b VARCHAR(150), c int, d VARCHAR(4000),primary key(a,b)) partition by range(a) (partition p1 values less than (50000000), partition p2 values less than MAXVALUE);
+
+#global index: range key is the prefix of the index key
+create index gkey1 on t22(c,d) global partition BY range(c) (partition p1 values less than (50000000), partition p2 values less than MAXVALUE);
+
+
+
+connection obsys;
+
+let $table_id = query_get_value(select table_id from oceanbase.__all_virtual_table where table_name='t22', table_id, 1);
+let $gkey1_id = query_get_value(select table_id from oceanbase.__all_virtual_table where table_name like '%gkey1%' and data_table_id = $table_id, table_id, 1);
+let $gkey1_p1_id = query_get_value(select tablet_id from oceanbase.__all_virtual_part where table_id = $gkey1_id and part_name = 'p1', tablet_id, 1);
+let $gkey1_p2_id = query_get_value(select tablet_id from oceanbase.__all_virtual_part where table_id = $gkey1_id and part_name = 'p2', tablet_id, 1);
+
+let $p1_ls_id = query_get_value(select LS_ID from oceanbase.CDB_OB_TABLE_LOCATIONS where table_id = $gkey1_id and role = 'LEADER' and tablet_id = $gkey1_p1_id, LS_ID, 1);
+let $p1_svr_ip = query_get_value(select SVR_IP from oceanbase.CDB_OB_TABLE_LOCATIONS where table_id = $gkey1_id and role = 'LEADER' and tablet_id = $gkey1_p1_id, SVR_IP, 1);
+let $p1_svr_port = query_get_value(select SVR_PORT from oceanbase.CDB_OB_TABLE_LOCATIONS where table_id = $gkey1_id and role = 'LEADER' and tablet_id = $gkey1_p1_id, SVR_PORT, 1);
+
+let $p2_ls_id = query_get_value(select LS_ID from oceanbase.CDB_OB_TABLE_LOCATIONS where table_id = $gkey1_id and role = 'LEADER' and tablet_id = $gkey1_p2_id, LS_ID, 1);
+let $p2_svr_ip = query_get_value(select SVR_IP from oceanbase.CDB_OB_TABLE_LOCATIONS where table_id = $gkey1_id and role = 'LEADER' and tablet_id = $gkey1_p2_id, SVR_IP, 1);
+let $p2_svr_port = query_get_value(select SVR_PORT from oceanbase.CDB_OB_TABLE_LOCATIONS where table_id = $gkey1_id and role = 'LEADER' and tablet_id = $gkey1_p2_id, SVR_PORT, 1);
+--replace_regex /table_id = [0-9]*/table_id = gkey1_id/g
+eval select count(1) from (select DISTINCT(LS_ID) from oceanbase.CDB_OB_TABLE_LOCATIONS where table_id = $gkey1_id and role = 'LEADER');
+
+
+connection conn1;
+
+
+let $times_insert = 0;
+while ($times_insert < 20)
+{
+  --inc $times_insert
+  insert into t22(a,b,c,d) select 
+    uniform(1, 100000000, random()),
+    randstr(150, random()) c1,
+    uniform(1, 100000000, random()),
+    randstr(4000, random()) c1
+  from 
+    table(generator(5000));
+}
+
+connection obsys;
+let $times_check = 0;
+while ($times_check < 10)
+{
+  sleep 15;
+  --inc $times_check
+  let $partition_count = query_get_value(select count(1) as count from (select distinct(src_tablet_id) from oceanbase.__all_virtual_tablet_reorganize_history where src_tablet_id = $gkey1_p1_id or src_tablet_id = $gkey1_p2_id), count, 1);
+  if ($partition_count == 2) 
+  {
+    let $times_check = 11;
+  }
+}
+
+--replace_regex /table_id = [0-9]*/table_id = gkey1_id/g
+eval select count(1) > 3 from __all_virtual_part where table_id = $gkey1_id;
+--sleep 5
+#make sure that the position of tablets are located at the same places before and after the split 
+
+--replace_regex /LS_ID = [0-9]*/LS_ID = origin_ls_id/g /table_id = [0-9]*/table_id = origin_table_id/g /src_tablet_id = [0-9]*/src_tablet_id = origin_src_tablet_id/g 
+eval select LS_ID = $p1_ls_id from oceanbase.CDB_OB_TABLE_LOCATIONS where table_id = $gkey1_id and role = 'LEADER' and tablet_id in (select dest_tablet_id from __all_virtual_tablet_reorganize_history where src_tablet_id = $gkey1_p1_id);
+--replace_regex /SVR_IP = '.*'/SVR_IP = origin_svr_ip/g /table_id = [0-9]*/table_id = origin_table_id/g /src_tablet_id = [0-9]*/src_tablet_id = origin_src_tablet_id/g 
+eval select SVR_IP = '$p1_svr_ip' from oceanbase.CDB_OB_TABLE_LOCATIONS where table_id = $gkey1_id and role = 'LEADER' and tablet_id in (select dest_tablet_id from __all_virtual_tablet_reorganize_history where src_tablet_id = $gkey1_p1_id);
+--replace_regex /SVR_PORT = [0-9]*/SVR_PORT = origin_svr_port/g /table_id = [0-9]*/table_id = origin_table_id/g /src_tablet_id = [0-9]*/src_tablet_id = origin_src_tablet_id/g 
+eval select SVR_PORT = $p1_svr_port from oceanbase.CDB_OB_TABLE_LOCATIONS where table_id = $gkey1_id and role = 'LEADER' and tablet_id in (select dest_tablet_id from __all_virtual_tablet_reorganize_history where src_tablet_id = $gkey1_p1_id);
+
+--replace_regex /LS_ID = [0-9]*/LS_ID = origin_ls_id/g /table_id = [0-9]*/table_id = origin_table_id/g /src_tablet_id = [0-9]*/src_tablet_id = origin_src_tablet_id/g 
+eval select LS_ID = $p2_ls_id from oceanbase.CDB_OB_TABLE_LOCATIONS where table_id = $gkey1_id and role = 'LEADER' and tablet_id in (select dest_tablet_id from __all_virtual_tablet_reorganize_history where src_tablet_id = $gkey1_p2_id);
+--replace_regex /SVR_IP = '.*'/SVR_IP = origin_svr_ip/g /table_id = [0-9]*/table_id = origin_table_id/g /src_tablet_id = [0-9]*/src_tablet_id = origin_src_tablet_id/g 
+eval select SVR_IP = '$p2_svr_ip' from oceanbase.CDB_OB_TABLE_LOCATIONS where table_id = $gkey1_id and role = 'LEADER' and tablet_id in (select dest_tablet_id from __all_virtual_tablet_reorganize_history where src_tablet_id = $gkey1_p2_id);
+--replace_regex /SVR_PORT = [0-9]*/SVR_PORT = origin_svr_port/g /table_id = [0-9]*/table_id = origin_table_id/g /src_tablet_id = [0-9]*/src_tablet_id = origin_src_tablet_id/g 
+eval select SVR_PORT = $p2_svr_port from oceanbase.CDB_OB_TABLE_LOCATIONS where table_id = $gkey1_id and role = 'LEADER' and tablet_id in (select dest_tablet_id from __all_virtual_tablet_reorganize_history where src_tablet_id = $gkey1_p2_id);
+
+
+#make sure the values in __all_virtual_ddl_operation are expected
+--replace_regex /table_id = [0-9]*/table_id = gkey1_id/g
+eval select ddl_stmt_str from __all_virtual_ddl_operation where operation_type = $OB_DDL_SPLIT_PARTITION and table_id = $gkey1_id;
+--replace_regex /table_id = [0-9]*/table_id = gkey1_id/g
+eval select ddl_stmt_str from __all_virtual_ddl_operation where operation_type = $OB_DDL_MODIFY_TABLE_SCHEMA_VERSION and table_id = $gkey1_id;
+
+
+#test global index key with range column key 
+connection conn1;
+drop table t22;
+set session ob_query_timeout=1000000000000;
+--sleep 5
+create table t22(a int, b VARCHAR(150), c int, d VARCHAR(4000),primary key(a,b)) partition by range(a) (partition p1 values less than (50000000), partition p2 values less than MAXVALUE);
+#global index: partition by multiple ranges
+create index gkey2 on t22(a,c,d) global partition by range columns(a,c) (partition p1 values less than (50000000,50000000), partition p2 values less than (MAXVALUE,MAXVALUE));
+
+connection obsys;
+let $table_id = query_get_value(select table_id from oceanbase.__all_virtual_table where table_name='t22',table_id,1);
+
+let $gkey2_id = query_get_value(select table_id from oceanbase.__all_virtual_table where table_name like '%gkey2%' and data_table_id = $table_id, table_id, 1);
+let $gkey2_p1_id = query_get_value(select tablet_id from oceanbase.__all_virtual_part where table_id = $gkey2_id and part_name = 'p1', tablet_id, 1);
+let $gkey2_p2_id = query_get_value(select tablet_id from oceanbase.__all_virtual_part where table_id = $gkey2_id and part_name = 'p2', tablet_id, 1);
+
+let $p1_ls_id = query_get_value(select LS_ID from oceanbase.CDB_OB_TABLE_LOCATIONS where table_id = $gkey2_id and role = 'LEADER' and tablet_id = $gkey2_p1_id, LS_ID, 1);
+let $p1_svr_ip = query_get_value(select SVR_IP from oceanbase.CDB_OB_TABLE_LOCATIONS where table_id = $gkey2_id and role = 'LEADER' and tablet_id = $gkey2_p1_id, SVR_IP, 1);
+let $p1_svr_port = query_get_value(select SVR_PORT from oceanbase.CDB_OB_TABLE_LOCATIONS where table_id = $gkey2_id and role = 'LEADER' and tablet_id = $gkey2_p1_id, SVR_PORT, 1);
+
+let $p2_ls_id = query_get_value(select LS_ID from oceanbase.CDB_OB_TABLE_LOCATIONS where table_id = $gkey2_id and role = 'LEADER' and tablet_id = $gkey2_p2_id, LS_ID, 1);
+let $p2_svr_ip = query_get_value(select SVR_IP from oceanbase.CDB_OB_TABLE_LOCATIONS where table_id = $gkey2_id and role = 'LEADER' and tablet_id = $gkey2_p2_id, SVR_IP, 1);
+let $p2_svr_port = query_get_value(select SVR_PORT from oceanbase.CDB_OB_TABLE_LOCATIONS where table_id = $gkey2_id and role = 'LEADER' and tablet_id = $gkey2_p2_id, SVR_PORT, 1);
+--replace_regex /table_id = [0-9]*/table_id = gkey2_id/g
+eval select count(1) from (select DISTINCT(LS_ID) from oceanbase.CDB_OB_TABLE_LOCATIONS where table_id = $gkey2_id and role = 'LEADER');
+
+connection conn1;
+
+let $times_insert = 0;
+while ($times_insert < 20)
+{
+  --inc $times_insert
+  insert into t22(a,b,c,d) select 
+    uniform(1, 100000000, random()),
+    randstr(150, random()) c1,
+    uniform(1, 100000000, random()),
+  randstr(4000, random()) c1
+  from 
+    table(generator(5000));
+}
+
+
+
+connection obsys;
+let $times_check = 0;
+while ($times_check < 10)
+{
+  sleep 15;
+  --inc $times_check
+  let $partition_count = query_get_value(select count(1) as count from (select distinct(src_tablet_id) from oceanbase.__all_virtual_tablet_reorganize_history where src_tablet_id = $gkey2_p1_id or src_tablet_id = $gkey2_p2_id), count, 1);
+  if ($partition_count == 2) 
+  {
+    let $times_check = 11;
+  }
+}
+
+--replace_regex /table_id = [0-9]*/table_id = gkey2_id/g
+eval select count(1) > 3 from __all_virtual_part where table_id = $gkey2_id;
+--sleep 5
+#make sure that the position of tablets are located at the same places before and after the split 
+
+--replace_regex /LS_ID = [0-9]*/LS_ID = origin_ls_id/g /table_id = [0-9]*/table_id = origin_table_id/g /src_tablet_id = [0-9]*/src_tablet_id = origin_src_tablet_id/g 
+eval select LS_ID = $p1_ls_id from oceanbase.CDB_OB_TABLE_LOCATIONS where table_id = $gkey2_id and role = 'LEADER' and tablet_id in (select dest_tablet_id from __all_virtual_tablet_reorganize_history where src_tablet_id = $gkey2_p1_id);
+--replace_regex /SVR_IP = '.*'/SVR_IP = origin_svr_ip/g /table_id = [0-9]*/table_id = origin_table_id/g /src_tablet_id = [0-9]*/src_tablet_id = origin_src_tablet_id/g 
+eval select SVR_IP = '$p1_svr_ip' from oceanbase.CDB_OB_TABLE_LOCATIONS where table_id = $gkey2_id and role = 'LEADER' and tablet_id in (select dest_tablet_id from __all_virtual_tablet_reorganize_history where src_tablet_id = $gkey2_p1_id);
+--replace_regex /SVR_PORT = [0-9]*/SVR_PORT = origin_svr_port/g /table_id = [0-9]*/table_id = origin_table_id/g /src_tablet_id = [0-9]*/src_tablet_id = origin_src_tablet_id/g 
+eval select SVR_PORT = $p1_svr_port from oceanbase.CDB_OB_TABLE_LOCATIONS where table_id = $gkey2_id and role = 'LEADER' and tablet_id in (select dest_tablet_id from __all_virtual_tablet_reorganize_history where src_tablet_id = $gkey2_p1_id);
+
+--replace_regex /LS_ID = [0-9]*/LS_ID = origin_ls_id/g /table_id = [0-9]*/table_id = origin_table_id/g /src_tablet_id = [0-9]*/src_tablet_id = origin_src_tablet_id/g 
+eval select LS_ID = $p2_ls_id  from oceanbase.CDB_OB_TABLE_LOCATIONS where table_id = $gkey2_id and role = 'LEADER' and tablet_id in (select dest_tablet_id from __all_virtual_tablet_reorganize_history where src_tablet_id = $gkey2_p2_id);
+--replace_regex /SVR_IP = '.*'/SVR_IP = origin_svr_ip/g /table_id = [0-9]*/table_id = origin_table_id/g /src_tablet_id = [0-9]*/src_tablet_id = origin_src_tablet_id/g 
+eval select SVR_IP = '$p2_svr_ip'  from oceanbase.CDB_OB_TABLE_LOCATIONS where table_id = $gkey2_id and role = 'LEADER' and tablet_id in (select dest_tablet_id from __all_virtual_tablet_reorganize_history where src_tablet_id = $gkey2_p2_id);
+--replace_regex /SVR_PORT = [0-9]*/SVR_PORT = origin_svr_port/g /table_id = [0-9]*/table_id = origin_table_id/g /src_tablet_id = [0-9]*/src_tablet_id = origin_src_tablet_id/g 
+eval select SVR_PORT = $p2_svr_port  from oceanbase.CDB_OB_TABLE_LOCATIONS where table_id = $gkey2_id and role = 'LEADER' and tablet_id in (select dest_tablet_id from __all_virtual_tablet_reorganize_history where src_tablet_id = $gkey2_p2_id);
+
+
+#make sure the values in __all_virtual_ddl_operation are expected
+--replace_regex /table_id = [0-9]*/table_id = gkey2_id/g
+eval select ddl_stmt_str from __all_virtual_ddl_operation where operation_type = $OB_DDL_SPLIT_PARTITION and table_id = $gkey2_id;
+--replace_regex /table_id = [0-9]*/table_id = gkey2_id/g
+eval select ddl_stmt_str from __all_virtual_ddl_operation where operation_type = $OB_DDL_MODIFY_TABLE_SCHEMA_VERSION and table_id = $gkey2_id;
+
+
+
+#test global index key without range key 
+connection conn1;
+--disable_warnings
+drop table if exists t22;
+--enable_warnings
+alter system set enable_auto_split = true;
+set session ob_query_timeout=1000000000000;
+--sleep 5
+create table t22(a int, b VARCHAR(150), c int, d VARCHAR(4000),primary key(a,b)) partition by range(a) (partition p1 values less than (50000000), partition p2 values less than MAXVALUE);
+#global index: no range key 
+create index gkey1 on t22(a,d) global;
+
+connection obsys;
+let $table_id = query_get_value(select table_id from oceanbase.__all_virtual_table where table_name='t22',table_id,1);
+let $gkey1_id = query_get_value(select table_id from oceanbase.__all_virtual_table where table_name like '%gkey1%' and data_table_id = $table_id, table_id, 1);
+let $gkey1_src_tablet_id = query_get_value(select tablet_id from oceanbase.__all_virtual_table where table_id = $gkey1_id, tablet_id, 1);
+
+
+let $p1_ls_id = query_get_value(select LS_ID from oceanbase.CDB_OB_TABLE_LOCATIONS where table_id = $gkey1_id and role = 'LEADER' and tablet_id = $gkey1_src_tablet_id, LS_ID, 1);
+let $p1_svr_ip = query_get_value(select SVR_IP from oceanbase.CDB_OB_TABLE_LOCATIONS where table_id = $gkey1_id and role = 'LEADER' and tablet_id = $gkey1_src_tablet_id, SVR_IP, 1);
+let $p1_svr_port = query_get_value(select SVR_PORT from oceanbase.CDB_OB_TABLE_LOCATIONS where table_id = $gkey1_id and role = 'LEADER' and tablet_id = $gkey1_src_tablet_id, SVR_PORT, 1);
+
+
+connection conn1;
+
+let $times_insert = 0;
+while ($times_insert < 20)
+{
+  --inc $times_insert
+  insert into t22(a,b,c,d) select 
+    uniform(1, 100000000, random()),
+    randstr(150, random()) c1,
+    uniform(1, 100000000, random()),
+    randstr(4000, random()) c1
+  from 
+    table(generator(5000));
+}
+connection obsys;
+
+connection obsys;
+let $times_check = 0;
+while ($times_check < 10)
+{
+  sleep 15;
+  --inc $times_check
+  let $partition_count = query_get_value(select count(1) as count from (select distinct(src_tablet_id) from oceanbase.__all_virtual_tablet_reorganize_history where src_tablet_id = $gkey1_src_tablet_id), count, 1);
+  if ($partition_count == 1) 
+  {
+    let $times_check = 11;
+  }
+}
+
+--replace_regex /table_id = [0-9]*/table_id = gkey1_id/g
+eval select count(1) > 1 from __all_virtual_part where table_id = $gkey1_id;
+--sleep 5
+#make sure that the position of tablets are located at the same places before and after the split 
+
+--replace_regex /LS_ID = [0-9]*/LS_ID = origin_ls_id/g /table_id = [0-9]*/table_id = origin_table_id/g /src_tablet_id = [0-9]*/src_tablet_id = origin_src_tablet_id/g 
+eval select LS_ID = $p1_ls_id from oceanbase.CDB_OB_TABLE_LOCATIONS where table_id = $gkey1_id and role = 'LEADER' and tablet_id in (select dest_tablet_id from __all_virtual_tablet_reorganize_history where src_tablet_id = $gkey1_src_tablet_id);
+--replace_regex /SVR_IP = '.*'/SVR_IP = origin_svr_ip/g /table_id = [0-9]*/table_id = origin_table_id/g /src_tablet_id = [0-9]*/src_tablet_id = origin_src_tablet_id/g 
+eval select SVR_IP = '$p1_svr_ip' from oceanbase.CDB_OB_TABLE_LOCATIONS where table_id = $gkey1_id and role = 'LEADER' and tablet_id in (select dest_tablet_id from __all_virtual_tablet_reorganize_history where src_tablet_id = $gkey1_src_tablet_id);
+--replace_regex /SVR_PORT = [0-9]*/SVR_PORT = origin_svr_port/g /table_id = [0-9]*/table_id = origin_table_id/g /src_tablet_id = [0-9]*/src_tablet_id = origin_src_tablet_id/g 
+eval select SVR_PORT = $p1_svr_port from oceanbase.CDB_OB_TABLE_LOCATIONS where table_id = $gkey1_id and role = 'LEADER' and tablet_id in (select dest_tablet_id from __all_virtual_tablet_reorganize_history where src_tablet_id = $gkey1_src_tablet_id);
+
+#make sure the values in __all_virtual_ddl_operation are expected
+--replace_regex /table_id = [0-9]*/table_id = gkey1_id/g
+eval select ddl_stmt_str from __all_virtual_ddl_operation where operation_type = $OB_DDL_SPLIT_PARTITION and table_id = $gkey1_id;
+
+connection conn1;
+drop table t22;
+alter system set enable_auto_split = false;
+--replace_regex /PRIMARY_ZONE = '.*'/PRIMARY_ZONE = "origin_primary_zone"/g
+eval alter tenant sys PRIMARY_ZONE = '$origin_primary_zone';

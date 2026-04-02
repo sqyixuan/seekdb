@@ -1,0 +1,89 @@
+##
+# owner:zjf225077
+# owner group:transaction
+# description: verify whether the rebuild operation can be triggerd and
+# completed correctly during the leader reconfirm
+# attention: use this case needs to add a configuration item to prohibit
+# the fetch log operation, meanwhile it needs to run sysbench
+##
+
+ob1=OBI(cluster=1:1:1,proxy_num=1,locality=HZ:SZ:SZ);
+
+ob1.z1.obs0.set extra_config=devname=bond0;
+ob1.z2.obs0.set extra_config=devname=bond0;
+ob1.z3.obs0.set extra_config=devname=bond0;
+
+ob1.reboot;
+
+ob1.mysql create resource pool rp1 unit = 'sys_unit_config', unit_num = 1, zone_list = ('z1', 'z2', 'z3');
+ob1.mysql create tenant tt1 replica_num 3, primary_zone 'z2;z3', resource_pool_list('rp1') set ob_tcp_invited_nodes='%';
+
+ob1.mysql alter system set enable_rebalance = 'false';
+
+sleep 2;
+
+let $z1_ip=deploy_get_value(ob1.z1.obs0.ip);
+let $z1_port=deploy_get_value(ob1.z1.obs0.port);
+let $z2_ip=deploy_get_value(ob1.z2.obs0.ip);
+let $z2_port=deploy_get_value(ob1.z2.obs0.port);
+let $z3_ip=deploy_get_value(ob1.z3.obs0.ip);
+let $z3_port=deploy_get_value(ob1.z3.obs0.port);
+
+ob1.mysql alter system set server_data_copy_in_concurrency=1000;
+ob1.mysql alter system set data_copy_concurrency=1000;
+ob1.mysql alter system set server_data_copy_out_concurrency=1000;
+
+let $src_address_z1 = deploy_get_value(ob1.select select concat(svr_ip, ':', svr_port) host from oceanbase.__all_server where zone='z1', host, 1);
+let $src_address_z2 = deploy_get_value(ob1.select select concat(svr_ip, ':', svr_port) host from oceanbase.__all_server where zone='z2', host, 1);
+let $src_address_z3 = deploy_get_value(ob1.select select concat(svr_ip, ':', svr_port) host from oceanbase.__all_server where zone='z3', host, 1);
+
+let $proxy_ip=deploy_get_value(ob1.proxy0.ip);
+let $proxy_port=deploy_get_value(ob1.proxy0.port);
+ob1.mysql alter system set memory_chunk_cache_size='12G';
+ob1.mysql alter system set syslog_io_bandwidth_limit = '10240MB';
+
+connect (conn1,$proxy_ip,root@tt1,,test,$proxy_port);
+
+# step1: create table
+# step2: block the net between z2 and z3
+# step3: recycle the log on z1 and z2
+# step4: clean the net between z2 and z3, switch leader from z2 to z3
+
+# step1, the purpose of sleep 30 seconds is to create table, and then use sysbench
+# to write data, the case of sysbench is create_trade
+sleep 30;
+let $table_id=deploy_get_value(ob1.select select table_id from oceanbase.__all_virtual_table where table_name = 'trade_process_000', table_id, 1);
+
+# step2, block the net between z2 and z3, make z3 a lagged replica
+ob1.z2.obs0.block_net ob1.z3.obs0;
+
+# the purpose of sleep 100s is make z3 far behind, and trigger the rebuild operation
+# successfully
+sleep 100;
+
+# step3, make z1 and z2 recycle their's log, and the will trigger dump memory
+# automatically.
+ob1.mysql alter system set clog_disk_utilization_threshold = 10 server='$src_address_z1';
+ob1.mysql alter system set clog_disk_utilization_threshold = 10 server='$src_address_z2';
+# avoid the influence of kvcache
+ob1.mysql alter system set cache_wash_threshold = '4KB';
+sleep 300;
+
+# adjust the clog_disk_utilization_threshold of z1 and z3, make them can write log
+# normally
+ob1.mysql alter system set clog_disk_utilization_threshold = 80 server='$src_address_z1';
+ob1.mysql alter system set clog_disk_utilization_threshold = 80 server='$src_address_z3';
+
+# prohibit fetch log on z3, it needs to be set via configuration items, avoid trigger
+# rebuild operation on z3 before it becomes leader
+ob1.mysql alter system set _enable_fetch_log = false server='$src_address_z3';
+sleep 2;
+# clean the net between z2 and z3, and then switch leader from z2 to z3
+ob1.z2.obs0.clean_net ob1.z3.obs0;
+sleep 2;
+ob1.mysql alter system switch replica leader partition_id='0%0@$table_id' server='$z3_ip:$z3_port';
+sleep 2;
+# defensive methods, avoid switch leader from z3 to z2 by root service
+ob1.z2.obs0.block_net ob1.z3.obs0;
+
+sleep 3000;

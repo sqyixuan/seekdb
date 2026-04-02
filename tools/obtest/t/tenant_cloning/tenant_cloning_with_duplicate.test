@@ -1,0 +1,77 @@
+# owner: chensen.cs
+# owner group: transaction
+# Testing Case: basic tenant cloning with duplicate table
+
+ob1=OBI(cluster=1:1:1, proxy_num=0);
+
+source include/mini_ob_config.inc;
+ob1.z1.obs0.set extra_config = "cache_wash_threshold='1G',_ob_minor_merge_schedule_interval='3s'";
+ob1.z2.obs0.set extra_config = "cache_wash_threshold='1G',_ob_minor_merge_schedule_interval='3s'";
+ob1.z3.obs0.set extra_config = "cache_wash_threshold='1G',_ob_minor_merge_schedule_interval='3s'";
+
+let $clone_ip       = deploy_get_value(ob1.z1.obs0.ip);
+let $clone_port     = deploy_get_value(ob1.z1.obs0.mysql_port);
+let $source_mysql_tenant    = mysql;
+let $clone_mysql_tenant = clone_mysql_tenant;
+let $clone_mysql_resource_pool = clone_mysql_resource_pool;
+let $log_backup_dest = deploy_get_value(ob1.get_log_backup_dest $source_mysql_tenant);
+
+# 必须先stop掉老的，删除才能有效，不然可能会有残留。
+ob1.force_stop;
+ob1.clean_backup_dest;
+ob1.reboot;
+
+# 固定sys租户规格
+ob1.mysql alter resource unit sys_unit_config memory_size='2G';
+
+connect(sys_conn, $clone_ip, root@sys,, oceanbase, $clone_port);
+connection sys_conn;
+use oceanbase;
+
+source sql/physical_backup/prepare_multi_zone_resource.sql;
+
+ob1.mysql alter system set _backup_idle_time = '10s';
+ob1.mysql alter system set enable_async_syslog=false;
+
+# 创建源租户
+ob1.mysql CREATE TENANT $source_mysql_tenant RESOURCE_POOL_LIST = ('small_pool'), primary_zone = "z1" set ob_tcp_invited_nodes='%', ob_compatibility_mode='mysql';
+let $source_mysql_tenant_id = query_get_value(select tenant_id from oceanbase.__all_tenant where tenant_name='$source_mysql_tenant', tenant_id, 1);
+ob_connect(conn_mysql, ob1.z1.obs0, root@$source_mysql_tenant, ,test, , USE_MYSQL_CONNECTOR);
+connection conn_mysql;
+set global wait_timeout = 288000;
+
+# 开启日志归档
+ob_connect(conn_sys, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection conn_sys;
+--disable_all_result_log
+eval alter system set log_archive_dest='location=$log_backup_dest' tenant=$source_mysql_tenant;
+eval alter system archivelog tenant= $source_mysql_tenant;
+--enable_all_result_log
+ob1.check_until_timeout select status from oceanbase.__all_virtual_log_archive_progress where tenant_id=$source_mysql_tenant_id, DOING, 600;
+let $start_scn = query_get_value(select start_scn from oceanbase.__all_virtual_log_archive_progress where tenant_id=$source_mysql_tenant_id, start_scn, 1);
+--disable_all_result_log
+eval alter system minor freeze tenant = $source_mysql_tenant;
+--enable_all_result_log
+ob1.check_until_timeout select count(*)>0 from oceanbase.__all_virtual_ls_info where tenant_id=$source_mysql_tenant_id and (select MIN(checkpoint_scn) as min_scn from oceanbase.__all_virtual_ls_info where tenant_id=$source_mysql_tenant_id) >= $start_scn, 1, 600;
+
+# 创建广播日志流
+ob_connect(conn_mysql, ob1.z1.obs0, root@$source_mysql_tenant, , test, , USE_MYSQL_CONNECTOR);
+connection conn_mysql;
+create table dup_t1(c1 int, c2 longtext) duplicate_scope = 'cluster';
+insert into dup_t1 value (1, "123"), (2,"456"), (3,"789"), (4,"1"), (5, "2");
+create table dup_pt1(c1 int) duplicate_scope = 'CLUSTER' partition by hash(c1) partitions 4;
+insert into dup_pt1 value (1), (2), (3), (4), (5);
+
+# 开始克隆，校验克隆最终结果为CLONE_SYS_SUCCESS
+connection conn_sys;
+--echo ===============================================================
+--echo ==================     clone mysql tenant   ========================
+--echo ===============================================================
+ob1.mysql CREATE TENANT $clone_mysql_tenant FROM $source_mysql_tenant WITH RESOURCE_POOL = $clone_mysql_resource_pool, UNIT = small_unit;
+ob1.check_until_timeout select status from oceanbase.__all_clone_job_history where clone_tenant_name='$clone_mysql_tenant', CLONE_SYS_SUCCESS, 300;
+
+ob_connect(clone_conn_mysql, ob1.z1.obs0, root@$clone_mysql_tenant, ,test, , USE_MYSQL_CONNECTOR);
+connection clone_conn_mysql;
+ob1.check_until_timeout select count(*) from __all_virtual_memory_info where mod_name like '%OB_MOD_DO_NOT_USE_ME%' and hold != 0, 0, 10;
+
+--echo clone mysql tenant finished

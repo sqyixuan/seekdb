@@ -1,0 +1,306 @@
+# owner:shanyan.g
+# owner group:transaction
+# description:
+# 测试点：partition/pg的管理
+##
+ob1=OBI(cluster=1:1,proxy_num=0,init_unit_cpu=5);
+
+ob1.reboot;
+sleep 5;
+
+ob1.mysql alter system set enable_auto_leader_switch = false;
+
+#在zone1上建立连接
+let $ip=deploy_get_value(ob1.z1.obs0.ip);
+let $port=deploy_get_value(ob1.z1.obs0.mysql_port);
+connect (conn1,$ip,admin@obtest,admin,oceanbase,$port);
+connect (conn2,$ip,root@sys,,oceanbase,$port);
+
+##########################################################################
+# case 1 : 验证非PG的DDL功能
+connection conn1;
+use test;
+# 1.1 基本操作
+create tablegroup storage_001_tg1 partition by hash partitions 2;
+create table storage_001_test1(id1 int, id2 int) tablegroup storage_001_tg1 partition by hash(id1 % 2) partitions 2; 
+create table storage_001_test2(id1 int, id2 int) tablegroup storage_001_tg1 partition by hash(id1 % 2) partitions 2; 
+
+desc storage_001_test1;
+desc storage_001_test2;
+
+insert into storage_001_test1 values(1, 1), (2, 2), (3, 3), (4,4);
+insert into storage_001_test2 values(1, 1), (2, 2), (3, 3), (4,4);
+
+select * from storage_001_test1 order by id1;
+select * from storage_001_test2 order by id1;
+
+# 1.2 验证create table like语法
+create table storage_001_test3 like test.storage_001_test1;
+create table storage_001_test4 like test.storage_001_test2;
+
+desc storage_001_test3;
+desc storage_001_test4;
+
+insert into storage_001_test3 values(1, 1), (2, 2), (3, 3), (4,4);
+insert into storage_001_test4 values(1, 1), (2, 2), (3, 3), (4,4);
+
+select * from storage_001_test3 order by id1;
+select * from storage_001_test4 order by id1;
+
+connection conn2;
+let $table_id1 = query_get_value(select table_id from oceanbase.__all_virtual_table where table_name = 'storage_001_test1', table_id, 1);
+
+# 1.3 验证truncate table
+connection conn1;
+truncate table storage_001_test1;
+truncate table storage_001_test2;
+truncate table storage_001_test3;
+truncate table storage_001_test4;
+
+desc storage_001_test1;
+desc storage_001_test2;
+desc storage_001_test3;
+desc storage_001_test4;
+
+insert into storage_001_test1 values(10, 1), (20, 2), (30, 3), (40,4);
+insert into storage_001_test2 values(10, 1), (20, 2), (30, 3), (40,4);
+insert into storage_001_test3 values(10, 1), (20, 2), (30, 3), (40,4);
+insert into storage_001_test4 values(10, 1), (20, 2), (30, 3), (40,4);
+
+select * from storage_001_test1 order by id1;
+select * from storage_001_test2 order by id1;
+select * from storage_001_test3 order by id1;
+select * from storage_001_test4 order by id1;
+
+sleep 5;
+
+# 1.4 验证truncate之后的flashback table
+connection conn2;
+let $table_objname1 = query_get_value(select object_name from oceanbase.__all_virtual_recyclebin where table_id = $table_id1 and type = 1, object_name, 1);
+
+connection conn1;
+--disable_query_log
+eval flashback table $table_objname1 to before drop rename to flashback_test1;
+--enable_query_log
+desc flashback_test1;
+insert into flashback_test1 values(1, 11), (1, 12), (1, 13), (1,14);
+select * from flashback_test1 order by id1;
+
+# 1.5 验证table的alter tablegroup功能
+create tablegroup storage_001_tg2 partition by hash partitions 2;
+alter table storage_001_test1 tablegroup storage_001_tg2;
+alter table storage_001_test2 tablegroup storage_001_tg2;
+alter table storage_001_test3 tablegroup storage_001_tg2;
+alter table storage_001_test4 tablegroup storage_001_tg2;
+
+connection conn2;
+let $table_id2 = query_get_value(select table_id from oceanbase.__all_virtual_table where table_name = 'flashback_test1', table_id, 1);
+
+# 1.6 验证drop table功能
+connection conn1;
+drop tablegroup storage_001_tg1;
+--error 4615
+drop tablegroup storage_001_tg2;
+
+drop table flashback_test1;
+drop table storage_001_test1;
+drop table storage_001_test2;
+drop table storage_001_test3;
+drop table storage_001_test4;
+
+# 1.7 验证drop table之后的flashback table
+connection conn2;
+let $table_objname2 = query_get_value(select object_name from oceanbase.__all_virtual_recyclebin where table_id = $table_id2 and type = 1, object_name, 1);
+
+connection conn1;
+--disable_query_log
+eval flashback table $table_objname2 to before drop rename to flashback_test2;
+--enable_query_log
+desc flashback_test2;
+insert into flashback_test2 values(11, 11), (12, 12), (13, 13), (14,14);
+select * from flashback_test2 order by id1;
+
+drop table flashback_test2;
+--error 5151
+drop tablegroup storage_001_tg1;
+drop tablegroup storage_001_tg2;
+
+# 1.8 验证tablegroup被drop之后，还能否建表
+--error 5151
+create table storage_001_test5(id1 int, id2 int) tablegroup storage_001_tg1 partition by hash(id1 % 2) partitions 2;
+--error 5151
+create table storage_001_test6(id1 int, id2 int) tablegroup storage_001_tg2 partition by hash(id1 % 2) partitions 2; 
+
+###################################################################################
+#case 2 验证PG的DDL功能
+# 2.1 基本操作
+create tablegroup storage_001_tg3 binding true partition by hash partitions 2;
+create table storage_001_test5(id1 int, id2 int) tablegroup storage_001_tg3 partition by hash(id1 % 2) partitions 2;
+create table storage_001_test6(id1 int, id2 int) tablegroup storage_001_tg3 partition by hash(id1 % 2) partitions 2;
+
+desc storage_001_test5;
+desc storage_001_test6;
+
+insert into storage_001_test5 values(1, 1), (2, 2), (3, 3), (4,4);
+insert into storage_001_test6 values(1, 1), (2, 2), (3, 3), (4,4);
+
+select * from storage_001_test5 order by id1;
+select * from storage_001_test6 order by id1;
+
+# 2.2 验证create table like功能
+create table storage_001_test7 like storage_001_test5;
+create table storage_001_test8 like storage_001_test6;
+
+desc storage_001_test7;
+desc storage_001_test8;
+
+insert into storage_001_test7 values(1, 1), (2, 2), (3, 3), (4,4);
+insert into storage_001_test8 values(1, 1), (2, 2), (3, 3), (4,4);
+
+select * from storage_001_test7 order by id1;
+select * from storage_001_test8 order by id1;
+
+connection conn2;
+let $table_id3 = query_get_value(select table_id from oceanbase.__all_virtual_table where table_name = 'storage_001_test5', table_id, 1);
+
+# 2.3 验证truncate table功能
+connection conn1;
+truncate table storage_001_test5;
+truncate table storage_001_test6;
+truncate table storage_001_test7;
+truncate table storage_001_test8;
+
+desc storage_001_test5;
+desc storage_001_test6;
+desc storage_001_test7;
+desc storage_001_test8;
+
+insert into storage_001_test5 values(11, 1), (12, 2), (13, 3), (14,4);
+insert into storage_001_test6 values(11, 1), (12, 2), (13, 3), (14,4);
+insert into storage_001_test7 values(11, 1), (12, 2), (13, 3), (14,4);
+insert into storage_001_test8 values(11, 1), (12, 2), (13, 3), (14,4);
+
+select * from storage_001_test5 order by id1;
+select * from storage_001_test6 order by id1;
+select * from storage_001_test7 order by id1;
+select * from storage_001_test8 order by id1;
+
+# 2.4 验证truncate之后的flashback table
+connection conn2;
+let $table_objname3 = query_get_value(select object_name from oceanbase.__all_virtual_recyclebin where table_id = $table_id3 and type = 1, object_name, 1);
+
+connection conn1;
+--disable_query_log
+eval flashback table $table_objname3 to before drop rename to flashback_test3;
+--enable_query_log
+desc flashback_test3;
+insert into flashback_test3 values(110, 11), (120, 12), (130, 13), (140,14);
+select * from flashback_test3 order by id1;
+
+# 2.5 验证table的alter tablegroup功能
+create tablegroup storage_001_tg4 binding true partition by hash partitions 2;
+--error 4179
+alter table storage_001_test5 tablegroup storage_001_tg4;
+--error 4179
+alter table storage_001_test6 tablegroup storage_001_tg4;
+--error 4179
+alter table storage_001_test7 tablegroup storage_001_tg4;
+--error 4179
+alter table storage_001_test8 tablegroup storage_001_tg4;
+
+connection conn2;
+let $table_id4 = query_get_value(select table_id from oceanbase.__all_virtual_table where table_name = 'flashback_test3', table_id, 1);
+
+# 2.6 验证drop table功能
+connection conn1;
+--error 4615
+drop tablegroup storage_001_tg3;
+drop tablegroup storage_001_tg4;
+
+drop table flashback_test3;
+drop table storage_001_test5;
+drop table storage_001_test6;
+drop table storage_001_test7;
+drop table storage_001_test8;
+
+# 2.7 验证drop table之后的flashback table
+connection conn2;
+let $table_objname4 = query_get_value(select object_name from oceanbase.__all_virtual_recyclebin where table_id = $table_id4 and type = 1, object_name, 1);
+
+connection conn1;
+--disable_query_log
+eval flashback table $table_objname4 to before drop rename to flashback_test4;
+--enable_query_log
+desc flashback_test4;
+insert into flashback_test4 values(11, 11), (12, 12), (13, 13), (14,14);
+select * from flashback_test4 order by id1;
+
+drop table flashback_test4;
+#PG 场景下，需要清空回收站，否则pg删除不掉
+--error 4615
+drop tablegroup storage_001_tg3;
+
+purge recyclebin;
+drop tablegroup storage_001_tg3;
+--error 5151
+drop tablegroup storage_001_tg4;
+
+# 2.8 验证tablegroup被drop之后，还能否建表
+--error 5151
+create table storage_001_test9(id1 int, id2 int) tablegroup storage_001_tg3 partition by hash(id1 % 2) partitions 2;
+--error 5151
+create table storage_001_test10(id1 int, id2 int) tablegroup storage_001_tg4 partition by hash(id1 % 2) partitions 2;
+
+connection conn2;
+alter system minor freeze tenant = sys;
+alter system minor freeze tenant = all_user;
+alter system minor freeze tenant = all_meta;
+sleep 40;
+
+####################################################################################
+# case 3 : version range的问题
+connection conn1;
+create tablegroup storage_001_tg5 binding true partition by hash partitions 2;
+create table storage_001_test09(id1 int, id2 int) tablegroup storage_001_tg5 partition by hash(id1 % 2) partitions 2;
+create table storage_001_test10(id1 int, id2 int) tablegroup storage_001_tg5 partition by hash(id1 % 2) partitions 2;
+create table storage_001_test11(id1 int, id2 int) tablegroup storage_001_tg5 partition by hash(id1 % 2) partitions 2;
+create table storage_001_test12(id1 int, id2 int) tablegroup storage_001_tg5 partition by hash(id1 % 2) partitions 2;
+
+insert into storage_001_test09 values(1, 1), (2, 2), (3, 3), (4,4);
+insert into storage_001_test10 values(1, 1), (2, 2), (3, 3), (4,4);
+insert into storage_001_test11 values(1, 1), (2, 2), (3, 3), (4,4);
+insert into storage_001_test12 values(1, 1), (2, 2), (3, 3), (4,4);
+
+#全部删除PG内的表
+drop table if exists storage_001_test09;
+drop table if exists storage_001_test10;
+drop table if exists storage_001_test11;
+drop table if exists storage_001_test12;
+purge recyclebin;
+sleep 20;
+
+#PG被删空之后，保证能够继续向PG内建表，不能出现version range不连续的问题
+create table storage_001_test13(id1 int, id2 int) tablegroup storage_001_tg5 partition by hash(id1 % 2) partitions 2;
+insert into storage_001_test13 values(5,5), (6,6), (7,7), (8,8);
+
+#转储之后，继续建表，新表的major右边界保证要连续
+ob1.mysql alter system minor freeze tenant = sys;
+ob1.mysql alter system minor freeze tenant = all_user;
+ob1.mysql alter system minor freeze tenant = all_meta;
+sleep 40;
+create table storage_001_test14(id1 int, id2 int) tablegroup storage_001_tg5 partition by hash(id1 % 2) partitions 2;
+insert into storage_001_test14 values(5,5), (6,6), (7,7), (8,8);
+
+#宕机重启，看看回放是否符合预期
+connection conn2;
+ob1.z1.obs0.force_stop;
+ob1.z2.obs0.force_stop;
+sleep 20;
+
+ob1.z1.obs0.start;
+ob1.z2.obs0.start;
+sleep 60;
+ob1.check_until_timeout select status from oceanbase.__all_server where zone='z1', active, 60;
+ob1.mysql alter system major freeze;
+sleep 30;
+ob1.check_version 2;

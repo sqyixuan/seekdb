@@ -1,0 +1,309 @@
+# owner: zeli.lwb
+# owner group: shenzhen
+#
+# executing TTL task while switching ls leader
+ 
+ob1=OBI(cluster=1:1:1,proxy_num=1);
+ob1.reboot;
+ 
+ob1.mysql alter system set enable_rebalance='false';
+ 
+# build tenant
+let $max_cpu = 4;
+let $min_cpu = 1;
+let $memory_size = 8589934592;
+let $log_disk_size = 3221225472;
+let $max_iops = 100000;
+let $min_iops = 1024;
+ 
+ob_connect(conn_sys, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+set @@session.ob_query_timeout = 1000000000;
+# mysql tenant
+eval CREATE RESOURCE UNIT unit_1 MAX_CPU $max_cpu, MIN_CPU $min_cpu, MEMORY_SIZE $memory_size, LOG_DISK_SIZE $log_disk_size, MAX_IOPS $max_iops, MIN_IOPS $min_iops;
+eval CREATE RESOURCE POOL pool_1 UNIT = 'unit_1', UNIT_NUM = 1;
+eval CREATE TENANT mysql RESOURCE_POOL_LIST = ('pool_1'), primary_zone='z1' set ob_tcp_invited_nodes='%';
+ 
+let $mysql_tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = 'mysql', tenant_id, 1);
+ 
+ob_connect(sys_conn, ob1.z1.obs0, root,,test,USE_OB_CONNECTOR);
+ob_connect(conn1, ob1.z1.obs0, root@mysql,, test,, USE_OB_CONNECTOR);
+ 
+ 
+sleep 3;
+ 
+--echo
+--echo >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+--echo    1: TTL SYS LS SWITCH TEST
+--echo >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+### 切换系统流随机到一个 Follwer，触发 TTL 任务，挂起，并切换回原来的 Leader，尝试重新触发任务失败报 -4109，
+### resume 之后任务继续执行完成，再次切换系统日志流到一个 Follower，触发任务并执行完成
+ 
+connection conn1;
+ 
+# sleep for tasks
+--sleep 15
+ 
+# set system param
+alter system minor freeze;
+alter system set enable_kv_ttl = true;
+ 
+# create table 
+create table ttl_table_sw_rs(a varchar(1024), b int primary key, c timestamp) TTL(c + INTERVAL 0 SECOND) partition by key(b) partitions 32;
+
+# get tenant_id
+let $tenant_id = query_get_value(select tenant_id from oceanbase.dba_ob_tenants where status = 'NORMAL' and tenant_name = 'mysql', tenant_id, 1);
+ 
+# get ls leader
+let $leader = deploy_get_value(ob1.select select concat(svr_ip,':',svr_port) as host from oceanbase.cdb_ob_ls_locations where tenant_id = $tenant_id and ls_id = 1 and ROLE = 'LEADER' limit 1, host, 1);
+--echo --> get Log Stream leader done
+ 
+# get ls follower randomly
+let $follower = deploy_get_value(ob1.select select concat(svr_ip,':',svr_port) as host from oceanbase.cdb_ob_ls_locations where tenant_id = $tenant_id and ls_id = 1 and ROLE = 'FOLLOWER' order by rand() limit 1, host, 1);
+--echo --> get Log Stream follower done
+ 
+# insert data
+--disable_query_log
+--echo --> insert into ttl_table_sw_rs 200 row...
+connection conn1;
+let $cnt=0;
+--disable_all_result_log
+while($cnt < 200)
+{
+  eval insert into ttl_table_sw_rs(a, b, c) values (concat('row', cast($cnt as char)), $cnt, now());
+	inc $cnt;
+}
+--enable_all_result_log
+--echo --> insert 200 rows end
+ 
+# switch ls and check success
+ob1.mysql alter system switch replica leader ls=1 server='$follower' tenant='mysql';
+--echo --> switch ls completed
+ob1.check_until_timeout select concat(svr_ip,':',svr_port) as host from oceanbase.cdb_ob_ls_locations where tenant_id = $tenant_id and ls_id = 1 and ROLE = 'LEADER' limit 1, $follower, 15;
+ 
+# trigger ttl
+ob1.mysql alter system trigger ttl tenant = mysql;
+--echo --> trigger ttl
+# suspend ttl
+ob1.mysql alter system suspend ttl tenant = mysql;
+--echo --> suspend ttl
+ 
+# switch ls back to origin leader and check success
+ob1.mysql alter system switch replica leader ls=1 server='$leader' tenant='mysql';
+--echo --> switch ls back completed
+ob1.check_until_timeout select concat(svr_ip,':',svr_port) as host from oceanbase.cdb_ob_ls_locations where tenant_id = $tenant_id and ls_id = 1 and ROLE = 'LEADER' limit 1, $leader, 15;
+ 
+# trigger ttl
+--error 10504
+alter system trigger ttl;
+--echo --> trigger ttl
+ 
+# get result from system table, should only one task exists
+SELECT (SELECT COUNT(*) FROM oceanbase.DBA_OB_KV_TTL_TASKS WHERE task_type = "NORMAL" and TABLE_ID = -1) + (SELECT COUNT(*) FROM oceanbase.DBA_OB_KV_TTL_TASK_HISTORY WHERE task_type = "NORMAL" and TABLE_ID = -1) AS TotalCount;
+
+# resume ttl tasks
+alter system resume ttl; 
+--echo --> resume ttl
+--sleep 10
+
+# check task finished and check task result
+ob1.check_until_timeout select count(*) as task_cnt from oceanbase.cdb_ob_kv_ttl_tasks where task_type = "NORMAL" and tenant_id = $tenant_id, 0, 90;
+SELECT TABLE_NAME, TRIGGER_TYPE, STATUS, TTL_DEL_CNT, MAX_VERSION_DEL_CNT, SCAN_CNT, RET_CODE from oceanbase.DBA_OB_KV_TTL_TASK_HISTORY where task_type = "NORMAL" order by tablet_id asc;
+
+# insert data
+--disable_query_log
+--echo --> insert into ttl_table_sw_rs 100 row...
+connection conn1;
+let $cnt=0;
+--disable_all_result_log
+while($cnt < 100)
+{
+  eval insert into ttl_table_sw_rs(a, b, c) values (concat('row', cast($cnt as char)), $cnt, now());
+	inc $cnt;
+}
+--enable_all_result_log
+--echo --> insert 100 rows end
+
+# switch ls and check success
+ob1.mysql alter system switch replica leader ls=1 server='$follower' tenant='mysql';
+--echo --> switch ls completed
+ob1.check_until_timeout select concat(svr_ip,':',svr_port) as host from oceanbase.cdb_ob_ls_locations where tenant_id = $tenant_id and ls_id = 1 and ROLE = 'LEADER' limit 1, $follower, 15;
+
+# trigger ttl tasks;
+alter system trigger ttl;
+--echo --> trigger ttl
+--sleep 10
+
+# check task finished and check task result
+ob1.check_until_timeout select count(*) as task_cnt from oceanbase.cdb_ob_kv_ttl_tasks where task_type = "NORMAL" and tenant_id = $tenant_id, 0, 90;
+SELECT TABLE_NAME, TRIGGER_TYPE, STATUS, TTL_DEL_CNT, MAX_VERSION_DEL_CNT, SCAN_CNT, RET_CODE from oceanbase.DBA_OB_KV_TTL_TASK_HISTORY where task_type = "NORMAL" and task_id = (select max(task_id) from oceanbase.DBA_OB_KV_TTL_TASK_HISTORY where task_type = "NORMAL") order by tablet_id asc;
+
+--echo
+--echo >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+--echo    2: TTL Normal LS SWITCH TEST 
+--echo >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+### 切换数据日志流到随机一个 Follower，触发 TTL 任务执行完成，再切回到 Leader，触发 TTL 任务并执行完成 
+
+let $normal_ls_id = deploy_get_value(ob1.select select ls_id from oceanbase.CDB_OB_TABLE_LOCATIONS where table_name = 'ttl_table_sw_rs' and tenant_id = $tenant_id limit 1, ls_id, 1);
+
+# get normal ls leader
+let $normal_ls_leader = deploy_get_value(ob1.select select concat(svr_ip,':',svr_port) as host from oceanbase.cdb_ob_ls_locations where tenant_id = $tenant_id and ls_id = $normal_ls_id and ROLE = 'LEADER' limit 1, host, 1);
+--echo --> get normal Log Stream leader done
+ 
+# get ls follower randomly
+let $normal_ls_follower = deploy_get_value(ob1.select select concat(svr_ip,':',svr_port) as host from oceanbase.cdb_ob_ls_locations where tenant_id = $tenant_id and ls_id = $normal_ls_id and ROLE = 'FOLLOWER' order by rand() limit 1, host, 1);
+--echo --> get normal Log Stream follower done
+
+# switch normal ls and check success
+ob1.mysql alter system switch replica leader ls=$normal_ls_id server='$normal_ls_follower' tenant='mysql';
+--echo --> switch ls completed
+ob1.check_until_timeout select concat(svr_ip,':',svr_port) as host from oceanbase.cdb_ob_ls_locations where tenant_id = $tenant_id and ls_id = $normal_ls_id and ROLE = 'LEADER' limit 1, $normal_ls_follower, 15;
+
+# insert data
+--disable_query_log
+--echo --> insert into ttl_table_sw_rs 300 row...
+connection conn1;
+let $cnt=0;
+--disable_all_result_log
+while($cnt < 500)
+{
+  eval insert into ttl_table_sw_rs(a, b, c) values (concat('row', cast($cnt as char)), $cnt, now());
+	inc $cnt;
+}
+--enable_all_result_log
+--echo --> insert 500 rows end
+
+# trigger ttl
+alter system trigger ttl;
+--echo --> trigger ttl
+--sleep 10
+
+# check task finished and check task result
+ob1.check_until_timeout select count(*) as task_cnt from oceanbase.cdb_ob_kv_ttl_tasks where task_type = "NORMAL" and tenant_id = $tenant_id, 0, 90;
+SELECT TABLE_NAME, TRIGGER_TYPE, STATUS, TTL_DEL_CNT, MAX_VERSION_DEL_CNT, SCAN_CNT, RET_CODE from oceanbase.DBA_OB_KV_TTL_TASK_HISTORY where task_type = "NORMAL" and task_id = (select max(task_id) from oceanbase.DBA_OB_KV_TTL_TASK_HISTORY where  task_type = "NORMAL") order by tablet_id asc;
+
+# switch normal ls back and check success
+ob1.mysql alter system switch replica leader ls=$normal_ls_id server='$normal_ls_leader' tenant='mysql';
+--echo --> switch ls completed
+ob1.check_until_timeout select concat(svr_ip,':',svr_port) as host from oceanbase.cdb_ob_ls_locations where tenant_id = $tenant_id and ls_id = $normal_ls_id and ROLE = 'LEADER' limit 1, $normal_ls_leader, 15;
+
+# insert data
+--disable_query_log
+--echo --> insert into ttl_table_sw_rs 300 row...
+connection conn1;
+let $cnt=0;
+--disable_all_result_log
+while($cnt < 500)
+{
+  eval insert into ttl_table_sw_rs(a, b, c) values (concat('row', cast($cnt as char)), $cnt, now());
+	inc $cnt;
+}
+--enable_all_result_log
+--echo --> insert 500 rows end
+
+# trigger ttl
+alter system trigger ttl;
+--echo --> trigger ttl
+--sleep 10
+
+# check task finished and check task result
+ob1.check_until_timeout select count(*) as task_cnt from oceanbase.cdb_ob_kv_ttl_tasks where task_type = "NORMAL" and tenant_id = $tenant_id, 0, 90;
+SELECT TABLE_NAME, TRIGGER_TYPE, STATUS, TTL_DEL_CNT, MAX_VERSION_DEL_CNT, SCAN_CNT, RET_CODE from oceanbase.DBA_OB_KV_TTL_TASK_HISTORY where task_type = "NORMAL" and task_id = (select max(task_id) from oceanbase.DBA_OB_KV_TTL_TASK_HISTORY where task_type = "NORMAL") order by tablet_id asc;
+
+--echo
+--echo >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+--echo    3: TTL Multi-Leader TEST
+--echo >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+### 0. 执行 TTL 任务
+### 1. 通过 debug sync 将任务执行卡在 BEFORE_CHECK_TTL_TASK_FINISH，任务无法完成 
+### 2. 通过 debug sync 将任务执行卡再 BEFORE_TTL_SCHEDULER_RUN，让非 leader 节点 RS TTL 定时器不被调度执行
+### 3. 对 RS 进行切主，旧主卡在 BEFORE_CHECK_TTL_TASK_FINISH，新主卡在 BEFORE_TTL_SCHEDULER_RUN
+### 3. 开启 BEFORE_TTL_SCHEDULER_RUN，让新主读取到租户 TTL 任务状态
+### 4. 开启 BEFORE_CHECK_TTL_TASK_FINISH，让旧主执行完成
+### 
+
+# set BEFORE_CHECK_TTL_TASK_FINISH sync point
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+--sleep 3
+ob1.mysql set ob_global_debug_sync = 'BEFORE_CHECK_TTL_TASK_FINISH wait_for continue_signal execute 10000';
+
+connection conn1;
+# trigger ttl
+ob1.mysql alter system trigger ttl tenant = mysql;
+--echo --> trigger ttl
+--sleep 20
+
+# wait all tablet task finished, but tenant task won't finished
+ob1.check_until_timeout select count(*) as task_cnt from oceanbase.cdb_ob_kv_ttl_tasks where task_type = "NORMAL" and table_id != -1 and tenant_id = $tenant_id, 32, 90;
+
+# set BEFORE_TTL_SCHEDULER_RUN sync point
+ob1.mysql set ob_global_debug_sync = 'BEFORE_TTL_SCHEDULER_RUN wait_for continue_signal execute 10000';
+
+# switch ls and check success
+ob1.mysql alter system switch replica leader ls=1 server='$follower' tenant='mysql';
+--echo --> switch ls completed
+ob1.check_until_timeout select concat(svr_ip,':',svr_port) as host from oceanbase.cdb_ob_ls_locations where tenant_id = $tenant_id and ls_id = 1 and ROLE = 'LEADER' limit 1, $follower, 15;
+--sleep 20
+
+# clear all debug sync
+ob1.mysql set ob_global_debug_sync = 'BEFORE_TTL_SCHEDULER_RUN clear';
+ob1.mysql set ob_global_debug_sync = 'BEFORE_CHECK_TTL_TASK_FINISH clear';
+ob1.mysql set ob_global_debug_sync = 'now broadcast continue_signal';
+
+# check task finished and check task result
+ob1.check_until_timeout select count(*) as task_cnt from oceanbase.cdb_ob_kv_ttl_tasks where task_type = "NORMAL" and tenant_id = $tenant_id, 0, 90;
+SELECT TABLE_NAME, TRIGGER_TYPE, STATUS, TTL_DEL_CNT, MAX_VERSION_DEL_CNT, SCAN_CNT, RET_CODE from oceanbase.DBA_OB_KV_TTL_TASK_HISTORY where task_type = "NORMAL" and task_id = (select max(task_id) from oceanbase.DBA_OB_KV_TTL_TASK_HISTORY where task_type = "NORMAL") order by tablet_id asc;
+
+# trigger ttl again
+ob1.mysql alter system trigger ttl tenant = mysql;
+--echo --> trigger ttl
+
+# check task finished and check task result
+ob1.check_until_timeout select count(*) as task_cnt from oceanbase.cdb_ob_kv_ttl_tasks where task_type = "NORMAL" and tenant_id = $tenant_id, 0, 90;
+SELECT TABLE_NAME, TRIGGER_TYPE, STATUS, TTL_DEL_CNT, MAX_VERSION_DEL_CNT, SCAN_CNT, RET_CODE from oceanbase.DBA_OB_KV_TTL_TASK_HISTORY where task_type = "NORMAL" and task_id = (select max(task_id) from oceanbase.DBA_OB_KV_TTL_TASK_HISTORY where task_type = "NORMAL") order by tablet_id asc;
+
+--echo
+--echo >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+--echo    4: TTL tablet Finished & TTL task PENDING when Tenant TTL Mgr Finish task check
+--echo >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+#### 1. Tenant TTL mgr 卡在检查任务完成的开始
+#### 2. 执行 TTL 任务
+#### 3. 等待所有 tablet 任务完成
+#### 4. 执行 alter system pending TTL
+#### 4. 继续检查任务，发现任务完成，但是由于租户状态变成 pending，所以不会租户状态变成 move 并一直处于 pending 状态（如果没有执行命令）
+#### 
+
+# set BEFORE_CHECK_TTL_TASK_FINISH sync point
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+--sleep 3
+ob1.mysql set ob_global_debug_sync = 'BEFORE_CHECK_TTL_TASK_FINISH wait_for continue_signal execute 10000';
+
+connection conn1;
+# trigger ttl
+ob1.mysql alter system trigger ttl tenant = mysql;
+--echo --> trigger ttl
+
+# wait all tablet task finished, but tenant task won't finished
+ob1.check_until_timeout select count(*) as task_cnt from oceanbase.cdb_ob_kv_ttl_tasks where task_type = "NORMAL" and table_id != -1 and tenant_id = $tenant_id and status = "FINISHED", 32, 90;
+
+# suspend ttl
+ob1.mysql alter system suspend ttl tenant = mysql;
+--echo --> trigger ttl
+
+# clear all debug sync
+ob1.mysql set ob_global_debug_sync = 'BEFORE_CHECK_TTL_TASK_FINISH clear';
+ob1.mysql set ob_global_debug_sync = 'now broadcast continue_signal';
+
+# wait and check task status, should still pending
+--sleep 10
+ob1.check_until_timeout select STATUS as task_status from oceanbase.cdb_ob_kv_ttl_tasks where task_type = "NORMAL" and tenant_id = $tenant_id and table_id = -1, RS_SUSPENDING, 5;
+SELECT TABLE_NAME, TRIGGER_TYPE, STATUS, TTL_DEL_CNT, MAX_VERSION_DEL_CNT, SCAN_CNT, RET_CODE from oceanbase.DBA_OB_KV_TTL_TASKS where task_type = "NORMAL" order by tablet_id asc;
+
+# make task finish, resume taks and check finish
+# resume ttl
+ob1.mysql alter system resume ttl tenant = mysql;
+--echo --> resume ttl
+ob1.check_until_timeout select count(*) as task_cnt from oceanbase.cdb_ob_kv_ttl_tasks where task_type = "NORMAL" and tenant_id = $tenant_id, 0, 90;
+SELECT TABLE_NAME, TRIGGER_TYPE, STATUS, TTL_DEL_CNT, MAX_VERSION_DEL_CNT, SCAN_CNT, RET_CODE from oceanbase.DBA_OB_KV_TTL_TASK_HISTORY where task_type = "NORMAL" and task_id = (select max(task_id) from oceanbase.DBA_OB_KV_TTL_TASK_HISTORY where task_type = "NORMAL") order by tablet_id asc;
+
+# drop table
+drop table ttl_table_sw_rs;

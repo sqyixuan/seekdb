@@ -1,0 +1,229 @@
+ob1=OBI(cluster=1, proxy_num=0);
+ob1.z1.obs0.set extra_config = "cache_wash_threshold='1G',_ob_minor_merge_schedule_interval='3s'";
+ob1.force_stop;
+ob1.clean_backup_dest;
+ob1.reboot;
+ob1.mysql alter resource unit sys_unit_config memory_size='2G';
+use oceanbase;
+alter system set resource_hard_limit = 1000;
+alter system set _restore_idle_time = '10s';
+CREATE RESOURCE UNIT small_unit MAX_CPU=1, MEMORY_SIZE='4G';
+CREATE RESOURCE POOL small_pool UNIT small_unit, UNIT_NUM 1, ZONE_LIST ('z1');
+CREATE RESOURCE POOL small_pool_0 UNIT small_unit, UNIT_NUM 1, ZONE_LIST ('z1');
+ob1.mysql alter system set _backup_idle_time = '10s';
+ob1.mysql alter system set enable_async_syslog=false;
+ob1.mysql CREATE TENANT $backup_mysql_tenant RESOURCE_POOL_LIST = ('small_pool'), primary_zone = "z1" set ob_tcp_invited_nodes='%', ob_compatibility_mode='mysql',lower_case_table_names=1;
+set global wait_timeout = 288000;
+===============================================================
+====================     create table   =======================
+===============================================================
+use test;
+create table t0 (c0 int primary key, c1 char(100));
+create table t1 (c1 int primary key,
+c2 char(100) not null,
+c3 char(50) unique,
+c4 int check(c4>20),
+c5 int,
+c6 set ('abc', 'cde', 'def'),
+c7 enum ('a', 'b', 'c'),
+c8 char(100) generated always as (substr(c2, 1, 20)) virtual,
+c9 char(100) generated always as (substr(c2, 1, 20)) stored,
+CONSTRAINT t1_fk FOREIGN KEY(c1) REFERENCES t0 (c0));
+insert into t0 values (1, "Mysql");
+insert into t0 values (2, "Oracle");
+insert into t0 values (3, "OceanBase");
+insert into t0 values (4, "Mysql");
+insert into t1 (c1, c2, c3, c4, c5, c6, c7) values (1, 'allen ', '1234567890123', 30, 1, 'abc', 'a');
+insert into t1 (c1, c2, c3, c4, c5, c6, c7) values (2, 'sam ', '2234567890123', 30, 2, 'cde', 'c');
+insert into t1 (c1, c2, c3, c4, c5, c6, c7) values (3, 'billy ', '3234567890123', 30, 3, 'cde', 'b');
+insert into t1 (c1, c2, c3, c4, c5, c6, c7) values (4, 'carl', '4234567890123', 30, 4, 'cde', 'a');
+create table t2 (c1 int,
+c2 int,
+c3 int,
+c4 int,
+c5 int,
+CONSTRAINT t2_cst_pk PRIMARY KEY (c1),
+constraint t2_cst_chk_1 check(c1=c2),
+constraint t2_cst_chk_2 check(c1=c2),
+constraint t2_cst_unique_1 unique(c3, c1),
+constraint t2_cst_unique_2 unique(c4, c1),
+constraint t2_OBCHECK_123456 check(c2=c3),
+constraint t2_OBUNIQUE_123456 unique(c5, c1),
+constraint t2_fk_1 FOREIGN KEY(c1) REFERENCES t0(c0),
+constraint t2_fk_2 FOREIGN KEY(c1) REFERENCES t1(c1),
+constraint t2_fk_self_reference FOREIGN KEY(c2) REFERENCES t2(c1)) partition by hash(c1) partitions 3;
+insert into t2 values(1, 1, 1, 1, 1);
+insert into t2 values(2, 2, 2, 2, 2);
+insert into t2 values(3, 3, 3, 3, 3);
+insert into t2 values(4, 4, 4, 4, 4);
+alter table t2 add column col6 int first;
+CREATE TRIGGER recover_trig1 BEFORE insert on t2 FOR EACH ROW BEGIN insert into t0 values(5, "Mysql"); END;
+CREATE TRIGGER recover_trig2 BEFORE update on t2 FOR EACH ROW BEGIN update t0 set c1 = "Mysql 8.0" where c1 = "Mysql"; END;
+CREATE TRIGGER recover_trig3 BEFORE delete on t1 FOR EACH ROW BEGIN insert into t1 (c1, c2, c3, c4, c5, c6, c7) values (100, 'allen_bob ', 'trigger_insert', 30, 1, 'abc', 'a'); END;
+===============================================================
+==============   check constraint and index   =================
+===============================================================
+use oceanbase;
+select table_name, index_type, index_status from oceanbase.__all_virtual_table where data_table_id in (
+select table_id from oceanbase.__all_virtual_table where table_name = 't1' or table_name = 't2');
+table_name	index_type	index_status
+__idx_DATA_TABLE_ID_c3	2	2
+__idx_DATA_TABLE_ID_t2_cst_unique_1	2	2
+__idx_DATA_TABLE_ID_t2_cst_unique_2	2	2
+__idx_DATA_TABLE_ID_t2_OBUNIQUE_TIMESTAMP	2	2
+select constraint_name, constraint_type, check_expr, rely_flag, enable_flag, validate_flag from oceanbase.__all_virtual_constraint where table_id in (
+select table_id from oceanbase.__all_virtual_table where table_name = 't1' or table_name = 't2');
+constraint_name	constraint_type	check_expr	rely_flag	enable_flag	validate_flag
+t1_OBCHECK_TIMESTAMP	3	(`c4` > 20)	0	1	1
+t2_cst_chk_1	3	(`c1` = `c2`)	0	1	1
+t2_cst_chk_2	3	(`c1` = `c2`)	0	1	1
+t2_OBCHECK_TIMESTAMP	3	(`c2` = `c3`)	0	1	1
+===============================================================
+==============   backup and archive   =========================
+===============================================================
+use oceanbase;
+ob1.mysql alter system archivelog;
+ob1.check_until_timeout select status from oceanbase.CDB_OB_ARCHIVELOG where tenant_id=$backup_mysql_tenant_id, DOING, 600;
+ob1.mysql alter system backup database;
+ob1.check_until_timeout select count(*) from cdb_ob_backup_jobs, 0, 600;
+ob1.check_until_timeout select checkpoint_scn > $restore_checkpoint1 from CDB_OB_ARCHIVELOG, 1, 600;
+===============================================================
+====================   recover table   ========================
+===============================================================
+create database recover_test;
+use oceanbase;
+ob1.mysql alter system recover table test.t0, test.t1, test.t2 to tenant backup_mysql_tenant from '$restore_path' until scn = $restore_checkpoint1 with 'pool_list=small_pool_0&primary_zone=z1' remap table test.t0:recover_test.t0,test.t1:recover_test.recover_restore_normal_table_t1,test.t2:recover_test.recover_restore_normal_table_t2;
+ob1.check_until_timeout select status from cdb_ob_restore_history where tenant_id = 1 and restore_tenant_id = 1004, SUCCESS, 600;
+ob1.check_until_timeout select count(*) from __all_virtual_recover_table_job, 0, 600;
+
+to check result after trigger operation.
+use recover_test;
+select * from recover_restore_normal_table_t2;
+col6	c1	c2	c3	c4	c5
+NULL	3	3	3	3	3
+NULL	1	1	1	1	1
+NULL	4	4	4	4	4
+NULL	2	2	2	2	2
+insert into recover_restore_normal_table_t2 values(5, 5, 5, 5, 5, 5);
+select * from t0;
+c0	c1
+1	Mysql
+2	Oracle
+3	OceanBase
+4	Mysql
+5	Mysql
+update recover_restore_normal_table_t2 set c5 = 100 where c5 = 1;
+select * from t0;
+c0	c1
+1	Mysql 8.0
+2	Oracle
+3	OceanBase
+4	Mysql 8.0
+5	Mysql 8.0
+delete from recover_restore_normal_table_t1 where c1 = 4;
+ERROR 42S02: Table 'recover_test.t1' doesn't exist
+select * from recover_restore_normal_table_t1;
+c1	c2	c3	c4	c5	c6	c7	c8	c9
+1	allen	1234567890123	30	1	abc	a	allen	allen
+2	sam	2234567890123	30	2	cde	c	sam	sam
+3	billy	3234567890123	30	3	cde	b	billy	billy
+4	carl	4234567890123	30	4	cde	a	carl	carl
+
+to show rebuild index, csts, foreign keys.
+use oceanbase;
+select table_name, index_type, index_status from oceanbase.__all_virtual_table where data_table_id in (
+select table_id from oceanbase.__all_virtual_table where table_name like '%recover_restore_normal_table%');
+table_name	index_type	index_status
+__idx_DATA_TABLE_ID_c3	2	2
+__idx_DATA_TABLE_ID_t2_cst_unique_1	2	2
+__idx_DATA_TABLE_ID_t2_cst_unique_2	2	2
+__idx_DATA_TABLE_ID_t2_OBUNIQUE_TIMESTAMP	2	2
+select constraint_name, constraint_type, check_expr, rely_flag, enable_flag, validate_flag from oceanbase.__all_virtual_constraint where table_id in (
+select table_id from oceanbase.__all_virtual_table where table_name like '%recover_restore_normal_table%');
+constraint_name	constraint_type	check_expr	rely_flag	enable_flag	validate_flag
+recover_restore_normal_table_t1_OBCHECK_TIMESTAMP	3	(`c4` > 20)	0	1	1
+t2_cst_chk_1	3	(`c1` = `c2`)	0	1	1
+t2_cst_chk_2	3	(`c1` = `c2`)	0	1	1
+t2_OBCHECK_TIMESTAMP	3	(`c2` = `c3`)	0	1	1
+select foreign_key_name, update_action, delete_action, ref_cst_type, rely_flag, enable_flag, validate_flag, is_parent_table_mock from oceanbase.__all_virtual_foreign_key where child_table_id in (select table_id from oceanbase.__all_virtual_table where table_name like '%recover_restore_normal_table%');
+foreign_key_name	update_action	delete_action	ref_cst_type	rely_flag	enable_flag	validate_flag	is_parent_table_mock
+t1_fk	1	1	1	0	1	1	0
+t2_fk_1	1	1	1	0	1	1	0
+select trigger_name, trigger_type, trigger_events, timing_points, trigger_flags, trigger_body, package_spec_source, package_body_source from oceanbase.__all_virtual_trigger where base_object_id in (select table_id from oceanbase.__all_virtual_table where table_name like '%recover_restore_normal_table%');
+trigger_name	trigger_type	trigger_events	timing_points	trigger_flags	trigger_body	package_spec_source	package_body_source
+recover_trig3	1	4	4	1	TRIGGER recover_trig3 BEFORE delete on t1 FOR EACH ROW BEGIN insert into t1 (c1, c2, c3, c4, c5, c6, c7) values (100, 'allen_bob ', 'trigger_insert', 30, 1, 'abc', 'a'); END	PACKAGE `recover_trig3` 
+PROCEDURE before_row(IN OLD `test`.`t1`%ROWTYPE, INOUT NEW `test`.`t1`%ROWTYPE);
+PROCEDURE after_row(IN OLD `test`.`t1`%ROWTYPE, IN NEW `test`.`t1`%ROWTYPE);
+END;
+	PACKAGE BODY `recover_trig3` 
+PROCEDURE before_row(IN OLD `test`.`t1`%ROWTYPE, INOUT NEW `test`.`t1`%ROWTYPE) 
+BEGIN
+BEGIN insert into t1 (c1, c2, c3, c4, c5, c6, c7) values (100, 'allen_bob ', 'trigger_insert', 30, 1, 'abc', 'a'); END;
+END;
+PROCEDURE after_row(IN OLD `test`.`t1`%ROWTYPE, IN NEW `test`.`t1`%ROWTYPE) 
+BEGIN
+END;
+END;
+
+recover_trig2	1	2	4	1	TRIGGER recover_trig2 BEFORE update on t2 FOR EACH ROW BEGIN update t0 set c1 = "Mysql 8.0" where c1 = "Mysql"; END	PACKAGE `recover_trig2` 
+PROCEDURE before_row(IN OLD `test`.`t2`%ROWTYPE, INOUT NEW `test`.`t2`%ROWTYPE);
+PROCEDURE after_row(IN OLD `test`.`t2`%ROWTYPE, IN NEW `test`.`t2`%ROWTYPE);
+END;
+	PACKAGE BODY `recover_trig2` 
+PROCEDURE before_row(IN OLD `test`.`t2`%ROWTYPE, INOUT NEW `test`.`t2`%ROWTYPE) 
+BEGIN
+BEGIN update t0 set c1 = "Mysql 8.0" where c1 = "Mysql"; END;
+END;
+PROCEDURE after_row(IN OLD `test`.`t2`%ROWTYPE, IN NEW `test`.`t2`%ROWTYPE) 
+BEGIN
+END;
+END;
+
+recover_trig1	1	1	4	1	TRIGGER recover_trig1 BEFORE insert on t2 FOR EACH ROW BEGIN insert into t0 values(5, "Mysql"); END	PACKAGE `recover_trig1` 
+PROCEDURE before_row(IN OLD `test`.`t2`%ROWTYPE, INOUT NEW `test`.`t2`%ROWTYPE);
+PROCEDURE after_row(IN OLD `test`.`t2`%ROWTYPE, IN NEW `test`.`t2`%ROWTYPE);
+END;
+	PACKAGE BODY `recover_trig1` 
+PROCEDURE before_row(IN OLD `test`.`t2`%ROWTYPE, INOUT NEW `test`.`t2`%ROWTYPE) 
+BEGIN
+BEGIN insert into t0 values(5, "Mysql"); END;
+END;
+PROCEDURE after_row(IN OLD `test`.`t2`%ROWTYPE, IN NEW `test`.`t2`%ROWTYPE) 
+BEGIN
+END;
+END;
+
+SELECT DDL_STMT_STR FROM OCEANBASE.__ALL_VIRTUAL_DDL_OPERATION WHERE tenant_id = 1002 and (ddl_stmt_str != '' and ddl_stmt_str not like '%GRANT%' and ddl_stmt_str not like '%USER%' and ddl_stmt_str not like '%ROLE%') order by gmt_create;
+DDL_STMT_STR
+set global wait_timeout = 288000
+create table t0 (c0 int primary key, c1 char(100))
+create table t1 (c1 int primary key,
+c2 char(100) not null,
+c3 char(50) unique,
+c4 int check(c4>20),
+c5 int,
+c6 set ('abc', 'cde', 'def'),
+c7 enum ('a', 'b', 'c'),
+c8 char(100) generated always as (substr(c2, 1, 20)) virtual,
+c9 char(100) generated always as (substr(c2, 1, 20)) stored,
+CONSTRAINT t1_fk FOREIGN KEY(c1) REFERENCES t0 (c0))
+create table t2 (c1 int,
+c2 int,
+c3 int,
+c4 int,
+c5 int,
+CONSTRAINT t2_cst_pk PRIMARY KEY (c1),
+constraint t2_cst_chk_1 check(c1=c2),
+constraint t2_cst_chk_2 check(c1=c2),
+constraint t2_cst_unique_1 unique(c3, c1),
+constraint t2_cst_unique_2 unique(c4, c1),
+constraint t2_OBCHECK_123456 check(c2=c3),
+constraint t2_OBUNIQUE_123456 unique(c5, c1),
+constraint t2_fk_1 FOREIGN KEY(c1) REFERENCES t0(c0),
+constraint t2_fk_2 FOREIGN KEY(c1) REFERENCES t1(c1),
+constraint t2_fk_self_reference FOREIGN KEY(c2) REFERENCES t2(c1)) partition by hash(c1) partitions 3
+alter table t2 add column col6 int first
+CREATE TRIGGER recover_trig1 BEFORE insert on t2 FOR EACH ROW BEGIN insert into t0 values(5, "Mysql"); END
+CREATE TRIGGER recover_trig2 BEFORE update on t2 FOR EACH ROW BEGIN update t0 set c1 = "Mysql 8.0" where c1 = "Mysql"; END
+CREATE TRIGGER recover_trig3 BEFORE delete on t1 FOR EACH ROW BEGIN insert into t1 (c1, c2, c3, c4, c5, c6, c7) values (100, 'allen_bob ', 'trigger_insert', 30, 1, 'abc', 'a'); END
+create database recover_test

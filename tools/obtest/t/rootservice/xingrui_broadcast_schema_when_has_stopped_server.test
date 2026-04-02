@@ -1,0 +1,49 @@
+# CASE_OWNER:
+#    @xingrui.cwh
+# CASE_DESC:
+#    验证有observer stopped的情况下，truncate等并行ddl不等待对应机器schema刷新
+
+ob1=OBI(cluster=1:1:1,proxy_num=0);
+source include/mini_ob_config.inc;
+ob1.set extra_config=$mini_ob_config;
+ob1.reboot;
+
+ob_connect(conn_sys, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection conn_sys;
+set @@session.ob_query_timeout = 1000000000;
+alter system set _parallel_ddl_control = 'TRUNCATE_TABLE:ON' tenant = all;
+alter system set _enable_parallel_table_creation = true tenant = all;
+alter system set _wait_interval_after_parallel_ddl = '30s' tenant = all;
+eval CREATE RESOURCE UNIT xingrui_broadcast_schema_unit MAX_CPU 1, MEMORY_SIZE '2G';
+eval CREATE RESOURCE POOL xingrui_broadcast_schema_pool UNIT = 'xingrui_broadcast_schema_unit', UNIT_NUM = 1;
+eval CREATE TENANT xingrui_broadcast_schema_mysql RESOURCE_POOL_LIST = ('xingrui_broadcast_schema_pool'), primary_zone='z1,z2' set ob_tcp_invited_nodes='%';
+
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = 'xingrui_broadcast_schema_mysql', tenant_id, 1);
+let $unit_ip = deploy_get_value(ob1.select select svr_ip from oceanbase.__all_virtual_unit where tenant_id= $tenant_id and zone = 'z3', svr_ip, 1);
+let $unit_port = deploy_get_value(ob1.select select svr_port from oceanbase.__all_virtual_unit where tenant_id= $tenant_id and zone = 'z3', svr_port, 1);
+
+#模拟stop server
+--disable_query_log
+eval alter system stop server '$unit_ip:$unit_port';
+--enable_query_log
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where svr_ip='$unit_ip' and svr_port=$unit_port and stop_time != 0,1,30;
+
+ob_connect(conn_mysql, ob1.z1.obs0, root@xingrui_broadcast_schema_mysql, , test, , USE_MYSQL_CONNECTOR);
+connection conn_mysql;
+#create table
+let $current_timestamp = deploy_get_value(ob1.z1.obs0.select select time_to_usec(current_timestamp()) as time, time, 1);
+create table xingrui_broadcast_schema(col1 int, col2 int);
+let $cost = deploy_get_value(ob1.z2.obs0.select select CAST(((time_to_usec(current_timestamp()) - $current_timestamp) / 1000000) as SIGNED) as cost, cost, 1);
+if ($cost > 15)
+{
+  echo "create table cost time is too long after stop server";
+}
+
+#truncate table
+let $current_timestamp = deploy_get_value(ob1.z1.obs0.select select time_to_usec(current_timestamp()) as time, time, 1);
+truncate table xingrui_broadcast_schema;
+let $cost = deploy_get_value(ob1.z2.obs0.select select CAST(((time_to_usec(current_timestamp()) - $current_timestamp) / 1000000) as SIGNED) as cost, cost, 1);
+if ($cost > 15)
+{
+  echo "truncate table cost time is too long after stop server";
+}

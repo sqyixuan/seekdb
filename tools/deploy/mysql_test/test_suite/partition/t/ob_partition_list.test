@@ -1,0 +1,446 @@
+#owner: peihan.dph
+##owner group: sql3
+# tags: optimizer
+
+#   # 简单的list分区
+#     create table t1 (c1 int, c2 int) partition by list(c1) (partition p0 values in (3, 1));
+#     1. list分区的值有重复的情况，p0中有重复，p0, p1两个有重复的情况
+#     2. in 中值的个数不一样的情况
+#     3. 含有default值，default在同一个in里面出现多次，default在不同的partition出现，default和其他值同时出现, 只有default分区的情况
+#     4. in里面的值超过上限的情况
+#     5. in给的类型不是int的情况
+#     6. list里面是表达式的情况，简单表达式例如c1 + 1，或者复杂的c1 + c2。表达式计算结果不为int类型的情况
+#     7. 含有primary key和unique key的情况, 含有auto increment的情况
+#   //以上所有情况都需要叠加insert和select查询，并且要通过explain查看实际的分区裁剪是否正确, 考虑show create table t1;
+#
+#   查询需要考虑到的事情
+#   1. 点查询，给定的查询刚好是某个分区，或者几个分区，in表达式和or表达式都需要
+#   2. 范围查询
+#   3. 查询的顺序，特别需要考虑倒序查询必须正确。就是在消除order by以后结果是正确的
+#   4. 需要考虑多机分布式查询
+#   5. 查询中需要有join操作，需要考虑智能连接
+#   6. 需要考虑insert,delete,update,select操作不存在分区时候的报错输出
+#
+#   分区操作
+#   // 不支持add和drop分区
+#
+#   # 简单的list columns分区
+#
+#     create table t1 (c1 int, c2 int, c3 int) partition by list columns(c1, c2) (partition p0 values in ((1,3), (3,4));
+#     1. list分区的值有重复的情况，p0中有重复，p0, p1两个有重复的情况
+#     2. values in ((1,3)) 和 values in (1,3)这两种都需要支持
+#     3. 向量的个数对应不上的情况。例如in ((1)) 这种
+#     4. default值不能出现两次，例如in ((default, default))这种。
+#     5. 类型对应不上 in ('1', '3')这种
+#     6. list columns里面写表达，例如(c1 +1, c2)等等
+#     7. list columns里面只有一个column，然后(1,3)，和((1), (3))这种写法的问题
+#
+#   // 插入和查询操作同上
+#
+#
+#   # 二级分区
+#   之前的分区方式智能是hash + range， range + hash这两种方式（hash包括了key分区，range包括了range columns分区)。在实现的框架上
+#   range和list分区的逻辑是在一起的，所以这次需要放开所有的限制。测试点比较多
+#
+#   list分区作为一级分区
+#   1. 需要能聚合其他所有的分区类型，包括list分区类型
+#
+#   list分区作为二级分区
+#   1. 主要是range分区支持的分区操作需要没有任何问题
+#
+#
+
+--source ./mysql_test/include/refresh_proxy_location_cache.inc
+use test;
+--disable_warnings
+drop table if exists t1;
+drop table if exists test;
+drop table if exists obschema_t_WJ9;
+--enable_warnings
+
+# ===========简单list分区
+create table t1 (c1 int, c2 int) partition by list(c1) (partition p0 values in (1,2,3), partition p1 values in (7,9));
+insert into t1 values(1,2);
+insert into t1 values(2,2);
+
+--error 1526
+insert into t1 values(5, 10);
+
+select * from t1 where c1 = 1;
+explain select * from t1 where c1 = 1;
+
+select * from t1 where c1 = 10;
+explain select * from t1 where c1 = 10;
+
+select * from t1 where c1 > 1;
+explain select * from t1 where c1 > 1;
+
+drop table t1;
+
+
+
+# ====有重复值的情况
+--error 1495
+create table t1 (c1 int, c2 int) partition by list (c1) (partition p0 values in (1,2), partition p1 values in (2));
+--error 1495
+create table t1 (c1 int, c2 int) partition by list (c1) (partition p0 values in (2,2));
+--error 1517
+create table t1 (c1 int, c2 int) partition by list (c1) (partition p0 values in (1), partition p1 values in (2), partition p1 values in (4));
+
+
+# ===含有default值的情况
+
+--error 1064
+create table t1 (c1 int, c2 int) partition by list(c1) (partition p0 values in (1,2,3), partition p1 values in (7,9), partition p2 values in default); #不写括号要报语法错误
+
+--error 5491
+create table t1 (c1 int, c2 int) partition by list(c1) (partition p0 values in (1,2,3), partition p1 values in (7,9), partition p2 values in (default), partition p3 values in (default));
+
+create table t1 (c1 int, c2 int) partition by list(c1) (partition p0 values in (1,2,3), partition p1 values in (7,9), partition p2 values in (default));
+
+insert into t1 values(1, 1);
+insert into t1 values(10, 1);
+
+select * from t1 where c1 = 1;
+explain select * from t1 where c1 = 10;
+
+select * from t1;
+
+drop table t1;
+
+
+# ===in给的类型不是int的情况
+--error 1659
+create table t1 (c1 timestamp, c2 int) partition by list(c1) (partition p0 values in (1519660800000000));
+create table t1 (c1 year, c2 int) partition by list(c1) (partition p0 values in (2018));
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create table t1;
+
+insert into t1 values(2018, 9);
+select * from t1 where c1 = 2018;
+explain select * from t1 where c1 = 2018;
+drop table t1;
+
+create table t1 (c1 year, c2 int) partition by range(c1) (partition p0 values less than (2018));
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create table t1;
+
+insert into t1 values(2017, 9);
+select * from t1 where c1 = 2017;
+explain select * from t1 where c1 = 2017;
+drop table t1;
+
+
+
+create table t1 (c1 bit(64), c2 int) partition by list(c1) (partition p0 values in (2018));
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create table t1;
+
+insert into t1 values(2018, 9);
+select c2 from t1 where c1 = 2018;
+explain select * from t1 where c1 = 2018;
+drop table t1;
+
+create table t1 (c1 bit(64), c2 int) partition by range(c1) (partition p0 values less than (2018));
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create table t1;
+
+insert into t1 values(2017, 9);
+select * from t1 where c1 = 2017;
+explain select * from t1 where c1 = 2017;
+drop table t1;
+
+
+# ===list里面有表达式的情况
+create table t1 (c1 int, c2 int) partition by list(c1 + 1) (partition p0 values in (1), partition p1 values in (2,3));
+
+insert into t1 values(1,2);
+explain insert into t1 values(1,2);
+
+select * from t1 where c1 = 1;
+explain select * from t1 where c1 = 1;
+
+drop table t1;
+
+
+create table t1 (c1 int, c2 int) partition by list(c1 + c2) (partition p0 values in (1), partition p1 values in (2,3));
+insert into t1 values(1,1);
+
+--error 1526
+insert into t1 values(0,0);
+
+
+explain update t1 set c2 = 5 where c1 = 0;
+update t1 set c2 = 5 where c1 = 0;
+delete from t1 where c1 = 0;
+explain delete from t1 where c1 = 0;
+select * from t1 where c1 = 1;
+explain select * from t1 where c1 = 1;
+
+drop table t1;
+
+
+# ===list columns分区有重复的情况
+
+--error 1495
+create table t1 (c1 int, c2 int, c3 int) partition by list columns(c1,c2) (partition p0 values in (1,2), partition p1 values in (1,2));
+
+--error 1495
+create table t1 (c1 int, c2 int, c3 int) partition by list columns(c1,c2) (partition p0 values in (1,2), partition p1 values in ((1,3), (1,3)));
+
+
+create table t1 (c1 int, c2 int, c3 int) partition by list columns(c1,c2) (partition p0 values in (1,2), partition p1 values in ((1,3)));
+drop table t1;
+
+
+--error 5491
+create table t1 (c1 int, c2 int, c3 int) partition by list columns(c1,c2) (partition p0 values in (default), partition p1 values in (default));
+
+
+
+
+# ===list columns分区给定的向量格式不正确的情况
+create table t1 (c1 int, c2 int, c3 int) partition by list columns(c1,c2) (partition p0 values in (1,2));
+drop table t1;
+
+--error 1653
+create table t1 (c1 int, c2 int, c3 int) partition by list columns(c1,c2) (partition p0 values in (1,2,3,4));
+
+--error 1653
+create table t1 (c1 int, c2 int, c3 int) partition by list columns(c1,c2) (partition p0 values in ((1,2),3,4));
+
+create table t1 (c1 int, c2 int, c3 int) partition by list columns(c1,c2) (partition p0 values in ((1,2),(3,4)));
+drop table t1;
+
+create table t1 (c1 int, c2 int, c3 int) partition by list columns(c1,c2) (partition p0 values in ((1,2)));
+drop table t1;
+
+--error 1653
+create table t1 (c1 int, c2 int, c3 int) partition by list columns(c1,c2) (partition p0 values in (1,2,(3,4)));
+
+--error 1653
+create table t1 (c1 int, c2 int, c3 int) partition by list columns(c1,c2) (partition p0 values in ((1,2),(3)));
+
+#--error 1653
+#create table t1 (c1 int, c2 int, c3 int) partition by list columns(c1,c2) (partition p0 values in (((1,2)))); # 这条目前还是不过的状态
+
+
+# ===list column default不能出现两次的问题
+
+--error 1064
+create table t1 (c1 int, c2 int, c3 int) partition by list columns(c1,c2) (partition p0 values in ((1,2)), partition p1 values in (default,default));
+
+--error 1064
+create table t1 (c1 int, c2 int, c3 int) partition by list columns(c1,c2) (partition p0 values in (1,2), partition p1 values in ((default)));
+
+
+# ===list column类型对应不上的问题
+--error 1654
+create table t1 (c1 int, c2 int, c3 int) partition by list columns(c1,c2) (partition p0 values in ('1','2'));
+
+create table t1 (c1 varchar(100), c2 varchar(100), c3 int) partition by list columns(c1,c2) (partition p0 values in ('1','2'));
+drop table t1;
+
+--error 1654
+create table t1 (c1 varchar(100), c2 varchar(100), c3 int) partition by list columns(c1,c2) (partition p0 values in (1,2));
+
+--error 1064
+create table t1 (c1 int, c2 int, c3 int) partition by list columns(c1 + 1,c2) (partition p0 values in (1,2));
+
+
+# ===二级分区的情况
+create table t1 (c1 int, c2 int, c3 int) partition by hash(c1) subpartition by list(c2) subpartition template(subpartition p0 values in (1,2,3), subpartition p1 values in (default)) partitions 3;
+
+insert into t1 values(0,1,3);
+
+select * from t1 where c1 = 0 and c2 = 1;
+explain select * from t1 where c1 = 0 and c2 = 1;
+
+insert into t1 values(0,5,3);
+
+select * from t1 where c1 = 0 and c2 = 5;
+explain select * from t1 where c1 = 0 and c2 = 5;
+
+drop table t1;
+
+create table t1 (c1 int, c2 int, c3 int) partition by list(c1) subpartition by hash(c2) subpartitions 3 (partition p0 values in (1,2,3), partition p1 values in (default));
+
+insert into t1 values(1,0,3);
+select * from t1 where c1 = 1 and c2 = 0;
+explain select * from t1 where c1 = 1 and c2 = 0;
+
+insert into t1 values(5,0,3);
+select * from t1 where c1 = 5 and c2 = 0;
+explain select * from t1 where c1 = 5 and c2 = 0;
+
+drop table t1;
+
+create table t1 (c1 int, c2 int, c3 int) partition by range(c1) subpartition by list(c2) subpartition template (subpartition p0 values in (1,2,3), subpartition p1 values in (default)) (partition p0 values less than (5), partition p1 values less than(10));
+
+insert into t1 values(0,1,3);
+select * from t1 where c1 = 0 and c2 = 1;
+explain select * from t1 where c1 = 0 and c2 = 1;
+
+insert into t1 values(6,5,3);
+select * from t1 where c1 = 6 and c2 = 5;
+explain select * from t1 where c1 = 6 and c2 = 5;
+
+drop table t1;
+
+
+create table t1 (c1 int, c2 int, c3 int) partition by list(c1) subpartition by range(c2) subpartition template (subpartition p0 values less than (5), subpartition p1 values less than (maxvalue)) (partition p0 values in (1,2,3), partition p1 values in (default));
+
+insert into t1 values(0,1,3);
+select * from t1 where c1 = 0 and c2 = 1;
+explain select * from t1 where c1 = 0 and c2 = 1;
+
+insert into t1 values(6,5,3);
+select * from t1 where c1 = 6 and c2 = 5;
+explain select * from t1 where c1 = 6 and c2 = 5;
+
+drop table t1;
+
+
+create table t1 (c1 int, c2 int, c3 int) partition by range(c1) subpartition by list(c2) subpartition template (subpartition p0 values in (1,2,3), subpartition p1 values in (default)) (partition p0 values less than (5), partition p1 values less than(10));
+
+insert into t1 values(6,1,2);
+
+alter table t1 drop partition (p1);
+
+select * from t1;
+
+--error 1526
+insert into t1 values(6,1,0);
+
+
+alter table t1 add partition (partition p1 values less than(maxvalue));
+
+insert into t1 values(6,1,0);
+drop table t1;
+
+
+# bug project/81079/issue/14359934?akProjectId=81079&
+create table t1(a int, b int, c int, d int, e int, primary key(a,b,c,d), key k1(b) local, key k2(c,b) local, key k3(c,d,b) local) partition by list columns(b,c) (partition p0 values in ((1,1),(2,2),(3,3)),partition p1 values in (default));
+
+insert into t1 values(1,1,1,1,1),(2,2,2,2,2),(3,3,3,3,3),(4,4,4,4,4),(5,5,5,5,5),(6,6,6,6,6),(7,7,7,7,7),(8,8,8,8,8),(9,9,9,9,9),(10,10,10,10,10);
+
+select/*+index(t1 k2)*/ * from t1 where (c,b) in ((1,1),(2,2),(3,3),(4,4),(5,5)) order by a,b,c,d;
+
+drop table t1;
+
+# bug 
+create table obschema_t_WJ9(obschema_c_0_cvA tinyint(255) auto_increment NOT NULL,
+obschema_c_1_c9 bit(64) NOT NULL default b'1111111111111111111111111111111111111111111111111111111111111111',
+obschema_c_2_XR datetime NOT NULL default now(),
+obschema_c_3_VCtDbq varchar(200) NOT NULL default 'aEFGHI01',
+obschema_c_4_OWQZ varchar(150) NOT NULL default 'CDEFGHI01',
+ primary key(obschema_c_0_cvA,
+ obschema_c_1_c9,
+ obschema_c_2_XR,
+ obschema_c_3_VCtDbq,
+ obschema_c_4_OWQZ),
+ index obschema_i_0_tX(obschema_c_0_cvA,
+ obschema_c_1_c9,
+ obschema_c_2_XR,
+ obschema_c_3_VCtDbq,
+ obschema_c_4_OWQZ) LOCAL ,
+ partition_id varchar(1) COLLATE utf8mb4_bin GENERATED ALWAYS AS (substr(obschema_c_3_VCtDbq,
+ 200 ,
+ 1)) VIRTUAL,
+ UNIQUE KEY uk(obschema_c_3_VCtDbq,
+ partition_id) local)partition by list columns(partition_id) (partition p0 values in ('00'), partition p1 values in ('01'), partition p2 values in ('02'));
+
+--error 1406
+replace into obschema_t_WJ9(obschema_c_1_c9,obschema_c_2_XR,obschema_c_3_VCtDbq,obschema_c_4_OWQZ) values(now(6),now(6),now(6),now(6));
+--error 1526
+replace into obschema_t_WJ9() values();
+
+drop table obschema_t_WJ9;
+
+
+CREATE TABLE `test` (
+    `partner_id` varchar(400) COLLATE utf8mb4_bin NOT NULL,
+    `out_trade_no` varchar(64) COLLATE utf8mb4_bin NOT NULL,
+    `trade_from` varchar(200) COLLATE utf8mb4_bin NOT NULL,
+    `trade_no_prefix` varchar(1) COLLATE utf8mb4_bin DEFAULT NULL,
+    `trade_no` varchar(64) COLLATE utf8mb4_bin NOT NULL,
+    `gmt_create` datetime(6) NOT NULL,
+    `partition_id` varchar(2),
+    PRIMARY KEY (`out_trade_no`, `partner_id`, `trade_from`,`partition_id`)
+    ) partition by list columns(partition_id)
+  (partition p00 values in (('00')),
+   partition p01 values in (('01')),
+   partition p02 values in (('02')),
+   partition p03 values in (('03')));
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create table test;
+drop table test;
+
+create table t1 (c1 int, c2 int) partition by list (c1) (partition p0 values in (1), partition p1 values in (default));
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create table t1;
+drop table t1;
+
+create table t1 (c1 int, c2 int) partition by list columns(c1, c2) (partition p0 values in (1,2), partition p1 values in (default));
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create table t1;
+drop table t1;
+
+###bug18345266, 非分区表转成分区表后，查表客户端报错The object is not initialized
+###
+--error 0,1051
+drop table test;
+create table test (c1 int primary key) partition by list columns(c1) (partition p1 values in (default));
+
+select * from test where c1 = 1;
+
+drop table test;
+create table test (c1 int primary key) partition by list(c1) (partition p1 values in (default));
+select * from test where c1 = 1;
+
+drop table test;
+
+#create table test (c1 int primary key);
+#alter table test partition by list columns (c1) (partition pdefault values in (default));
+#insert into test values(3);
+#select * from test where c1 =3;
+
+#drop table test;
+
+
+--echo ###19080176, [oracle兼容性] list分区定义中支持null
+###
+--error 0,1051
+drop table tx4xb;
+create table tx4xb(c int)
+partition by list (c)
+(partition p1 values in(null), partition p2 values in (5));
+
+insert into tx4xb values(null);
+insert into tx4xb values(5);
+select * from tx4xb partition(p1);
+select * from tx4xb partition(p2);
+
+drop table tx4xb;
+create table tx4xb(c varchar(100))
+partition by list columns(c)
+(partition p1 values in (null), partition p2 values in ('default'));
+
+insert into tx4xb values(null);
+insert into tx4xb values('default');
+select * from tx4xb partition(p1);
+select * from tx4xb partition(p2);
+
+drop table tx4xb;
+
+create table tx4xb(c int)
+partition by list columns (c)
+(partition p1 values in(null), partition p2 values in (5));
+
+insert into tx4xb values(null);
+insert into tx4xb values(5);
+select * from tx4xb partition(p1);
+select * from tx4xb partition(p2);
+
+
+drop table tx4xb;

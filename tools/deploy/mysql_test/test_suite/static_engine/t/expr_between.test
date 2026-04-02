@@ -1,0 +1,163 @@
+# owner: peihan.dph
+# owner group: sql2
+# tags: optimizer
+# description: 测试新执行引擎between表达式, 
+
+--disable_abort_on_error
+--result_format 4
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+
+connect (conn_admin, $OBMYSQL_MS0,admin,$OBMYSQL_PWD,oceanbase,$OBMYSQL_PORT);
+connection conn_admin;
+
+--explain_protocol 0
+--disable_warnings
+drop table if exists t1;
+--enable_warnings
+set timestamp = 1600000000;
+create table t1 (col_pos_int int,
+                 col_neg_int int,
+                 col_zero_int int,
+                 col_pos_varchar varchar(10),
+                 col_neg_varchar varchar(10),
+                 col_zero_varchar varchar(10));
+insert into t1 values(1, -1, 0, '01', '-02', '00');
+select * from t1;
+
+--echo // Case1: normal test
+alter system flush plan cache global;
+--explain_protocol 2
+set @@ob_enable_plan_cache = 0;
+--echo // 1
+select col_zero_int between col_neg_int and col_pos_int from t1;
+--echo // 边界测试，结果为1
+select col_zero_int between col_zero_int and col_pos_int from t1;
+--echo // 边界测试，结果为1
+select col_zero_int between col_zero_int and col_zero_int from t1;
+--echo // 0
+select col_pos_int between col_zero_int and col_zero_int from t1;
+
+--echo // Case2: 测试char与int比较
+--echo // MySQL是按照数字比较的即'01' <= '1'是成立的, Oracle是不成立的, 结果为1
+select '1' between col_pos_varchar and 3 from t1;
+
+--echo // Case3: not between
+--echo // 0
+select 1 not between col_pos_int and col_pos_int from t1;
+--echo // 1
+select 1 not between col_neg_int and col_zero_int from t1;
+--echo // 0
+select 1 not between col_pos_varchar and col_pos_varchar from t1;
+--echo // 1
+select 1 not between col_neg_varchar and col_zero_varchar from t1;
+
+--echo // Case4: 有Null的情况
+--echo // null
+select 1 between col_pos_int and null from t1;
+--echo // 0
+select 1 between col_pos_int+1 and null from t1;
+--echo // null
+select 1 between col_pos_varchar and null from t1;
+--echo // 0
+select 1 between col_neg_varchar and null from t1;
+--echo // null
+select 1 between null and col_pos_int from t1;
+--echo // 0
+select 1 between null and col_neg_int from t1;
+--echo // null
+select 1 between null and col_pos_varchar from t1;
+--echo // 0
+select 1 between null and col_neg_varchar from t1;
+
+--echo // null
+select 1 not between col_pos_int and null from t1;
+--echo // null
+select 1 not between col_neg_int and null from t1;
+--echo // 1
+select 1 not between col_pos_varchar+1 and null from t1;
+--echo // null
+select 1 not between null and col_pos_int from t1;
+--echo // 1
+select 1 not between null and col_neg_int from t1;
+--echo // null
+select 1 not between null and col_pos_varchar from t1;
+--echo // 1
+select 1 not between null and col_neg_varchar from t1;
+
+--echo // Case5: copied from mysql_test/t/expr_between.test, test datetime
+--explain_protocol 0
+--disable_warnings
+drop table if exists t1;
+--enable_warnings
+create table t1(col_1 datetime, col_2 date, col_3 timestamp, col_4 year, col_5 time);
+set time_zone='-2:00';
+insert into t1 values("2021-01-01 12:34:56","2021-01-01","2021-01-01 12:34:56",2021,"12:34:56");
+
+alter system flush plan cache global;
+--explain_protocol 2
+set @@ob_enable_plan_cache = 0;
+let $cnt = 5;
+let $arg_idx0 = 1;
+while ($arg_idx0 <= $cnt)
+{
+  let $arg_idx1 = 1;
+  while ($arg_idx1 <= $cnt)
+  {
+    let $arg_idx2 = 1;
+    while ($arg_idx2 <= $cnt)
+    {
+      eval select col_$arg_idx0 between col_$arg_idx1 and col_$arg_idx2 from t1;
+      eval select col_$arg_idx0 not between col_$arg_idx1 and col_$arg_idx2 from t1;
+
+      inc $arg_idx2;
+    }
+    inc $arg_idx1;
+  }
+  inc $arg_idx0;
+}
+
+--echo // change timezone
+--explain_protocol 0
+--sleep 2
+set time_zone='+8:00';
+insert into t1 values("2021-12-30 12:34:56","2021-12-30","2021-12-30 12:34:56",2021,"12:35:56");
+alter system flush plan cache global;
+--explain_protocol 2
+set @@ob_enable_plan_cache = 0;
+let $cnt = 5;
+let $arg_idx0 = 1;
+while ($arg_idx0 <= $cnt)
+{
+  let $arg_idx1 = 1;
+  while ($arg_idx1 <= $cnt)
+  {
+    let $arg_idx2 = 1;
+    while ($arg_idx2 <= $cnt)
+    {
+      eval select col_$arg_idx0 between col_$arg_idx1 and col_$arg_idx2 from t1;
+      eval select col_$arg_idx0 not between col_$arg_idx1 and col_$arg_idx2 from t1;
+
+      inc $arg_idx2;
+    }
+    inc $arg_idx1;
+  }
+  inc $arg_idx0;
+}
+select '2018-12-28' not between 1 and 2;
+
+--explain_protocol 0
+drop table t1;
+create table t1(a bigint);
+insert into t1 values(1234556789);
+insert into t1 values(-9030561677807976448);
+alter system flush plan cache global;
+--explain_protocol 2
+set @@ob_enable_plan_cache = 0;
+SELECT a FROM t1 WHERE !(a BETWEEN NULL AND "你好 世界！");
+--echo // 这里有bug, 增加隐式cast时，没有处理好in 表达式，zixie的提交会修复
+SELECT a FROM t1 WHERE ("hello world!" BETWEEN (((a <= a) IN (a, 'acqjd')) IS NULL) and (!(-146929937842962432 and (99.99999999 BETWEEN a and 'c')) IS NULL));
+select '02' between '1' and 3;
+select '02' not between '1' and 3;
+

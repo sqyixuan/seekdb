@@ -1,0 +1,63 @@
+#### small farm test cases for gc test on shared-storage ###
+# author: 哈嗖
+# Storage QA Team 2
+
+ob1=OBI(cluster=2:2:2,proxy_num=1);
+ob1.reboot;
+
+let $proxy_ip = deploy_get_value(ob1.proxy0.ip);
+let $proxy_port = deploy_get_value(ob1.proxy0.port);
+connect(sys_conn, $proxy_ip, root@sys,,oceanbase, $proxy_port);
+connection sys_conn;
+SET GLOBAL recyclebin = 0;
+connection sys_conn;
+ob1.mysql alter system set _ss_deleted_tablet_gc_time = '5s' tenant sys;
+
+ob1.mysql CREATE RESOURCE UNIT gc_test_unit_1 MAX_CPU 1, MEMORY_SIZE '2G', DATA_DISK_SIZE = '2G';
+ob1.mysql CREATE RESOURCE POOL gc_test_resource_pool_1 UNIT gc_test_unit_1, UNIT_NUM 2, ZONE_LIST = ('z1', 'z2');
+
+
+#---------------------------------------------------
+# test case 1: create a tenant and delete it (basic validation for small farm only)
+#---------------------------------------------------
+ob1.mysql CREATE TENANT gc_tenant_1 primary_zone = 'z1', resource_pool_list=('gc_test_resource_pool_1') set ob_tcp_invited_nodes = '%';
+connect(tenant_conn, $proxy_ip, root@gc_tenant_1,,test, $proxy_port);
+connection tenant_conn;
+create table t_gc_1(c1 bigint, c2 longtext, c3 longtext, c4 varchar(1024));
+insert /*+ query_timeout(100000000000) parallel(32) enable_parallel_dml */ into t_gc_1 select random() c1, randstr(1024, random()) c2, randstr(1024,random()) c3, randstr(1024,random()) c4 from table(generator(100000));
+connection sys_conn;
+let $tenant_id = query_get_value(select tenant_id from __all_tenant where tenant_name = 'gc_tenant_1', tenant_id, 1);
+let $svr_ip = query_get_value(select svr_ip from CDB_OB_TABLE_LOCATIONS where table_name = 't_gc_1' and zone = 'z1', server_ip, 1);
+let $svr_port = query_get_value(select svr_port from CDB_OB_TABLE_LOCATIONS where table_name = 't_gc_1' and zone = 'z1', svr_port, 1);
+let $server_id = query_get_value(select id from __all_server where svr_ip = '$svr_ip' and svr_port = $svr_port, id, 1);
+let $local_dir = query_get_value(show parameters where name = 'data_dir' and svr_ip = '$svr_ip' and svr_port = $svr_port, value, 1); 
+let $tablet_id = query_get_value(select tablet_id from CDB_OB_TABLE_LOCATIONS where table_name = 't_gc_1' and zone = 'z1', tablet_id, 1);
+let $oss_location = query_get_value(select path from __all_zone_storage where zone = 'z1', path, 1);
+let $endpoint = query_get_value(select endpoint from __all_virtual_server_storage where svr_ip = '$svr_ip' and svr_port = $svr_port, endpoint, 1);
+connection tenant_conn;
+drop table t_gc_1;
+sleep 60;
+connection sys_conn;
+ob1.z1.obs0.check_tablet_exists $svr_ip, $tenant_id, $server_id, $tablet_id, $local_dir, private;
+let $gc_message = deploy_get_value(ob1.z1.obs0.check_tablet_exists $endpoint, $tenant_id, $server_id, $tablet_id, $oss_location, private);
+if($gc_message == no directory found)
+{
+    --echo tablet gc finished;
+}
+if($gc_message == tablet non_exists)
+{
+    --echo tablet gc finished;
+}
+if($gc_message != no directory found)
+{
+    if($gc_message != tablet non_exists)
+    {
+        --echo $gc_message;
+    }
+}
+DROP TENANT gc_tenant_1 FORCE;
+#check local private directory/whether a ls is gc-ed
+sleep 150;
+ob1.z1.obs0.check_tenant_dir_exists $svr_ip, $tenant_id, $server_id, $local_dir, private;
+ob1.z1.obs0.check_tenant_dir_exists $endpoint, $tenant_id, $server_id, $oss_location, private;
+ob1.z1.obs0.check_tenant_dir_exists $endpoint, $tenant_id, $server_id, $oss_location, public;

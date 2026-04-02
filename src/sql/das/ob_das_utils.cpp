@@ -321,7 +321,7 @@ int ObDASUtils::reshape_datum_vector_value(const ObObjMeta &col_type,
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid args", KR(ret), K(batch_selector));
   } else {
-    ObBatchSelector single_selector(static_cast<int64_t>(0), 1);
+    ObBatchSelector single_selector(0L, 1);
     ObBatchSelector &selector = datum_vector.is_batch() ? batch_selector : single_selector;
     if (col_type.is_binary()) {
       const int32_t binary_len = col_accuracy.get_length();
@@ -934,7 +934,7 @@ int ObDASUtils::find_child_das_rtdef(ObDASBaseRtDef *root_rtdef,
   return ret;
 }
 
-bool ObDASUtils::is_index_merge(const ObDASBaseCtDef *attach_ctdef)
+bool ObDASUtils::is_index_merge(const ObDASBaseCtDef *attach_ctdef) 
 {
   bool bret = false;
   if (attach_ctdef != nullptr) {
@@ -952,7 +952,7 @@ bool ObDASUtils::is_index_merge(const ObDASBaseCtDef *attach_ctdef)
   return bret;
 }
 
-bool ObDASUtils::is_func_lookup(const ObDASBaseCtDef *attach_ctdef)
+bool ObDASUtils::is_func_lookup(const ObDASBaseCtDef *attach_ctdef) 
 {
   int ret = OB_SUCCESS;
   bool bret = false;
@@ -967,7 +967,7 @@ bool ObDASUtils::is_func_lookup(const ObDASBaseCtDef *attach_ctdef)
   return bret;
 }
 
-bool ObDASUtils::is_vec_idx_scan(const ObDASBaseCtDef *attach_ctdef)
+bool ObDASUtils::is_vec_idx_scan(const ObDASBaseCtDef *attach_ctdef) 
 {
   int ret = OB_SUCCESS;
 
@@ -984,7 +984,7 @@ bool ObDASUtils::is_vec_idx_scan(const ObDASBaseCtDef *attach_ctdef)
   return bret;
 }
 
-bool ObDASUtils::is_fts_idx_scan(const ObDASBaseCtDef *attach_ctdef)
+bool ObDASUtils::is_fts_idx_scan(const ObDASBaseCtDef *attach_ctdef) 
 {
   int ret = OB_SUCCESS;
 

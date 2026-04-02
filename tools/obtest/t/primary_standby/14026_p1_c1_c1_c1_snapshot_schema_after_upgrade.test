@@ -1,0 +1,100 @@
+# owner: rongxuan.lc
+# description: 本case是为了测试226加上备库后一起升级成22x的场景；
+
+ob1=OBI(cluster=1,init_unit_cpu=5,init_unit_num=1,init_unit_mem=5368709120,version=2_2_60,oblog_version=current,proxy_num=0);
+ob2=OBI(cluster=1,leaderob=ob1,proxy_num=0,version=2_2_60);
+ob3=OBI(cluster=1,leaderob=ob1,proxy_num=0,version=2_2_60);
+ob1.z1.obs0.set extra_config=memory_chunk_cache_size=1G;
+ob1.reboot;
+
+let $cpu = 1;
+let $memory = 5368709120;
+let $min_memory = 5368709120;
+let $disk = 536870912;
+let $iops = 100000;
+let $session = 64;
+let $case_index = 1;
+
+ob_connect(sys1_conn, ob1.z1.obs0, root, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection sys1_conn;
+set ob_query_timeout = 30000000;
+eval  CREATE RESOURCE UNIT unit_1 MAX_CPU $cpu, MAX_MEMORY $memory, MAX_IOPS $iops, MAX_DISK_SIZE $disk, MAX_SESSION_NUM $session, MIN_CPU=1, MIN_MEMORY=$min_memory, MIN_IOPS=128;
+eval  CREATE RESOURCE POOL pool_1 UNIT = 'unit_1', UNIT_NUM = 1, ZONE_LIST = ('z1');
+eval  CREATE TENANT tenant_$case_index RESOURCE_POOL_LIST = ('pool_1'), primary_zone='z1' set ob_tcp_invited_nodes='%';
+
+# 1.启动之后首先检查配置项文件正常
+let $work_dir=deploy_get_value(ob1.z1.obs0.workdir);
+ob1.z1.obs0.sh cd $work_dir/; ls -l {etc,etc2,etc3}/observer.conf*.bin;
+# 2. 修改配置项
+ob1.mysql alter system set balancer_idle_time='10s';
+ob1.mysql alter system set merger_check_interval='10s';
+ob1.mysql alter system set resource_soft_limit=200;
+ob1.mysql alter system set resource_hard_limit=200;
+
+# 5.3.1 第1次合并
+ob1.mysql alter system major freeze;
+ob1.check_version 2;
+ob1.check_until_timeout select info from __all_zone where zone='' and name='merge_status',IDLE,30;
+##检查ob2快照接入进来；
+ob2.reboot;
+ob2.check_until_timeout select value from __all_zone where zone = '' and name = 'last_merged_version', 2, 480;
+ob2.check_until_timeout select column_value from __all_core_table where table_name = '__all_global_stat' and column_name = 'standby_snapshot_frozen_version', 2, 3; 
+ob1.mysql alter system major freeze;
+ob1.mysql alter system major freeze;
+ob1.check_until_timeout select value from __all_zone where zone = '' and name = 'last_merged_version', 4, 360;
+ob3.reboot;
+ob3.check_until_timeout select value from __all_zone where zone = '' and name = 'last_merged_version', 4, 360;
+ob3.check_until_timeout select column_value from __all_core_table where table_name = '__all_global_stat' and column_name = 'standby_snapshot_frozen_version', 4, 3; 
+ob2.check_until_timeout select value from __all_zone where zone = '' and name = 'last_merged_version', 4, 360;
+ob1.check_until_timeout select info from __all_zone where zone='' and name='merge_status',IDLE,30;
+ob2.check_until_timeout select info from __all_zone where zone='' and name='merge_status',IDLE,30;
+ob3.check_until_timeout select info from __all_zone where zone='' and name='merge_status',IDLE,30;
+# 6 打开升级配置, 升级前检查
+ob1.upgrade_check_before;
+
+ob1.mysql alter system begin upgrade;
+sleep 2;
+# 7.执行升级SQL
+# 7.2 执行升级脚本
+ob1.upgrade_commond_for_server pre;
+sleep 5;
+
+# 8.1 首先检查日志是同步状态
+ob1.check_until_timeout select count(1) from __all_virtual_core_meta_table where role=1 and zone='z1',1,120;
+ob1.check_until_timeout SELECT CAST(COUNT(*) AS SIGNED) as cnt FROM __all_virtual_clog_stat WHERE is_in_sync = 0 and is_offline=0,0,600;
+
+ob1.z1.force_stop;
+ob1.z1.upgrade;
+ob1.z1.nstart;
+ob1.check_until_timeout select count(1) from __all_virtual_core_meta_table where role=1 and zone='z1',1,120;
+
+ob2.z1.force_stop;
+ob2.z1.upgrade;
+ob2.z1.nstart;
+ob2.check_until_timeout select count(1) from __all_virtual_core_meta_table where role=1 and zone='z1',1,120;
+
+ob3.z1.force_stop;
+ob3.z1.upgrade;
+ob3.z1.nstart;
+ob3.check_until_timeout select count(1) from __all_virtual_core_meta_table where role=1 and zone='z1',1,120;
+
+ob_connect(sys1_conn, ob1.z1.obs0, root, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection sys1_conn;
+set @@session.ob_query_timeout = 60000000;
+alter system upgrade virtual schema;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_server_schema_info as a join oceanbase.__all_virtual_server_schema_info as b on a.tenant_id = b.tenant_id  where a.refreshed_schema_version != b.refreshed_schema_version, 0, 50;
+select count(*) > 0 from oceanbase.__all_virtual_tenant_partition_meta_table;
+sleep 10;
+ob1.upgrade_commond_for_server post;
+ob1.mysql alter system end upgrade;
+sleep 10;
+ob1.mysql alter system run job 'root_inspection';
+sleep 10;
+ob1.upgrade_check_after;
+
+ob1.mysql alter system major freeze;
+
+ob1.check_until_timeout select value from __all_zone where zone = '' and name = 'last_merged_version', 5, 360;
+ob2.check_until_timeout select value from __all_zone where zone = '' and name = 'last_merged_version', 5, 360;
+ob3.check_until_timeout select value from __all_zone where zone = '' and name = 'last_merged_version', 5, 360;
+

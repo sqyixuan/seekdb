@@ -1,0 +1,140 @@
+# CASE_OWNER:
+#    @jingyu.cr
+# CASE_DESC:
+#    test clone tenant from standby tenant with conflict cases
+
+ob1=OBI(cluster=1:1:1, proxy_num=0);
+source include/mini_ob_config.inc;
+ob1.set extra_config = $mini_ob_config;
+ob1.force_stop;
+ob1.clean_backup_dest;
+ob1.reboot;
+
+--echo ===========================================
+--echo        create resource pool to use
+--echo ===========================================
+# 固定sys租户规格
+ob1.mysql alter resource unit sys_unit_config memory_size='2G';
+ob_connect(sys_conn, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection sys_conn;
+
+CREATE RESOURCE UNIT large_unit MAX_CPU=2, MEMORY_SIZE='2G';
+CREATE RESOURCE POOL large_pool UNIT large_unit, UNIT_NUM 1, ZONE_LIST ('z1','z2','z3');
+CREATE RESOURCE POOL large_pool_1 UNIT large_unit, UNIT_NUM 1, ZONE_LIST ('z1','z2','z3');
+
+ob1.mysql alter system set _backup_idle_time = '10s';
+ob1.mysql alter system set merger_check_interval = '10s';
+ob1.mysql alter system set enable_async_syslog=false;
+ob1.mysql alter system set debug_sync_timeout = '1000s';
+
+--echo ===========================================
+--echo        create backup_mysql_tenant
+--echo ===========================================
+connection sys_conn;
+# create mysql tenant, test create tenant before major freeze
+ob1.mysql CREATE TENANT backup_mysql_tenant RESOURCE_POOL_LIST = ('large_pool'), primary_zone = "z1, z2" set ob_tcp_invited_nodes='%', ob_compatibility_mode='mysql';
+let $backup_mysql_tenant_id = query_get_value(select tenant_id from oceanbase.DBA_OB_TENANTS where tenant_name='backup_mysql_tenant', tenant_id, 1);
+ob_connect(backup_mysql_tenant_conn, ob1.z1.obs0, root@backup_mysql_tenant, , test, , USE_MYSQL_CONNECTOR);
+connection backup_mysql_tenant_conn;
+create table t1 (c1 int);
+insert into t1 values (1), (2), (3), (4), (5);
+
+connection sys_conn;
+# mysql租户  开启日志备份
+ob1.mysql alter system archivelog;
+let $table_id = deploy_get_value(ob1.select select table_id from oceanbase.CDB_OB_TABLE_LOCATIONS where tenant_id=$backup_mysql_tenant_id and database_name='test' and table_name = 't1' order by object_id limit 1, table_id, 1);
+let $object_id = deploy_get_value(ob1.select select object_id from oceanbase.CDB_OB_TABLE_LOCATIONS where table_id=$table_id order by object_id limit 1, object_id, 1);
+let $tablet_id = deploy_get_value(ob1.select select distinct(tablet_id) as tablet_id from oceanbase.CDB_OB_TABLE_LOCATIONS where tenant_id = $backup_mysql_tenant_id and table_name = "T1", tablet_id, 1);
+let $current_ls_id = deploy_get_value(ob1.select select ls_id as current_ls_id from oceanbase.CDB_OB_TABLET_TO_LS where tenant_id = $backup_mysql_tenant_id and tablet_id = $tablet_id, current_ls_id, 1);
+let $another_ls_id = deploy_get_value(ob1.select select ls_id as another_ls_id from oceanbase.CDB_OB_LS where tenant_id = $backup_mysql_tenant_id and ls_id != $current_ls_id and ls_id != 1, another_ls_id , 1);
+
+# get primary tenant access point
+let $server_ip_port_1=deploy_get_value(ob1.select select concat(svr_ip,':',sql_port) as host from CDB_OB_LS_LOCATIONS where tenant_id = $backup_mysql_tenant_id and ls_id = 1 and role = 'LEADER' order by svr_ip, sql_port limit 1;, host, 1);
+let $server_ip_port_2=deploy_get_value(ob1.select select concat(svr_ip,':',sql_port) as host from CDB_OB_LS_LOCATIONS where tenant_id = $backup_mysql_tenant_id and ls_id = 1 and role = 'FOLLOWER' order by svr_ip, sql_port limit 1, host, 1);
+let $server_ip_port_3=deploy_get_value(ob1.select select concat(svr_ip,':',sql_port) as host from CDB_OB_LS_LOCATIONS where tenant_id = $backup_mysql_tenant_id and ls_id = 1 and role = 'FOLLOWER' and concat(svr_ip,':',sql_port) not like "%$server_ip_port_2%" limit 1, host, 1);
+
+--echo =========================================== 
+--echo       create log restore source user
+--echo ===========================================
+ob_connect(backup_mysql_tenant_conn, ob1.z1.obs0, root@backup_mysql_tenant, , test, , USE_MYSQL_CONNECTOR);
+connection backup_mysql_tenant_conn;
+create user mytest identified by "test";
+GRANT SELECT on OCEANBASE.DBA_OB_ACCESS_POINT to mytest;
+GRANT SELECT on OCEANBASE.GV$OB_UNITS to mytest;
+GRANT SELECT on OCEANBASE.DBA_OB_TENANTS to mytest;
+GRANT SELECT on OCEANBASE.GV$OB_PARAMETERS to mytest;
+GRANT SELECT on OCEANBASE.GV$OB_LOG_STAT to mytest;
+GRANT SELECT on OCEANBASE.DBA_OB_LS to mytest;
+
+--echo ==============================================
+--echo   create standby tenant standby_mysql_tenant
+--echo ==============================================
+connection sys_conn;
+--disable_all_result_log
+send CREATE STANDBY TENANT IF NOT EXISTS standby_mysql_tenant LOG_RESTORE_SOURCE = 'service=$server_ip_port_1;$server_ip_port_2;$server_ip_port_3 USER=mytest@backup_mysql_tenant PASSWORD=test' PRIMARY_ZONE='z1', RESOURCE_POOL_LIST=('large_pool_1'),locality='F@z1,F@z2,F@z3', comment='standby tenant to do clone';
+--enable_all_result_log
+ob1.check_until_timeout SELECT count(*) FROM oceanbase.DBA_OB_TENANTS WHERE tenant_name='standby_mysql_tenant', 1, 100;
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.DBA_OB_TENANTS where tenant_name='standby_mysql_tenant', tenant_id, 1);
+ob1.check_until_timeout SELECT status FROM oceanbase.DBA_OB_TENANTS WHERE TENANT_NAME = 'standby_mysql_tenant', NORMAL, 200;
+
+--echo ==============================================
+--echo prepare clone tenant from standby_mysql_tenant
+--echo ==============================================
+let $data_backup_dest = deploy_get_value(ob1.get_data_backup_dest standby_mysql_tenant);
+let $log_backup_dest = deploy_get_value(ob1.get_log_backup_dest standby_mysql_tenant);
+let $standby_mysql_tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.DBA_OB_TENANTS where tenant_name = 'standby_mysql_tenant', tenant_id, 1);
+let $standby_mysql_leader_ip_port = deploy_get_value(ob1.select select concat(svr_ip,':',svr_port) as host from oceanbase.CDB_OB_LS_LOCATIONS where tenant_id = $standby_mysql_tenant_id and ls_id =  1 and role = "LEADER" limit 1, host, 1);
+let $standby_mysql_leader_obs = deploy_get_value(ob1.get_obs_by_addr $standby_mysql_leader_ip_port);
+#ob1.mysql alter system archivelog;
+ob_connect(standby_mysql_tenant_conn, $standby_mysql_leader_obs, root@standby_mysql_tenant, , test, , USE_MYSQL_CONNECTOR);
+connection standby_mysql_tenant_conn;
+--disable_all_result_log
+eval alter system set data_backup_dest='$data_backup_dest';
+eval alter system set log_archive_dest='location=$log_backup_dest piece_switch_interval=1d';
+--enable_all_result_log
+ob1.mysql alter system archivelog;
+ob1.check_until_timeout select status from oceanbase.CDB_OB_ARCHIVELOG where tenant_id=$tenant_id, DOING, 600;
+
+# minor freeze for standby_mysql_tenant before clone
+connection sys_conn;
+ALTER SYSTEM MINOR FREEZE TENANT standby_mysql_tenant;
+ob1.z1.obs0.check_log_until_success -c "succeed to release head data memtable";
+ob1.z2.obs0.check_log_until_success -c "succeed to release head data memtable";
+ob1.z3.obs0.check_log_until_success -c "succeed to release head data memtable";
+sleep 10;
+
+--echo ==============================================
+--echo              trigger transfer event
+--echo ==============================================
+ob1.mysql alter system set enable_transfer = 'false' tenant='standby_mysql_tenant';
+ob1.mysql set ob_global_debug_sync = 'AFTER_FIRST_CLONE_CHECK_FOR_STANDBY wait_for signal_for_transfer';
+eval ALTER SYSTEM TRANSFER PARTITION TABLE_ID $table_id, OBJECT_ID  $object_id TO LS $another_ls_id tenant=backup_mysql_tenant;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_OB_BALANCE_TASK_HISTORY where tenant_id = $backup_mysql_tenant_id, 1, 120;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_OB_BALANCE_TASKS where tenant_id = $backup_mysql_tenant_id, 0, 120;
+#sleep 30;
+
+--echo ==============================================
+--echo    clone tenant from standby_mysql_tenant
+--echo ==============================================
+ob1.mysql alter system set_tp tp_name = ERRSIM_CLONE_RESOURCE_POOL_DO_NOTHING_ERROR, error_code = 4002, frequency = 1;
+send create tenant clone_tenant from standby_mysql_tenant with resource_pool = 'clone_tenant_pool', unit = 'large_unit';
+
+--echo ================================================
+--echo      trigger standby tenant's conflict task
+--echo ================================================
+ob_connect(sys_conn2, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection sys_conn2;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_clone_job where tenant_id = 1 and source_tenant_id = $standby_mysql_tenant_id and status = "CLONE_SYS_CREATE_INNER_RESOURCE_POOL", 1, 200;
+ob1.mysql alter system set enable_transfer = 'true' tenant='standby_mysql_tenant';
+ob1.mysql set ob_global_debug_sync = 'now signal signal_for_transfer';
+ob1.mysql alter system set_tp tp_name = ERRSIM_CLONE_RESOURCE_POOL_DO_NOTHING_ERROR, error_code = 4002, frequency = 0;
+
+--echo ================================================
+--echo           check clone tenant job failed
+--echo ================================================
+connection sys_conn;
+--disable_all_result_log
+--error 9110
+reap;
+--enable_all_result_log
+ob1.check_until_timeout select count(*) as cnt from oceanbase.DBA_OB_CLONE_HISTORY where clone_tenant_name = "clone_tenant" and status = "CLONE_SYS_CANCELED", 1, 30;

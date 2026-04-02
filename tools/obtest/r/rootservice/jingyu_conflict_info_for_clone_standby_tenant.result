@@ -1,0 +1,57 @@
+ob1=OBI(cluster=1:1:1, proxy_num=0);
+ob1.set extra_config = $mini_ob_config;
+ob1.reboot;
+===========================================
+create resource pool to use
+===========================================
+ob1.mysql alter resource unit sys_unit_config memory_size='2G';
+CREATE RESOURCE UNIT large_unit MAX_CPU=2, MEMORY_SIZE='2G';
+CREATE RESOURCE POOL large_pool UNIT large_unit, UNIT_NUM 1, ZONE_LIST ('z1','z2','z3');
+CREATE RESOURCE POOL large_pool_1 UNIT large_unit, UNIT_NUM 1, ZONE_LIST ('z1','z2','z3');
+ob1.mysql alter system set _backup_idle_time = '10s';
+ob1.mysql alter system set merger_check_interval = '10s';
+ob1.mysql alter system set enable_async_syslog=false;
+ob1.mysql alter system set debug_sync_timeout = '1000s';
+===========================================
+create backup_mysql_tenant
+===========================================
+ob1.mysql CREATE TENANT backup_mysql_tenant RESOURCE_POOL_LIST = ('large_pool'), primary_zone = "z1" set ob_tcp_invited_nodes='%', ob_compatibility_mode='mysql';
+ob1.mysql alter system archivelog;
+===========================================
+create log restore source user
+===========================================
+create user mytest identified by "test";
+GRANT SELECT on OCEANBASE.DBA_OB_ACCESS_POINT to mytest;
+GRANT SELECT on OCEANBASE.GV$OB_UNITS to mytest;
+GRANT SELECT on OCEANBASE.DBA_OB_TENANTS to mytest;
+GRANT SELECT on OCEANBASE.GV$OB_PARAMETERS to mytest;
+GRANT SELECT on OCEANBASE.GV$OB_LOG_STAT to mytest;
+GRANT SELECT on OCEANBASE.DBA_OB_LS to mytest;
+==============================================
+create standby tenant standby_mysql_tenant
+==============================================
+ob1.check_until_timeout SELECT count(*) FROM oceanbase.DBA_OB_TENANTS WHERE tenant_name='standby_mysql_tenant', 1, 100;
+ob1.check_until_timeout SELECT status FROM oceanbase.DBA_OB_TENANTS WHERE TENANT_NAME = 'standby_mysql_tenant', NORMAL, 200;
+==============================================
+clone tenant from standby_mysql_tenant
+==============================================
+ob1.mysql alter system archivelog;
+ob1.check_until_timeout select status from oceanbase.CDB_OB_ARCHIVELOG where tenant_id=$tenant_id, DOING, 600;
+ALTER SYSTEM MINOR FREEZE TENANT standby_mysql_tenant;
+ob1.z1.obs0.check_log_until_success -c "succeed to release head data memtable";
+ob1.z2.obs0.check_log_until_success -c "succeed to release head data memtable";
+ob1.z3.obs0.check_log_until_success -c "succeed to release head data memtable";
+================================================
+trigger standby tenant's conflict task
+================================================
+ob1.mysql alter system set enable_transfer = 'false' tenant='standby_mysql_tenant';
+alter tenant backup_mysql_tenant primary_zone = 'z1,z2,z3';
+ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_OB_BALANCE_TASK_HISTORY where tenant_id = $backup_mysql_tenant_id, 0, 200;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_OB_BALANCE_TASKS where tenant_id = $backup_mysql_tenant_id, 0, 200;
+ob1.mysql set ob_global_debug_sync = 'BEFORE_EXECUTE_BALANCE_TASK wait_for signal_1';
+ob1.mysql set ob_global_debug_sync = 'BEFORE_REMOVE_BALANCE_TASK_HELPER wait_for signal_2';
+ob1.mysql alter system set enable_transfer = 'true' tenant='standby_mysql_tenant';
+ob1.check_until_timeout select count(*) > 0 from oceanbase.CDB_OB_BALANCE_TASKS where tenant_id = $tenant_id, 1, 200;
+create tenant clone_tenant from standby_mysql_tenant with resource_pool = 'clone_tenant_pool', unit = 'large_unit';
+ERROR HY000: Tenant (1004) is in STANDBY_TRANSFER procedure, create snapshot or clone tenant not allowed now
+ob1.check_until_timeout select count(*) as cnt from oceanbase.DBA_OB_CLONE_HISTORY where clone_tenant_name = "clone_tenant" and status = "CLONE_SYS_LOCK_FAIL" and ERROR_MESSAGE like "%is in STANDBY_TRANSFER procedure%", 1, 30;

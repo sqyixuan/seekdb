@@ -1,0 +1,328 @@
+##########################
+#owner :msy164651
+# 测试点：
+##########################
+
+ob1=OBI(cluster=2:2,proxy_num=0);
+source include/mini_ob_config.inc;
+ob1.set extra_config=$mini_ob_config;
+ob1.reboot;
+
+ob_connect(conn_sys, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+
+connection conn_sys;
+alter system set balancer_idle_time = '10s';
+ob1.mysql alter system set debug_sync_timeout = '1000s';
+ob1.mysql alter system set _transfer_start_trans_timeout = '10s';
+
+set @@session.ob_query_timeout = 1000000000;
+eval CREATE RESOURCE UNIT unit_1 MAX_CPU 1, MEMORY_SIZE '2G';
+eval CREATE RESOURCE POOL pool_2 UNIT = 'unit_1', UNIT_NUM = 1, zone_list = ('z1');
+eval CREATE TENANT mysql RESOURCE_POOL_LIST = ('pool_2'), primary_zone='z1' set ob_tcp_invited_nodes='%', autocommit='on';
+connection conn_sys;
+--error 4179
+alter system transfer partition table_id = 1, object_id= 1 to ls 1001 tenant = 'mysql';
+ob_connect(conn_sys1, ob1.z1.obs1, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection conn_sys1;
+--error 4179
+alter system transfer partition table_id = 1, object_id= 1 to ls 1001 tenant = 'mysql';
+ob_connect(conn_sys2, ob1.z2.obs1, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection conn_sys2;
+--error 4179
+alter system transfer partition table_id = 1, object_id= 1 to ls 1001 tenant = 'mysql';
+
+ob1.mysql drop tenant mysql force;
+#oracle tenant
+eval CREATE RESOURCE POOL pool_1 UNIT = 'unit_1', UNIT_NUM = 2;
+eval CREATE TENANT oracle RESOURCE_POOL_LIST = ('pool_1'), primary_zone='z1' set ob_tcp_invited_nodes='%',ob_compatibility_mode='oracle', autocommit='on';
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = 'oracle', tenant_id, 1);
+ob1.mysql alter system set balancer_idle_time = '10s' tenant = 'oracle';
+ob1.mysql alter system set _transfer_service_wakeup_interval = '5s' tenant = 'oracle';
+ob1.mysql alter system set _transfer_task_retry_interval = '0' tenant='oracle';
+sleep 2;
+ob_connect(conn_oracle, ob1.z1.obs1, SYS@oracle, , SYS, , USE_OB_CONNECTOR);
+connection conn_oracle;
+set recyclebin=off;
+--disable_query_log
+let $count = 0;
+while ($count < 100) 
+{
+eval create table NON_$count(pk int primary key, c3 int, c4 int, c2 varchar2(1024));
+eval insert into NON_$count values(1, 1, 1, "xdrdgwrtqwrweqr");
+eval create index il_$count on NON_$count(c3) local;
+eval create index il1_$count on NON_$count(c4) global partition by hash(c4) partitions 2;
+inc $count;
+}
+
+let $count = 0;
+while ($count < 10) 
+{
+eval create table ONE_$count(c1 int , c2 int, c3 varchar2(1024)) partition by hash(c1) partitions 4;
+eval insert into ONE_$count values (1,1,'cdfasdwtew');
+eval insert into ONE_$count values (2,2,'dfdgdsvwet');
+eval insert into ONE_$count values (3,3,'dfasdgwtw');
+inc $count;
+}
+
+#创建广播日志流
+# test create duplicate table
+create table dup_t1(c1 int, c2 varchar(1024)) duplicate_scope = 'cluster';
+create table dup_pt1(c1 int) duplicate_scope = 'CLUSTER' partition by hash(c1) partitions 4;
+--enable_query_log
+ob1.mysql set ob_global_debug_sync = 'BEFORE_TENANT_BALANCE_SERVICE wait_for signal';
+connection conn_oracle;
+let $count = 0;
+--disable_query_log
+while ($count < 100) 
+{
+let $table_id = deploy_get_value(ob1.select select table_id from oceanbase.cdb_ob_table_locations where table_name = 'NON_$count', table_id, 1);
+let $src_ls = deploy_get_value(ob1.select select ls_id from oceanbase.cdb_ob_table_locations where table_id = $table_id, ls_id, 1);
+let $dest_ls = deploy_get_value(ob1.select select ls_id from oceanbase.__all_virtual_ls_status where tenant_id = $tenant_id and ls_id != 1 and ls_id != $src_ls, ls_id, 1);
+eval alter system transfer partition table_id = $table_id, object_id = $table_id to ls $dest_ls;
+inc $count;
+}
+connection conn_sys;
+let $count = 0;
+while ($count < 10) 
+{
+let $table_id = deploy_get_value(ob1.select select table_id from oceanbase.cdb_ob_table_locations where table_name = 'ONE_$count', table_id, 1);
+let $part_id = deploy_get_value(ob1.select select object_id from oceanbase.cdb_ob_table_locations where table_name = 'ONE_$count' and PARTITION_NAME = 'p0', object_id, 1);
+let $src_ls = deploy_get_value(ob1.select select ls_id from oceanbase.cdb_ob_table_locations where table_id = $table_id and object_id = $part_id, ls_id, 1);
+let $dest_ls = deploy_get_value(ob1.select select ls_id from oceanbase.__all_virtual_ls_status where tenant_id = $tenant_id and ls_id != 1 and ls_id != $src_ls, ls_id, 1);
+eval alter system transfer partition table_id = $table_id, object_id = $part_id to ls $dest_ls tenant = 'oracle';
+let $part_id = deploy_get_value(ob1.select select object_id from oceanbase.cdb_ob_table_locations where table_name = 'ONE_$count' and PARTITION_NAME = 'p1', object_id, 1);
+let $src_ls = deploy_get_value(ob1.select select ls_id from oceanbase.cdb_ob_table_locations where table_id = $table_id and object_id = $part_id, ls_id, 1);
+let $dest_ls = deploy_get_value(ob1.select select ls_id from oceanbase.__all_virtual_ls_status where tenant_id = $tenant_id and ls_id != 1 and ls_id != $src_ls, ls_id, 1);
+eval alter system transfer partition table_id = $table_id, object_id = $part_id to ls $dest_ls tenant = 'oracle';
+let $part_id = deploy_get_value(ob1.select select object_id from oceanbase.cdb_ob_table_locations where table_name = 'ONE_$count' and PARTITION_NAME = 'p2', object_id, 1);
+let $src_ls = deploy_get_value(ob1.select select ls_id from oceanbase.cdb_ob_table_locations where table_id = $table_id and object_id = $part_id, ls_id, 1);
+let $dest_ls = deploy_get_value(ob1.select select ls_id from oceanbase.__all_virtual_ls_status where tenant_id = $tenant_id and ls_id != 1 and ls_id != $src_ls, ls_id, 1);
+eval alter system transfer partition table_id = $table_id, object_id = $part_id to ls $dest_ls tenant = 'oracle';
+let $part_id = deploy_get_value(ob1.select select object_id from oceanbase.cdb_ob_table_locations where table_name = 'ONE_$count' and PARTITION_NAME = 'p3', object_id, 1);
+let $src_ls = deploy_get_value(ob1.select select ls_id from oceanbase.cdb_ob_table_locations where table_id = $table_id and object_id = $part_id, ls_id, 1);
+let $dest_ls = deploy_get_value(ob1.select select ls_id from oceanbase.__all_virtual_ls_status where tenant_id = $tenant_id and ls_id != 1 and ls_id != $src_ls, ls_id, 1);
+eval alter system transfer partition table_id = $table_id, object_id = $part_id to ls $dest_ls tenant = 'oracle';
+
+inc $count;
+}
+--enable_query_log
+ob1.mysql set ob_global_debug_sync = 'now signal signal';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_job, 1, 30;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_job_history, 1, 400;
+
+#验证transfer task可以多次执行
+
+#ob1.mysql set ob_global_debug_sync = 'BEFORE_TENANT_BALANCE_SERVICE wait_for signal';
+#ob1.mysql alter system set_tp tp_name = EN_INSERT_TRANSFER_START_FAILED, error_code = 4016, frequency = 1;
+#let $count = 0;
+#--disable_query_log
+#while ($count < 50) 
+#{
+#let $table_id = deploy_get_value(ob1.select select table_id from oceanbase.cdb_ob_table_locations where table_name = 'NON_$count', table_id, 1);
+#let $src_ls = deploy_get_value(ob1.select select ls_id from oceanbase.cdb_ob_table_locations where table_id = $table_id, ls_id, 1);
+#let $dest_ls = deploy_get_value(ob1.select select ls_id from oceanbase.__all_virtual_ls_status where tenant_id = $tenant_id and ls_id != 1 and ls_id != $src_ls, ls_id, 1);
+#eval alter system transfer partition table_id = $table_id, object_id = $table_id to ls $dest_ls tenant = 'oracle';
+#inc $count;
+#}
+#--enable_query_log
+#ob1.mysql set ob_global_debug_sync = 'now signal signal';
+#ob1.check_until_timeout select count(*) > 5 from oceanbase.__all_virtual_transfer_task_history where status = 'FAILED',1, 100;
+#ob1.mysql alter system set_tp tp_name = EN_INSERT_TRANSFER_START_FAILED, error_code = 4016, frequency = 0;
+#ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_transfer_partition_task, 0, 300;
+#ob1.mysql_p select distinct status from oceanbase.__all_virtual_transfer_partition_task_history;
+
+#验证Transfer的的状态回滚
+ob1.mysql set ob_global_debug_sync = 'AFTER_TRANSFER_PROCESS_INIT_TASK_AND_BEFORE_NOTIFY_STORAGE wait_for signal1';
+let $count = 0;
+--disable_query_log
+while ($count < 10) 
+{
+let $table_id = deploy_get_value(ob1.select select table_id from oceanbase.cdb_ob_table_locations where table_name = 'ONE_$count', table_id, 1);
+let $part_id = deploy_get_value(ob1.select select object_id from oceanbase.cdb_ob_table_locations where table_name = 'ONE_$count' and PARTITION_NAME = 'p0', object_id, 1);
+let $src_ls = deploy_get_value(ob1.select select ls_id from oceanbase.cdb_ob_table_locations where table_id = $table_id and object_id = $part_id, ls_id, 1);
+let $dest_ls = deploy_get_value(ob1.select select ls_id from oceanbase.__all_virtual_ls_status where tenant_id = $tenant_id and ls_id != 1 and ls_id != $src_ls, ls_id, 1);
+eval alter system transfer partition table_id = $table_id, object_id = $part_id to ls $dest_ls tenant = 'oracle';
+let $part_id = deploy_get_value(ob1.select select object_id from oceanbase.cdb_ob_table_locations where table_name = 'ONE_$count' and PARTITION_NAME = 'p1', object_id, 1);
+let $src_ls = deploy_get_value(ob1.select select ls_id from oceanbase.cdb_ob_table_locations where table_id = $table_id and object_id = $part_id, ls_id, 1);
+let $dest_ls = deploy_get_value(ob1.select select ls_id from oceanbase.__all_virtual_ls_status where tenant_id = $tenant_id and ls_id != 1 and ls_id != $src_ls, ls_id, 1);
+eval alter system transfer partition table_id = $table_id, object_id = $part_id to ls $dest_ls tenant = 'oracle';
+let $part_id = deploy_get_value(ob1.select select object_id from oceanbase.cdb_ob_table_locations where table_name = 'ONE_$count' and PARTITION_NAME = 'p2', object_id, 1);
+let $src_ls = deploy_get_value(ob1.select select ls_id from oceanbase.cdb_ob_table_locations where table_id = $table_id and object_id = $part_id, ls_id, 1);
+let $dest_ls = deploy_get_value(ob1.select select ls_id from oceanbase.__all_virtual_ls_status where tenant_id = $tenant_id and ls_id != 1 and ls_id != $src_ls, ls_id, 1);
+eval alter system transfer partition table_id = $table_id, object_id = $part_id to ls $dest_ls tenant = 'oracle';
+let $part_id = deploy_get_value(ob1.select select object_id from oceanbase.cdb_ob_table_locations where table_name = 'ONE_$count' and PARTITION_NAME = 'p3', object_id, 1);
+let $src_ls = deploy_get_value(ob1.select select ls_id from oceanbase.cdb_ob_table_locations where table_id = $table_id and object_id = $part_id, ls_id, 1);
+let $dest_ls = deploy_get_value(ob1.select select ls_id from oceanbase.__all_virtual_ls_status where tenant_id = $tenant_id and ls_id != 1 and ls_id != $src_ls, ls_id, 1);
+eval alter system transfer partition table_id = $table_id, object_id = $part_id to ls $dest_ls tenant = 'oracle';
+
+inc $count;
+}
+--enable_query_log
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_job, 1, 100;
+ob1.check_until_timeout select count(*) > 0 from oceanbase.__all_virtual_transfer_task, 1, 100;
+ob1.mysql alter system set enable_transfer = false tenant = 'oracle';
+ob1.mysql alter system set enable_rebalance = false tenant = 'oracle';
+ob1.check_until_timeout select status from oceanbase.__all_virtual_balance_job, CANCELING, 100;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_job, 0, 100;
+#ob1.mysql_p select distinct comment from oceanbase.__all_virtual_transfer_partition_task;
+ob1.mysql set ob_global_debug_sync = 'now signal signal1';
+ob1.mysql alter system set enable_transfer = true tenant = 'oracle';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_job, 1, 100;
+#在transfer过程中停止，会重新split
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_job, 0, 200;
+select balance_strategy_name, job_type, target_unit_num, target_primary_zone_num, status, comment from oceanbase.__all_balance_job_history;
+
+ob1.mysql_p select distinct status from oceanbase.__all_virtual_transfer_partition_task_history;
+#会存在多余的日志流
+ob1.mysql alter system set enable_rebalance = true tenant = 'oracle';
+ob1.mysql set ob_global_debug_sync = 'BEFORE_TENANT_BALANCE_SERVICE wait_for signal';
+ob1.mysql set ob_global_debug_sync = 'BEFORE_PROCESS_AFTER_HAS_MEMBER_LIST wait_for signal1';
+sleep 2;
+ob1.mysql alter tenant oracle set primary_zone = 'z1, z2';
+ob1.mysql set ob_global_debug_sync = 'now signal signal';
+ob1.check_until_timeout select count(*) >= 1 from oceanbase.__all_virtual_ls_status where status = 'CREATING', 1, 100;
+ob1.mysql alter tenant oracle set primary_zone = 'z2';
+ob1.check_until_timeout select status from oceanbase.__all_virtual_balance_job, CANCELING, 100;
+ob1.mysql alter system set enable_rebalance = false tenant = 'oracle';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_job, 0, 100;
+let $count = 50;
+--disable_query_log
+while ($count < 100) 
+{
+let $table_id = deploy_get_value(ob1.select select table_id from oceanbase.cdb_ob_table_locations where table_name = 'NON_$count', table_id, 1);
+let $src_ls = deploy_get_value(ob1.select select ls_id from oceanbase.cdb_ob_table_locations where table_id = $table_id, ls_id, 1);
+let $dest_ls = deploy_get_value(ob1.select select ls_id from oceanbase.__all_virtual_ls_status where tenant_id = $tenant_id and ls_id != 1 and ls_id != $src_ls, ls_id, 1);
+eval alter system transfer partition table_id = $table_id, object_id = $table_id to ls $dest_ls tenant = 'oracle';
+inc $count;
+}
+--enable_query_log
+#验证存在creating的日志流不能transfer
+sleep 10;
+ob1.mysql_p select * from oceanbase.__all_virtual_balance_job, 0, 100;
+ob1.mysql set ob_global_debug_sync = 'now signal signal1';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_job, 1, 100;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_job, 0, 200;
+ob1.mysql alter system set enable_rebalance = true tenant = 'oracle';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_job, 1, 100;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_job, 0, 100;
+ob1.mysql alter system set enable_rebalance = false tenant = 'oracle';
+
+#验证ls_merge之前分区被删除
+ob1.mysql set ob_global_debug_sync = 'BEFORE_TENANT_BALANCE_SERVICE wait_for signal';
+let $count = 0;
+--disable_query_log
+while ($count < 10) 
+{
+let $table_id = deploy_get_value(ob1.select select table_id from oceanbase.cdb_ob_table_locations where table_name = 'NON_$count', table_id, 1);
+let $src_ls = deploy_get_value(ob1.select select ls_id from oceanbase.cdb_ob_table_locations where table_id = $table_id, ls_id, 1);
+let $dest_ls = deploy_get_value(ob1.select select ls_id from oceanbase.__all_virtual_ls_status where tenant_id = $tenant_id and ls_id != 1 and ls_id != $src_ls, ls_id, 1);
+eval alter system transfer partition table_id = $table_id, object_id = $table_id to ls $dest_ls tenant = 'oracle';
+inc $count;
+}
+--enable_query_log
+ob1.mysql set ob_global_debug_sync = 'BEFORE_PROCESS_BALANCE_TASK_ALTER_LS wait_for signal1';
+ob1.mysql set ob_global_debug_sync = 'now signal signal';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_task where task_type = 'LS_ALTER' and status = 'ALTER_LS', 1, 100;
+let $count = 0;
+connection conn_oracle;
+--disable_query_log
+while ($count < 10)
+{
+set recyclebin=off;
+eval drop table NON_$count;
+inc $count;
+}
+ob1.mysql set ob_global_debug_sync = 'now signal signal1';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_job, 0, 100;
+
+#验证已经结束掉的transfer，再次发起不会被结束掉
+ob1.mysql set ob_global_debug_sync = 'BEFORE_TENANT_BALANCE_SERVICE wait_for signal3';
+let $count = 10;
+--disable_query_log
+while ($count < 20) 
+{
+let $table_id = deploy_get_value(ob1.select select table_id from oceanbase.cdb_ob_table_locations where table_name = 'NON_$count', table_id, 1);
+let $src_ls = deploy_get_value(ob1.select select ls_id from oceanbase.cdb_ob_table_locations where table_id = $table_id, ls_id, 1);
+let $dest_ls = deploy_get_value(ob1.select select ls_id from oceanbase.__all_virtual_ls_status where tenant_id = $tenant_id and ls_id != 1 and ls_id != $src_ls, ls_id, 1);
+eval alter system transfer partition table_id = $table_id, object_id = $table_id to ls $dest_ls tenant = 'oracle';
+inc $count;
+}
+--enable_query_log
+ob1.mysql_p select count(*) from oceanbase.__all_virtual_transfer_partition_task;
+ob1.mysql set ob_global_debug_sync = 'BEFORE_PROCESS_BALANCE_TASK_DROP_LS wait_for signal4';
+ob1.mysql set ob_global_debug_sync = 'now signal signal3';
+ob1.check_until_timeout select count(*) < 9 from oceanbase.__all_virtual_transfer_partition_task, 1, 100;
+let $balance_job_id = deploy_get_value(ob1.select select job_id from oceanbase.__all_virtual_balance_job, job_id, 1);
+#重新插入
+let $count = 10;
+--disable_query_log
+while ($count < 20) 
+{
+let $table_id = deploy_get_value(ob1.select select table_id from oceanbase.cdb_ob_table_locations where table_name = 'NON_$count', table_id, 1);
+let $src_ls = deploy_get_value(ob1.select select ls_id from oceanbase.cdb_ob_table_locations where table_id = $table_id, ls_id, 1);
+let $dest_ls = deploy_get_value(ob1.select select ls_id from oceanbase.__all_virtual_ls_status where tenant_id = $tenant_id and ls_id != 1 and ls_id != $src_ls, ls_id, 1);
+--error 0, 4017,600
+eval alter system transfer partition table_id = $table_id, object_id = $table_id to ls $dest_ls tenant = 'oracle';
+inc $count;
+}
+--enable_query_log
+ob1.mysql set ob_global_debug_sync = 'AFTER_LOCK_ALL_BALANCE_JOB wait_for signal5';
+ob1.mysql set ob_global_debug_sync = 'now signal signal4';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_job, 0, 200;
+ob1.mysql_p select count(*) > 0 from oceanbase.__all_virtual_transfer_partition_task;
+ob1.mysql set ob_global_debug_sync = 'now signal signal5';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_job_history where job_id > $balance_job_id, 1, 100;
+ob1.mysql_p select balance_strategy_name, job_type, target_unit_num, target_primary_zone_num, status, comment from oceanbase.__all_virtual_balance_job_history;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_transfer_partition_task, 0, 100;
+#验证全局索引的迁移
+ob1.mysql set ob_global_debug_sync = 'BEFORE_TENANT_BALANCE_SERVICE wait_for signal';
+--disable_query_log
+let $count = 30;
+while ($count < 40) 
+{
+let $table_id = deploy_get_value(ob1.select select table_id from oceanbase.cdb_ob_table_locations where table_name = 'NON_$count', table_id, 1);
+let $src_ls = deploy_get_value(ob1.select select ls_id from oceanbase.cdb_ob_table_locations where table_id = $table_id, ls_id, 1);
+let $dest_ls = deploy_get_value(ob1.select select ls_id from oceanbase.__all_virtual_ls_status where tenant_id = $tenant_id and ls_id != 1 and ls_id != $src_ls, ls_id, 1);
+eval alter system transfer partition table_id = $table_id, object_id = $table_id to ls $dest_ls;
+let $table_id =  deploy_get_value(ob1.select select table_id from oceanbase.cdb_ob_table_locations where index_name = 'il1_$count' and partition_name = 'P0', table_id, 1);
+let $object_id =  deploy_get_value(ob1.select select object_id from oceanbase.cdb_ob_table_locations where index_name = 'il1_$count', object_id, 1);
+let $src_ls = deploy_get_value(ob1.select select ls_id from oceanbase.cdb_ob_table_locations where table_id = $table_id and object_id = $object_id, ls_id, 1);
+let $dest_ls = deploy_get_value(ob1.select select ls_id from oceanbase.__all_virtual_ls_status where tenant_id = $tenant_id and ls_id != 1 and ls_id != $src_ls, ls_id, 1);
+eval alter system transfer partition table_id = $table_id, object_id = $object_id to ls $dest_ls;
+let $object_id =  deploy_get_value(ob1.select select object_id from oceanbase.cdb_ob_table_locations where index_name = 'il1_$count' and partition_name = 'P1', object_id, 1);
+let $src_ls = deploy_get_value(ob1.select select ls_id from oceanbase.cdb_ob_table_locations where table_id = $table_id and object_id = $object_id, ls_id, 1);
+let $dest_ls = deploy_get_value(ob1.select select ls_id from oceanbase.__all_virtual_ls_status where tenant_id = $tenant_id and ls_id != 1 and ls_id != $src_ls, ls_id, 1);
+eval alter system transfer partition table_id = $table_id, object_id = $object_id to ls $dest_ls;
+
+inc $count;
+}
+
+while ($count < 50) 
+{
+let $table_id =  deploy_get_value(ob1.select select table_id from oceanbase.cdb_ob_table_locations where index_name = 'il1_$count', table_id, 1);
+let $object_id =  deploy_get_value(ob1.select select object_id from oceanbase.cdb_ob_table_locations where index_name = 'il1_$count' and partition_name = 'P0', object_id, 1);
+let $src_ls = deploy_get_value(ob1.select select ls_id from oceanbase.cdb_ob_table_locations where table_id = $table_id and object_id = $object_id, ls_id, 1);
+let $dest_ls = deploy_get_value(ob1.select select ls_id from oceanbase.__all_virtual_ls_status where tenant_id = $tenant_id and ls_id != 1 and ls_id != $src_ls, ls_id, 1);
+eval alter system transfer partition table_id = $table_id, object_id = $object_id to ls $dest_ls;
+let $object_id =  deploy_get_value(ob1.select select object_id from oceanbase.cdb_ob_table_locations where index_name = 'il1_$count' and partition_name = 'P1', object_id, 1);
+let $src_ls = deploy_get_value(ob1.select select ls_id from oceanbase.cdb_ob_table_locations where table_id = $table_id and object_id = $object_id, ls_id, 1);
+let $dest_ls = deploy_get_value(ob1.select select ls_id from oceanbase.__all_virtual_ls_status where tenant_id = $tenant_id and ls_id != 1 and ls_id != $src_ls, ls_id, 1);
+eval alter system transfer partition table_id = $table_id, object_id = $object_id to ls $dest_ls;
+
+inc $count;
+}
+while ($count < 40) 
+{
+let $table_id =  deploy_get_value(ob1.select select table_id from oceanbase.cdb_ob_table_locations where index_name = 'il1_$count', table_id, 1);
+let $object_id =  deploy_get_value(ob1.select select object_id from oceanbase.cdb_ob_table_locations where index_name = 'il1_$count', object_id, 1);
+let $src_ls = deploy_get_value(ob1.select select ls_id from oceanbase.cdb_ob_table_locations where table_id = $table_id and object_id = $object_id, ls_id, 1);
+let $dest_ls = deploy_get_value(ob1.select select ls_id from oceanbase.__all_virtual_ls_status where tenant_id = $tenant_id and ls_id != 1 and ls_id != $src_ls, ls_id, 1);
+eval alter system transfer partition table_id = $table_id, object_id = $object_id to ls $dest_ls;
+inc $count;
+}
+connection conn_sys;
+ob1.mysql set ob_global_debug_sync = 'now signal signal';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_job, 1, 150;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_transfer_partition_task, 0, 230;
+
+#验证none的tablegroup迁移走，可以迁移回来

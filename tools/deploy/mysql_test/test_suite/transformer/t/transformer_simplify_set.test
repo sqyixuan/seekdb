@@ -1,0 +1,246 @@
+--source mysql_test/include/backup_spm_var.inc
+# owner: sean.yyj
+# owner group: sql1
+# tags: optimizer
+
+--error 0,1051
+drop table t1;
+--error 0,1051
+drop table t2;
+--error 0,1051
+drop table t3;
+--error 0,1051
+drop table t4;
+
+create table t1 (c1 int, c2 int, c3 int, c4 int);
+create table t2 (c1 int, c2 int, c3 int, c4 int);
+create table t3 (c1 int, c2 int, c3 int, c4 int);
+create table t4 (c1 int, c2 int, c3 int, c4 int);
+insert into t1 values (1,1,1,1);
+insert into t1 values (1,2,2,2);
+insert into t2 values (2,2,2,2);
+insert into t2 values (2,2,3,3);
+insert into t3 values (3,3,3,3);
+insert into t3 values (3,3,3,4);
+insert into t4 values (4,4,4,4);
+
+--explain_protocol 2
+--echo ######## UNION DISTINCT #############
+--echo #### test const false condition.
+--echo # where condition -> should prune
+select c1 from t1 where 1=2 UNION select c1 from t2;
+select c1 from t1 where 1=2 and 1=1 UNION DISTINCT select c1 from t2;
+select c1 from t1 where 1=2 and 1=(1+1)/2*1 UNION DISTINCT select c1 from t2;
+--echo # where condition -> shouldn't prune
+select c1 from t1 where 1=2 or 1=1 UNION DISTINCT select c1 from t2;
+--echo # not int type.
+--disable_warnings
+select c1 from t1 where 1=2 or 'a' UNION DISTINCT select c1 from t2;
+--enable_warnings
+
+--echo # having condition -> should prune
+select c1 from t1 group by c1 having 1=2 UNION DISTINCT select c1 from t2;
+--echo #having condition -> shouldn't prune
+select c1 from t1 group by c1 having 1=2 or 2=2 UNION DISTINCT select c1 from t2;
+
+--echo # scalar group by + where -> shouldn't prune
+select count(c1) from t1 where 1=2 UNION DISTINCT select c1 from t2;
+
+--echo # scalar group by + having -> should prune
+select count(c1) from t1 having 1=2 UNION DISTINCT select c1 from t2;
+--echo #scalar group by + having -> shouldn't prune
+select count(c1) from t1 having 1=2 or 2=2 UNION DISTINCT select c1 from t2;
+
+
+--echo #### test limit
+--echo # prune limit 0 -> should prune
+EXPLAIN (select c1 from t1 limit 0) UNION DISTINCT select c1 from t2;
+(select c1 from t1 limit 0) UNION DISTINCT select c1 from t2;
+EXPLAIN (select c1 from t1 limit 0 offset 1) UNION DISTINCT select c1 from t2;
+(select c1 from t1 limit 0 offset 1) UNION DISTINCT select c1 from t2;
+
+--echo # other limit condition -> shouldn't pruning
+--error 1064
+select c1 from t1 limit 0 offset -1 UNION DISTINCT select c1 from t2;
+--error 1064
+select c1 from t1 limit -1 UNION DISTINCT select c1 from t2;
+EXPLAIN (select c1 from t1 limit 1) UNION DISTINCT select c1 from t2;
+(select c1 from t1 limit 1) UNION DISTINCT select c1 from t2;
+EXPLAIN (select c1 from t1 limit 1 OFFSET 1) UNION DISTINCT select c1 from t2;
+(select c1 from t1 limit 1 OFFSET 1) UNION DISTINCT select c1 from t2;
+
+--echo # test set_query's limit.
+--echo # assign limit to child 
+select c1 from t1 UNION DISTINCT select c1 from t2 where 1=2 limit 1;
+--echo # conflict limit
+EXPLAIN (select c1 from t1 limit 1) UNION DISTINCT select c1 from t2 where 1=2 limit 2;
+(select c1 from t1 limit 1) UNION DISTINCT select c1 from t2 where 1=2 limit 2;
+EXPLAIN (select c1 from t1 limit 2) UNION DISTINCT select c1 from t2 where 1=2 limit 1;
+(select c1 from t1 limit 2) UNION DISTINCT select c1 from t2 where 1=2 limit 1;
+
+--echo # test conflict order by.
+EXPLAIN (select c1,c2 from t1 order by c1) UNION DISTINCT (select c1,c2 from t2 where 1=2) order by c2;
+(select c1,c2 from t1 order by c1) UNION DISTINCT (select c1,c2 from t2 where 1=2) order by c2;
+--echo # test conflict order by/limit
+EXPLAIN (select c1 from t1 order by c1 limit 2) UNION DISTINCT (select c1 from t2 where 1=2) order by c1 limit 1;
+(select c1 from t1 order by c1 limit 2) UNION DISTINCT (select c1 from t2 where 1=2) order by c1 limit 1;
+
+--echo #### after other rewrite rule(predicate move around)
+select * from (select 1 as s1, c1, c2 from t1 union all select 2 as s1, c1, c2 from t2 ) where s1 = 1;
+
+
+--echo ######## UNION ALL #############
+--echo #### dual branches, test DISTINCT, since other cases are tested in UNION DISTINCT
+--echo # doesn't have distinct 
+select c1 from t1 where 1=2 UNION ALL select c1 from t2;
+
+--echo #### multi branches
+--echo # keep the second and forth stmt.
+select c1 from t1 where 1=2 UNION ALL select c1 from t2 UNION ALL select c1 from t3 where 2=3 UNION ALL select c1 from t4 where 2=2;
+--echo # complex conditions
+--echo # keep the third stmt.
+select c1 from t1 where 1=2 UNION ALL select c1 from t2 group by c1 having 1=2 UNION ALL select count(c1) from t3 where 2=3 UNION ALL select c1 from t4 limit 0;
+--echo # if all branches should be removed, keep the lastest branch.
+select c1 from t1 where 1=2 UNION ALL select c1 from t2 group by c1 having 1=2 UNION ALL select count(c1) from t3 having 1=2 UNION ALL select c1 from t4 limit 0;
+--echo # remove the first branch.
+select c1 from t1 where 1=2 UNION ALL select c1 from t2 group by c1 having 1=1 UNION ALL select count(c1) from t3 where 1=2 UNION ALL select c1 from t4 limit 1;
+
+--echo # order_by/limit/distinct in multi branches
+--echo # won't affect child stmt's order by if no need to replace parent.
+EXPLAIN (((select * from t1 order by c1) UNION ALL select * from t2 order by c2) UNION ALL select * from t3 order by c3) UNION ALL select * from t4 where 1=2 order by c4,c3,c2,c1;
+(((select * from t1 order by c1) UNION ALL select * from t2 order by c2) UNION ALL select * from t3 order by c3) UNION ALL select * from t4 where 1=2 order by c4,c3,c2,c1;
+--echo # while replace parent_stmt with child_stmt, won't overwrite child's order by, create a view to store the order by.
+EXPLAIN (((select * from t1 order by c1) UNION ALL select * from t2 where 1=2 order by c2) UNION ALL select * from t3 having 1=2 order by c3) UNION ALL (select * from t4) order by c4,c3,c2,c1 limit 1;
+(((select * from t1 order by c1) UNION ALL select * from t2 where 1=2 order by c2) UNION ALL select * from t3 having 1=2 order by c3) UNION ALL (select * from t4) order by c4,c3,c2,c1 limit 1;
+
+--echo # won't affect child stmt's limit if no need to replace parent.
+EXPLAIN (((select c1 from t1 limit 3) UNION ALL select c1 from t2 limit 4) UNION ALL select c1 from t3 limit 5) UNION ALL select c1 from t4 where 1=2 limit 1;
+(((select c1 from t1 limit 3) UNION ALL select c1 from t2 limit 4) UNION ALL select c1 from t3 limit 5) UNION ALL select c1 from t4 where 1=2 limit 1;
+--echo # conflict limit
+EXPLAIN ((select c1 from t1 limit 0) UNION ALL select c1 from t2 where 1=2 UNION ALL select c1 from t3 limit 5) UNION ALL select c1 from t4 where 1=2 limit 3;
+((select c1 from t1 limit 0) UNION ALL select c1 from t2 where 1=2 UNION ALL select c1 from t3 limit 5) UNION ALL select c1 from t4 where 1=2 limit 3;
+
+--echo ######## EXCEPT #############
+--echo #### only test the behavior of replace_set_stmt with child_stmt
+--echo # keep the first branch.
+select c1 from t1 except select c1 from t2 where 1=2; 
+--echo # keep the first branch.
+select c1 from t1 where 1=2 except select c1 from t2;
+--echo # keep the first branch.
+select c1 from t1 where 1=2 except select c1 from t2 where 1=2;
+--echo # shouldn't prune
+select c1 from t1 except select c1 from t2;
+
+--echo ######## INTERSECT #############
+--echo #### once there is a branch with const false condition /limit 0. replace the set_stmt with the first child stmt.
+select c1 from t1 intersect select c1 from t2 where 1=2; 
+select c1 from t1 where 1=2 intersect select c1 from t2;
+select c1 from t1 where 1=2 intersect select c1 from t2 where 1=2;
+--echo # shouldn't prune
+select c1 from t1 intersect select c1 from t2;
+
+--echo ########  UNION RECURSIVE #############
+--echo # the fake tmp table branch shouldn't be removed.
+with recursive cte(a) as (select 1 from dual where 1=2 UNION ALL select a+1 as a from cte where a < 5) select * from cte;
+--echo # the other branch is removable
+with recursive cte(a) as (select 1 from dual UNION ALL select a+1 as a from cte where a < 5 and 1=2) select * from cte;
+--echo # should always keep the fake tmp table branches.
+with recursive cte(a) as (select 1 from dual where 1=2 UNION ALL select a+1 as a from cte where a < 5 and 1=2) select * from cte;
+
+--echo ####### test select into #############
+--echo #simple select into
+select @a;
+select 2 from dual union all select 1 from dual where false into @a;
+select 2 from dual union all select 1 from dual where false;
+select @a;
+
+--echo #conflict select into 
+--error 5617
+(select 3 into @a) UNION ALL select 1 from dual where false into @b;
+
+--echo ######## test constraint #############
+--explain_protocol 0
+connect (admin,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection admin;
+alter system set plan_cache_evict_interval = '5s';
+alter system flush plan cache global;
+connection default;
+--disable_query_log
+
+--echo #### test precalc constraints ####
+--echo "select c1 from t1 where 1=2 UNION ALL select c1 from t2;"
+--echo "select c1 from t1 where 2=3 UNION ALL select c1 from t2;"
+--echo "expect hit the plan cache,  one record for master, two record for slave."
+--disable_result_log
+select c1 from t1 where 1=2 UNION ALL select c1 from t2;
+select c1 from t1 where 2=3 UNION ALL select c1 from t2;
+--enable_result_log
+select hit_count from oceanbase.gv$ob_plan_cache_plan_stat where statement like 'select c1 from t1 where %';
+alter system flush plan cache global;
+
+--echo "select c1 from t1 where 1=2 UNION ALL select c1 from t2;"
+--echo "select c1 from t1 where 2=2 UNION ALL select c1 from t2;"
+--disable_result_log
+select c1 from t1 where 1=2 UNION ALL select c1 from t2;
+select c1 from t1 where 2=2 UNION ALL select c1 from t2;
+--enable_result_log
+--echo "do not hit the plan cache,  two record for master, four record for slave."
+select hit_count from oceanbase.gv$ob_plan_cache_plan_stat where statement like 'select c1 from t1 where %';
+alter system flush plan cache global;
+
+--echo #### test const constraints ####
+--echo "select c1 from t1 limit 0 UNION ALL select c1 from t2;"
+--echo "select c1 from t1 limit 1 UNION ALL select c1 from t2;"
+--disable_result_log
+EXPLAIN (select c1 from t1 limit 0) UNION ALL select c1 from t2;
+(select c1 from t1 limit 0) UNION ALL select c1 from t2;
+EXPLAIN (select c1 from t1 limit 1) UNION ALL select c1 from t2;
+(select c1 from t1 limit 1) UNION ALL select c1 from t2;
+--enable_result_log
+--echo "do not hit the plan cache,  two record for master, four record for slave."
+select hit_count from oceanbase.gv$ob_plan_cache_plan_stat where statement like '(select c1 from t1 limit%';
+alter system flush plan cache global;
+
+--echo #### test const constraints ####
+--echo "select c1 from t1 limit 0 UNION ALL select c1 from t2;"
+--echo "select c1 from t1 limit 1-1 UNION ALL select c1 from t2;"
+--disable_result_log
+(select c1 from t1 limit 0) UNION ALL select c1 from t2;
+(select c1 from t1 limit 0) UNION ALL select c1 from t2;
+--enable_result_log
+--echo "hit the plan cache,  one record for master, two record for slave."
+select hit_count from oceanbase.gv$ob_plan_cache_plan_stat where statement like '(select c1 from t1 limit%';
+alter system flush plan cache global;
+
+--echo #### test multi query ####
+--echo "(select c1 from t1 where 1=2) UNION ALL select c1 from t2 where 1=1 UNION ALL select c1 from t3;"
+--echo "(select c1 from t1 where 2=3) UNION ALL select c1 from t2 where 1=1 UNION ALL select c1 from t3;"
+--disable_result_log
+(select c1 from t1 where 1=2) UNION ALL select c1 from t2 where 1=1 UNION ALL select c1 from t3;
+(select c1 from t1 where 2=3) UNION ALL select c1 from t2 where 1=1 UNION ALL select c1 from t3;
+--enable_result_log
+--echo "expect hit the plan cache, one record for master, two record for slave."
+select hit_count from oceanbase.gv$ob_plan_cache_plan_stat where statement like '(select c1 from t1%';
+alter system flush plan cache global;
+
+--echo #### test multi query ####
+--echo "(select c1 from t1) UNION ALL select c1 from t2 where 2=3 UNION ALL select c1 from t3;"
+--echo "(select c1 from t1) UNION ALL select c1 from t2 where 1=2 UNION ALL select c1 from t3;"
+--disable_result_log
+(select c1 from t1 where 1=2) UNION ALL select c1 from t2 where 2=3 UNION ALL select c1 from t3;
+(select c1 from t1 where 2=3) UNION ALL select c1 from t2 where 1=2 UNION ALL select c1 from t3;
+--enable_result_log
+--echo "expect hit the plan cache, one record for master, two record for slave."
+select hit_count from oceanbase.gv$ob_plan_cache_plan_stat where statement like '(select c1 from t1%';
+alter system flush plan cache global;
+
+connection admin;
+alter system set plan_cache_evict_interval = '30s';
+alter system flush plan cache global;
+connection default;
+
+drop table t1;
+drop table t2;
+drop table t3;
+drop table t4;
+--source mysql_test/include/recover_spm_var.inc

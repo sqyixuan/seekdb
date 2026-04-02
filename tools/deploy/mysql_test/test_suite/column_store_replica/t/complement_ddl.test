@@ -1,0 +1,178 @@
+# owner: ouyanghongrong.oyh
+# owner group: STORAGE
+# description: test special column store replica offline ddl (drop column, add column offline, column redifinition)
+
+--echo ===============================================================
+--echo === Step 0: create tenant with cs replica locality in z2 ======
+--echo ===============================================================
+
+let $unit1 = unit_1;
+let $pool1 = pool_1;
+connect (obsys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,oceanbase,$OBMYSQL_PORT);
+connection obsys;
+# TODO(chengkong): after case stable, drop resources after case finish
+
+let $z1 = query_get_value(select distinct zone from oceanbase.__all_zone where zone != '' limit 3, zone, 1); 
+let $z2 = query_get_value(select distinct zone from oceanbase.__all_zone where zone != '' limit 3, zone, 1); 
+let $z2_ip         = query_get_value(select svr_ip     from oceanbase.__all_server where zone = '$z2', svr_ip,     1); 
+let $z2_mysql_port = query_get_value(select inner_port from oceanbase.__all_server where zone = '$z2', inner_port, 1);
+
+--disable_warnings
+drop tenant if exists tenant1 force;
+eval DROP RESOURCE POOL if exists $pool1;
+eval DROP RESOURCE UNIT if exists $unit1;
+--disable_query_log
+#eval CREATE RESOURCE UNIT if not exists $unit1 MAX_CPU=1, MEMORY_SIZE='2G';
+#eval create resource pool if not exists $pool1 unit='$unit1', unit_num = 1, zone_list = ('$z1', '$z2');
+#eval create tenant tenant1 resource_pool_list=('$pool1'), replica_num=2, zone_list=('$z1','$z2'), locality = 'F@$z1, C@$z2' set ob_tcp_invited_nodes='%';
+--source mysql_test/include/check_tenant_sync.inc
+--enable_query_log
+--enable_warnings
+
+connect (conn1,$OBMYSQL_MS0,root,,test,$OBMYSQL_PORT);
+connect (conn2,$z2_ip,root,'',test, $z2_mysql_port);
+
+--echo ===============================================================
+--echo === Step 2: create table, prepare basic data ==================
+--echo ===============================================================
+connection conn1;
+
+--disable_query_log
+--disable_warnings
+drop table if exists t1;
+drop table if exists t2;
+drop table if exists t3;
+drop table if exists t4;
+set ob_query_timeout = 1000000000;
+--enable_warnings
+--enable_query_log
+
+create table t1 (k int primary key, v1 int, v2 int);
+create table t2 (k int primary key, v1 int, v2 int) partition by hash(k) partitions 2;
+create table t3 (k int primary key, v1 int, v2 int) with column group(each column);
+create table t4 (k int primary key, v1 int, v2 int) partition by hash(k) partitions 2 with column group(each column);
+
+insert into t1 values (1, 2, 3), (2, 3, 4), (3, 4, 5), (0, 1, 2);
+insert into t2 values (1, 2, 3), (2, 3, 4), (3, 4, 5), (0, 1, 2);
+insert into t3 values (1, 2, 3), (2, 3, 4), (3, 4, 5), (0, 1, 2);
+insert into t4 values (1, 2, 3), (2, 3, 4), (3, 4, 5), (0, 1, 2);
+
+
+select * from t1;
+select * from t2;
+select * from t3;
+select * from t4;
+
+SELECT distinct(table_id) FROM oceanbase.DBA_OB_TABLE_LOCATIONS WHERE table_name='t1';
+SELECT distinct(table_id) FROM oceanbase.DBA_OB_TABLE_LOCATIONS WHERE table_name='t2';
+SELECT distinct(table_id) FROM oceanbase.DBA_OB_TABLE_LOCATIONS WHERE table_name='t3';
+SELECT distinct(table_id) FROM oceanbase.DBA_OB_TABLE_LOCATIONS WHERE table_name='t4';
+
+--echo ===============================================================
+--echo === Step 3.1: drop column =====================================
+--echo ===============================================================
+connection conn1;
+ALTER TABLE t1 DROP COLUMN v1;
+ALTER TABLE t2 DROP COLUMN v1;
+ALTER TABLE t3 DROP COLUMN v1;
+ALTER TABLE t4 DROP COLUMN v1;
+
+select count(*), avg(k), avg(v2), sum(k), sum(v2) from t1;
+select count(*), avg(k), avg(v2), sum(k), sum(v2) from t2;
+select count(*), avg(k), avg(v2), sum(k), sum(v2) from t3;
+select count(*), avg(k), avg(v2), sum(k), sum(v2) from t4;
+
+select * from t1 order by v2, k;
+select * from t2 order by v2, k;
+select * from t3 order by v2, k;
+select * from t4 order by v2, k;
+
+explain select * from t1 order by k, v2;
+explain select * from t2 order by k, v2;
+explain select * from t3 order by k, v2;
+explain select * from t4 order by k, v2;
+
+SELECT distinct(table_id) FROM oceanbase.DBA_OB_TABLE_LOCATIONS WHERE table_name='t1';
+SELECT distinct(table_id) FROM oceanbase.DBA_OB_TABLE_LOCATIONS WHERE table_name='t2';
+SELECT distinct(table_id) FROM oceanbase.DBA_OB_TABLE_LOCATIONS WHERE table_name='t3';
+SELECT distinct(table_id) FROM oceanbase.DBA_OB_TABLE_LOCATIONS WHERE table_name='t4';
+
+sleep 10;
+connection conn2;
+set ob_route_policy=COLUMN_STORE_ONLY;
+set ob_read_consistency = WEAK;
+
+select count(*), avg(k), avg(v2), sum(k), sum(v2) from t1;
+select count(*), avg(k), avg(v2), sum(k), sum(v2) from t2;
+select count(*), avg(k), avg(v2), sum(k), sum(v2) from t3;
+select count(*), avg(k), avg(v2), sum(k), sum(v2) from t4;
+
+select * from t1 order by v2, k;
+select * from t2 order by v2, k;
+select * from t3 order by v2, k;
+select * from t4 order by v2, k;
+
+explain select * from t1 order by k, v2;
+explain select * from t2 order by k, v2;
+explain select * from t3 order by k, v2;
+explain select * from t4 order by k, v2;
+
+set ob_read_consistency = STRONG;
+set ob_route_policy=READONLY_ZONE_FIRST;
+connection conn1;
+
+--echo ===============================================================
+--echo === Step 3.2: add column online ==============================
+--echo ===============================================================
+connection conn1;
+ALTER TABLE t1 ADD COLUMN v0 varchar(10) FIRST, ADD COLUMN v1 double BEFORE v2, ADD COLUMN v3 decimal (10, 2) AFTER v2;
+ALTER TABLE t2 ADD COLUMN v0 varchar(10) FIRST, ADD COLUMN v1 double BEFORE v2, ADD COLUMN v3 decimal (10, 2) AFTER v2;
+ALTER TABLE t3 ADD COLUMN v0 varchar(10) FIRST, ADD COLUMN v1 double BEFORE v2, ADD COLUMN v3 decimal (10, 2) AFTER v2;
+ALTER TABLE t4 ADD COLUMN v0 varchar(10) FIRST, ADD COLUMN v1 double BEFORE v2, ADD COLUMN v3 decimal (10, 2) AFTER v2;
+
+connection obsys;
+alter system major freeze tenant = tenant1;
+--source mysql_test/include/wait_daily_merge.inc
+
+connection conn1;
+select * from t1 order by v2, k;
+select * from t2 order by v2, k;
+select * from t3 order by v2, k;
+select * from t4 order by v2, k;
+
+explain select * from t1 order by k, v2;
+explain select * from t2 order by k, v2;
+explain select * from t3 order by k, v2;
+explain select * from t4 order by k, v2;
+
+SELECT distinct(table_id) FROM oceanbase.DBA_OB_TABLE_LOCATIONS WHERE table_name='t1';
+SELECT distinct(table_id) FROM oceanbase.DBA_OB_TABLE_LOCATIONS WHERE table_name='t2';
+SELECT distinct(table_id) FROM oceanbase.DBA_OB_TABLE_LOCATIONS WHERE table_name='t3';
+SELECT distinct(table_id) FROM oceanbase.DBA_OB_TABLE_LOCATIONS WHERE table_name='t4';
+
+sleep 10;
+connection conn2;
+set ob_route_policy=COLUMN_STORE_ONLY;
+set ob_read_consistency = WEAK;
+
+select * from t1 order by v2, k;
+select * from t2 order by v2, k;
+select * from t3 order by v2, k;
+select * from t4 order by v2, k;
+
+explain select * from t1 order by k, v2;
+explain select * from t2 order by k, v2;
+explain select * from t3 order by k, v2;
+explain select * from t4 order by k, v2;
+
+set ob_read_consistency = STRONG;
+set ob_route_policy=READONLY_ZONE_FIRST;
+
+connection obsys;
+--disable_warnings
+#drop tenant if exists tenant1 force;
+#eval DROP RESOURCE POOL if exists $pool1;
+#eval DROP RESOURCE UNIT if exists $unit1;
+--disable_query_log
+
+select "FINISH";

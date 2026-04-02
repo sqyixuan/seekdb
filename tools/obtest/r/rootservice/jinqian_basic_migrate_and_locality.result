@@ -1,0 +1,203 @@
+ob1=OBI(cluster=1:1:2,proxy_num=0,init_unit_cpu=0);
+ob1.set extra_config=$mini_ob_config;
+ob1.reboot;
+ob1.mysql alter system set debug_sync_timeout = '1000s';
+ob1.mysql ALTER SYSTEM SET enable_rebalance = 'false';
+ob1.mysql ALTER SYSTEM SET enable_rereplication = 'true';
+set @@session.ob_query_timeout = 200000000;
+alter system set __min_full_resource_pool_memory=1073741824;
+use oceanbase;
+ob1.mysql CREATE RESOURCE POOL tenant_pool UNIT = "2c2g", UNIT_NUM = 1, ZONE_LIST = ('z1', 'z2', 'z3');
+ob1.mysql CREATE TENANT mysql_tenant RESOURCE_POOL_LIST=('tenant_pool'), LOCALITY = "F@z1, F@z3", PRIMARY_ZONE = "z1" SET ob_tcp_invited_nodes='%';
+========================================================================
+||                    [MILESTONE] prepare finished                    ||
+========================================================================
+========================================================================
+||                [MILESTONE] case 1: migrate unit                    ||
+========================================================================
+ob1.mysql alter system set_tp tp_name = ERRSIM_DISASTER_RECOVERY_POP_AND_EXECUTE_TASK, error_code = 4016, frequency = 1;
+select tenant_id, ls_id, task_type, priority, target_paxos_replica_number, target_replica_type, source_paxos_replica_number, source_replica_type, comment from oceanbase.V$OB_LS_REPLICA_TASK_PLAN;
+tenant_id	ls_id	task_type	priority	target_paxos_replica_number	target_replica_type	source_paxos_replica_number	source_replica_type	comment
+1001	1	MIGRATE REPLICA	LOW	2	FULL	2	FULL	migrate replica due to unit not match
+1002	1	MIGRATE REPLICA	LOW	2	FULL	2	FULL	migrate replica due to unit not match
+1002	1001	MIGRATE REPLICA	LOW	2	FULL	2	FULL	migrate replica due to unit not match
+select tenant_id, ls_id, task_type, priority, target_paxos_replica_number, target_replica_type, source_paxos_replica_number, source_replica_type, comment from oceanbase.V$OB_LS_REPLICA_TASK_PLAN;
+tenant_id	ls_id	task_type	priority	target_paxos_replica_number	target_replica_type	source_paxos_replica_number	source_replica_type	comment
+1002	1	MIGRATE REPLICA	LOW	2	FULL	2	FULL	migrate replica due to unit not match
+1002	1001	MIGRATE REPLICA	LOW	2	FULL	2	FULL	migrate replica due to unit not match
+alter system change tenant tenant_id = 1001;
+select tenant_id, ls_id, task_type, priority, target_paxos_replica_number, target_replica_type, source_paxos_replica_number, source_replica_type, comment from oceanbase.V$OB_LS_REPLICA_TASK_PLAN;
+tenant_id	ls_id	task_type	priority	target_paxos_replica_number	target_replica_type	source_paxos_replica_number	source_replica_type	comment
+1001	1	MIGRATE REPLICA	LOW	2	FULL	2	FULL	migrate replica due to unit not match
+alter system change tenant tenant_id = 1;
+ob1.check_until_timeout SELECT COUNT(*) = 1 FROM oceanbase.DBA_OB_UNIT_JOBS WHERE unit_id = $unit_id AND job_type = "MIGRATE_UNIT" AND job_status = "INPROGRESS", 1, 20;
+ob1.check_until_timeout select count(*) = $migrate_ls_cnt from oceanbase.CDB_OB_LS_REPLICA_TASKS, 1, 20;
+select ls_id, task_type, priority, task_status, target_paxos_replica_number, target_replica_type, source_paxos_replica_number, source_replica_type, comment from oceanbase.DBA_OB_LS_REPLICA_TASKS;
+ls_id	task_type	priority	task_status	target_paxos_replica_number	target_replica_type	source_paxos_replica_number	source_replica_type	comment
+select ls_id, task_type, priority, task_status, target_paxos_replica_number, target_replica_type, source_paxos_replica_number, source_replica_type, comment from oceanbase.DBA_OB_LS_REPLICA_TASKS;
+ls_id	task_type	priority	task_status	target_paxos_replica_number	target_replica_type	source_paxos_replica_number	source_replica_type	comment
+1	MIGRATE REPLICA	LOW	WAITING	2	FULL	2	FULL	migrate replica due to unit not match
+1001	MIGRATE REPLICA	LOW	WAITING	2	FULL	2	FULL	migrate replica due to unit not match
+alter system change tenant tenant_id = 1001;
+select ls_id, task_type, priority, task_status, target_paxos_replica_number, target_replica_type, source_paxos_replica_number, source_replica_type, comment from oceanbase.DBA_OB_LS_REPLICA_TASKS;
+ls_id	task_type	priority	task_status	target_paxos_replica_number	target_replica_type	source_paxos_replica_number	source_replica_type	comment
+1	MIGRATE REPLICA	LOW	WAITING	2	FULL	2	FULL	migrate replica due to unit not match
+alter system change tenant tenant_id = 1;
+ob1.mysql alter system set_tp tp_name = ERRSIM_DISASTER_RECOVERY_POP_AND_EXECUTE_TASK, error_code = 4016, frequency = 0;
+ob1.check_until_timeout SELECT COUNT(*) = 1 FROM oceanbase.DBA_OB_UNITS WHERE unit_id = $unit_id AND migrate_from_svr_ip is null, 1, 100;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $tenant_id AND role = "LEADER" AND member_list LIKE '%$dest_server%', 2, 20;
+ob1.check_until_timeout SELECT COUNT(*) = 1 FROM oceanbase.DBA_OB_UNIT_JOBS WHERE unit_id = $unit_id AND job_type = "MIGRATE_UNIT" AND job_status = "SUCCESS", 1, 20;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_LS_REPLICA_TASKS, 0, 40;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_LS_REPLICA_TASK_HISTORY, $migrate_ls_cnt, 40;
+========================================================================
+||              [MILESTONE] case 2: locality 2F to 3F                 ||
+========================================================================
+ob1.mysql alter system set_tp tp_name = ERRSIM_DISASTER_RECOVERY_POP_AND_EXECUTE_TASK, error_code = 4016, frequency = 1;
+ALTER TENANT mysql_tenant LOCALITY = 'F@z1,F@z2,F@z3';
+select tenant_id, ls_id, task_type, priority, target_paxos_replica_number, target_replica_type, source_paxos_replica_number, source_replica_type, comment from oceanbase.V$OB_LS_REPLICA_TASK_PLAN;
+tenant_id	ls_id	task_type	priority	target_paxos_replica_number	target_replica_type	source_paxos_replica_number	source_replica_type	comment
+1001	1	ADD REPLICA	HIGH	3	FULL	2	FULL	add paxos replica according to locality
+1002	1	ADD REPLICA	HIGH	3	FULL	2	FULL	add paxos replica according to locality
+1002	1001	ADD REPLICA	HIGH	3	FULL	2	FULL	add paxos replica according to locality
+select tenant_id, ls_id, task_type, priority, target_paxos_replica_number, target_replica_type, source_paxos_replica_number, source_replica_type, comment from oceanbase.V$OB_LS_REPLICA_TASK_PLAN;
+tenant_id	ls_id	task_type	priority	target_paxos_replica_number	target_replica_type	source_paxos_replica_number	source_replica_type	comment
+1002	1	ADD REPLICA	HIGH	3	FULL	2	FULL	add paxos replica according to locality
+1002	1001	ADD REPLICA	HIGH	3	FULL	2	FULL	add paxos replica according to locality
+alter system change tenant tenant_id = 1001;
+select tenant_id, ls_id, task_type, priority, target_paxos_replica_number, target_replica_type, source_paxos_replica_number, source_replica_type, comment from oceanbase.V$OB_LS_REPLICA_TASK_PLAN;
+tenant_id	ls_id	task_type	priority	target_paxos_replica_number	target_replica_type	source_paxos_replica_number	source_replica_type	comment
+1001	1	ADD REPLICA	HIGH	3	FULL	2	FULL	add paxos replica according to locality
+alter system change tenant tenant_id = 1;
+ob1.check_until_timeout SELECT COUNT(*) AS cnt FROM oceanbase.DBA_OB_TENANT_JOBS WHERE tenant_id = $tenant_id AND job_type = "ALTER_TENANT_LOCALITY" AND sql_text LIKE "%F@z1,F@z2,F@z3%" AND extra_info like "%FULL{1}@z1, FULL{1}@z3%" AND job_status = "INPROGRESS", 1, 20;
+ob1.check_until_timeout select count(*) = $ls_cnt + $meta_ls_cnt from oceanbase.CDB_OB_LS_REPLICA_TASKS, 1, 20;
+select ls_id, task_type, priority, task_status, target_paxos_replica_number, target_replica_type, source_paxos_replica_number, source_replica_type, comment from oceanbase.DBA_OB_LS_REPLICA_TASKS;
+ls_id	task_type	priority	task_status	target_paxos_replica_number	target_replica_type	source_paxos_replica_number	source_replica_type	comment
+select ls_id, task_type, priority, task_status, target_paxos_replica_number, target_replica_type, source_paxos_replica_number, source_replica_type, comment from oceanbase.DBA_OB_LS_REPLICA_TASKS;
+ls_id	task_type	priority	task_status	target_paxos_replica_number	target_replica_type	source_paxos_replica_number	source_replica_type	comment
+1	ADD REPLICA	HIGH	WAITING	3	FULL	2	FULL	add paxos replica according to locality
+1001	ADD REPLICA	HIGH	WAITING	3	FULL	2	FULL	add paxos replica according to locality
+alter system change tenant tenant_id = 1001;
+select ls_id, task_type, priority, task_status, target_paxos_replica_number, target_replica_type, source_paxos_replica_number, source_replica_type, comment from oceanbase.DBA_OB_LS_REPLICA_TASKS;
+ls_id	task_type	priority	task_status	target_paxos_replica_number	target_replica_type	source_paxos_replica_number	source_replica_type	comment
+1	ADD REPLICA	HIGH	WAITING	3	FULL	2	FULL	add paxos replica according to locality
+alter system change tenant tenant_id = 1;
+ob1.mysql alter system set_tp tp_name = ERRSIM_DISASTER_RECOVERY_POP_AND_EXECUTE_TASK, error_code = 4016, frequency = 0;
+ob1.check_until_timeout SELECT COUNT(*) = 1 FROM oceanbase.DBA_OB_TENANTS WHERE tenant_id = $tenant_id AND previous_locality is null, 1 ,100;
+ob1.check_until_timeout SELECT COUNT(*) = 1 FROM oceanbase.DBA_OB_TENANTS WHERE tenant_id = $meta_tenant_id AND previous_locality is null, 1 ,100;
+ob1.check_until_timeout SELECT COUNT(*) = 1 FROM oceanbase.DBA_OB_TENANTS WHERE tenant_id = $tenant_id AND primary_zone = (SELECT primary_zone FROM oceanbase.DBA_OB_TENANTS WHERE tenant_id = $meta_tenant_id), 1 ,50;
+ob1.check_until_timeout SELECT COUNT(*) = 1 FROM oceanbase.__all_tenant where tenant_id = $tenant_id AND zone_list = (SELECT zone_list FROM oceanbase.__all_tenant WHERE tenant_id = $meta_tenant_id), 1 ,50;
+ob1.check_until_timeout SELECT COUNT(*) = 1 FROM oceanbase.DBA_OB_TENANT_JOBS WHERE tenant_id = $tenant_id AND job_type = "ALTER_TENANT_LOCALITY" AND sql_text LIKE "%F@z1,F@z2,F@z3%" AND extra_info like "%FULL{1}@z1, FULL{1}@z3%" AND job_status = "SUCCESS", 1, 20;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $meta_tenant_id AND role = "LEADER" AND member_list LIKE "%$z2_dst0%", 1, 20;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $tenant_id AND role = "LEADER" AND member_list LIKE "%$z2_dst0%", 2, 20;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS, 0, 30;
+========================================================================
+||             [MILESTONE] case 3: locality 3F to 2F1R                ||
+========================================================================
+ob1.mysql alter system set_tp tp_name = ERRSIM_DISASTER_RECOVERY_POP_AND_EXECUTE_TASK, error_code = 4016, frequency = 1;
+tenant_id	ls_id	task_type	priority	target_paxos_replica_number	target_replica_type	source_paxos_replica_number	source_replica_type	comment
+1001	1	TYPE TRANSFORM	HIGH	2	READONLY	3	FULL	type transform according to locality
+1002	1	TYPE TRANSFORM	HIGH	2	READONLY	3	FULL	type transform according to locality
+1002	1001	TYPE TRANSFORM	HIGH	2	READONLY	3	FULL	type transform according to locality
+tenant_id	ls_id	task_type	priority	target_paxos_replica_number	target_replica_type	source_paxos_replica_number	source_replica_type	comment
+1002	1	TYPE TRANSFORM	HIGH	2	READONLY	3	FULL	type transform according to locality
+1002	1001	TYPE TRANSFORM	HIGH	2	READONLY	3	FULL	type transform according to locality
+tenant_id	ls_id	task_type	priority	target_paxos_replica_number	target_replica_type	source_paxos_replica_number	source_replica_type	comment
+1001	1	TYPE TRANSFORM	HIGH	2	READONLY	3	FULL	type transform according to locality
+ob1.check_until_timeout SELECT COUNT(*) AS cnt FROM oceanbase.DBA_OB_TENANT_JOBS WHERE tenant_id = $tenant_id AND job_type = "ALTER_TENANT_LOCALITY" AND sql_text LIKE "%F@z1,R@z2,F@z3%" AND extra_info like "%FULL{1}@z1, FULL{1}@z2, FULL{1}@z3%" AND job_status = "INPROGRESS", 1, 20;
+ob1.check_until_timeout select count(*) = $ls_cnt + $meta_ls_cnt from oceanbase.CDB_OB_LS_REPLICA_TASKS, 1, 20;
+ls_id	task_type	priority	task_status	target_paxos_replica_number	target_replica_type	source_paxos_replica_number	source_replica_type	comment
+ls_id	task_type	priority	task_status	target_paxos_replica_number	target_replica_type	source_paxos_replica_number	source_replica_type	comment
+1	TYPE TRANSFORM	HIGH	WAITING	2	READONLY	3	FULL	type transform according to locality
+1001	TYPE TRANSFORM	HIGH	WAITING	2	READONLY	3	FULL	type transform according to locality
+ls_id	task_type	priority	task_status	target_paxos_replica_number	target_replica_type	source_paxos_replica_number	source_replica_type	comment
+1	TYPE TRANSFORM	HIGH	WAITING	2	READONLY	3	FULL	type transform according to locality
+ob1.mysql alter system set_tp tp_name = ERRSIM_DISASTER_RECOVERY_POP_AND_EXECUTE_TASK, error_code = 4016, frequency = 0;
+ob1.check_until_timeout SELECT COUNT(*) = 1 FROM oceanbase.DBA_OB_TENANTS WHERE tenant_id = $tenant_id AND previous_locality is null, 1 ,100;
+ob1.check_until_timeout SELECT COUNT(*) = 1 FROM oceanbase.DBA_OB_TENANTS WHERE tenant_id = $meta_tenant_id AND previous_locality is null, 1 ,100;
+ob1.check_until_timeout SELECT COUNT(*) = 1 FROM oceanbase.DBA_OB_TENANTS WHERE tenant_id = $tenant_id AND primary_zone = (SELECT primary_zone FROM oceanbase.DBA_OB_TENANTS WHERE tenant_id = $meta_tenant_id), 1 ,50;
+ob1.check_until_timeout SELECT COUNT(*) = 1 FROM oceanbase.__all_tenant where tenant_id = $tenant_id AND zone_list = (SELECT zone_list FROM oceanbase.__all_tenant WHERE tenant_id = $meta_tenant_id), 1 ,50;
+ob1.check_until_timeout SELECT COUNT(*) = 1 FROM oceanbase.DBA_OB_TENANT_JOBS WHERE tenant_id = $tenant_id AND job_type = "ALTER_TENANT_LOCALITY" AND sql_text LIKE "%F@z1,R@z2,F@z3%" AND extra_info like "%FULL{1}@z1, FULL{1}@z2, FULL{1}@z3%" AND job_status = "SUCCESS", 1, 20;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $meta_tenant_id AND role = "LEADER" AND member_list LIKE "%$z2_dst0%", 0, 20;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $meta_tenant_id AND role = "LEADER" AND learner_list LIKE "%$z2_dst0%", 1, 20;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $tenant_id AND role = "LEADER" AND member_list LIKE "%$z2_dst0%", 0, 20;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $tenant_id AND role = "LEADER" AND learner_list LIKE "%$z2_dst0%", 2, 20;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS, 0, 30;
+========================================================================
+||             [MILESTONE] case 4: locality 2F1R to 2F                ||
+========================================================================
+ob1.mysql alter system set_tp tp_name = ERRSIM_DISASTER_RECOVERY_POP_AND_EXECUTE_TASK, error_code = 4016, frequency = 1;
+tenant_id	ls_id	task_type	priority	target_paxos_replica_number	target_replica_type	source_paxos_replica_number	source_replica_type	comment
+1001	1	REMOVE NON PAXOS REPLICA	LOW	2	READONLY	2	NULL	remove redundant non-paxos replica according to locality
+1002	1	REMOVE NON PAXOS REPLICA	LOW	2	READONLY	2	NULL	remove redundant non-paxos replica according to locality
+1002	1001	REMOVE NON PAXOS REPLICA	LOW	2	READONLY	2	NULL	remove redundant non-paxos replica according to locality
+tenant_id	ls_id	task_type	priority	target_paxos_replica_number	target_replica_type	source_paxos_replica_number	source_replica_type	comment
+1002	1	REMOVE NON PAXOS REPLICA	LOW	2	READONLY	2	NULL	remove redundant non-paxos replica according to locality
+1002	1001	REMOVE NON PAXOS REPLICA	LOW	2	READONLY	2	NULL	remove redundant non-paxos replica according to locality
+tenant_id	ls_id	task_type	priority	target_paxos_replica_number	target_replica_type	source_paxos_replica_number	source_replica_type	comment
+1001	1	REMOVE NON PAXOS REPLICA	LOW	2	READONLY	2	NULL	remove redundant non-paxos replica according to locality
+ob1.check_until_timeout SELECT COUNT(*) AS cnt FROM oceanbase.DBA_OB_TENANT_JOBS WHERE tenant_id = $tenant_id AND job_type = "ALTER_TENANT_LOCALITY" AND sql_text LIKE "%F@z1,F@z3%" AND extra_info like "%FULL{1}@z1, READONLY{1}@z2, FULL{1}@z3%" AND job_status = "INPROGRESS", 1, 20;
+ob1.check_until_timeout select count(*) = $ls_cnt + $meta_ls_cnt from oceanbase.CDB_OB_LS_REPLICA_TASKS, 1, 20;
+ls_id	task_type	priority	task_status	target_paxos_replica_number	target_replica_type	source_paxos_replica_number	source_replica_type	comment
+ls_id	task_type	priority	task_status	target_paxos_replica_number	target_replica_type	source_paxos_replica_number	source_replica_type	comment
+1	REMOVE NON PAXOS REPLICA	HIGH	WAITING	2	READONLY	2	NULL	remove redundant non-paxos replica according to locality
+1001	REMOVE NON PAXOS REPLICA	HIGH	WAITING	2	READONLY	2	NULL	remove redundant non-paxos replica according to locality
+ls_id	task_type	priority	task_status	target_paxos_replica_number	target_replica_type	source_paxos_replica_number	source_replica_type	comment
+1	REMOVE NON PAXOS REPLICA	HIGH	WAITING	2	READONLY	2	NULL	remove redundant non-paxos replica according to locality
+ob1.mysql alter system set_tp tp_name = ERRSIM_DISASTER_RECOVERY_POP_AND_EXECUTE_TASK, error_code = 4016, frequency = 0;
+ob1.check_until_timeout SELECT COUNT(*) = 1 FROM oceanbase.DBA_OB_TENANTS WHERE tenant_id = $tenant_id AND previous_locality is null, 1 ,100;
+ob1.check_until_timeout SELECT COUNT(*) = 1 FROM oceanbase.DBA_OB_TENANTS WHERE tenant_id = $meta_tenant_id AND previous_locality is null, 1 ,100;
+ob1.check_until_timeout SELECT COUNT(*) = 1 FROM oceanbase.DBA_OB_TENANTS WHERE tenant_id = $tenant_id AND primary_zone = (SELECT primary_zone FROM oceanbase.DBA_OB_TENANTS WHERE tenant_id = $meta_tenant_id), 1 ,50;
+ob1.check_until_timeout SELECT COUNT(*) = 1 FROM oceanbase.__all_tenant where tenant_id = $tenant_id AND zone_list = (SELECT zone_list FROM oceanbase.__all_tenant WHERE tenant_id = $meta_tenant_id), 1 ,50;
+ob1.check_until_timeout SELECT COUNT(*) = 1 FROM oceanbase.DBA_OB_TENANT_JOBS WHERE tenant_id = $tenant_id AND job_type = "ALTER_TENANT_LOCALITY" AND sql_text LIKE "%F@z1,F@z3%" AND extra_info like "%FULL{1}@z1, READONLY{1}@z2, FULL{1}@z3%" AND job_status = "SUCCESS", 1, 20;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $meta_tenant_id AND role = "LEADER" AND learner_list LIKE "%$z2_dst0%", 0, 20;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $tenant_id AND role = "LEADER" AND learner_list LIKE "%$z2_dst0%", 0, 20;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS, 0, 30;
+tenant_id	ls_id	task_type	priority	task_status	target_paxos_replica_number	target_replica_type	source_paxos_replica_number	source_replica_type	comment
+1001	1	ADD REPLICA	HIGH	COMPLETED	3	FULL	2	FULL	add paxos replica according to locality
+1002	1	ADD REPLICA	HIGH	COMPLETED	3	FULL	2	FULL	add paxos replica according to locality
+1002	1001	ADD REPLICA	HIGH	COMPLETED	3	FULL	2	FULL	add paxos replica according to locality
+1001	1	MIGRATE REPLICA	LOW	COMPLETED	2	FULL	2	FULL	migrate replica due to unit not match
+1002	1	MIGRATE REPLICA	LOW	COMPLETED	2	FULL	2	FULL	migrate replica due to unit not match
+1002	1001	MIGRATE REPLICA	LOW	COMPLETED	2	FULL	2	FULL	migrate replica due to unit not match
+1001	1	REMOVE NON PAXOS REPLICA	HIGH	COMPLETED	2	READONLY	2	NULL	remove redundant non-paxos replica according to locality
+1002	1	REMOVE NON PAXOS REPLICA	HIGH	COMPLETED	2	READONLY	2	NULL	remove redundant non-paxos replica according to locality
+1002	1001	REMOVE NON PAXOS REPLICA	HIGH	COMPLETED	2	READONLY	2	NULL	remove redundant non-paxos replica according to locality
+1001	1	TYPE TRANSFORM	HIGH	COMPLETED	2	READONLY	3	FULL	type transform according to locality
+1002	1	TYPE TRANSFORM	HIGH	COMPLETED	2	READONLY	3	FULL	type transform according to locality
+1002	1001	TYPE TRANSFORM	HIGH	COMPLETED	2	READONLY	3	FULL	type transform according to locality
+========================================================================
+||                [MILESTONE] case 5: locality 1F                     ||
+========================================================================
+ob1.mysql CREATE RESOURCE POOL tenant_pool2 UNIT = "2c2g", UNIT_NUM = 1, ZONE_LIST = ('z1', 'z2', 'z3');
+ob1.mysql CREATE TENANT mysql_tenant2 RESOURCE_POOL_LIST=('tenant_pool2'), LOCALITY = "F@z1", PRIMARY_ZONE = "z1" SET ob_tcp_invited_nodes='%';
+ob1.mysql ALTER SYSTEM SET enable_rereplication = 'false';
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = 1004 AND ls_id = 1001 AND role = "LEADER" AND member_list LIKE '%$z2_dst0%', 1, 30;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = 1004 AND ls_id = 1001, 2, 30;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = 1004 AND ls_id = 1001 AND role = "LEADER" AND member_list LIKE '%$z1_dst0%', 0, 30;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = 1004 AND ls_id = 1001, 1, 30;
+ob1.mysql ALTER SYSTEM SET enable_rereplication = 'true';
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = 1004 AND ls_id = 1001 AND role = "LEADER" AND member_list LIKE '%$z2_dst0%', 0, 60;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = 1004 AND ls_id = 1001, 1, 30;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = 1004 AND ls_id = 1001 AND role = "LEADER" AND member_list LIKE '%$z1_dst0%', 1, 30;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = 1004 AND ls_id = 1001, 1, 30;
+ob1.check_until_timeout select count(*) from oceanbase.V\$OB_LS_REPLICA_TASK_PLAN, 0, 30;
+========================================================================
+||             [MILESTONE] case 6: locality 2F->1F                    ||
+========================================================================
+ob1.mysql ALTER SYSTEM SET enable_rereplication = 'false';
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = 1004 AND ls_id = 1001 AND role = "LEADER" AND member_list LIKE '%$z2_dst0%', 1, 30;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = 1004 AND ls_id = 1001, 2, 30;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = 1004 AND ls_id = 1001 AND ZONE = 'z2', 1, 30;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = 1004 AND ls_id = 1001 AND role = "LEADER" AND member_list LIKE '%$dest_server2%', 1, 30;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = 1004 AND ls_id = 1001, 3, 30;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = 1004 AND ls_id = 1001 AND ZONE = 'z3', 1, 30;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = 1004 AND ls_id = 1001 AND role = "LEADER" AND member_list LIKE '%$z1_dst0%', 0, 30;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = 1004 AND ls_id = 1001, 2, 30;
+ob1.mysql ALTER SYSTEM SET enable_rereplication = 'true';
+ob1.check_until_timeout select count(*) from oceanbase.V\$OB_LS_REPLICA_TASK_PLAN, 0, 100;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = 1004 AND ls_id = 1001 AND role = "LEADER" AND member_list LIKE '%$dest_server2%', 0, 60;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = 1004 AND ls_id = 1001, 2, 30;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = 1004 AND ls_id = 1001 AND role = "LEADER" AND member_list LIKE '%$z2_dst0%', 0, 60;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = 1004 AND ls_id = 1001, 1, 30;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = 1004 AND ls_id = 1001 AND role = "LEADER" AND member_list LIKE '%$z1_dst0%', 1, 30;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = 1004 AND ls_id = 1001, 1, 30;

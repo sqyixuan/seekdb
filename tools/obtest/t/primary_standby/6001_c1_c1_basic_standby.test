@@ -1,0 +1,79 @@
+##########################
+ob1=OBI(cluster=1,proxy_num=0);
+ob2=OBI(cluster=1, proxy_num=0, leaderob=ob1);
+
+let $extra_conf = "cpu_count=16,memory_limit='20G',system_memory='5G',__min_full_resource_pool_memory='1073741824',cache_wash_threshold='1G',enable_async_syslog='false', syslog_io_bandwidth_limit='10G'";
+ob1.z1.obs0.set extra_config=_enable_defensive_check=false,$extra_conf;
+
+# case 1. 验证bootstrap
+ob1.reboot;
+sleep 3;
+
+ob1.mysql alter system set resource_soft_limit=100;
+ob1.mysql alter system set enable_rebalance='false';
+
+# case 2. 验证sys租户创建表和DML/SELECT操作
+ob_connect(conn_sys, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+# case 3. 验证建租户
+let $cpu = 1;
+let $memory = 1073741824;
+let $min_memory = 1073741824;
+let $disk = 536870912;
+let $iops = 100000;
+let $session = 64;
+
+set @@session.ob_query_timeout = 1000000000;
+#mysql tenant
+eval CREATE RESOURCE UNIT unit_1 MAX_CPU $cpu, MAX_MEMORY $memory, MAX_IOPS $iops, MAX_DISK_SIZE $disk, MAX_SESSION_NUM $session, MIN_CPU=1, MIN_MEMORY=$min_memory, MIN_IOPS=128;
+eval CREATE RESOURCE POOL pool_1 UNIT = 'unit_1', UNIT_NUM = 1;
+eval CREATE TENANT mysql RESOURCE_POOL_LIST = ('pool_1') set ob_tcp_invited_nodes='%';
+source include/check_schema_sync.inc;
+# case 4. 验证mysql租户下表的DML/SELECT
+ob_connect(conn_mysql, ob1.z1.obs0, root@mysql, , test, , USE_MYSQL_CONNECTOR);
+create table t1(c1 int);
+insert into t1 values(1);
+
+connection conn_mysql;
+# case 10. 验证standby bootstrap
+ob2.z1.obs0.set extra_config=_enable_defensive_check=false,$extra_conf;
+ob2.reset;
+ob2.deploy;
+ob2.bootstrap;
+
+#init standby admin user
+ob_connect(conn_sys_ob2, ob2.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+use oceanbase;
+create user 'admin' IDENTIFIED BY 'admin';
+grant all on *.* to 'admin' WITH GRANT OPTION;
+
+# case 11. 验证主库add cluster
+let $ob2_ip=deploy_get_value(ob2.z1.obs0.ip);
+let $cluster_id_ob2 = deploy_get_value(ob2.select select value from oceanbase.__all_virtual_sys_parameter_stat where name = 'cluster_id', value, 1);
+let $ob2_rpc_port=deploy_get_value(ob2.select select svr_port from oceanbase.__all_server where zone = 'z1', svr_port, 1);
+let $cluster_name = deploy_get_value(ob1.select select info from oceanbase.__all_zone where name = 'cluster', info, 1);
+ob_connect(conn_sys_ob1, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+--disable_query_log
+eval alter system add cluster '$cluster_name' cluster_id $cluster_id_ob2 rootservice_list '$ob2_ip:$ob2_rpc_port';
+--enable_query_log
+
+connection conn_sys_ob2;
+ob2.check_until_timeout select count(*) from __all_tenant where tenant_name = 'mysql', 1, 100;
+sleep 30;
+select tenant_id, ls_id, status, primary_zone from __all_virtual_ls_status;
+let $cpu = 1;
+let $memory = 1073741824;
+let $min_memory = 1073741824;
+let $disk = 536870912;
+let $iops = 100000;
+let $session = 64;
+
+ob2.mysql CREATE RESOURCE UNIT unit_1 MAX_CPU $cpu, MAX_MEMORY $memory, MAX_IOPS $iops, MAX_DISK_SIZE $disk, MAX_SESSION_NUM $session, MIN_CPU=1, MIN_MEMORY=$min_memory, MIN_IOPS=128;
+ob2.mysql CREATE RESOURCE POOL pool_1 UNIT = 'unit_1', UNIT_NUM = 1;
+connection conn_sys_ob2;
+--error 4179
+CREATE TENANT mysql1 RESOURCE_POOL_LIST = ('pool_1') set ob_tcp_invited_nodes='%';
+ob2.check_until_timeout select count(*) from oceanbase.__all_virtual_ls_recovery_stat where tenant_id = 1002 and readable_ts_ns > 0, 2, 100;
+ob_connect(conn2_mysql, ob2.z1.obs0, root@mysql, , test, , USE_MYSQL_CONNECTOR);
+select /*+ read_consistency(weak)*/* from t1;
+select * from t;
+

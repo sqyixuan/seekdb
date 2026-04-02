@@ -1,0 +1,115 @@
+ob1=OBI(cluster=1:1,proxy_num=0,init_unit_cpu=4);
+ob1.reboot;
+===============================================================
+=================  Step 0: prepare env   ======================
+===============================================================
+ob1.mysql alter resource unit sys_unit_config memory_size='2G';
+ob1.mysql alter system set enable_rebalance = 'false';
+ob1.mysql alter system set default_compress_func = 'none';
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+ob1.mysql alter system set ob_compaction_schedule_interval = '10s' tenant obtest;
+ob1.mysql alter system set merger_check_interval = '10s' tenant obtest;
+===============================================================
+=================  Step 1: create tenant   ====================
+===============================================================
+CREATE RESOURCE UNIT user_unit_config MAX_CPU = 1, MEMORY_SIZE = '2G', MAX_IOPS = 1024, LOG_DISK_SIZE = '3G';
+ob1.mysql create resource pool cs_replica_pool unit = "user_unit_config", unit_num = 1, zone_list = ('z1', 'z2');
+ob1.mysql create TENANT tenant1 resource_pool_list=('cs_replica_pool'), locality = "F@z1" set ob_tcp_invited_nodes='%';
+===============================================================
+=================  Step 2: create table   =====================
+===============================================================
+create table t1 (k int primary key, v1 int, v2 int);
+insert into t1 values (1, 1, 1);
+insert into t1 values (2, 2, 2);
+insert into t1 values (3, 3, 3);
+select * from t1 order by k;
+k	v1	v2
+1	1	1
+2	2	2
+3	3	3
+===============================================================
+=================  Step 2: add cs replcia   ===================
+===============================================================
+ob1.mysql alter tenant tenant1 set locality = "F{1}@z1,C{1}@z2";
+ob1.check_until_timeout select count(*) from (select * from oceanbase.DBA_OB_TENANT_JOBS where tenant_id = $tenant_id order by START_TIME desc limit 1) where job_status = "SUCCESS", 1, 100;
+select count(*) from GV$OB_SSTABLES where (tenant_id, tablet_id) = (select tenant_id, tablet_id from __all_virtual_table where table_name = 't1') and table_type in ('CO_MAJOR');
+count(*)
+1
+set ob_route_policy=READONLY_ZONE_FIRST;
+select * from t1 order by k;
+k	v1	v2
+1	1	1
+2	2	2
+3	3	3
+select k, v1 from t1 order by k;
+k	v1
+1	1
+2	2
+3	3
+select avg(k), avg(v1), avg(v2) from t1;
+avg(k)	avg(v1)	avg(v2)
+2.0000	2.0000	2.0000
+set ob_route_policy=COLUMN_STORE_ONLY;
+select /*+READ_CONSISTENCY(WEAK)+*/ * from t1 order by k;
+k	v1	v2
+1	1	1
+2	2	2
+3	3	3
+select /*+READ_CONSISTENCY(WEAK)+*/ k, v1 from t1 order by k;
+k	v1
+1	1
+2	2
+3	3
+select /*+READ_CONSISTENCY(WEAK)+*/ avg(k), avg(v1), avg(v2) from t1;
+avg(k)	avg(v1)	avg(v2)
+2.0000	2.0000	2.0000
+===============================================================
+==========  Step 3: test slow data tablet migration ===========
+===============================================================
+ob1.mysql alter tenant tenant1 set locality = "F{1}@z1";
+ob1.check_until_timeout select count(*) from (select * from oceanbase.DBA_OB_TENANT_JOBS where tenant_id = $tenant_id order by START_TIME desc limit 1) where job_status = "SUCCESS", 1, 100;
+ob1.mysql set ob_global_debug_sync = 'BEFROE_UPDATE_MIG_TABLET_CONVERT_CO_PROGRESSING wait_for continue_signal execute 10000';
+ob1.mysql set ob_global_debug_sync = 'AFTER_SET_CO_CONVERT_RETRY_EXHUASTED wait_for continue_signal2 execute 10000';
+ob1.mysql alter system set_tp tp_no = 720, error_code = 4016, frequency = 1;
+ob1.mysql alter tenant tenant1 set locality = "F{1}@z1,C{1}@z2";
+ob1.check_until_timeout select count(*) from (select * from oceanbase.DBA_OB_TENANT_JOBS where tenant_id = $tenant_id order by START_TIME desc limit 1) where job_status = "INPROGRESS", 1, 100;
+ob1.z2.obs0.check_log_until_success -c "set tablet co convert retry exhausted.*200001";
+ob1.mysql set ob_global_debug_sync = 'now broadcast continue_signal';
+ob1.z2.obs0.check_log_until_success -c "Start schedule co merge dag to switch row to column store.*200001";
+ob1.mysql alter system set_tp tp_name = EN_ALL_STATE_DETERMINISTIC_FALSE, error_code = 4016, frequency = 1;
+ob1.mysql set ob_global_debug_sync = 'now broadcast continue_signal2';
+ob1.z2.obs0.check_log_until_success -c "ERRSIM EN_ALL_STATE_DETERMINISTIC_FALSE make new round check";
+ob1.mysql alter system set_tp tp_no = 720, error_code = 4016, frequency = 0;
+ob1.mysql alter system set_tp tp_name = EN_ALL_STATE_DETERMINISTIC_FALSE, error_code = 4016, frequency = 0;
+ob1.check_until_timeout select count(*) from (select * from oceanbase.DBA_OB_TENANT_JOBS where tenant_id = $tenant_id order by START_TIME desc limit 1) where job_status = "SUCCESS", 1, 100;
+select count(*) from GV$OB_SSTABLES where (tenant_id, tablet_id) = (select tenant_id, tablet_id from __all_virtual_table where table_name = 't1') and table_type in ('CO_MAJOR');
+count(*)
+0
+set ob_route_policy=READONLY_ZONE_FIRST;
+select * from t1 order by k;
+k	v1	v2
+1	1	1
+2	2	2
+3	3	3
+select k, v1 from t1 order by k;
+k	v1
+1	1
+2	2
+3	3
+select avg(k), avg(v1), avg(v2) from t1;
+avg(k)	avg(v1)	avg(v2)
+2.0000	2.0000	2.0000
+set ob_route_policy=COLUMN_STORE_ONLY;
+select /*+READ_CONSISTENCY(WEAK)+*/ * from t1 order by k;
+k	v1	v2
+1	1	1
+2	2	2
+3	3	3
+select /*+READ_CONSISTENCY(WEAK)+*/ k, v1 from t1 order by k;
+k	v1
+1	1
+2	2
+3	3
+select /*+READ_CONSISTENCY(WEAK)+*/ avg(k), avg(v1), avg(v2) from t1;
+avg(k)	avg(v1)	avg(v2)
+2.0000	2.0000	2.0000

@@ -22,9 +22,7 @@
 #include <atomic>
 #include "lib/ob_errno.h"
 #include "lib/list/ob_dlist.h"
-#ifdef __linux__
 #include <linux/futex.h>
-#endif
 #include "lib/ob_abort.h"
 namespace oceanbase {
 namespace lib {

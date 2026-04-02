@@ -1,0 +1,322 @@
+ob1=OBI(cluster=1:1:1,proxy_num=0,init_unit_cpu=6);
+ob1.reboot;
+===============================================================
+=================  Step 0: prepare env   ======================
+===============================================================
+ob1.mysql alter resource unit sys_unit_config memory_size='2G';
+ob1.mysql alter system set enable_rebalance = 'false';
+ob1.mysql alter system set default_compress_func = 'none';
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+ob1.mysql alter system set ob_compaction_schedule_interval = '10s' tenant obtest;
+ob1.mysql alter system set merger_check_interval = '10s' tenant obtest;
+===============================================================
+=================  Step 1: create tenant   ====================
+===============================================================
+alter system set_tp tp_name = "EN_COMPACTION_DISABLE_ROW_COL_SWITCH", error_code = 4016, frequency = 1;
+CREATE RESOURCE UNIT user_unit_config MAX_CPU = 1, MEMORY_SIZE = '2G', MAX_IOPS = 1024, LOG_DISK_SIZE = '3G';
+ob1.mysql create resource pool cs_replica_pool unit = "user_unit_config", unit_num = 1, zone_list = ('z1', 'z2', 'z3');
+ob1.mysql create TENANT $tenant_name resource_pool_list=('cs_replica_pool'), locality = "F@z1, F@z2, C@z3", primary_zone = "z1" set ob_tcp_invited_nodes='%';
+===============================================================
+=================  Step 2: create table   =====================
+===============================================================
+create table t1 (k int primary key, v1 int, v2 int);
+create table t2 (k int primary key, v1 int, v2 int);
+insert into t1 values (1, 1, 1);
+insert into t2 values (1, 1, 1);
+insert into t1 values (2, 2, 2);
+insert into t2 values (2, 2, 2);
+insert into t1 values (3, 3, 3);
+insert into t2 values (3, 3, 3);
+select * from t1 order by k;
+k	v1	v2
+1	1	1
+2	2	2
+3	3	3
+select * from t2 order by k;
+k	v1	v2
+1	1	1
+2	2	2
+3	3	3
+select count(*), avg(k), avg(v1), avg(v2) from t1;
+count(*)	avg(k)	avg(v1)	avg(v2)
+3	2.0000	2.0000	2.0000
+select count(*), avg(k), avg(v1), avg(v2) from t2;
+count(*)	avg(k)	avg(v1)	avg(v2)
+3	2.0000	2.0000	2.0000
+set ob_route_policy=COLUMN_STORE_ONLY;
+set ob_read_consistency = WEAK;
+select * from t1 order by k;
+k	v1	v2
+1	1	1
+2	2	2
+3	3	3
+select * from t2 order by k;
+k	v1	v2
+1	1	1
+2	2	2
+3	3	3
+select count(*), avg(k), avg(v1), avg(v2) from t1;
+count(*)	avg(k)	avg(v1)	avg(v2)
+3	2.0000	2.0000	2.0000
+select count(*), avg(k), avg(v1), avg(v2) from t2;
+count(*)	avg(k)	avg(v1)	avg(v2)
+3	2.0000	2.0000	2.0000
+set ob_read_consistency = STRONG;
+set ob_route_policy=READONLY_ZONE_FIRST;
+===============================================================
+=================  Step 3: do offline ddl =====================
+===============================================================
+insert into t1 values (4, 4, 4);
+insert into t2 values (4, 4, 4);
+alter table t1 modify v1 decimal(10, 1);
+alter table t2 modify v1 decimal(10, 1);
+select * from t1 order by k;
+k	v1	v2
+1	1.0	1
+2	2.0	2
+3	3.0	3
+4	4.0	4
+select * from t2 order by k;
+k	v1	v2
+1	1.0	1
+2	2.0	2
+3	3.0	3
+4	4.0	4
+select count(*), avg(k), avg(v1), avg(v2) from t1;
+count(*)	avg(k)	avg(v1)	avg(v2)
+4	2.5000	2.50000	2.5000
+select count(*), avg(k), avg(v1), avg(v2) from t2;
+count(*)	avg(k)	avg(v1)	avg(v2)
+4	2.5000	2.50000	2.5000
+set ob_route_policy=COLUMN_STORE_ONLY;
+set ob_read_consistency = WEAK;
+select * from t1 order by k;
+k	v1	v2
+1	1.0	1
+2	2.0	2
+3	3.0	3
+4	4.0	4
+select * from t2 order by k;
+k	v1	v2
+1	1.0	1
+2	2.0	2
+3	3.0	3
+4	4.0	4
+select count(*), avg(k), avg(v1), avg(v2) from t1;
+count(*)	avg(k)	avg(v1)	avg(v2)
+4	2.5000	2.50000	2.5000
+select count(*), avg(k), avg(v1), avg(v2) from t2;
+count(*)	avg(k)	avg(v1)	avg(v2)
+4	2.5000	2.50000	2.5000
+set ob_read_consistency = STRONG;
+set ob_route_policy=READONLY_ZONE_FIRST;
+===============================================================
+=================  Step 4: do offline ddl with migrate ========
+===============================================================
+alter system set_tp tp_name = "EN_LS_NOT_SEE_CS_REPLICA", error_code = 4016, frequency = 1;
+insert into t1 values (5, 5, 5);
+insert into t2 values (5, 5, 5);
+alter table t1 modify v2 decimal(10, 3);
+alter table t2 modify v2 decimal(10, 3);
+alter table t1 add column group (each column) delayed;
+alter table t2 add column group (each column, all columns) delayed;
+select * from t1 order by k;
+k	v1	v2
+1	1.0	1.000
+2	2.0	2.000
+3	3.0	3.000
+4	4.0	4.000
+5	5.0	5.000
+select * from t2 order by k;
+k	v1	v2
+1	1.0	1.000
+2	2.0	2.000
+3	3.0	3.000
+4	4.0	4.000
+5	5.0	5.000
+select count(*), avg(k), avg(v1), avg(v2) from t1;
+count(*)	avg(k)	avg(v1)	avg(v2)
+5	3.0000	3.00000	3.0000000
+select count(*), avg(k), avg(v1), avg(v2) from t2;
+count(*)	avg(k)	avg(v1)	avg(v2)
+5	3.0000	3.00000	3.0000000
+set ob_route_policy=COLUMN_STORE_ONLY;
+set ob_read_consistency = WEAK;
+select * from t1 order by k;
+k	v1	v2
+1	1.0	1.000
+2	2.0	2.000
+3	3.0	3.000
+4	4.0	4.000
+5	5.0	5.000
+select * from t2 order by k;
+k	v1	v2
+1	1.0	1.000
+2	2.0	2.000
+3	3.0	3.000
+4	4.0	4.000
+5	5.0	5.000
+select count(*), avg(k), avg(v1), avg(v2) from t1;
+count(*)	avg(k)	avg(v1)	avg(v2)
+5	3.0000	3.00000	3.0000000
+select count(*), avg(k), avg(v1), avg(v2) from t2;
+count(*)	avg(k)	avg(v1)	avg(v2)
+5	3.0000	3.00000	3.0000000
+set ob_read_consistency = STRONG;
+set ob_route_policy=READONLY_ZONE_FIRST;
+alter system set_tp tp_name = "EN_LS_NOT_SEE_CS_REPLICA", error_code = 4016, frequency = 0;
+table_type
+MAJOR
+table_type
+MAJOR
+table_type
+MAJOR
+table_type
+MAJOR
+alter system set_tp tp_name = "EN_LS_NOT_SEE_CS_REPLICA", error_code = 4016, frequency = 1;
+alter system set_tp tp_name = "EN_REPLAY_REDO_DDL_LOG_WAIT", error_code = 4016, frequency = 1;
+ob1.check_until_timeout select count(*) from oceanbase.GV\$OB_SSTABLES where tablet_id = $tablet_id1 and table_type ='MAJOR' and svr_ip = '$z3_ip0' and svr_port = $z3_port0, 1, 60;
+ob1.check_until_timeout select count(*) from oceanbase.GV\$OB_SSTABLES where tablet_id = $tablet_id2 and table_type ='MAJOR' and svr_ip = '$z3_ip0' and svr_port = $z3_port0, 1, 60;
+alter table t1 modify v2 decimal(20, 3);
+alter table t2 modify v2 decimal(20, 3);
+ob1.z3.obs0.check_log_until_success -c "EN_REPLAY_REDO_DDL_LOG_WAIT replay ddl redo failed.*4016";
+ob1.z3.obs0.force_stop;
+alter system set_tp tp_name = "EN_REPLAY_REDO_DDL_LOG_WAIT", error_code = 4016, frequency = 0;
+ob1.z3.obs0.nstart;
+ob1.check_until_timeout select count(*) from __all_server where status='INACTIVE' or start_service_time <= 0, 0, 120;
+ob1.check_until_timeout select count(*) from oceanbase.GV\$OB_SSTABLES where tablet_id = $tablet_id1 and table_type ='CO_MAJOR' and svr_ip = '$z1_ip0' and svr_port = $z1_port0, 1, 300;
+ob1.check_until_timeout select count(*) from oceanbase.GV\$OB_SSTABLES where tablet_id = $tablet_id2 and table_type ='CO_MAJOR' and svr_ip = '$z1_ip0' and svr_port = $z1_port0, 1, 300;
+ob1.check_until_timeout select count(*) from oceanbase.GV\$OB_SSTABLES where tablet_id = $tablet_id1 and table_type ='CO_MAJOR' and svr_ip = '$z3_ip0' and svr_port = $z3_port0, 1, 300;
+ob1.check_until_timeout select count(*) from oceanbase.GV\$OB_SSTABLES where tablet_id = $tablet_id2 and table_type ='CO_MAJOR' and svr_ip = '$z3_ip0' and svr_port = $z3_port0, 1, 300;
+alter system set_tp tp_name = "EN_LS_NOT_SEE_CS_REPLICA", error_code = 4016, frequency = 0;
+set ob_route_policy=COLUMN_STORE_ONLY;
+set ob_read_consistency = WEAK;
+select * from t1 order by k;
+k	v1	v2
+1	1.0	1.000
+2	2.0	2.000
+3	3.0	3.000
+4	4.0	4.000
+5	5.0	5.000
+select * from t2 order by k;
+k	v1	v2
+1	1.0	1.000
+2	2.0	2.000
+3	3.0	3.000
+4	4.0	4.000
+5	5.0	5.000
+select count(*), avg(k), avg(v1), avg(v2) from t1;
+count(*)	avg(k)	avg(v1)	avg(v2)
+5	3.0000	3.00000	3.0000000
+select count(*), avg(k), avg(v1), avg(v2) from t2;
+count(*)	avg(k)	avg(v1)	avg(v2)
+5	3.0000	3.00000	3.0000000
+set ob_read_consistency = STRONG;
+set ob_route_policy=READONLY_ZONE_FIRST;
+===============================================================
+=================  Step 5: wait major freeze   ================
+===============================================================
+alter table t1 add column v3 int default 666;
+alter table t2 add column v3 int default 666;
+insert into t1 values (6, 6, 6, 6);
+insert into t2 values (6, 6, 6, 6);
+insert into t1 values (7, 7, 7, 7);
+insert into t2 values (7, 7, 7, 7);
+ob1.mysql alter system major freeze tenant $tenant_name;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tablet_meta_table where compaction_scn = $frozen_scn and tenant_id = $tenant_id and tablet_id = $tablet_id1, 3, 400;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tablet_meta_table where compaction_scn = $frozen_scn and tenant_id = $tenant_id and tablet_id = $tablet_id2, 3, 400;
+table_type
+CO_MAJOR
+NORMAL_CG
+NORMAL_CG
+NORMAL_CG
+CO_MAJOR
+NORMAL_CG
+NORMAL_CG
+NORMAL_CG
+NORMAL_CG
+table_type
+CO_MAJOR
+NORMAL_CG
+NORMAL_CG
+NORMAL_CG
+CO_MAJOR
+NORMAL_CG
+NORMAL_CG
+NORMAL_CG
+NORMAL_CG
+table_type
+CO_MAJOR
+NORMAL_CG
+NORMAL_CG
+NORMAL_CG
+CO_MAJOR
+NORMAL_CG
+NORMAL_CG
+NORMAL_CG
+NORMAL_CG
+table_type
+CO_MAJOR
+NORMAL_CG
+NORMAL_CG
+NORMAL_CG
+CO_MAJOR
+NORMAL_CG
+NORMAL_CG
+NORMAL_CG
+NORMAL_CG
+===============================================================
+=================  Step 6: query continue =====================
+===============================================================
+select * from t1 order by k;
+k	v1	v2	v3
+1	1.0	1.000	666
+2	2.0	2.000	666
+3	3.0	3.000	666
+4	4.0	4.000	666
+5	5.0	5.000	666
+6	6.0	6.000	6
+7	7.0	7.000	7
+select * from t2 order by k;
+k	v1	v2	v3
+1	1.0	1.000	666
+2	2.0	2.000	666
+3	3.0	3.000	666
+4	4.0	4.000	666
+5	5.0	5.000	666
+6	6.0	6.000	6
+7	7.0	7.000	7
+select count(*), avg(k), avg(v1), avg(v2) from t1;
+count(*)	avg(k)	avg(v1)	avg(v2)
+7	4.0000	4.00000	4.0000000
+select count(*), avg(k), avg(v1), avg(v2) from t2;
+count(*)	avg(k)	avg(v1)	avg(v2)
+7	4.0000	4.00000	4.0000000
+set ob_route_policy=COLUMN_STORE_ONLY;
+set ob_read_consistency = WEAK;
+select * from t1 order by k;
+k	v1	v2	v3
+1	1.0	1.000	666
+2	2.0	2.000	666
+3	3.0	3.000	666
+4	4.0	4.000	666
+5	5.0	5.000	666
+6	6.0	6.000	6
+7	7.0	7.000	7
+select * from t2 order by k;
+k	v1	v2	v3
+1	1.0	1.000	666
+2	2.0	2.000	666
+3	3.0	3.000	666
+4	4.0	4.000	666
+5	5.0	5.000	666
+6	6.0	6.000	6
+7	7.0	7.000	7
+select count(*), avg(k), avg(v1), avg(v2) from t1;
+count(*)	avg(k)	avg(v1)	avg(v2)
+7	4.0000	4.00000	4.0000000
+select count(*), avg(k), avg(v1), avg(v2) from t2;
+count(*)	avg(k)	avg(v1)	avg(v2)
+7	4.0000	4.00000	4.0000000
+set ob_read_consistency = STRONG;
+set ob_route_policy=READONLY_ZONE_FIRST;

@@ -1,0 +1,503 @@
+#owner: tuliwei.tlw
+#owner group: 产品技术部-技术部-SQL
+#description: 435优化器技改 拆分sum中const表达式改写 GroupBy 下推 union 改写
+#tags:
+#author: wb-lyq858317
+
+--result_format 4
+purge recyclebin;
+
+--echo 拆分sum中const表达式改写
+
+--error 0,1051
+drop table sumtest;
+CREATE TABLE sumtest (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    bool_col BOOLEAN,
+    tinyint_col TINYINT,
+    smallint_col SMALLINT,
+    mediumint_col MEDIUMINT,
+    int_col INT,
+    bigint_col BIGINT,
+    decimal_col DECIMAL(10, 2),
+    numeric_col NUMERIC(10, 2),
+    float_col FLOAT,
+    double_col DOUBLE,
+    bit_col BIT(1),
+    date_col DATE,
+    year_col YEAR,
+    char_col CHAR(5),
+    varchar_col VARCHAR(255)
+);
+
+ALTER TABLE sumtest ADD generated_col INT AS (int_col * 2);
+ALTER TABLE sumtest ADD generated_col2 INT AS (CAST(char_col AS SIGNED));
+
+INSERT INTO sumtest (
+    bool_col,
+    tinyint_col,
+    smallint_col,
+    mediumint_col,
+    int_col,
+    bigint_col,
+    decimal_col,
+    numeric_col,
+    float_col,
+    double_col,
+    bit_col,
+    date_col,
+    year_col,
+    char_col,
+    varchar_col
+) VALUES
+    (TRUE, 10, 100, 1000, 2000, 100000, 1234.56, 7890.12, 1.23, 4.56, b'1', '2023-01-01', 2023, '1', 'hello world'),
+    (FALSE, 20, 200, 2000, 4000, 200000, 2345.67, 8901.23, 2.34, 5.67, b'0', '2023-02-02', 2022, '2', 'mysql example'),
+    (TRUE, 30, 300, 3000, 6000, 300000, 3456.78, 9012.34, 3.45, 6.78, b'1', '2023-03-03', 2021, '3', 'data row');
+
+
+--echo 不改写
+select sum(id + 1) from sumtest;
+explain basic select sum(id + 1) from sumtest;
+
+--echo 两个聚合=>两个聚合，不改写
+select sum(id), sum(id + 1) from sumtest;
+explain basic select sum(id), sum(id + 1) from sumtest;
+
+--echo 三个聚合=>两个聚合，改写
+select sum(id), sum(id + 1) + sum(id + 2) from sumtest;
+explain basic select sum(id), sum(id + 1) + sum(id + 2) from sumtest;
+
+--echo 3=>2 改写
+select sum(id), count(id), sum(id + 1) from sumtest;
+explain basic select sum(id), count(id), sum(id + 1) from sumtest;
+
+select sum(id), count(id), sum(id + 1), sum(id + 2), sum(id + 3), sum(id + 4), sum(id + 5), sum(id + 6) from sumtest;
+explain basic select sum(id), count(id), sum(id + 1), sum(id + 2), sum(id + 3), sum(id + 4), sum(id + 5), sum(id + 6) from sumtest;
+
+--echo 仅对 "sum(column +- const_expr)" 或者 "sum(const_expr +- column)"形式的表达式进行改写。（column也可以是带cast的column）
+
+select sum(id), sum(id - 1) + sum(id - 2) from sumtest;
+explain basic select sum(id), sum(id - 1) + sum(id - 2) from sumtest;
+
+select sum(id), count(id), sum(id - 1), sum(id - 2), sum(id - 3) from sumtest;
+explain basic select sum(id), count(id), sum(id - 1), sum(id - 2), sum(id - 3) from sumtest;
+
+--echo const_expr 为负数， 正常改写
+
+select sum(id), sum(-1 - id) + sum(-2 - id) from sumtest;
+explain basic select sum(id), sum(-1 - id) + sum(-2 - id) from sumtest;
+
+--echo const_expr 为小数， 不能改写
+
+select sum(id), count(id), sum(id - 1.0164), sum(id - -2.222222), sum(id - -3.999999999) from sumtest;
+explain basic select sum(id), count(id), sum(id - 1.0164), sum(id - -2.222222), sum(id - -3.999999999) from sumtest;
+
+--echo const_expr 为字符串， 不能改写
+
+select sum(id), count(id), sum(id - '1'), sum(id - '2'), sum(id - '3') from sumtest;
+explain basic select sum(id), count(id), sum(id - '1'), sum(id - '2'), sum(id - '3') from sumtest;
+
+--echo const_expr 为null， 不能改写
+
+select sum(id), count(id), sum(id - null), sum(id - null), sum(id - null) from sumtest;
+explain basic select sum(id), count(id), sum(id - null), sum(id - null), sum(id - null) from sumtest;
+
+--echo const_expr 为9999999999999999999999， 不能改写
+
+select sum(id), sum(9999999999999999999999 - id) + sum(9999999999999999999999 - id) from sumtest;
+explain basic select sum(id), sum(9999999999999999999999 - id) + sum(9999999999999999999999 - id) from sumtest;
+
+--echo const_expr 为9999999999， 可以改写
+
+select sum(id), sum(9999999999 - id) + sum(9999999999 - id) from sumtest;
+explain basic select sum(id), sum(9999999999 - id) + sum(9999999999 - id) from sumtest;
+
+--echo column 为 BOOLEAN类型 ，可以改写
+select sum(bool_col), sum(9999999999 - bool_col) + sum(9999999999 - bool_col) from sumtest;
+explain basic select sum(bool_col), sum(9999999999 - bool_col) + sum(9999999999 - bool_col) from sumtest;
+
+--echo column 为 TINYINT类型 ，可以改写
+select sum(tinyint_col), sum(9999999999 - tinyint_col) + sum(9999999999 - tinyint_col) from sumtest;
+explain basic select sum(tinyint_col), sum(9999999999 - tinyint_col) + sum(9999999999 - tinyint_col) from sumtest;
+
+--echo column 为 SMALLINT 类型 ，可以改写
+select sum(smallint_col), sum(9999999999 - smallint_col) + sum(9999999999 - smallint_col) from sumtest;
+explain basic select sum(smallint_col), sum(9999999999 - smallint_col) + sum(9999999999 - smallint_col) from sumtest;
+
+--echo column 为 MEDIUMINT 类型 ，可以改写
+select sum(mediumint_col), sum(9999999999 - mediumint_col) + sum(9999999999 - mediumint_col) from sumtest;
+explain basic select sum(mediumint_col), sum(9999999999 - mediumint_col) + sum(9999999999 - mediumint_col) from sumtest;
+
+--echo column 为 BIGINT 类型 ，可以改写
+select sum(bigint_col), sum(9999999999 - bigint_col) + sum(9999999999 - bigint_col) from sumtest;
+explain basic select sum(bigint_col), sum(9999999999 - bigint_col) + sum(9999999999 - bigint_col) from sumtest;
+
+--echo column 为 DECIMAL 类型 ，未改写  原因： 因为column被套上了个cast，然后没这个cast没有共享，所以没识别到，   熠华沟通目前暂不处理
+select sum(decimal_col), sum(999 - decimal_col) + sum(999 - decimal_col) from sumtest;
+explain basic select sum(decimal_col), sum(999 - decimal_col) + sum(999 - decimal_col) from sumtest;
+
+--echo column 为 DECIMAL 类型 ，未改写
+select sum(ROUND(decimal_col)), sum(999 - ROUND(decimal_col)) + sum(999 - ROUND(decimal_col)) from sumtest;
+explain basic select sum(ROUND(decimal_col)), sum(999 - ROUND(decimal_col)) + sum(999 - ROUND(decimal_col)) from sumtest;
+
+--echo column 为 NUMERIC 类型 ，不改写
+select sum(numeric_col), sum(9999999999 - numeric_col) + sum(9999999999 - numeric_col) from sumtest;
+explain basic select sum(numeric_col), sum(9999999999 - numeric_col) + sum(9999999999 - numeric_col) from sumtest;
+
+--echo column 为 FLOAT 类型 ，不改写
+select sum(float_col), sum(9999999999 - float_col) + sum(9999999999 - float_col) from sumtest;
+explain basic select sum(float_col), sum(9999999999 - float_col) + sum(9999999999 - float_col) from sumtest;
+
+--echo column 为 DOUBLE 类型 ，不改写
+select sum(double_col), sum(9999999999 - double_col) + sum(9999999999 - double_col) from sumtest;
+explain basic select sum(double_col), sum(9999999999 - double_col) + sum(9999999999 - double_col) from sumtest;
+
+--echo column 为 BIT 类型 ，不改写
+select sum(bit_col), sum(9999999999 - bit_col) + sum(9999999999 - bit_col) from sumtest;
+explain basic select sum(bit_col), sum(9999999999 - bit_col) + sum(9999999999 - bit_col) from sumtest;
+
+--echo column 为 DATE 类型 ，不改写
+select sum(date_col), sum(9999999999 - date_col) + sum(9999999999 - date_col) from sumtest;
+explain basic select sum(date_col), sum(9999999999 - date_col) + sum(9999999999 - date_col) from sumtest;
+
+--echo column 为 YEAR 类型 ，不改写
+select sum(year_col), sum(9999999999 - year_col) + sum(9999999999 - year_col) from sumtest;
+explain basic select sum(year_col), sum(9999999999 - year_col) + sum(9999999999 - year_col) from sumtest;
+
+--echo column 为 CHAR 类型 ，不改写
+select sum(char_col), sum(9999999999 - char_col) + sum(9999999999 - char_col) from sumtest;
+explain basic select sum(char_col), sum(9999999999 - char_col) + sum(9999999999 - char_col) from sumtest;
+
+--echo column 为 VARCHAR 类型 ，不改写
+select sum(varchar_col), sum(9999999999 - varchar_col) + sum(9999999999 - varchar_col) from sumtest;
+explain basic select sum(varchar_col), sum(9999999999 - varchar_col) + sum(9999999999 - varchar_col) from sumtest;
+
+--echo column 为 CHAR 类型  + cast，不改写
+select sum(cast(char_col as SIGNED)), sum(9999999999 - cast(char_col as SIGNED)) + sum(9999999999 - cast(char_col as SIGNED)) from sumtest;
+explain basic select sum(cast(char_col as SIGNED)), sum(9999999999 - cast(char_col as SIGNED)) + sum(9999999999 - cast(char_col as SIGNED)) from sumtest;
+
+--echo column 为 生成列 类型 ，可以改写
+select sum(generated_col), sum(9999999999 - generated_col) + sum(9999999999 - generated_col) from sumtest;
+explain basic select sum(generated_col), sum(9999999999 - generated_col) + sum(9999999999 - generated_col) from sumtest;
+
+--echo column 为 生成列 类型 ，可以改写
+select sum(generated_col2), sum(9999999999 - generated_col2) + sum(9999999999 - generated_col2) from sumtest;
+explain basic select sum(generated_col2), sum(9999999999 - generated_col2) + sum(9999999999 - generated_col2) from sumtest;
+
+--echo distinct 不改写
+select sum(distinct generated_col), sum(9999999999 - generated_col) + sum(9999999999 - generated_col) from sumtest;
+explain basic select sum( distinct generated_col), sum(9999999999 - generated_col) + sum(9999999999 - generated_col) from sumtest;
+
+
+--echo 带winfun的groupby下推
+
+--error 0,1051
+drop table winftest1;
+CREATE TABLE winftest1 (
+    c1 INT,
+    c2 VARCHAR(255),
+    c3 DATETIME,
+    c4 FLOAT,
+    c5 VARCHAR(255),
+    c6 DATE,
+    INDEX idx_c1_c2_c3 (c1, c2, c3),
+    INDEX idx_t1_c1 (c1)
+);
+
+INSERT INTO winftest1 (c1, c2, c3, c4, c5, c6) VALUES
+(1, 'example1', '2023-10-01 12:00:00', 10.5, 'data1', '2023-10-01');
+
+INSERT INTO winftest1 (c1, c2, c3, c4, c5, c6) VALUES
+(2, 'example2', '2023-11-01 13:00:00', 20.5, 'data2', '2023-11-01');
+
+INSERT INTO winftest1 (c1, c2, c3, c4, c5, c6) VALUES
+(3, 'example3', '2023-12-01 14:00:00', 30.5, 'data3', '2023-12-01');
+
+--error 0,1051
+drop table winftest2;
+CREATE TABLE winftest2 (
+    c1 INT,
+    c2 VARCHAR(255),
+    c3 DATETIME,
+    c4 FLOAT,
+    c5 VARCHAR(255),
+    c6 DATE,
+    INDEX idx_c1 (c1),
+    INDEX idx_c2 (c2),
+    INDEX idx_c5 (c5)
+) 
+PARTITION BY RANGE (YEAR(c6)) (
+    PARTITION p2020 VALUES LESS THAN (2021),
+    PARTITION p2021 VALUES LESS THAN (2022),
+    PARTITION p2022 VALUES LESS THAN (2023),
+    PARTITION p2023 VALUES LESS THAN MAXVALUE
+);
+
+INSERT INTO winftest2 (c1, c2, c3, c4, c5, c6) VALUES
+(1, 'example1', '2023-09-01 15:00:00', 40.5, 'data4', '2023-09-01');
+
+INSERT INTO winftest2 (c1, c2, c3, c4, c5, c6) VALUES
+(2, 'example2', '2023-08-01 16:00:00', 50.5, 'data5', '2023-08-01');
+
+INSERT INTO winftest2 (c1, c2, c3, c4, c5, c6) VALUES
+(3, 'example6', '2023-07-01 17:00:00', 60.5, 'data6', '2023-07-01');
+
+--echo min(min(t1.c1))  会下推
+select /*+place_group_by*/ min(t1.c1), t1.c2, min(min(t1.c1)) over (partition by t1.c2 order by t1.c2) as wf from winftest1 t1 , winftest2 t2 group by t2.c1, t1.c2 order by 1,2;
+explain basic select /*+place_group_by*/ min(t1.c1), t1.c2, min(min(t1.c1)) over (partition by t1.c2 order by t1.c2) as wf from winftest1 t1 , winftest2 t2 group by t2.c1, t1.c2 order by 1,2;
+
+--echo min(t1.c1)  不会下推
+select /*+place_group_by*/ min(t2.c1) over (partition by t1.c2 order by t1.c2) as wf from winftest1 t1 , winftest2 t2 group by t2.c1, t1.c2 order by 1;
+explain basic select /*+place_group_by*/ min(t2.c1) over (partition by t1.c2 order by t1.c2) as wf from winftest1 t1 , winftest2 t2 group by t2.c1, t1.c2 order by 1;
+
+--echo max(min(t1.c1))  会下推
+select /*+place_group_by*/ min(t1.c1), t1.c2, max(min(t1.c1)) over (partition by t1.c2 order by t1.c2) as wf from winftest1 t1 , winftest2 t2 group by t2.c1, t1.c2 order by 1,2;
+explain basic select /*+place_group_by*/ min(t1.c1), t1.c2, max(min(t1.c1)) over (partition by t1.c2 order by t1.c2) as wf from winftest1 t1 , winftest2 t2 group by t2.c1, t1.c2 order by 1,2;
+
+--echo sum(max(t1.c1))   会下推
+select /*+place_group_by*/ min(t1.c1), t1.c2, sum(max(t1.c1)) over (partition by t1.c2 order by t1.c2) as wf from winftest1 t1 , winftest2 t2 group by t2.c1, t1.c2 order by 1,2;
+explain basic select /*+place_group_by*/ min(t1.c1), t1.c2, sum(max(t1.c1)) over (partition by t1.c2 order by t1.c2) as wf from winftest1 t1 , winftest2 t2 group by t2.c1, t1.c2 order by 1,2;
+
+--echo avg(sum(t1.c1))   会下推
+select /*+place_group_by*/ min(t1.c1), t1.c2, avg(sum(t1.c1)) over (partition by t1.c2 order by t1.c2) as wf from winftest1 t1 , winftest2 t2 group by t2.c1, t1.c2 order by 1,2;
+explain basic select /*+place_group_by*/ min(t1.c1), t1.c2, avg(sum(t1.c1)) over (partition by t1.c2 order by t1.c2) as wf from winftest1 t1 , winftest2 t2 group by t2.c1, t1.c2 order by 1,2;
+
+--echo count(avg(t1.c1))   不会下推  因为avg输出结果有隐式转换成浮点型
+select /*+place_group_by*/ min(t1.c1), t1.c2, count(avg(t1.c1)) over (partition by t1.c2 order by t1.c2) as wf from winftest1 t1 , winftest2 t2 group by t2.c1, t1.c2 order by 1,2;
+explain basic select /*+place_group_by*/ min(t1.c1), t1.c2, count(avg(t1.c1)) over (partition by t1.c2 order by t1.c2) as wf from winftest1 t1 , winftest2 t2 group by t2.c1, t1.c2 order by 1,2;
+
+--echo count(min(t1.c1)) 会下推
+select /*+place_group_by*/ min(t1.c1), t1.c2, count(min(t1.c1)) over (partition by t1.c2 order by t1.c2) as wf from winftest1 t1 , winftest2 t2 group by t2.c1, t1.c2 order by 1,2;
+explain basic select /*+place_group_by*/ min(t1.c1), t1.c2, count(min(t1.c1)) over (partition by t1.c2 order by t1.c2) as wf from winftest1 t1 , winftest2 t2 group by t2.c1, t1.c2 order by 1,2;
+
+--echo ROW_NUMBER() 不会下推
+select /*+place_group_by*/ ROW_NUMBER() over (partition by t1.c2 order by t1.c2) as wf from winftest1 t1 , winftest2 t2 group by t1.c2 order by 1;
+explain basic select /*+place_group_by*/ ROW_NUMBER() over (partition by t1.c2 order by t1.c2) as wf from winftest1 t1 , winftest2 t2 group by t1.c2 order by 1;
+
+
+select /*+place_group_by*/ count(min(t1.c1)) over (partition by t1.c2 order by t1.c2) as wf from winftest1 t1 , (select /*+place_group_by*/ min(t1.c1), t1.c2, max(min(t1.c1)) over (partition by t1.c2 order by t1.c2) as wf from winftest1 t1 , winftest2 t2 group by t2.c1, t1.c2) t2 group by t1.c2 order by 1;
+explain basic select /*+place_group_by*/ count(min(t1.c1)) over (partition by t1.c2 order by t1.c2) as wf from winftest1 t1 , (select /*+place_group_by*/ min(t1.c1), t1.c2, max(min(t1.c1)) over (partition by t1.c2 order by t1.c2) as wf from winftest1 t1 , winftest2 t2 group by t2.c1, t1.c2) t2 group by t1.c2 order by 1;
+
+
+--echo GroupBy 下推 union 改写
+--error 0,1051
+drop table uniontest1;
+CREATE TABLE uniontest1 (
+    c1 INT,
+    c2 VARCHAR(255),
+    c3 DATETIME,
+    c4 FLOAT,
+    c5 VARCHAR(255),
+    c6 DATE,
+    INDEX idx_c1_c2_c3 (c1, c2, c3),
+    INDEX idx_t1_c1 (c1)
+);
+
+INSERT INTO uniontest1 (c1, c2, c3, c4, c5, c6) VALUES
+(1, 'example1', '2023-10-01 12:00:00', 10.5, 'data1', '2023-10-01');
+
+INSERT INTO uniontest1 (c1, c2, c3, c4, c5, c6) VALUES
+(2, null, '2023-11-01 13:00:00', 20.5, 'data2', '2023-11-01');
+
+INSERT INTO uniontest1 (c1, c2, c3, c4, c5, c6) VALUES
+(3, 'example3', '2023-12-01 14:00:00', 30.5, 'data3', '2023-12-01');
+
+--error 0,1051
+drop table uniontest2;
+CREATE TABLE uniontest2 (
+    c1 INT,
+    c2 VARCHAR(255),
+    c3 DATETIME,
+    c4 FLOAT,
+    c5 VARCHAR(255),
+    c6 DATE,
+    INDEX idx_c1 (c1),
+    INDEX idx_c2 (c2),
+    INDEX idx_c5 (c5)
+) 
+PARTITION BY RANGE (YEAR(c6)) (
+    PARTITION p2020 VALUES LESS THAN (2021),
+    PARTITION p2021 VALUES LESS THAN (2022),
+    PARTITION p2022 VALUES LESS THAN (2023),
+    PARTITION p2023 VALUES LESS THAN MAXVALUE
+);
+
+INSERT INTO uniontest2 (c1, c2, c3, c4, c5, c6) VALUES
+(1, 'example1', '2023-09-01 15:00:00', 40.5, 'data4', '2023-09-01');
+
+INSERT INTO uniontest2 (c1, c2, c3, c4, c5, c6) VALUES
+(2, 'example2', '2023-08-01 16:00:00', 50.5, 'data5', '2023-08-01');
+
+INSERT INTO uniontest2 (c1, c2, c3, c4, c5, c6) VALUES
+(null, 'example6', '2023-07-01 17:00:00', 60.5, 'data6', '2023-07-01');
+
+--error 0,1051
+drop view v;
+create view v as (select * from uniontest1 union all select * from uniontest2);
+
+--error 0,1051
+drop view v_distinct;
+create view v_distinct as (select * from uniontest1 union all select * from uniontest2);
+
+--echo parent_stmt检查
+--echo 有聚合表达式，且不是非标GroupBy（scalar groupby也是可以下压的）
+
+select sum(c1), c2 from ( select c1, c2 from uniontest1 union all  select c1, c2 from uniontest2) t1 group by c2 order by 1,2;
+explain basic select /*+place_group_by*/ sum(c1), c2 from ( select c1, c2 from uniontest1 union all  select c1, c2 from uniontest2) t1 group by c2 order by 1,2;
+
+--echo 没有rollup, rownum, rand, 没有condition（但是可以等待其他改写规则将condition下压）
+--echo 有rollup， 不会下压
+select /*+place_group_by*/ sum(c1), c2 from ( select c1, c2 from uniontest1 union all  select c1, c2 from uniontest2) t1 group by c2 WITH ROLLUP order by 1,2;
+explain basic select /*+place_group_by*/ sum(c1), c2 from ( select c1, c2 from uniontest1 union all  select c1, c2 from uniontest2) t1 group by c2 WITH ROLLUP order by 1,2;
+
+--echo 有rand， 不会下压
+--disable_result_log
+select /*+place_group_by*/ sum(c1), c2 from ( select c1, c2 from uniontest1 union all  select c1, c2 from uniontest2) t1 group by c2 order by rand();
+--enable_result_log
+explain basic select /*+place_group_by*/ sum(c1), c2 from ( select c1, c2 from uniontest1 union all  select c1, c2 from uniontest2) t1 group by c2 order by rand();
+
+--echo 有where， 会下压
+select /*+place_group_by*/ sum(c1), c2 from ( select c1, c2 from uniontest1 union all  select c1, c2 from uniontest2) t1 where c2 < 9999 group by c2  order by 1,2;
+explain basic select /*+place_group_by*/ sum(c1), c2 from ( select c1, c2 from uniontest1 union all  select c1, c2 from uniontest2) t1 where c2 < 9999 group by c2  order by 1,2;
+
+--echo 有having， 会下压
+select /*+place_group_by*/ sum(c1) c1, c2 from ( select * from uniontest1 union all  select * from uniontest2) t1 where c4 > 2  group by c2 having c2 <9999 order by 1,2;
+explain basic select /*+place_group_by*/ sum(c1) c1, c2 from ( select * from uniontest1 union all  select * from uniontest2) t1 where c4 > 2  group by c2 having c2 <9999 order by 1,2;
+
+--echo 聚合函数都是MIN/MAX/SUM/COUNT（如果union_stmt为UNION DISTINCT，则只能有MIN和MAX），且没有param distinct
+--echo 有min， 会下压
+select /*+place_group_by*/ min(c1) c1, c2 from ( select * from uniontest1 union all  select * from uniontest2) t1 where c4 > 2  group by c2 having c2 <9999 order by 1,2;
+explain basic select /*+place_group_by*/ min(c1) c1, c2 from ( select * from uniontest1 union all  select * from uniontest2) t1 where c4 > 2  group by c2 having c2 <9999 order by 1,2;
+
+--echo 有max， 会下压
+select /*+place_group_by*/ max(c1) c1, c2 from ( select * from uniontest1 union all  select * from uniontest2) t1 where c4 > 2  group by c2 having c2 <9999 order by 1,2;
+explain basic select /*+place_group_by*/ max(c1) c1, c2 from ( select * from uniontest1 union all  select * from uniontest2) t1 where c4 > 2  group by c2 having c2 <9999 order by 1,2;
+
+--echo 有count， 会下压
+select /*+place_group_by*/ count(c1) c1, c2 from ( select * from uniontest1 union all  select * from uniontest2) t1 where c4 > 2  group by c2 having c2 <9999 order by 1,2;
+explain basic select /*+place_group_by*/ count(c1) c1, c2 from ( select * from uniontest1 union all  select * from uniontest2) t1 where c4 > 2  group by c2 having c2 <9999 order by 1,2;
+select /*+place_group_by*/ count(*) c1, c2 from ( select * from uniontest1 union all  select * from uniontest2) t1 where c4 > 2  group by c2 having c2 <9999 order by 1,2;
+explain basic select /*+place_group_by*/ count(*) c1, c2 from ( select * from uniontest1 union all  select * from uniontest2) t1 where c4 > 2  group by c2 having c2 <9999 order by 1,2;
+--echo 有count(distinct c1)， 不会下压
+select /*+place_group_by*/ count(distinct c1) c1, c2 from ( select * from uniontest1 union all  select * from uniontest2) t1 where c4 > 2  group by c2 having c2 <9999 order by 1,2;
+explain basic select /*+place_group_by*/ count(distinct c1) c1, c2 from ( select * from uniontest1 union all  select * from uniontest2) t1 where c4 > 2  group by c2 having c2 <9999 order by 1,2;
+--echo 有distinct count(c1)， 会下压
+select /*+place_group_by*/ distinct count(c1) c1 from ( select * from uniontest1 union all  select * from uniontest2) t1 where c4 > 2  group by c2 having c2 <9999 order by 1;
+explain basic select /*+place_group_by*/ distinct count(c1) c1 from ( select * from uniontest1 union all  select * from uniontest2) t1 where c4 > 2  group by c2 having c2 <9999 order by 1;
+
+--echo 有avg， 会下压
+select /*+place_group_by*/ avg(c1) c1, c2 from ( select * from uniontest1 union all  select * from uniontest2) t1 where c4 > 2  group by c2 having c2 <9999 order by 1,2;
+explain basic select /*+place_group_by*/ avg(c1) c1, c2 from ( select * from uniontest1 union all  select * from uniontest2) t1 where c4 > 2  group by c2 having c2 <9999 order by 1,2;
+
+--echo MIN/MAX/SUM/COUNT/avg 会下压
+select /*+place_group_by*/ distinct min(c1), max(c4), count(c2) , sum(c1), avg(c1), c2 from ( select * from uniontest1 union all  select * from uniontest2) t1 where c4 > 2  group by c1,c2 having c2 <9999 order by 1,2;
+explain basic select /*+place_group_by*/ distinct min(c1), max(c4), count(c2) , sum(c1), avg(c1), c2 from ( select * from uniontest1 union all  select * from uniontest2) t1 where c4 > 2  group by c1,c2 having c2 <9999 order by 1,2;
+
+--echo float和double数据类型，不会下压
+explain basic select /*+place_group_by*/  sum(c4), c2 from ( select * from uniontest1 union all  select * from uniontest2) t1 group by c2 order by 1,2;
+
+--echo union_stmt为UNION DISTINCT 则只能有MIN和MAX
+select /*+place_group_by*/ distinct min(c1), max(c4), count(c2) , sum(c1), avg(c1), c2 from ( select * from uniontest1 union distinct  select * from uniontest2) t1 where c4 > 2  group by c1,c2 having c2 <9999 order by 1,2;
+explain basic select /*+place_group_by*/ distinct min(c1), max(c4), count(c2) , sum(c1), avg(c1), c2 from ( select * from uniontest1 union distinct  select * from uniontest2) t1 where c4 > 2  group by c1,c2 having c2 <9999 order by 1,2;
+
+select /*+place_group_by*/ distinct min(c1), max(c4), c2 from ( select * from uniontest1 union distinct  select * from uniontest2) t1 where c4 > 2  group by c1,c2 having c2 <9999 order by 1,2;
+explain basic select /*+place_group_by*/ distinct min(c1), max(c4), c2 from ( select * from uniontest1 union distinct  select * from uniontest2) t1 where c4 > 2  group by c1,c2 having c2 <9999 order by 1,2;
+
+--echo 聚合函数的param是简单的列表达式
+--echo 含有case when 不会下压
+select /*+place_group_by*/ distinct min(abs(c1)), max(case when c4 < 10 then 1 when c4 <20 then 20 else c4 end ), count(c2) , sum(c1), avg(c1), c2 from ( select * from uniontest1 union all  select * from uniontest2) t1 where c4 > 2  group by c1,c2 having c2 <9999 order by 1,2;
+explain basic select /*+place_group_by*/ distinct min(abs(c1)), max(case when c4 < 10 then 1 when c4 <20 then 20 else c4 end ), count(c2) , sum(c1), avg(c1), c2 from ( select * from uniontest1 union all  select * from uniontest2) t1 where c4 > 2  group by c1,c2 having c2 <9999 order by 1,2;
+
+--echo 层次查询，
+
+WITH RECURSIVE cte1 AS (select c1, c2 from uniontest1  UNION ALL  select c1, c2 from uniontest2) SELECT /*+place_group_by*/ sum(c1), c2 FROM cte1 group by c2 order by 1,2;
+explain basic WITH RECURSIVE cte1 AS (select c1, c2 from uniontest1  UNION ALL  select c1, c2 from uniontest2) SELECT /*+place_group_by*/ sum(c1), c2 FROM cte1 group by c2 order by 1,2;
+
+WITH RECURSIVE cte2 AS ( SELECT c1, c2, c3, c4, c5, c6, 1 AS level FROM uniontest1 WHERE c5 IS NULL UNION ALL SELECT u.c1, u.c2, u.c3, u.c4, u.c5, u.c6, h.level + 1 FROM uniontest1 u JOIN cte2 h ON u.c5 = h.c1) SELECT /*+place_group_by*/ sum(c1), c2 FROM cte2 group by c2 order by 1,2;
+explain basic WITH RECURSIVE cte2 AS ( SELECT c1, c2, c3, c4, c5, c6, 1 AS level FROM uniontest1 WHERE c5 IS NULL UNION ALL SELECT u.c1, u.c2, u.c3, u.c4, u.c5, u.c6, h.level + 1 FROM uniontest1 u JOIN cte2 h ON u.c5 = h.c1) SELECT /*+place_group_by*/ sum(c1), c2 FROM cte2 group by c2 order by 1,2;
+
+--echo union_stmt应当没有orderby和limit
+--echo limit 不会下压
+select /*+place_group_by*/ distinct min(c1), max(c4), count(c2) , sum(c1), avg(c1), c2 from ( select * from uniontest1 union all  select * from uniontest2 limit 10) t1 where c4 > 2  group by c1,c2 having c2 <9999 order by 1,2;
+explain basic select /*+place_group_by*/ distinct min(c1), max(c4), count(c2) , sum(c1), avg(c1), c2 from ( select * from uniontest1 union all  select * from uniontest2 limit 10) t1 where c4 > 2  group by c1,c2 having c2 <9999 order by 1,2;
+--echo order by 会下压
+select /*+place_group_by*/ distinct min(c1), max(c4), count(c2) , sum(c1), avg(c1), c2 from ( select * from uniontest1 union all  select * from uniontest2 order by 1,2 asc ) t1 where c4 > 2  group by c1,c2 having c2 <9999 order by 1,2 desc;
+explain basic select /*+place_group_by*/ distinct min(c1), max(c4), count(c2) , sum(c1), avg(c1), c2 from ( select * from uniontest1 union all  select * from uniontest2 order by 1,2 asc ) t1 where c4 > 2  group by c1,c2 having c2 <9999 order by 1,2 desc;
+
+--echo union_stmt 中有case when， 可以下压
+select /*+place_group_by*/ sum(c1), c4 from ( select c1, (case when c4 < 10 then 1 when c4 <20 then 20 else c4 end) c4 from uniontest1 union all  select c1, c4 from uniontest2) t1 where c4 < 9999 group by c4  order by 1,2;
+explain basic select /*+place_group_by*/ sum(c1), c4 from ( select c1, (case when c4 < 10 then 1 when c4 <20 then 20 else c4 end) c4 from uniontest1 union all  select c1, c4 from uniontest2) t1 where c4 < 9999 group by c4  order by 1,2;
+
+--echo union_stmt 中有group by ， 可以下压
+select /*+place_group_by*/ sum(c1), c4 from ( select max(c1) c1, c4 from uniontest1 group by c4 union all  select c1, c4 from uniontest2) t1 where c4 < 9999 group by c4  order by 1,2;
+explain basic select /*+place_group_by*/ sum(c1), c4 from ( select max(c1) c1, c4 from uniontest1 group by c4 union all  select c1, c4 from uniontest2) t1 where c4 < 9999 group by c4  order by 1,2;
+
+--echo union_stmt 中有distinct ， 可以下压
+select /*+place_group_by*/ sum(c1), c4 from ( select distinct max(c1) c1, c4 from uniontest1 group by c4 union all  select c1, c4 from uniontest2) t1 where c4 < 9999 group by c4  order by 1,2;
+explain basic select /*+place_group_by*/ sum(c1), c4 from ( select distinct max(c1) c1, c4 from uniontest1 group by c4 union all  select c1, c4 from uniontest2) t1 where c4 < 9999 group by c4  order by 1,2;
+
+--echo union_stmt 中有distinct ， 可以下压
+select /*+place_group_by*/ sum(c1), c4 from ( select  max(distinct c1) c1, c4 from uniontest1 group by c4 union all  select c1, c4 from uniontest2) t1 where c4 < 9999 group by c4  order by 1,2;
+explain basic select /*+place_group_by*/ sum(c1), c4 from ( select  max(distinct c1) c1, c4 from uniontest1 group by c4 union all  select c1, c4 from uniontest2) t1 where c4 < 9999 group by c4  order by 1,2;
+
+--echo union_stmt 中有ROLLUP ， 可以下压
+select /*+place_group_by*/ sum(c1), c4 from ( select  max(distinct c1) c1, c4 from uniontest1 group by c4 union all  select c1, c4 from uniontest2) t1 where c4 < 9999 group by c4  order by 1,2;
+explain basic select /*+place_group_by*/ sum(c1), c4 from 
+( select  max(distinct c1) c1, c4 from uniontest1 group by c4 WITH ROLLUP union all  select c1, c4 from uniontest2) t1 
+where c4 < 9999 group by c4  order by 1,2;
+
+select /*+place_group_by*/ sum(c1), c4 from ( select  max(distinct c1) c1, c4 from uniontest1 group by c4 union all  select c1, c4 from uniontest2) t1 where c4 < 9999 group by c4  order by 1,2;
+explain basic select /*+place_group_by*/ sum(c1), c4 from 
+( select * from (select  max(distinct c1) c1, c4 from uniontest1 group by c4 WITH ROLLUP) uniontest1 union all  select * from (select  max(distinct c1) c1, c4 from uniontest2 group by c4 WITH ROLLUP) uniontest2) t1 
+where c4 < 9999 group by c4  order by 1,2;
+
+select /*+place_group_by*/ sum(c1), c4 from 
+( select  max(distinct c1) c1, c4 from uniontest1 group by c4 WITH ROLLUP union all  select  max(distinct c1) c1, c4 from uniontest2 group by c4 WITH ROLLUP) t1 
+where c4 < 9999 group by c4  order by 1,2;
+explain basic select /*+place_group_by*/ sum(c1), c4 from 
+( select  max(distinct c1) c1, c4 from uniontest1 group by c4 WITH ROLLUP union all  select  max(distinct c1) c1, c4 from uniontest2 group by c4 WITH ROLLUP) t1 
+where c4 < 9999 group by c4  order by 1,2;
+
+select /*+place_group_by*/ sum(c1), c4 from 
+( select  max(distinct c1) c1, c4 from uniontest1 group by c4 WITH ROLLUP union all  select  max(distinct c1) c1, c4 from uniontest2 group by c4 WITH ROLLUP) t1 
+group by c4  order by 1,2;
+explain basic select /*+place_group_by*/ sum(c1), c4 from 
+( select  max(distinct c1) c1, c4 from uniontest1 group by c4 WITH ROLLUP union all  select   c1, c4 from uniontest2 ) t1 
+group by c4  order by 1,2;
+
+
+select /*+place_group_by*/ sum(c1), count(c1), c2 from v group by c2 order by 1,2;
+explain basic select /*+place_group_by*/ sum(c1), count(c1), c2 from v group by c2 order by 1,2;
+
+select /*+place_group_by*/ sum(c1), c4 from 
+( select  max(distinct c1) c1, c4 from v group by c4 union all  select  c1, c4 from v_distinct) t1 
+group by c4  order by 1,2;
+explain basic select /*+place_group_by*/ sum(c1), c4 from 
+( select  max(distinct c1) c1, c4 from v group by c4 union all  select  c1, c4 from v_distinct) t1 
+group by c4  order by 1,2;
+
+select /*+place_group_by*/ sum(c1), c4 from 
+( select  max(distinct c1) c1, c4 from v group by c4 WITH ROLLUP union all  select  max(distinct c1) c1, c4 from v_distinct group by c4 ) t1 
+group by c4  order by 1,2;
+explain basic select /*+place_group_by*/ sum(c1), c4 from 
+( select  max(distinct c1) c1, c4 from v group by c4 WITH ROLLUP union all  select  max(distinct c1) c1, c4 from v_distinct group by c4 ) t1 
+group by c4  order by 1,2;
+
+
+--error 0,1051
+drop table sumtest;
+--error 0,1051
+drop table winftest1;
+--error 0,1051
+drop table winftest2;
+--error 0,1051
+drop table uniontest1;
+--error 0,1051
+drop table uniontest2;
+--error 0,1051
+drop view v;
+--error 0,1051
+drop view v_distinct;
+
+
+

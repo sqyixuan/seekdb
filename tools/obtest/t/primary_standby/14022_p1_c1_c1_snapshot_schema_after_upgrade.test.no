@@ -1,0 +1,98 @@
+# owner: rongxuan.lc
+# description: 本case是为了主库升级后，加入一个备库，验证备库和主库系统表schema_version一致；
+
+ob1_long_cluster_name_for_test_over_64_1234567890123456789012345=OBI(cluster=1,init_unit_cpu=5,init_unit_num=1,init_unit_mem=5368709120,version=2_2_40,oblog_version=current,proxy_num=0);
+ob2=OBI(cluster=1,leaderob=ob1_long_cluster_name_for_test_over_64_1234567890123456789012345,proxy_num=0);
+ob3=OBI(cluster=1,leaderob=ob1_long_cluster_name_for_test_over_64_1234567890123456789012345,proxy_num=0);
+ob1_long_cluster_name_for_test_over_64_1234567890123456789012345.z1.obs0.set extra_config=memory_chunk_cache_size=1G;
+ob1_long_cluster_name_for_test_over_64_1234567890123456789012345.reboot;
+
+let $cpu = 1;
+let $memory = 5368709120;
+let $min_memory = 5368709120;
+let $disk = 536870912;
+let $iops = 100000;
+let $session = 64;
+let $case_index = 1;
+
+ob_connect(sys1_conn, ob1_long_cluster_name_for_test_over_64_1234567890123456789012345.z1.obs0, root, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection sys1_conn;
+set ob_query_timeout = 30000000;
+eval  CREATE RESOURCE UNIT unit_1 MAX_CPU $cpu, MAX_MEMORY $memory, MAX_IOPS $iops, MAX_DISK_SIZE $disk, MAX_SESSION_NUM $session, MIN_CPU=1, MIN_MEMORY=$min_memory, MIN_IOPS=128;
+eval  CREATE RESOURCE POOL pool_1 UNIT = 'unit_1', UNIT_NUM = 1, ZONE_LIST = ('z1');
+eval  CREATE TENANT tenant_$case_index RESOURCE_POOL_LIST = ('pool_1'), primary_zone='z1' set ob_tcp_invited_nodes='%';
+
+# 1.启动之后首先检查配置项文件正常
+let $work_dir=deploy_get_value(ob1_long_cluster_name_for_test_over_64_1234567890123456789012345.z1.obs0.workdir);
+ob1_long_cluster_name_for_test_over_64_1234567890123456789012345.z1.obs0.sh cd $work_dir/; ls -l {etc,etc2,etc3}/observer.conf*.bin;
+# 2. 修改配置项
+ob1_long_cluster_name_for_test_over_64_1234567890123456789012345.mysql alter system set balancer_idle_time='10s';
+ob1_long_cluster_name_for_test_over_64_1234567890123456789012345.mysql alter system set merger_check_interval='10s';
+ob1_long_cluster_name_for_test_over_64_1234567890123456789012345.mysql alter system set resource_soft_limit=200;
+ob1_long_cluster_name_for_test_over_64_1234567890123456789012345.mysql alter system set resource_hard_limit=200;
+
+# 5.3.1 第1次合并
+ob1_long_cluster_name_for_test_over_64_1234567890123456789012345.mysql alter system major freeze;
+ob1_long_cluster_name_for_test_over_64_1234567890123456789012345.check_version 2;
+sleep 30;
+ob1_long_cluster_name_for_test_over_64_1234567890123456789012345.check_until_timeout select info from __all_zone where zone='' and name='merge_status',IDLE,30;
+# 6 打开升级配置, 升级前检查
+ob1_long_cluster_name_for_test_over_64_1234567890123456789012345.upgrade_check_before;
+# 6.1 liboblog 创建租户相关
+# 放到升级检查之后，采用小内存
+#source include/liboblog/compat/oblog_create_tenant.inc;
+
+ob1_long_cluster_name_for_test_over_64_1234567890123456789012345.mysql alter system begin upgrade;
+sleep 2;
+# 7.执行升级SQL
+# 7.2 执行升级脚本
+ob1_long_cluster_name_for_test_over_64_1234567890123456789012345.upgrade_commond_for_server pre;
+sleep 5;
+
+# 8.1 首先检查日志是同步状态
+ob1_long_cluster_name_for_test_over_64_1234567890123456789012345.check_until_timeout select count(1) from __all_virtual_core_meta_table where role=1 and zone='z1',1,120;
+ob1_long_cluster_name_for_test_over_64_1234567890123456789012345.check_until_timeout SELECT CAST(COUNT(*) AS SIGNED) as cnt FROM __all_virtual_clog_stat WHERE is_in_sync = 0 and is_offline=0,0,600;
+
+ob1_long_cluster_name_for_test_over_64_1234567890123456789012345.z1.force_stop;
+ob1_long_cluster_name_for_test_over_64_1234567890123456789012345.z1.upgrade;
+ob1_long_cluster_name_for_test_over_64_1234567890123456789012345.z1.nstart;
+ob1_long_cluster_name_for_test_over_64_1234567890123456789012345.check_until_timeout select count(1) from __all_virtual_core_meta_table where role=1 and zone='z1',1,120;
+sleep 3;
+ob_connect(sys1_conn, ob1_long_cluster_name_for_test_over_64_1234567890123456789012345.z1.obs0, root, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection sys1_conn;
+set @@session.ob_query_timeout = 60000000;
+alter system upgrade virtual schema;
+ob1_long_cluster_name_for_test_over_64_1234567890123456789012345.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_server_schema_info as a join oceanbase.__all_virtual_server_schema_info as b on a.tenant_id = b.tenant_id  where a.refreshed_schema_version != b.refreshed_schema_version, 0, 50;
+select count(*) > 0 from oceanbase.__all_virtual_tenant_partition_meta_table;
+sleep 10;
+ob1_long_cluster_name_for_test_over_64_1234567890123456789012345.upgrade_commond_for_server post;
+ob1_long_cluster_name_for_test_over_64_1234567890123456789012345.mysql alter system end upgrade;
+sleep 10;
+ob1_long_cluster_name_for_test_over_64_1234567890123456789012345.mysql alter system run job 'root_inspection';
+sleep 10;
+ob1_long_cluster_name_for_test_over_64_1234567890123456789012345.upgrade_check_after;
+ob1_long_cluster_name_for_test_over_64_1234567890123456789012345.mysql alter system major freeze;
+ob1_long_cluster_name_for_test_over_64_1234567890123456789012345.check_version 3;
+
+
+ob2.reboot;
+sleep 3;
+ob_connect(tt2_conn, ob2.z1.obs0, root, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection tt2_conn;
+sleep 3;
+alter system set balancer_idle_time = '10s';
+alter system set server_data_copy_out_concurrency = 30;
+alter system set server_data_copy_in_concurrency = 30;
+alter system set data_copy_concurrency = 60;
+
+ob1_long_cluster_name_for_test_over_64_1234567890123456789012345.check_until_timeout select count(*) from v\$ob_cluster where switchover_status='TO STANDBY', 1, 360;
+##验证__all_table/__all_table_history/__all_cluster/__all_tablegroup的schema_version是一样的；
+#__all_failover_info
+let $row_id = deploy_get_value(ob1_long_cluster_name_for_test_over_64_1234567890123456789012345.select select row_id from __all_core_table where table_name = '__all_table' and column_name = 'table_name' and column_value = '__all_table', row_id, 1);
+let $schema_version = deploy_get_value(ob1_long_cluster_name_for_test_over_64_1234567890123456789012345.select select column_value from __all_core_table where table_name = '__all_table' and row_id = $row_id and column_name = 'schema_version', column_value, 1);
+ob2.check_until_timeout select column_value from __all_core_table where table_name = '__all_table' and row_id = $row_id and column_name = 'schema_version', $schema_version, 3;
+let $schema_version = deploy_get_value(ob1_long_cluster_name_for_test_over_64_1234567890123456789012345.select select schema_version from __all_table where table_name = '__all_cluster', schema_version, 1);
+ob2.check_until_timeout select schema_version from __all_table where table_name = '__all_cluster', $schema_version, 3;
+let $schema_version = deploy_get_value(ob1_long_cluster_name_for_test_over_64_1234567890123456789012345.select select schema_version from __all_table where table_name = '__all_failover_info', schema_version, 1);
+ob2.check_until_timeout select schema_version from __all_table where table_name = '__all_failover_info', $schema_version, 3;
+

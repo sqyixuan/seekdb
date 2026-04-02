@@ -1,0 +1,179 @@
+# CASE_OWNER:
+#    @jinqian.zzy
+# CASE_DESC:
+#    测试并行迁移的基础功能，并切换RS
+#    同时验证并行迁移时底层数据源是否选择了同zone的数据源
+#######################################################################
+#                        create inital objects
+#######################################################################
+
+ob1=OBI(cluster=2:2:2,proxy_num=0,init_unit_cpu=0);
+source include/mini_ob_config.inc;
+ob1.set extra_config=$mini_ob_config;
+ob1.reboot;
+
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+
+let $proxy_ip = deploy_get_value(ob1.z1.obs1.ip);
+let $proxy_port = deploy_get_value(ob1.z1.obs1.mysql_port);
+connect(sys_conn, $proxy_ip, root@sys,,oceanbase, $proxy_port);
+
+source include/create_unit_config.inc;
+ob1.mysql CREATE RESOURCE POOL tenant_pool UNIT = "2c2g", UNIT_NUM = 2, ZONE_LIST = ('z1', 'z2', 'z3');
+ob1.mysql CREATE TENANT mysql_tenant RESOURCE_POOL_LIST=('tenant_pool'), LOCALITY = "F@z1, F@z2, F@z3", PRIMARY_ZONE = "z1" SET ob_tcp_invited_nodes='%';
+connect(mysql_tenant, $proxy_ip, root@mysql_tenant,,oceanbase, $proxy_port);
+
+connection sys_conn;
+let $tenant_id = deploy_get_value(ob1.select SELECT tenant_id FROM oceanbase.DBA_OB_TENANTS WHERE tenant_name = "mysql_tenant", tenant_id, 1);
+let $meta_tenant_id = deploy_get_value(ob1.select SELECT tenant_id - 1 as meta_tenant_id FROM oceanbase.DBA_OB_TENANTS WHERE tenant_name = "mysql_tenant", meta_tenant_id, 1);
+let $meta_tenant_name = deploy_get_value(ob1.select SELECT tenant_name FROM oceanbase.DBA_OB_TENANTS WHERE tenant_id = $meta_tenant_id, tenant_name, 1);
+
+# get servers' addr in z1, z2, z3
+let $z1_obs0_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $z1_obs0_port = deploy_get_value(ob1.z1.obs0.port);
+let $z1_obs0 = $z1_obs0_ip:$z1_obs0_port;
+
+let $z1_obs1_ip = deploy_get_value(ob1.z1.obs1.ip);
+let $z1_obs1_port = deploy_get_value(ob1.z1.obs1.port);
+let $z1_obs1 = $z1_obs1_ip:$z1_obs1_port;
+
+let $z2_obs0_ip = deploy_get_value(ob1.z2.obs0.ip);
+let $z2_obs0_port = deploy_get_value(ob1.z2.obs0.port);
+let $z2_obs0 = $z2_obs0_ip:$z2_obs0_port;
+
+let $z2_obs1_ip = deploy_get_value(ob1.z2.obs1.ip);
+let $z2_obs1_port = deploy_get_value(ob1.z2.obs1.port);
+let $z2_obs1 = $z2_obs1_ip:$z2_obs1_port;
+
+let $z3_obs0_ip = deploy_get_value(ob1.z3.obs0.ip);
+let $z3_obs0_port = deploy_get_value(ob1.z3.obs0.port);
+let $z3_obs0 = $z3_obs0_ip:$z3_obs0_port;
+
+let $z3_obs1_ip = deploy_get_value(ob1.z3.obs1.ip);
+let $z3_obs1_port = deploy_get_value(ob1.z3.obs1.port);
+let $z3_obs1 = $z3_obs1_ip:$z3_obs1_port;
+
+let $tenant_ls_id = deploy_get_value(ob1.select SELECT ls_id as ls_id_tmp FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE svr_ip = '$z1_obs0_ip' AND svr_port = $z1_obs0_port AND ls_id > 1, ls_id_tmp, 1);
+
+let $delete_unit_group_id = deploy_get_value(ob1.select SELECT unit_group_id FROM __all_unit WHERE resource_pool_id = 1001 AND svr_ip = '$z1_obs0_ip' AND svr_port = $z1_obs0_port, unit_group_id, 1);
+
+--disable_query_log
+
+# create table and insert data
+ob_connect(conn_mysql, ob1.z1.obs0, root@mysql_tenant, , test, , USE_MYSQL_CONNECTOR);
+connection conn_mysql;
+create table t1_no_pk (c1 int);
+insert into t1_no_pk values (1), (2), (3);
+update t1_no_pk set c1=c1+10;
+create table t1_pk (c1 int primary key);
+insert into t1_pk values (1), (2), (3);
+update t1_pk set c1=c1+10;
+create table t1_part (c1 int primary key) partition by hash(c1) partitions 4;
+insert into t1_part values (1), (2), (3), (4);
+update t1_part set c1=c1+10;
+connection sys_conn;
+alter system minor freeze tenant mysql_tenant;
+ob1.z1.obs0.check_log_until_success -c "succeed to release head data memtable";
+ob1.z3.obs1.check_log_until_success -c "succeed to release head data memtable";
+sleep 10;
+connection conn_mysql;
+insert into t1_no_pk values (4), (5), (6);
+insert into t1_no_pk values (7), (8), (9);
+insert into t1_no_pk values (10), (11), (12);
+insert into t1_pk values (4), (5), (6);
+insert into t1_pk values (7), (8), (9);
+insert into t1_pk values (10);
+insert into t1_part values (5), (6), (7), (8);
+insert into t1_part values (9), (10), (21), (22);
+connection sys_conn;
+alter system minor freeze tenant mysql_tenant;
+ob1.z1.obs0.check_log_until_success -c "succeed to release head data memtable";
+ob1.z3.obs1.check_log_until_success -c "succeed to release head data memtable";
+sleep 10;
+
+--echo ========================================================================
+--echo ||                    [MILESTONE] prepare finished                    ||
+--echo ========================================================================
+
+--echo ========================================================================
+--echo ||          [MILESTONE] case 1: 开启并行迁移时，缩容进行并行迁移           ||
+--echo ========================================================================
+
+# 开启并行迁移
+alter system set replica_parallel_migration_mode = 'on' tenant = 'mysql_tenant';
+
+# 确认设置RS位于z1
+eval ALTER TENANT sys SET PRIMARY_ZONE="z1;z2;z3";
+ob1.check_until_timeout select count(*) from CDB_OB_LS_LOCATIONS where tenant_id = 1 and ls_id = 1 and role = 'leader' and zone = 'z1', 1, 60;
+
+# 暂时只生成任务不调度任务
+ob1.mysql alter system set_tp tp_name = ERRSIM_DISASTER_RECOVERY_POP_AND_EXECUTE_TASK, error_code = 4016, frequency = 1;
+
+# 开始缩容
+eval ALTER RESOURCE TENANT mysql_tenant UNIT_NUM = 1 delete unit_group = ($delete_unit_group_id);
+
+# 查看cdb_ob_ls_replica_tasks应该只有tenant_ls_id的3个任务
+ob1.check_until_timeout select count(*) from cdb_ob_ls_replica_tasks where tenant_id = $tenant_id and ls_id = $tenant_ls_id, 3, 60;
+
+# 切RS到z2
+eval ALTER TENANT sys SET PRIMARY_ZONE="z2;z1;z3";
+ob1.check_until_timeout select count(*) from CDB_OB_LS_LOCATIONS where tenant_id = 1 and ls_id = 1 and role = 'leader' and zone = 'z2', 1, 60;
+
+# 开始调度任务
+ob1.mysql alter system set_tp tp_name = ERRSIM_DISASTER_RECOVERY_POP_AND_EXECUTE_TASK, error_code = 4016, frequency = 0;
+
+# 等待缩容任务完成
+ob1.check_until_timeout select count(*) from __all_rootservice_job where job_type = 'ALTER_RESOURCE_TENANT_UNIT_NUM' and job_status = 'SUCCESS' and tenant_id = $tenant_id, 1, 100;
+
+# 等待unit GC 完成
+ob1.check_until_timeout select count(*) from GV\$ob_units where tenant_id = $tenant_id, 3, 200;
+sleep 10;
+
+# 查看使用数据源是否为同zone的
+ob1.check_until_timeout select count(*) from oceanbase.__all_server_event_history where event like "%choose_src%" and value1 = $tenant_id and svr_ip = '$z1_obs1_ip' and svr_port = $z1_obs1_port and value3 like "%$z1_obs0%" and value5 = 'MIGRATE_LS_OP', 1, 3;
+ob1.check_until_timeout select count(*) from oceanbase.__all_server_event_history where event like "%choose_src%" and value1 = $tenant_id and svr_ip = '$z2_obs1_ip' and svr_port = $z2_obs1_port and value3 like "%$z2_obs0%" and value5 = 'MIGRATE_LS_OP', 1, 3;
+ob1.check_until_timeout select count(*) from oceanbase.__all_server_event_history where event like "%choose_src%" and value1 = $tenant_id and svr_ip = '$z3_obs1_ip' and svr_port = $z3_obs1_port and value3 like "%$z3_obs0%" and value5 = 'MIGRATE_LS_OP', 1, 3;
+
+# 打印task_history视图记录任务执行结果
+eval select tenant_id, ls_id, task_type, priority, task_status, target_paxos_replica_number, target_replica_type, source_paxos_replica_number, source_replica_type, comment from oceanbase.CDB_OB_LS_REPLICA_TASK_HISTORY where tenant_id = $tenant_id and ls_id = $tenant_ls_id;
+
+--echo ========================================================================
+--echo ||          [MILESTONE] case 2: 关闭并行迁移时，扩容顺序迁移副本            ||
+--echo ========================================================================
+
+# 关闭并行迁移
+alter system set replica_parallel_migration_mode = 'off' tenant = 'mysql_tenant';
+
+# 暂时只生成任务不调度任务
+ob1.mysql alter system set_tp tp_name = ERRSIM_DISASTER_RECOVERY_POP_AND_EXECUTE_TASK, error_code = 4016, frequency = 1;
+
+# 扩容
+ALTER RESOURCE TENANT mysql_tenant UNIT_NUM = 2;
+
+ob1.check_until_timeout select count(*) from __all_virtual_ls_status where tenant_id = $tenant_id, 3, 20;
+
+let $max_ls_id = deploy_get_value(ob1.select select ls_id from __all_virtual_ls_status order by ls_id desc limit 1, ls_id, 1);
+
+# 等待容灾通过多轮检查
+sleep 30;
+
+# 查看cdb_ob_ls_replica_tasks应该同时有tenant_id 1003 日志流的1个副本的任务
+ob1.check_until_timeout select count(*) from cdb_ob_ls_replica_tasks where tenant_id = $tenant_id and ls_id = $max_ls_id, 1, 100;
+
+# 切RS到z3
+eval ALTER TENANT sys SET PRIMARY_ZONE="z3;z1;z2";
+ob1.check_until_timeout select count(*) from CDB_OB_LS_LOCATIONS where tenant_id = 1 and ls_id = 1 and role = 'leader' and zone = 'z3', 1, 60;
+
+# 开始调度任务
+ob1.mysql alter system set_tp tp_name = ERRSIM_DISASTER_RECOVERY_POP_AND_EXECUTE_TASK, error_code = 4016, frequency = 0;
+
+# 等待该租户容灾任务执行完
+ob1.check_until_timeout select count(*) from cdb_ob_ls_replica_task_history where tenant_id = $tenant_id and ls_id = $max_ls_id, 3, 60;
+ob1.check_until_timeout select count(*) from cdb_ob_ls_replica_tasks where tenant_id = $tenant_id and ls_id = $max_ls_id, 0, 60;
+
+# 确认该租户的扩容任务执行成功
+ob1.check_until_timeout select count(*) from __all_rootservice_job where job_type = 'ALTER_RESOURCE_TENANT_UNIT_NUM' and job_status = 'SUCCESS' and tenant_id = $tenant_id, 2, 30;
+
+# 打印task_history视图记录任务执行结果
+eval select tenant_id, ls_id, task_type, priority, task_status, target_paxos_replica_number, target_replica_type, source_paxos_replica_number, source_replica_type, comment from oceanbase.CDB_OB_LS_REPLICA_TASK_HISTORY where tenant_id = $tenant_id and ls_id = $max_ls_id;
+

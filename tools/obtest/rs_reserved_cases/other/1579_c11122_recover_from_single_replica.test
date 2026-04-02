@@ -1,0 +1,138 @@
+# owner: yanmu.ztl
+# owner group: rs
+# description: 验证单副本恢复的场景
+#              
+
+ob1=OBI(cluster=1:1:1:2:2, init_unit_cpu=0, proxy_num=0, ct_num=0, locality=hz:hz:hz:hz:hz:hz);
+
+# disable 1 server
+ob1.z4.obs0.set status=disable;
+ob1.z4.obs1.set status=disable;
+ob1.z5.obs0.set status=disable;
+ob1.z5.obs1.set status=disable;
+
+ob1.reboot;
+
+ob1.z4.add;
+ob1.z4.start_zone;
+ob1.z4.obs0.set status=enable;
+ob1.z4.obs0.start;
+ob1.z4.obs0.add;
+ob1.z4.obs1.set status=enable;
+ob1.z4.obs1.start;
+ob1.z4.obs1.add;
+
+ob1.z5.add;
+ob1.z5.start_zone;
+ob1.z5.obs0.set status=enable;
+ob1.z5.obs0.start;
+ob1.z5.obs0.add;
+ob1.z5.obs1.set status=enable;
+ob1.z5.obs1.start;
+ob1.z5.obs1.add;
+
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where zone in ('z4', 'z5') and (status != "active" or start_service_time <= 0), 0, 120;
+
+ob1.mysql alter system set enable_auto_leader_switch = 'true';
+ob1.mysql alter system set enable_rebalance = 'true';
+ob1.mysql alter system set enable_rereplication = 'true';
+ob1.mysql alter system set balancer_idle_time = '10s';
+ob1.mysql alter system set server_data_copy_out_concurrency = 20;
+ob1.mysql alter system set server_data_copy_in_concurrency = 20;
+
+let $cpu = 1;
+let $memory = 1073741824;
+let $min_memory = 1073741824;
+let $disk = 536870912;
+let $iops = 100000;
+let $session = 64;
+
+let $rs = deploy_get_value(ob1.get_leader sys:oceanbase:__all_core_table:0);
+let $rs_ip = deploy_get_value($rs.ip);
+let $rs_port = deploy_get_value($rs.port);
+let $rs_mysql_port = deploy_get_value($rs.mysql_port);
+connect (conn_sys,$rs_ip,root,,oceanbase,$rs_mysql_port);
+
+ob1.mysql CREATE RESOURCE UNIT unit_1 MAX_CPU $cpu, MAX_MEMORY $memory, MAX_IOPS $iops, MAX_DISK_SIZE $disk, MAX_SESSION_NUM $session, MIN_CPU=1, MIN_MEMORY=$min_memory, MIN_IOPS=128;
+ob1.mysql CREATE RESOURCE POOL pool_1 UNIT = 'unit_1', UNIT_NUM = 1, ZONE_LIST = ('z3','z4','z5');
+
+ob1.mysql CREATE TENANT tenant_1 RESOURCE_POOL_LIST = ('pool_1'), primary_zone = 'z3;z4;z5', locality='F{1}@z3, F{1}@z4, F{1}@z5' set ob_tcp_invited_nodes='%';
+let $resource_pool_id = deploy_get_value(ob1.select select resource_pool_id from __all_resource_pool where name = 'pool_1', resource_pool_id, 1);
+let $tenant1_id = deploy_get_value(ob1.select select tenant_id from __all_tenant where tenant_name = "tenant_1", tenant_id, 1);
+sleep 10;
+
+# z4, z5宕机
+let $z4_addr = deploy_get_value(ob1.select select concat(svr_ip, ":", svr_port) as addr from oceanbase.__all_unit where zone = "z4", addr, 1);
+let $z5_addr = deploy_get_value(ob1.select select concat(svr_ip, ":", svr_port) as addr from oceanbase.__all_unit where zone = "z5", addr, 1);
+let $z4_obs = deploy_get_value(ob1.get_obs_by_addr $z4_addr);
+let $z5_obs = deploy_get_value(ob1.get_obs_by_addr $z5_addr);
+$z4_obs.force_stop;
+$z5_obs.force_stop;
+
+# step 1: 关负载均衡和迁移复制
+alter system set enable_rebalance=false;
+alter system set enable_rereplication=false;
+
+# step 2: 触发ob_admin工具
+
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_clog_stat where (table_id >> 40) = "$tenant1_id" and role = "LEADER", 0, 20;
+
+let $count = deploy_get_value(ob1.select select count(*) as count from oceanbase.__all_virtual_clog_stat where table_id >> 40 = "$tenant1_id", count, 1);
+
+let $idx = 0;
+while ($idx < $count)
+{
+  let $shell = deploy_get_value(ob1.select select concat("./etc/ob_admin -h ",svr_ip," -p", svr_port, " force_set_as_single_replica ",table_id,":",partition_idx,":",partition_cnt) str from (select *  from oceanbase.__all_virtual_clog_stat where table_id >> 40 = "$tenant1_id" group by table_id, partition_idx, partition_cnt limit $idx, 1) as a, str, 1);
+  ob1.sh $shell;
+  inc $idx;
+}
+
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_clog_stat where (table_id >> 40) = "$tenant1_id" and role = "FOLLOWER", 0, 60;
+
+# step 3: 汇报&持久化
+let $z3_addr = deploy_get_value(ob1.select select concat(svr_ip, ":", svr_port) as addr from oceanbase.__all_server where zone = "z3", addr, 1);
+
+ob1.mysql alter system report replica server = "$z3_addr";
+
+ob1.mysql alter system minor freeze tenant tenant_1;
+
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_memstore_info where (table_id >> 40) = "$tenant1_id" and is_active = 0, 0, 240;
+
+# step 4: RS补副本
+connection conn_sys;
+# 确保宕机副本不上线
+alter system set server_permanent_offline_time = '20s';
+# 关modify_quorum逻辑
+alter system set __balance_controller='{"ENABLE_REPLICATE":"true"}';
+# 触发unit迁移
+alter system set enable_rebalance = true;
+alter system set enable_rereplication = true;
+
+
+let $src = $z3_addr;
+# 补z4副本
+let $zone = z4;
+let $dst = deploy_get_value(ob1.select select concat(svr_ip, ":", svr_port) as addr from oceanbase.__all_server where zone = "$zone" and concat(svr_ip, ":", svr_port) != "$z4_addr", addr, 1);
+ob1.check_until_timeout select count(*) from oceanbase.__all_unit where zone = "$zone" and concat(svr_ip, ":", svr_port) = "$dst", 1, 60;
+let $idx = 0;
+while ($idx < $count)
+{
+  let $partition_id = deploy_get_value(ob1.select select concat(partition_id, "%", partition_cnt, "@", table_id) as part_id from oceanbase.__all_root_table where tenant_id = "$tenant1_id" and role = 1 limit $idx, 1, part_id, 1);
+  ob1.mysql alter system copy replica partition_id "$partition_id" source = "$src" destination = "$dst" force;
+  inc $idx;
+}
+ob1.check_until_timeout select if($count = count(*), 1, 0) from oceanbase.__all_virtual_partition_table where tenant_id = "$tenant1_id" and zone = "$zone", 1, 60;
+# 补z5副本
+let $zone = z5;
+let $dst = deploy_get_value(ob1.select select concat(svr_ip, ":", svr_port) as addr from oceanbase.__all_server where zone = "$zone" and concat(svr_ip, ":", svr_port) != "$z5_addr", addr, 1);
+ob1.check_until_timeout select count(*) from oceanbase.__all_unit where zone = "$zone" and concat(svr_ip, ":", svr_port) = "$dst", 1, 60;
+let $idx = 0;
+while ($idx < $count)
+{
+  let $partition_id = deploy_get_value(ob1.select select concat(partition_id, "%", partition_cnt, "@", table_id) as part_id from oceanbase.__all_root_table where tenant_id = "$tenant1_id" and role = 1 limit $idx, 1, part_id, 1);
+  ob1.mysql alter system copy replica partition_id "$partition_id" source = "$src" destination = "$dst" force;
+  inc $idx;
+}
+ob1.check_until_timeout select if($count = count(*), 1, 0) from oceanbase.__all_virtual_partition_table where tenant_id = "$tenant1_id" and zone = "$zone", 1, 60;
+
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_replica_task, 0, 60;

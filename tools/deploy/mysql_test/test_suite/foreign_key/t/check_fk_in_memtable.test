@@ -1,0 +1,142 @@
+# owner: yangyifei.yyf
+# owner group: transaction
+# description: this case is used to test foreign key constraint check in the sstable
+
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+set GLOBAL ob_query_timeout = 1000000000000;
+--enable_query_log
+
+connect (conn0, $OBMYSQL_MS0, admin, $OBMYSQL_PWD, oceanbase, $OBMYSQL_PORT);
+connect (conn1, $OBMYSQL_MS0, $OBMYSQL_USR, $OBMYSQL_PWD, test, $OBMYSQL_PORT);
+connect (conn2, $OBMYSQL_MS0, $OBMYSQL_USR, $OBMYSQL_PWD, test, $OBMYSQL_PORT);
+
+connection conn1;
+--disable_warnings
+drop table if exists child;
+drop table if exists parent;
+--enable_warnings
+
+### 1. check foreign key constratint which has index in the child table
+# create parent table and child table with index
+create table parent(c1 int primary key, c2 int);
+create table child(c1 int primary key, c2 int, foreign key(c2) references parent(c1));
+
+## 1.1 check row in parent table has lock
+# start transaction in parent table
+begin;
+insert into parent values(1, 1);
+
+# start transaction in child table
+# and insert the row which reference to the same row
+connection conn2;
+send insert into child values(1, 1);
+
+connection conn1;
+commit;
+
+connection conn2;
+reap;
+commit;
+
+# check result
+select * from parent;
+select * from child;
+
+## 1.2 check row in child table has lock
+# start transaction in child table
+connection conn1;
+begin;
+delete from child where c2 = 1;
+
+# start transaction in parent table
+# and delete the referenced row
+connection conn2;
+begin;
+send delete from parent where c1 = 1;
+
+connection conn1;
+rollback;
+
+connection conn2;
+--error 1451
+reap;
+rollback;
+
+# check result
+select * from parent;
+select * from child;
+
+### 2. check foreign key constratint which has no index in the child table
+# create child table without index
+drop table child;
+create table child(c1 int, c2 int, foreign key(c2) references parent(c1));
+
+## 2.1 check row in child table has lock
+connection conn1;
+begin;
+insert into child values(1, 1);
+
+# start transaction in parent table
+# and delete the referenced row
+connection conn2;
+begin;
+send delete from parent where c1 = 1;
+
+connection conn1;
+commit;
+
+connection conn2;
+--error 1451
+reap;
+rollback;
+
+# check result
+select * from parent;
+select * from child;
+
+## 2.2 check row in child table meet tsc conflict
+# set transaction isolation to repeatable read
+connection conn1;
+set session transaction isolation level repeatable read;
+connection conn2;
+set session transaction isolation level repeatable read;
+
+# start transaction in parent table
+# and get the snapshot version
+connection conn1;
+begin;
+select * from parent;
+
+# start transaction in child table
+# and get the snapshot version
+connection conn2;
+begin;
+select * from child;
+
+# delete the reference row in child table and commit
+delete from child where c2 = 1;
+commit;
+
+# delete the referenced row in parent table and meet tsc conflict
+connection conn1;
+--error 6235
+delete from parent where c1 = 1;
+rollback;
+
+# check result
+select * from parent;
+select * from child;
+
+# retry by starting a new transaction
+begin;
+delete from parent where c1 = 1;
+commit;
+
+# check result
+select * from parent;
+select * from child;
+
+# test done, drop tables
+drop table child;
+drop table parent;

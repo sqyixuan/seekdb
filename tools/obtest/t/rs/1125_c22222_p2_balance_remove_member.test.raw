@@ -1,0 +1,124 @@
+# owner: rongxuan.lc
+# description:
+# 本case是为了在紧急降级建副本情况下，临时下线的obs重新上线时，会把replica重新加入到成员列表中；
+
+ob1=OBI(cluster=2:2:2:2:2, proxy_num=0, init_unit_cpu=2,locality=HZ:HZ:SH:SH:SZ);
+ob1.reboot;
+
+##region宕机
+##验证会从成员列表中删掉；
+##重新上线后，会加入到成员列表中；
+
+##新建租户
+ob1.mysql create resource pool rp1 unit = 'sys_unit_config', unit_num = 1, zone_list = ('z1', 'z2', 'z3', 'z4', 'z5');
+ob1.mysql create tenant tt1 replica_num 5, primary_zone 'z2', resource_pool_list ('rp1');
+ob1.mysql alter system set balancer_idle_time = '10s';
+ob1.mysql alter system set server_data_copy_in_concurrency = 10;
+ob1.mysql alter system set server_data_copy_out_concurrency = 10;
+#ob1.mysql alter system set enable_rebalance = false;
+#ob1.mysql alter system set enable_rereplication = false;
+sleep 2;
+
+ob1.create_client tenant=tt1,user=root,passwd=,database=test;
+
+eval create table test(c1 int primary key, c2 int);
+eval insert into test values(1,2);
+
+ob1.create_client tenant=sys,user=root,passwd=,database=test;
+
+##将partition 赶到z3.obs1/ z4.obs1上面；
+let $obs0ip = deploy_get_value(ob1.z3.obs1.ip);
+let $obs0port = deploy_get_value(ob1.z3.obs1.port);
+let $obs3ip = deploy_get_value(ob1.z3.obs0.ip);
+let $obs3port = deploy_get_value(ob1.z3.obs0.port);
+
+let $obs0sqlport = deploy_get_value(ob1.z3.obs1.mysql_port);
+let $z2ip = deploy_get_value(ob1.z4.obs1.ip);
+let $z2port = deploy_get_value(ob1.z4.obs1.port);
+let $z3ip = deploy_get_value(ob1.z4.obs0.ip);
+let $z3port = deploy_get_value(ob1.z4.obs0.port);
+
+
+--disable_query_log
+let $unit_count = deploy_get_value(ob1.select select count(*) c from oceanbase.__all_unit where resource_pool_id = 1002 and svr_ip ='$obs0ip' and svr_port= '$obs0port', c, 1);
+if ($unit_count == 0)
+{
+  let $unit_id = deploy_get_value(ob1.select select unit_id from oceanbase.__all_unit where resource_pool_id = 1002 and svr_ip ='$obs3ip' and svr_port='$obs3port', unit_id, 1);
+  eval alter system migrate unit $unit_id destination '$obs0ip:$obs0port';
+}
+let $unit_count = deploy_get_value(ob1.select select count(*) c from oceanbase.__all_unit where resource_pool_id = 1002 and svr_ip ='$z2ip' and svr_port= '$z2port', c, 1);
+if ($unit_count == 0)
+{
+  let $unit_id = deploy_get_value(ob1.select select unit_id from oceanbase.__all_unit where resource_pool_id = 1002 and svr_ip ='$z3ip' and svr_port='$z3port', unit_id, 1);
+  eval alter system migrate unit $unit_id destination '$z2ip:$z2port';
+}
+--enable_query_log
+
+##等待迁移做完
+let $count = 360;
+while($count > 0)
+{
+  let $migrate = deploy_get_value(ob1.select select count(*) c from oceanbase.__all_unit where migrate_from_svr_ip != '', c, 1);
+  if ($migrate == 0)
+  {
+    let $count = 0;
+  }
+  sleep 1;
+  dec $count;
+}
+##可能有系统表的迁移，所以需要等新主上线
+sleep 60;
+let $member_list = deploy_get_value(ob1.select select  /*+ READ_CONSISTENCY(WEAK) */  member_list from __all_virtual_meta_table where role = 1, member_list, 1);
+
+ob1.z3.obs1.stop;
+ob1.z4.obs1.stop;
+
+let $count = 1000;
+while ($count > 0) 
+{
+##检查成员列表；
+  let $member_list2 = deploy_get_value(ob1.select select  /*+ READ_CONSISTENCY(WEAK) */  member_list from __all_virtual_meta_table where role = 1, member_list, 1);
+  if ($member_list != $member_list2)
+  {
+    echo "delete from member list success";
+    let $count = 0;
+  }
+  sleep 1;
+  dec $count;
+}
+
+ob1.z3.obs1.nstart;
+ob1.z4.obs1.nstart;
+
+let $z3obs1ip= deploy_get_value(ob1.z3.obs1.ip);
+let $z3obs1port= deploy_get_value(ob1.z3.obs1.port);
+let $z4obs1ip= deploy_get_value(ob1.z4.obs1.ip);
+let $z4obs1port= deploy_get_value(ob1.z4.obs1.port);
+
+let $count = 360;
+while ($count > 0) 
+{
+##检查成员列表；
+  let $c = deploy_get_value(ob1.select select  /*+ READ_CONSISTENCY(WEAK) */  count(*) c from __all_virtual_meta_table where role = 1 and member_list like "%$z3obs1ip:$z3obs1port%", c, 1);
+  if ($c == 1)
+  {
+    echo "add z3.obs1 into member list success";
+    let $count = 0;
+  }
+  sleep 1;
+  dec $count;
+}
+let $count = 360;
+while ($count > 0) 
+{
+##检查成员列表；
+  let $c = deploy_get_value(ob1.select select  /*+ READ_CONSISTENCY(WEAK) */  count(*) c from __all_virtual_meta_table where role = 1 and member_list like "%$z4obs1ip:$z4obs1port%", c, 1);
+  if ($c == 1)
+  {
+    echo "add z4.obs1 into member list success";
+    let $count = 0;
+  }
+  sleep 1;
+  dec $count;
+}
+

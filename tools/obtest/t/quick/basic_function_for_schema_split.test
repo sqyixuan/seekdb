@@ -1,0 +1,124 @@
+##########################
+#owner : yulan.way
+#owner group: proxy
+#description: quick test
+# 测试点：
+# 1.reboot
+# 2.oracle 租户链接
+# 3.locality 变更
+# 4.leader切换
+# 5.合并转储
+# 6. 集群重启 
+##########################
+
+ob1=OBI(cluster=1:1:1,init_unit_cpu=2,proxy_num=1);
+ob2=OBI(cluster=1:1,leaderob=ob1,proxy_num=0);
+ob1.z1.obs0.set extra_config=__schema_split_mode=true;
+ob1.z2.obs0.set extra_config=__schema_split_mode=true;
+ob1.z3.obs0.set extra_config=__schema_split_mode=true;
+ob2.z1.obs0.set extra_config=__schema_split_mode=true;
+ob2.z2.obs0.set extra_config=__schema_split_mode=true;
+ob1.reboot;
+ob2.reboot;
+
+ob1.mysql alter system set merger_switch_leader_duration_time = '10s';
+ob1.mysql alter system set resource_hard_limit= 800;
+sleep 2;
+ob1.source include/merge.inc;
+ob1.source include/migrate.inc;
+source include/fast_auto_rebalance_configuration.inc;
+ob_connect(tt2_conn, ob2.z1.obs0, root, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection tt2_conn;
+sleep 3;
+alter system set balancer_idle_time = '10s';
+alter system set server_data_copy_out_concurrency = 30;
+alter system set server_data_copy_in_concurrency = 30;
+alter system set data_copy_concurrency = 60;
+
+ob_connect(conn_sys, ob1.proxy0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+ob_connect(conn_obtest, ob1.proxy0, root@obtest, , test, , USE_MYSQL_CONNECTOR);
+###create oracle tenant
+#FIXME: 暂时先加大超时绕过建租户慢的问题
+set @@session.ob_query_timeout = 20000000;
+ob1.mysql create resource unit box1 max_cpu 2, max_memory 2073741824, max_iops 100000, max_disk_size '5G', max_session_num 64, MIN_CPU=1, MIN_MEMORY=2073741824, MIN_IOPS=128;
+ob1.mysql create resource pool pool1 unit = 'box1', unit_num = 1;
+ob1.mysql create tenant oracle replica_num = 1, resource_pool_list=('pool1'), primary_zone = "z1;z2;z3" set ob_tcp_invited_nodes='%', ob_compatibility_mode='oracle';
+set @@session.ob_query_timeout = 10000000;
+ob1.mysql alter tenant oracle set variables autocommit='on';
+sleep 5;
+ob_connect(conn_oracle, ob1, SYS@oracle, ,SYS, , USE_OB_CONNECTOR);
+connection conn_oracle;
+create user obtest IDENTIFIED BY obtest;
+grant all on *.* to obtest WITH GRANT OPTION;
+ob_connect(conn_oracle_obtest,ob1,OBTEST@oracle,obtest,OBTEST,,USE_OB_CONNECTOR);
+create table t1(pk int primary key, c1 number);
+insert into t1 values(1,1),(2,2);
+delete from t1 where pk=1;
+select * from t1;
+#####################
+#验证备库同步创建副本成功；
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from __all_tenant where tenant_name = 'oracle', tenant_id, 1);
+ob2.check_until_timeout select count(*) from __all_virtual_meta_table where tenant_id = $tenant_id and status = 'REPLICA_STATUS_NORMAL', 2, 120; 
+ob_connect(conn_oracle_obtest2,ob2,OBTEST@oracle,obtest,OBTEST,,USE_OB_CONNECTOR);
+connection conn_oracle_obtest2;
+sleep 3;
+select /*+ read_consistency(weak)*/* from t1;
+
+#####################
+
+# major freeze && minor
+connection conn_obtest;
+let $tablenum=2;
+source sql/init_table.sql;
+
+ob1.mysql alter system minor freeze tenant = sys;
+ob1.mysql alter system minor freeze tenant = all_user;
+ob1.mysql alter system minor freeze tenant = all_meta;
+ob1.check_until_timeout select count(1) from __all_virtual_memstore_info where is_active=0, 0, 60;
+
+let $tablenum = 2;
+source sql/init_table.sql;
+let $offset = 3;
+source sql/init_table.sql;
+
+ob1.mysql alter system major freeze;
+ob1.check_version 2;
+ob2.check_version 2;
+select * from obtest1 limit 20;
+#connection tt2_conn;
+#select /*+ read_consistency(weak)*/* from t;
+
+# locality 变更,locality变更比较耗时，这里只加一种
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from __all_tenant where tenant_name = "obtest", tenant_id, 1);
+
+let $tablenum = 3;
+source sql/init_table.sql;
+let $offset = 4;
+source sql/init_table.sql;
+
+ob1.mysql alter tenant obtest locality='F@z1,F@z2,R@z3';
+ob1.check_until_timeout select count(*) c from oceanbase.__all_tenant where tenant_id = $tenant_id and previous_locality != '', 0, 300;
+ob1.check_until_timeout select count(*) c from oceanbase.__all_rootservice_job where job_status="SUCCESS", 1, 30;
+
+# switch partition leader
+ob1.mysql alter system set enable_auto_leader_switch = false;
+
+ob1.z2.obs0.switch_partition sys:oceanbase:__all_root_table;
+ob1.z2.obs0.switch_partition sys:oceanbase:__all_core_table;
+sleep 15;
+ob1.z2.obs0.check_leader sys:oceanbase:__all_root_table;
+ob1.z2.obs0.check_leader sys:oceanbase:__all_core_table;
+
+ob1.mysql alter system set enable_auto_leader_switch = true;
+
+--disable_result_log
+connection conn_sys;
+select * from __all_root_table limit 1;
+select * from __all_core_table limit 1;
+--enable_result_log
+
+# 集群重启
+ob1.force_stop;
+sleep 5;
+ob1.nstart;
+ob1.check_until_timeout SELECT CAST(COUNT(*) AS SIGNED) as cnt FROM __all_virtual_clog_stat WHERE is_in_sync = 0 and is_offline=0,0,600;

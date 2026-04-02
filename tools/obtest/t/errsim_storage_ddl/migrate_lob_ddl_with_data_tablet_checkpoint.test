@@ -1,0 +1,123 @@
+# owner: jianyun.sjy
+# owner group: storage/ddl
+
+ob1=OBI(cluster=2:2:2, proxy_num=0);
+
+
+--echo ===============================================================
+--echo ====================     bootstrap   ==========================
+--echo ===============================================================
+--echo test case for bootstrap begin
+ob1.reboot;
+sleep 3;
+let $sys_tenant_id = 1;
+ob1.mysql alter system set enable_rebalance='false';
+ob1.mysql alter system set syslog_io_bandwidth_limit = '4G';
+ob_connect(conn_sys, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+--echo test case for bootstrap finish
+
+--echo ===============================================================
+--echo ==================     create tenant   ========================
+--echo ===============================================================
+# 注意: 创建初始mysql租户'F@z1, F@z3'
+--echo test case for create tenant begin
+set @@session.ob_query_timeout = 1000000000;
+#mysql tenant
+eval CREATE RESOURCE UNIT unit_1 MAX_CPU 2, MEMORY_SIZE='8G';
+eval CREATE RESOURCE POOL pool_1 UNIT = 'unit_1', UNIT_NUM = 1;
+eval CREATE TENANT mysql RESOURCE_POOL_LIST = ('pool_1'), primary_zone='z1' set ob_tcp_invited_nodes='%';
+source include/check_schema_sync.inc;
+connection conn_sys;
+let $mysql_tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = 'mysql', tenant_id, 1);
+ob_connect(conn_mysql, ob1.z1.obs1, root@mysql, , test, , USE_MYSQL_CONNECTOR);
+--echo test case for create tenant finish
+
+
+--echo ===============================================================
+--echo ============     execute ddl with lob column    ===============
+--echo ===============================================================
+--echo test case for create index begin
+# 回放到prepare日志前卡住，已回放宏块转储为ddl sstable后，触发迁移。
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+sleep 5;
+# block all mds dump
+ob1.mysql set ob_global_debug_sync = 'AFTER_EMPTY_SHELL_TABLET_CREATE wait_for signal_mds execute 100000';
+ob1.mysql set ob_global_debug_sync = 'BEFORE_DDL_WRITE_PREPARE_LOG wait_for signal_ddl_commit execute 100000';
+connection conn_mysql;
+--disable_warnings
+drop table if exists t1;
+--enable_warnings
+create table t1(c1 int primary key, c2 varchar(1024), c3 varchar(1024), c4 varchar(1024), c5 text);
+--disable_query_log
+# write some data
+# ddl
+# allow data tablet ddl dump partial data
+# migrate
+
+let $__index__ = 1;
+while ($__index__ <= 1000)
+{
+  eval insert into t1 values ($__index__, MD5($__index__), MD5($__index__ * 10), MD5($__index__ * 100), MD5($__index__ * 1000));
+  inc $__index__;
+}
+--enable_query_log
+select count(*) from t1;
+
+send alter table t1 drop primary key;
+sleep 5;
+
+connection conn_sys;
+alter system minor freeze tenant mysql;
+let $data_table_id = deploy_get_value(ob1.select select table_id from oceanbase.__all_virtual_table where tenant_id = $mysql_tenant_id and table_name like '%hidden%', table_id, 1);
+let $data_tablet_id = deploy_get_value(ob1.select select tablet_id from oceanbase.__all_virtual_table where tenant_id = $mysql_tenant_id and table_id = $data_table_id, tablet_id, 1);
+let $lob_meta_tablet_id = deploy_get_value(ob1.select select tablet_id from oceanbase.__all_virtual_table where tenant_id = $mysql_tenant_id and data_table_id = $data_table_id and table_name like '%LOB_META%', tablet_id, 1);
+# set lob meta tablet
+ob1.mysql alter system set errsim_test_tablet_id = "$lob_meta_tablet_id";
+sleep 5;
+
+# block ddl merge task of lob meta tablet
+ob1.mysql set ob_global_debug_sync = 'BEFORE_LOB_META_TABELT_DDL_MERGE_TASK wait_for signal_ddl_merge execute 100000';
+# allow write ddl commit log
+ob1.mysql set ob_global_debug_sync = 'BEFORE_DDL_WRITE_PREPARE_LOG clear';
+ob1.mysql set ob_global_debug_sync = 'now broadcast signal_ddl_commit';
+
+# block mds dump for lob meta tablet
+ob1.mysql set ob_global_debug_sync = 'BEFORE_DDL_LOB_META_TABLET_MDS_DUMP wait_for signal_ddl execute 100000';
+# allow other mds dump
+ob1.mysql set ob_global_debug_sync = 'AFTER_EMPTY_SHELL_TABLET_CREATE clear';
+ob1.mysql set ob_global_debug_sync = 'now broadcast signal_mds';
+
+--echo ===============================================================
+--echo ==================     migrate unit    ========================
+--echo ===============================================================
+--echo test migrate unit begin
+source t/quick/include/migrate_unit.inc;
+ob1.mysql set ob_global_debug_sync = 'now broadcast signal_ddl';
+--echo test migrate unit finish
+
+--echo ===============================================================
+--echo ==================     recover ddl     ========================
+--echo ===============================================================
+--echo recover ddl begin
+# allow ddl merge task of lob meta tablet
+ob1.mysql set ob_global_debug_sync = 'BEFORE_LOB_META_TABELT_DDL_MERGE_TASK clear';
+ob1.mysql set ob_global_debug_sync = 'now broadcast signal_ddl_merge';
+source t/quick/include/migrate_unit_check_gc.inc;
+
+connection conn_mysql;
+reap;
+select count(*) from t1;
+sleep 10;
+
+connection conn_sys;
+# check lob meta tablet not migrated, which require redo log replay
+eval select * from __all_server_event_history where module like 'storage_ha' and event like 'tablet_migration_task' and value5 like "$lob_meta_tablet_id";
+let $lob_meta_tablet_major_sstable_count = deploy_get_value(ob1.select select count(*) as cnt from oceanbase.__all_virtual_table_mgr where tenant_id = $mysql_tenant_id and tablet_id = $lob_meta_tablet_id and table_type = 10, cnt, 1);
+--echo lob_meta_tablet_major_sstable_count: $lob_meta_tablet_major_sstable_count
+
+--echo ===============================================================
+--echo ===================         clear      ========================
+--echo ===============================================================
+
+ob1.mysql set ob_global_debug_sync = 'BEFORE_DDL_LOB_META_TABLET_MDS_DUMP clear';
+ob1.mysql set ob_global_debug_sync = 'now broadcast signal_ddl';

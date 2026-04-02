@@ -1,0 +1,79 @@
+##############
+#owner: bohou.ws
+#test point: obcdc handle big trans.
+##############
+# prepare cluster and tenant
+ob1=OBI(cluster=1,proxy_num=0);
+ob1.force_stop;
+ob1.clean_backup_dest;
+ob1.reboot;
+let $user_define_tenant_size=1;
+let $max_cpu=10;
+let $memory_size='50G';
+source include/liboblog/4_x/create_mysql_tenant.inc;
+set global auto_increment_cache_size=1000000;
+alter system set default_auto_increment_mode = 'NOORDER';
+connection conn_sys;
+let $backup_tenant_id = query_get_value(select tenant_id from oceanbase.__all_tenant where tenant_name='obcdc_mysql', tenant_id, 1);
+connection conn_obcdc_mysql;
+let $log_backup_dest = deploy_get_value(ob1.get_log_backup_dest mysql);
+--disable_all_result_log
+eval alter system set log_archive_dest='location=$log_backup_dest';
+--enable_all_result_log
+ob1.check_until_timeout select count(*) as num from oceanbase.__all_virtual_archive_stat, 0, 60;
+ob1.mysql alter system archivelog;
+source include/liboblog/archive_lag_target.inc;
+ob1.mysql alter system set archive_lag_target='0ms' tenant all_user;
+ob1.check_until_timeout select status from oceanbase.CDB_OB_ARCHIVELOG where tenant_id=$backup_tenant_id, DOING, 600;
+
+sleep 20;
+let $restart_usec = query_get_value(select time_to_usec(now(6)) as now, now, 1);
+
+ob1.oblog.gen_conf tb_white_list=*cdc*.*.* log_level=SHARE.SCHEMA:WARN;PALF.*:WARN;TLOG.*:INFO skip_ob_version_compat_check=1 cluster_id_black_list=2147473648;
+ob1.oblog.set_extra_argument -c;
+ob1.oblog.restart;
+
+ob_connect(conn_obcdc_mysql2, ob1.z1.obs0, root@obcdc_mysql, , oceanbase, USE_MYSQL_CONNECTOR);
+source include/liboblog/big_tx_dist.inc;
+ob1.oblog.waitUntilRealtime 2400;
+# TODO DATA_CRC_CHECHSUM is not same when run this case eachtime, may be caused by PDML parallelly execute. should verify this case after PDML guaratee order of seq_no in each participant
+ob1.oblog.next_dml;
+ob1.oblog.stop;
+
+# restart from tx_start
+# restart_ts1_usec/restart_ts2_usec get from tx_overall.inc
+ob1.oblog.gen_conf tb_white_list=*cdc*.*.* log_level=SHARE.SCHEMA:WARN;PALF.*:WARN;TLOG.*:INFO redo_dispatcher_memory_limit=128M enable_output_trans_order_by_sql_operation=1 skip_ob_version_compat_check=1 cluster_id_black_list=2147473648;
+ob1.oblog.set_start_tstamp_usec $restart_usec;
+ob1.oblog.set_extra_argument '-c';
+ob1.oblog.restart;
+ob1.oblog.waitUntilRealtime 2400;
+ob1.oblog.next_dml;
+ob1.oblog.stop;
+
+# restart from tx_start2
+#ob1.oblog.gen_conf tb_white_list=*cdc*.*.* log_level=INFO skip_ob_version_compat_check=1;
+#ob1.oblog.set_start_tstamp_usec $restart_ts2_usec;
+#ob1.oblog.set_extra_argument '-c';
+#ob1.oblog.restart;
+#ob1.oblog.waitUntilRealtime 600;
+#ob1.oblog.next_dml;
+#ob1.oblog.stop;
+
+ob1.oblog.gen_conf tb_white_list=*cdc*.*.* log_level=SHARE.SCHEMA:WARN;PALF.*:WARN;TLOG.*:INFO test_mode_on=1 test_fetch_missing_errsim=1 cluster_id_black_list=2147473648;
+ob1.oblog.set_start_tstamp_usec $restart_ts2_usec;
+ob1.oblog.set_extra_argument -c;
+ob1.oblog.restart;
+ob1.oblog.waitUntilRealtime 6000;
+ob1.oblog.next_dml;
+ob1.oblog.stop;
+
+# restart_ts1_usec/restart_ts2_usec get from tx_overall.inc
+# TODO: fetch_miss in direct mode is too slow, need optimize.
+#ob1.oblog.gen_conf tb_white_list=*cdc*.*.* log_level=SHARE.SCHEMA:WARN;PALF.*:WARN;TLOG.*:INFO redo_dispatcher_memory_limit=512M enable_output_trans_order_by_sql_operation=1 fetching_log_mode=direct meta_data_refresh_mode=data_dict archive_dest=$log_backup_dest;
+#ob1.oblog.set_start_tstamp_usec $restart_ts2_usec;
+#ob1.oblog.set_extra_argument '-c';
+#ob1.oblog.restart;
+#ob1.oblog.waitUntilRealtime 6000;
+#ob1.oblog.next_dml;
+#ob1.oblog.stop;
+

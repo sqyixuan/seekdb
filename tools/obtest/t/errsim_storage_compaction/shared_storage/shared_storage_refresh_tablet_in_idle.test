@@ -1,0 +1,122 @@
+# owner: lixia.yq
+# owner group: storage [shared_storage]
+# description: this case is use for test refresh tablet in idle state
+#
+
+ob1=OBI(cluster=1:1:1,proxy_num=0,init_unit_cpu=5);
+ob1.reboot;
+sleep 10;
+
+--source include/compaction/set_common_parameters.inc
+# set EN_ENABLE_SHARED_STORAGE_COLUMN_GROUP to enable column group under shared-storage mode
+ob1.mysql alter system set_tp tp_no = 2502, error_code = 4016, frequency = 1;
+
+let $proxy_ip=deploy_get_value(ob1.z1.obs0.ip);
+let $proxy_port=deploy_get_value(ob1.z1.obs0.mysql_port);
+let $z1_port=deploy_get_value(ob1.z1.obs0.port);
+
+connect(sys_conn, $proxy_ip, root@obtest,,oceanbase, $proxy_port);
+
+ob_connect(conn_mysql, ob1.z1.obs0, root@obtest, , test, , USE_MYSQL_CONNECTOR);
+connection conn_mysql;
+create table test01(c1 int, c2 int, c3 varchar(40960), c4 varchar(40960)) compression= 'none';
+create table test02(c0 varchar(4096), c1 int, c2 int, c3 int, c4 varchar(40960), c5 varchar(40960), c6 int, c7 int, c8 int, c9 int, c10 int, c11 int, c12 int) with column group (all columns, each column);
+
+let $tablet_id=deploy_get_value(ob1.select select tablet_id from oceanbase.__all_virtual_table where table_name='test01', tablet_id, 1);
+let $tablet_id2=deploy_get_value(ob1.select select tablet_id from oceanbase.__all_virtual_table where table_name='test02', tablet_id, 1);
+let $tenant_id=deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name='obtest', tenant_id, 1);
+let $ls_id=deploy_get_value(ob1.select select ls_id from oceanbase.__all_virtual_tablet_to_ls where tenant_id=$tenant_id and tablet_id=$tablet_id, ls_id, 1);
+#########################################################################
+# TEST_1: check execute replica refresh when check medium info
+#########################################################################
+
+#switch leader to z1
+let $z1_role=deploy_get_value(ob1.select select role from __all_virtual_ls_meta_table where tenant_id=$tenant_id and ls_id=$ls_id and svr_ip='$proxy_ip' and svr_port=$z1_port, role, 1);
+if ($z1_role != 1) {
+ob1.mysql alter system switch replica leader ls=$ls_id server='$proxy_ip:$z1_port' tenant='obtest';
+
+ob1.check_until_timeout select role from __all_virtual_ls_meta_table where tenant_id=$tenant_id and ls_id=$ls_id and svr_ip='$proxy_ip' and svr_port=$z1_port, 1, 100;
+}
+
+#########################################################################
+# TEST_1.1: insert rows & major merge
+#########################################################################
+connection conn_mysql;
+--disable_query_log
+let $cnt=0;
+while($cnt < 10)
+{
+  eval insert into test01 values($cnt, $cnt, repeat('oceanbase', 4096), repeat('wakakakaka', 4096));
+  eval insert into test02 values(repeat('k', 4096), $cnt, 2, 3, repeat('oceanbase', 4096), repeat('wakakakaka', 4096), 6, 7, 8, 9, 10, 11, 12);
+  inc $cnt;
+}
+--enable_query_log
+
+# EN_SHARED_STORAGE_SKIP_USER_TABLET_REFRESH=4023
+ob1.mysql alter system set_tp tp_no=744, error_code=4023, frequency=1;
+
+ob1.mysql alter system major freeze tenant='obtest';
+source include/compaction/wait_tenant_major_finish_on_ss.inc;
+let $major_scn1=deploy_get_value(ob1.select select GLOBAL_BROADCAST_SCN from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$tenant_id, GLOBAL_BROADCAST_SCN, 1);
+ob1.check_until_timeout select count(*) > 0 as c from oceanbase.__all_virtual_table_mgr where tenant_id=$tenant_id and table_type=10 and end_log_scn=$major_scn1 and tablet_id=$tablet_id, 0, 10;
+ob1.check_until_timeout select count(*) > 0 as c from oceanbase.__all_virtual_table_mgr where tenant_id=$tenant_id and table_type=10 and end_log_scn=$major_scn1 and tablet_id=$tablet_id2, 0, 10;
+
+#########################################################################
+# TEST_1.2: insert rows & major. execute replica will refresh in prepare medium info
+#########################################################################
+connection conn_mysql;
+--disable_query_log
+let $cnt=0;
+while($cnt < 10)
+{
+  eval insert into test01 values($cnt, $cnt, repeat('oceanbase', 4096), repeat('wakakakaka', 4096));
+  eval insert into test02 values(repeat('k', 4096), $cnt + 100, 2, 3, repeat('oceanbase', 4096), repeat('wakakakaka', 4096), 6, 7, 8, 9, 10, 11, 12);
+  inc $cnt;
+}
+--enable_query_log
+
+ob1.mysql alter system major freeze tenant='obtest';
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$tenant_id and LAST_SCN != GLOBAL_BROADCAST_SCN , 1, 100;
+let $major_scn2=deploy_get_value(ob1.select select GLOBAL_BROADCAST_SCN from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$tenant_id, GLOBAL_BROADCAST_SCN, 1);
+ob1.check_until_timeout select count(*) > 0 from __all_virtual_shared_storage_compaction_info where tenant_id= $tenant_id and ls_id=$ls_id and obj_type="LS_COMPACTION_STATUS" and info like "%REPLICA_VERIFY%", 1, 600;
+
+# for leader, will refresh in prepare_medium_info
+ob1.check_until_timeout select count(*) > 0 from __all_server_event_history where module='ss_merge_errsim' and event='leader_refresh_major' and name1='merge_version' and value1=$major_scn1, 1, 600;
+
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$tenant_id and LAST_SCN != GLOBAL_BROADCAST_SCN , 0, 600;
+# for follower, will refresh in check_medium_info
+ob1.check_until_timeout select count(*) > 0 from __all_server_event_history where module='ss_merge_errsim' and event='follower_refresh_major' and name1='refresh_scn' and value1=$major_scn1, 1, 600;
+
+ob1.check_until_timeout select count(*) > 0 as c from oceanbase.__all_virtual_table_mgr where tenant_id=$tenant_id and table_type=10 and end_log_scn=$major_scn1 and tablet_id=$tablet_id, 1, 100;
+ob1.check_until_timeout select count(*) > 0 as c from oceanbase.__all_virtual_table_mgr where tenant_id=$tenant_id and table_type=17 and end_log_scn=$major_scn1 and tablet_id=$tablet_id2, 1, 100;
+
+#########################################################################
+# TEST_2: insert rows & will refresh in backgroup thread
+#########################################################################
+connection conn_mysql;
+--disable_query_log
+let $cnt=0;
+while($cnt < 10)
+{
+  eval insert into test01 values($cnt, $cnt, repeat('oceanbase', 4096), repeat('wakakakaka', 4096));
+  eval insert into test02 values(repeat('k', 4096), $cnt, 2, 3, repeat('oceanbase', 4096), repeat('wakakakaka', 4096), 6, 7, 8, 9, 10, 11, 12);
+  inc $cnt;
+}
+--enable_query_log
+ob1.mysql alter system major freeze tenant='obtest';
+source include/compaction/wait_tenant_major_finish_on_ss.inc;
+let $major_scn3=deploy_get_value(ob1.select select GLOBAL_BROADCAST_SCN from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$tenant_id, GLOBAL_BROADCAST_SCN, 1);
+
+# EN_SHARED_STORAGE_SKIP_USER_TABLET_REFRESH=4023
+ob1.mysql alter system set_tp tp_no=744, error_code=4023, frequency=0;
+#open EN_SHARED_STORAGE_SCHEULD_TABLET_IN_IDLE
+ob1.mysql alter system set_tp tp_no=745, error_code=4023, frequency=1;
+
+# check major will refresh in IDLE state
+ob1.check_until_timeout select count(*) > 0 from __all_server_event_history where module='ss_merge_errsim' and event='refresh_in_idle', 1, 600;
+
+# clear EN_SHARED_STORAGE_SKIP_USER_TABLET_REFRESH
+ob1.check_until_timeout select count(*) > 0 as c from oceanbase.__all_virtual_table_mgr where tenant_id=$tenant_id and table_type=10 and end_log_scn=$major_scn3 and tablet_id=$tablet_id, 1, 100;
+ob1.check_until_timeout select count(*) > 0 as c from oceanbase.__all_virtual_table_mgr where tenant_id=$tenant_id and table_type=17 and end_log_scn=$major_scn3 and tablet_id=$tablet_id2, 1, 100;
+ob1.mysql alter system set_tp tp_no=745, error_code=4023, frequency=0;
+

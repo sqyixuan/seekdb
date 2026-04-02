@@ -1,0 +1,978 @@
+result_format: 4
+#### 创建租户 primary_zone= RANDOM 
+
+
+alter tenant my_tenant set variables ob_tcp_invited_nodes='%';
+alter tenant my_tenant set variables autocommit='on';
+alter tenant my_tenant set variables nls_date_format='YYYY-MM-DD HH24:MI:SS';
+alter tenant my_tenant set variables nls_timestamp_format='YYYY-MM-DD HH24:MI:SS.FF';
+alter tenant my_tenant set variables nls_timestamp_tz_format='YYYY-MM-DD HH24:MI:SS.FF TZR TZD';
+
+
+
+
+
+
+
+
+drop user whh_user1 cascade;
+drop user whh_user2 cascade;
+drop user whh_user3 cascade;
+
+create user whh_user1 IDENTIFIED BY 123;
+grant all privileges to whh_user1;
+grant all on *.* to whh_user1 WITH GRANT OPTION;
+grant dba,resource,connect to whh_user1;
+
+create user whh_user2 IDENTIFIED BY 123;
+grant all privileges to whh_user1;
+grant all on *.* to whh_user2 WITH GRANT OPTION;
+grant dba,resource,connect to whh_user2;
+
+create user whh_user3 IDENTIFIED BY 123;
+grant all privileges to whh_user1;
+grant all on *.* to whh_user3 WITH GRANT OPTION;
+grant dba,resource,connect to whh_user3;
+
+
+
+## 测试前准备
+drop table tab01;
+create table tab01(id number,c1 number) partition by hash(c1)partitions 4;
+INSERT INTO tab01 SELECT 0,ROWNUM FROM DUAL CONNECT BY ROWNUM <= 10;
+
+drop table tab02;
+create table tab02(id number,c1 number) partition by hash(c1)partitions 4;
+INSERT INTO tab02 SELECT 0,ROWNUM FROM DUAL CONNECT BY ROWNUM <= 10;
+
+drop table tab_log;
+create table tab_log(
+  id number,
+  username varchar2(50),
+  eventime TIMESTAMP(6),
+  action varchar2(100),
+  Object varchar2(100))
+partition by hash(id)partitions 4;
+insert into tab_log values (0,'【用户名】',systimestamp,'【触发事件】','【触发对象】');
+
+drop table tab_err;
+create table tab_err(id number,msg varchar2(200));
+insert into tab_err values (0,'【发生 EXCEPTION 信息】');
+
+drop table tab_cunt;
+create table tab_cunt(id number,c0 varchar2(50),c1 number);
+insert into tab_cunt values (0,'【记录修改 c1 列后的值】',0);
+
+DROP SEQUENCE seq1;
+CREATE SEQUENCE seq1 START WITH 1 INCREMENT BY 1 MAXVALUE 200000 CYCLE NOCACHE;
+
+drop package my_pack2;
+
+##删除所有触发器
+CREATE OR REPLACE PROCEDURE delete_all_objects(a varchar2 default user) AS
+  cnt number;
+BEGIN
+  select count(1) into cnt from all_triggers where TRIGGER_NAME like '%#_LOG%' ESCAPE '#' and OWNER = a;
+  if cnt != 0 then
+    FOR tri IN (select distinct OWNER,TRIGGER_NAME from all_triggers where TRIGGER_NAME like '%#_LOG%' ESCAPE '#' and OWNER = a) LOOP
+      EXECUTE IMMEDIATE 'DROP TRIGGER ' || a || '.' || tri.TRIGGER_NAME;
+    END LOOP;
+  end if;
+  DBMS_OUTPUT.PUT_LINE('drop all TRIGGER finish');
+  COMMIT;
+END;
+/
+create or replace package my_pack2 is
+  pack_cunt number default 1;
+  function get_pack_cunt return number;
+  function set_pack_cunt(p1 number default 1) return number;
+end;
+/
+create or replace package body my_pack2 is
+  function get_pack_cunt return number is
+  begin
+    return pack_cunt;
+  end;
+  function set_pack_cunt(p1 number default 1) return number is
+  begin
+    pack_cunt := p1;
+    return pack_cunt;
+  end;
+end;
+/
+
+#-----------------------------------------------------------------------------
+# tri-4  场景测试
+#-----------------------------------------------------------------------------
+#############################################
+#### 多个schema/database 触发器，其中某个触发器异常，验证触发器触发现象
+#连接 WHH_USER1
+call delete_all_objects(user);
+
+select my_pack2.set_pack_cunt() from dual;
++--------------------------+
+| MY_PACK2.SET_PACK_CUNT() |
++--------------------------+
+|                        1 |
++--------------------------+
+
+create or replace trigger dml_trigger before insert on tab02 for each row
+  when (new.id >3)
+DECLARE
+  v_error_message varchar2(200);
+begin
+  my_pack2.pack_cunt := my_pack2.pack_cunt + 2;
+  insert into tab01 values(1,'该sql异常报错');
+  EXCEPTION
+    WHEN OTHERS THEN
+      v_error_message := SQLERRM;
+      INSERT INTO tab_err VALUES (seq1.nextval,'【dml_trigger】' || v_error_message);
+end;
+/
+CREATE OR REPLACE TRIGGER after_logon_schema_trigger91
+AFTER LOGON ON SCHEMA
+DECLARE
+  PRAGMA AUTONOMOUS_TRANSACTION;
+BEGIN
+  my_pack2.pack_cunt := my_pack2.pack_cunt + 2;
+  insert into tab_log values (seq1.nextval,user,systimestamp,'after_logon_schema_trigger91','my_pack2.pack_cunt='||my_pack2.pack_cunt);
+  commit;
+END;
+/
+CREATE OR REPLACE TRIGGER after_logon_schema_trigger92
+AFTER LOGON ON SCHEMA FOLLOWS after_logon_schema_trigger91
+DECLARE
+  v_error_message varchar2(200);
+  PRAGMA AUTONOMOUS_TRANSACTION;
+BEGIN
+  my_pack2.pack_cunt := my_pack2.pack_cunt + 2;
+  insert into tab_log values (seq1.nextval,user,systimestamp,'after_logon_schema_trigger92','my_pack2.pack_cunt='||my_pack2.pack_cunt);
+  insert into tab01 values(2,'该sql异常报错');
+  EXCEPTION
+    WHEN OTHERS THEN
+      v_error_message := SQLERRM;
+      INSERT INTO tab_err VALUES (seq1.nextval,'after_logon_schema_trigger92' || v_error_message);
+  COMMIT;
+END;
+/
+CREATE OR REPLACE TRIGGER after_logon_schema_trigger93
+AFTER LOGON ON SCHEMA FOLLOWS after_logon_schema_trigger92
+DECLARE
+  PRAGMA AUTONOMOUS_TRANSACTION;
+BEGIN
+  my_pack2.pack_cunt := my_pack2.pack_cunt + 2;
+  insert into tab_log values (seq1.nextval,user,systimestamp,'after_logon_schema_trigger93','my_pack2.pack_cunt='||my_pack2.pack_cunt);
+  commit;
+END;
+/
+CREATE OR REPLACE TRIGGER after_logon_schema_trigger94
+AFTER LOGON ON SCHEMA FOLLOWS after_logon_schema_trigger93
+DECLARE
+  PRAGMA AUTONOMOUS_TRANSACTION;
+BEGIN
+  my_pack2.pack_cunt := my_pack2.pack_cunt + 2;
+  insert into tab_log values (seq1.nextval,user,systimestamp,'after_logon_schema_trigger94','my_pack2.pack_cunt='||my_pack2.pack_cunt);
+  insert into tab02 values(10,10);
+  commit;
+END;
+/
+
+delete from tab_log where id > 0;
+delete from tab_err where id > 0;
+select * from tab_err order by 1;
++------+-------------------------------+
+| ID   | MSG                           |
++------+-------------------------------+
+|    0 | 【发生 EXCEPTION 信息】       |
++------+-------------------------------+
+select USERNAME,ACTION,OBJECT from tab_log order by id;
++-----------------+--------------------+--------------------+
+| USERNAME        | ACTION             | OBJECT             |
++-----------------+--------------------+--------------------+
+| 【用户名】      | 【触发事件】       | 【触发对象】       |
++-----------------+--------------------+--------------------+
+select my_pack2.get_pack_cunt() from dual;
++--------------------------+
+| MY_PACK2.GET_PACK_CUNT() |
++--------------------------+
+|                        1 |
++--------------------------+
+
+
+#重新连接 WHH_USER2
+
+#重新连接 WHH_USER1
+
+select * from tab_err order by 1;
++------+-------------------------------------------------------+
+| ID   | MSG                                                   |
++------+-------------------------------------------------------+
+|    0 | 【发生 EXCEPTION 信息】                               |
+|    3 | after_logon_schema_trigger92ORA-01722: invalid number |
+|    6 | 【dml_trigger】ORA-01722: invalid number              |
++------+-------------------------------------------------------+
+select USERNAME,ACTION,OBJECT from tab_log order by id;
++-----------------+------------------------------+----------------------+
+| USERNAME        | ACTION                       | OBJECT               |
++-----------------+------------------------------+----------------------+
+| 【用户名】      | 【触发事件】                 | 【触发对象】         |
+| WHH_USER1       | after_logon_schema_trigger91 | my_pack2.pack_cunt=3 |
+| WHH_USER1       | after_logon_schema_trigger92 | my_pack2.pack_cunt=5 |
+| WHH_USER1       | after_logon_schema_trigger93 | my_pack2.pack_cunt=7 |
+| WHH_USER1       | after_logon_schema_trigger94 | my_pack2.pack_cunt=9 |
++-----------------+------------------------------+----------------------+
+select my_pack2.get_pack_cunt() from dual;
++--------------------------+
+| MY_PACK2.GET_PACK_CUNT() |
++--------------------------+
+|                       11 |
++--------------------------+
+
+DROP TRIGGER dml_trigger;
+DROP TRIGGER after_logon_schema_trigger91;
+DROP TRIGGER after_logon_schema_trigger92;
+DROP TRIGGER after_logon_schema_trigger93;
+DROP TRIGGER after_logon_schema_trigger94;
+
+
+#############################################
+#### schema/database 触发器，若多个用户同时并发登陆/退出场景，验证触发器触发现象
+#连接 WHH_USER1
+
+call WHH_USER1.delete_all_objects(user);
+
+CREATE OR REPLACE TRIGGER after_logon_schema_trigger110
+AFTER LOGON ON SCHEMA
+DECLARE
+  PRAGMA AUTONOMOUS_TRANSACTION;
+BEGIN
+  insert into tab_log values (seq1.nextval,user,systimestamp,'after_logon_schema_trigger110','schema');
+  update tab_cunt set c1 = c1 + 1 where id = 110;
+  commit;
+END;
+/
+CREATE OR REPLACE TRIGGER after_logon_database_trigger111
+AFTER LOGON ON database
+DECLARE
+  PRAGMA AUTONOMOUS_TRANSACTION;
+BEGIN
+  insert into tab_log values (seq1.nextval,user,systimestamp,'after_logon_database_trigger111','database');
+  update tab_cunt set c1 = c1 + 2 where id = 110;
+  commit;
+END;
+/
+CREATE OR REPLACE TRIGGER before_logoff_schema_trigger112
+BEFORE LOGOFF ON SCHEMA
+DECLARE
+  PRAGMA AUTONOMOUS_TRANSACTION;
+BEGIN
+  insert into tab_log values (seq1.nextval,user,systimestamp,'before_logoff_schema_trigger112','schema');
+  update tab_cunt set c1 = c1 + 3 where id = 110;
+  commit;
+END;
+/
+CREATE OR REPLACE TRIGGER before_logoff_database_trigger113
+BEFORE LOGOFF ON database
+DECLARE
+  PRAGMA AUTONOMOUS_TRANSACTION;
+BEGIN
+  insert into tab_log values (seq1.nextval,user,systimestamp,'before_logoff_database_trigger113','database');
+  update tab_cunt set c1 = c1 + 4 where id = 110;
+  commit;
+END;
+/
+
+delete from tab_cunt where id = 110;
+delete from tab_log where id > 0;
+insert into tab_cunt values(110,'c1 初始值 1',1);
+commit;
+
+select * from tab_cunt where id = 110;
++------+----------------+------+
+| ID   | C0             | C1   |
++------+----------------+------+
+|  110 | c1 初始值 1    |    1 |
++------+----------------+------+
+select USERNAME,ACTION,OBJECT from tab_log order by id;
++-----------------+--------------------+--------------------+
+| USERNAME        | ACTION             | OBJECT             |
++-----------------+--------------------+--------------------+
+| 【用户名】      | 【触发事件】       | 【触发对象】       |
++-----------------+--------------------+--------------------+
+
+
+#重新连接 sys
+
+#重新连接 WHH_USER3
+
+#重新连接 WHH_USER2
+
+#重新连接 WHH_USER1
+
+select * from whh_user1.tab_cunt where id = 110;
++------+----------------+------+
+| ID   | C0             | C1   |
++------+----------------+------+
+|  110 | c1 初始值 1    |   29 |
++------+----------------+------+
+select USERNAME,ACTION,OBJECT from WHH_USER1.tab_log order by id;
++-----------------+-----------------------------------+--------------------+
+| USERNAME        | ACTION                            | OBJECT             |
++-----------------+-----------------------------------+--------------------+
+| 【用户名】      | 【触发事件】                      | 【触发对象】       |
+| WHH_USER1       | before_logoff_schema_trigger112   | schema             |
+| WHH_USER1       | before_logoff_database_trigger113 | database           |
+| SYS             | after_logon_database_trigger111   | database           |
+| SYS             | before_logoff_database_trigger113 | database           |
+| WHH_USER3       | after_logon_database_trigger111   | database           |
+| WHH_USER3       | before_logoff_database_trigger113 | database           |
+| WHH_USER2       | after_logon_database_trigger111   | database           |
+| WHH_USER2       | before_logoff_database_trigger113 | database           |
+| WHH_USER1       | after_logon_schema_trigger110     | schema             |
+| WHH_USER1       | after_logon_database_trigger111   | database           |
++-----------------+-----------------------------------+--------------------+
+
+DROP TRIGGER after_logon_schema_trigger110;
+DROP TRIGGER after_logon_database_trigger111;
+DROP TRIGGER before_logoff_schema_trigger112;
+DROP TRIGGER before_logoff_database_trigger113;
+
+
+#############################################
+#### 系统触发器不支持 PRECEDES 子句控制触发器的执行顺序
+#连接 WHH_USER1
+
+call WHH_USER1.delete_all_objects(user);
+
+CREATE OR REPLACE TRIGGER after_logon_schema_trigger01
+AFTER LOGON ON SCHEMA
+DECLARE
+  PRAGMA AUTONOMOUS_TRANSACTION;
+BEGIN
+  my_pack2.pack_cunt := my_pack2.pack_cunt + 3;
+  insert into tab_log values (seq1.nextval,user,systimestamp,'after_logon_schema_trigger01','schema');
+  commit;
+END;
+/
+CREATE OR REPLACE TRIGGER after_logon_schema_trigger02
+AFTER LOGON ON SCHEMA PRECEDES after_logon_schema_trigger01
+DECLARE
+  PRAGMA AUTONOMOUS_TRANSACTION;
+BEGIN
+  my_pack2.pack_cunt := my_pack2.pack_cunt + 3;
+  insert into tab_log values (seq1.nextval,user,systimestamp,'after_logon_schema_trigger02','schema');
+  commit;
+END;
+/
+ERROR HY000: cannot specify PRECEDES clause
+
+CREATE OR REPLACE TRIGGER after_logon_database_trigger03
+AFTER LOGON ON DATABASE
+DECLARE
+  PRAGMA AUTONOMOUS_TRANSACTION;
+BEGIN
+  my_pack2.pack_cunt := my_pack2.pack_cunt + 3;
+  insert into tab_log values (seq1.nextval,user,systimestamp,'after_logon_database_trigger03','schema');
+  commit;
+END;
+/
+CREATE OR REPLACE TRIGGER after_logon_database_trigger04
+AFTER LOGON ON DATABASE PRECEDES after_logon_database_trigger03
+DECLARE
+  PRAGMA AUTONOMOUS_TRANSACTION;
+BEGIN
+  my_pack2.pack_cunt := my_pack2.pack_cunt + 3;
+  insert into tab_log values (seq1.nextval,user,systimestamp,'after_logon_database_trigger04','schema');
+  commit;
+END;
+/
+ERROR HY000: cannot specify PRECEDES clause
+
+delete from tab_log where id > 0;
+select USERNAME,ACTION,OBJECT from tab_log order by id;
++-----------------+--------------------+--------------------+
+| USERNAME        | ACTION             | OBJECT             |
++-----------------+--------------------+--------------------+
+| 【用户名】      | 【触发事件】       | 【触发对象】       |
++-----------------+--------------------+--------------------+
+select my_pack2.set_pack_cunt() from dual;
++--------------------------+
+| MY_PACK2.SET_PACK_CUNT() |
++--------------------------+
+|                        1 |
++--------------------------+
+select my_pack2.get_pack_cunt() from dual;
++--------------------------+
+| MY_PACK2.GET_PACK_CUNT() |
++--------------------------+
+|                        1 |
++--------------------------+
+
+
+#重新连接 WHH_USER1
+
+select USERNAME,ACTION,OBJECT from tab_log order by id;
++-----------------+--------------------------------+--------------------+
+| USERNAME        | ACTION                         | OBJECT             |
++-----------------+--------------------------------+--------------------+
+| 【用户名】      | 【触发事件】                   | 【触发对象】       |
+| WHH_USER1       | after_logon_schema_trigger01   | schema             |
+| WHH_USER1       | after_logon_database_trigger03 | schema             |
++-----------------+--------------------------------+--------------------+
+select my_pack2.get_pack_cunt() from dual;
++--------------------------+
+| MY_PACK2.GET_PACK_CUNT() |
++--------------------------+
+|                        7 |
++--------------------------+
+
+DROP TRIGGER after_logon_schema_trigger01;
+DROP TRIGGER after_logon_database_trigger03;
+
+
+#############################################
+#### 系统触发器支持 FOLLOWS 子句，但并不会按预期生效
+#连接 WHH_USER1
+
+call WHH_USER1.delete_all_objects(user);
+
+CREATE OR REPLACE TRIGGER after_logon_schema_trigger01
+AFTER LOGON ON SCHEMA
+DECLARE
+  PRAGMA AUTONOMOUS_TRANSACTION;
+BEGIN
+  my_pack2.pack_cunt := my_pack2.pack_cunt + 1;
+  insert into tab_log values (seq1.nextval,user,systimestamp,'after_logon_schema_trigger01','my_pack2.pack_cunt='||my_pack2.pack_cunt);
+  commit;
+END;
+/
+CREATE OR REPLACE TRIGGER after_logon_schema_trigger02
+AFTER LOGON ON SCHEMA
+DECLARE
+  PRAGMA AUTONOMOUS_TRANSACTION;
+BEGIN
+  my_pack2.pack_cunt := my_pack2.pack_cunt + 2;
+  insert into tab_log values (seq1.nextval,user,systimestamp,'after_logon_schema_trigger02','my_pack2.pack_cunt='||my_pack2.pack_cunt);
+  commit;
+END;
+/
+CREATE OR REPLACE TRIGGER after_logon_schema_trigger03
+AFTER LOGON ON SCHEMA FOLLOWS after_logon_schema_trigger01
+DECLARE
+  PRAGMA AUTONOMOUS_TRANSACTION;
+BEGIN
+  my_pack2.pack_cunt := my_pack2.pack_cunt + 3;
+  insert into tab_log values (seq1.nextval,user,systimestamp,'after_logon_schema_trigger03','my_pack2.pack_cunt='||my_pack2.pack_cunt);
+  commit;
+END;
+/
+CREATE OR REPLACE TRIGGER before_logoff_schema_trigger11
+BEFORE LOGOFF ON SCHEMA
+DECLARE
+  PRAGMA AUTONOMOUS_TRANSACTION;
+BEGIN
+  my_pack2.pack_cunt := my_pack2.pack_cunt + 4;
+  insert into tab_log values (seq1.nextval,user,systimestamp,'before_logoff_schema_trigger11','my_pack2.pack_cunt='||my_pack2.pack_cunt);
+  commit;
+END;
+/
+CREATE OR REPLACE TRIGGER before_logoff_schema_trigger12
+BEFORE LOGOFF ON SCHEMA
+DECLARE
+  PRAGMA AUTONOMOUS_TRANSACTION;
+BEGIN
+  my_pack2.pack_cunt := my_pack2.pack_cunt + 5;
+  insert into tab_log values (seq1.nextval,user,systimestamp,'before_logoff_schema_trigger12','my_pack2.pack_cunt='||my_pack2.pack_cunt);
+  commit;
+END;
+/
+CREATE OR REPLACE TRIGGER before_logoff_schema_trigger13
+BEFORE LOGOFF ON SCHEMA FOLLOWS before_logoff_schema_trigger11
+DECLARE
+  PRAGMA AUTONOMOUS_TRANSACTION;
+BEGIN
+  my_pack2.pack_cunt := my_pack2.pack_cunt + 6;
+  insert into tab_log values (seq1.nextval,user,systimestamp,'before_logoff_schema_trigger13','my_pack2.pack_cunt='||my_pack2.pack_cunt);
+  commit;
+END;
+/
+
+SELECT DBMS_METADATA.GET_DDL('TRIGGER', 'BEFORE_LOGOFF_SCHEMA_TRIGGER13') FROM DUAL;
++--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------BEGIN
+  my_pack2.pack_cunt := my_pack2.pack_cunt + 6;
+  insert into tab_log values (seq1.nextval,user,systimestamp,'before_logoff_schema_trigger13','my_pack2.pack_cunt='||my_pack2.pack_cunt);
+  commit;
+END; 
+
+ALTER TRIGGER "WHH_USER1"."BEFORE_LOGOFF_SCHEMA_TRIGGER13" ENABLE |
++--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------BEGIN
+  insert into tab_log values (seq1.nextval,user,systimestamp,'after_logon_schema_trigger1','my_pack2.pack_cunt='||my_pack2.get_pack_cunt());
+  v := my_pack2.set_pack_cunt(my_pack2.get_pack_cunt() + 2);
+  insert into tab_log values (seq1.nextval,user,systimestamp,'after_logon_schema_trigger1','my_pack2.pack_cunt='||my_pack2.get_pack_cunt());
+  commit;
+END;
+/
+CREATE OR REPLACE TRIGGER before_logoff_schema_trigger2
+BEFORE LOGOFF ON SCHEMA FOLLOWS after_logon_schema_trigger1
+DECLARE
+  v number;
+  PRAGMA AUTONOMOUS_TRANSACTION;
+BEGIN
+  insert into tab_log values (seq1.nextval,user,systimestamp,'before_logoff_schema_trigger2','my_pack2.pack_cunt='||my_pack2.get_pack_cunt());
+  v := my_pack2.set_pack_cunt(my_pack2.get_pack_cunt() + 4);
+  insert into tab_log values (seq1.nextval,user,systimestamp,'before_logoff_schema_trigger2','my_pack2.pack_cunt='||my_pack2.get_pack_cunt());
+  commit;
+END;
+/
+ERROR HY000: cannot reference a trigger of a different type
+
+delete from tab_log where id > 0;
+select USERNAME,ACTION,OBJECT from tab_log order by id;
++-----------------+--------------------+--------------------+
+| USERNAME        | ACTION             | OBJECT             |
++-----------------+--------------------+--------------------+
+| 【用户名】      | 【触发事件】       | 【触发对象】       |
++-----------------+--------------------+--------------------+
+select my_pack2.set_pack_cunt() from dual;
++--------------------------+
+| MY_PACK2.SET_PACK_CUNT() |
++--------------------------+
+|                        1 |
++--------------------------+
+select my_pack2.get_pack_cunt() from dual;
++--------------------------+
+| MY_PACK2.GET_PACK_CUNT() |
++--------------------------+
+|                        1 |
++--------------------------+
+
+
+#重新连接 WHH_USER2
+
+#重新连接 WHH_USER1
+
+select USERNAME,ACTION,OBJECT from tab_log order by id;
++-----------------+-----------------------------+----------------------+
+| USERNAME        | ACTION                      | OBJECT               |
++-----------------+-----------------------------+----------------------+
+| 【用户名】      | 【触发事件】                | 【触发对象】         |
+| WHH_USER1       | after_logon_schema_trigger1 | my_pack2.pack_cunt=1 |
+| WHH_USER1       | after_logon_schema_trigger1 | my_pack2.pack_cunt=3 |
++-----------------+-----------------------------+----------------------+
+select my_pack2.get_pack_cunt() from dual;
++--------------------------+
+| MY_PACK2.GET_PACK_CUNT() |
++--------------------------+
+|                        3 |
++--------------------------+
+
+DROP TRIGGER after_logon_schema_trigger1;
+
+
+#############################################
+#### FOLLOWS 子句不能用于不同范围的系统触发器（schema/database ）
+#连接 WHH_USER1
+
+call WHH_USER1.delete_all_objects(user);
+
+CREATE OR REPLACE TRIGGER after_logon_schema_trigger3
+AFTER LOGON ON SCHEMA
+DECLARE
+  PRAGMA AUTONOMOUS_TRANSACTION;
+BEGIN
+  insert into tab_log values (seq1.nextval,user,systimestamp,'after_logon_schema_trigger1','schema');
+  commit;
+END;
+/
+CREATE OR REPLACE TRIGGER after_logon_database_trigger4
+AFTER LOGON ON database FOLLOWS after_logon_schema_trigger3
+DECLARE
+  PRAGMA AUTONOMOUS_TRANSACTION;
+BEGIN
+  insert into tab_log values (seq1.nextval,user,systimestamp,'after_logon_database_trigger1','schema');
+  commit;
+END;
+/
+ERROR HY000: cannot reference a trigger defined on another table
+
+DROP TRIGGER after_logon_schema_trigger3;
+
+
+#############################################
+#### 在 SYS 用户下，可以创建 DATABASE 级别的触发器，不能创建 SCHEMA 级别触发器
+#连接 sys
+
+call WHH_USER1.delete_all_objects(user);
+
+CREATE OR REPLACE TRIGGER after_logon_schema_trigger1
+AFTER LOGON ON SCHEMA
+DECLARE
+  PRAGMA AUTONOMOUS_TRANSACTION;
+BEGIN
+  insert into whh_user1.tab_log values (seq1.nextval,user,systimestamp,'after_logon_schema_trigger1','schema');
+  commit;
+END;
+/
+ERROR HY000: system triggers cannot be defined on the schema of SYS user
+CREATE OR REPLACE TRIGGER before_logoff_schema_trigger2
+BEFORE LOGOFF ON SCHEMA
+DECLARE
+  PRAGMA AUTONOMOUS_TRANSACTION;
+BEGIN
+  insert into whh_user1.tab_log values (seq1.nextval,user,systimestamp,'before_logoff_schema_trigger2','schema');
+  commit;
+END;
+/
+ERROR HY000: system triggers cannot be defined on the schema of SYS user
+CREATE OR REPLACE TRIGGER after_logon_database_trigger3
+AFTER LOGON ON database when (user in('SYS',NULL,'','WHH_USER1'))
+DECLARE
+  PRAGMA AUTONOMOUS_TRANSACTION;
+BEGIN
+  insert into whh_user1.tab_log values (whh_user1.seq1.nextval,user,systimestamp,'after_logon_database_trigger3','database');
+  commit;
+END;
+/
+CREATE OR REPLACE TRIGGER before_logoff_database_trigger4
+BEFORE LOGOFF ON database
+DECLARE
+  PRAGMA AUTONOMOUS_TRANSACTION;
+BEGIN
+  insert into whh_user1.tab_log values (whh_user1.seq1.nextval,user,systimestamp,'before_logoff_database_trigger4','database');
+  commit;
+END;
+/
+
+delete from whh_user1.tab_log where id > 0;
+select USERNAME,ACTION,OBJECT from WHH_USER1.tab_log order by id;
++-----------------+--------------------+--------------------+
+| USERNAME        | ACTION             | OBJECT             |
++-----------------+--------------------+--------------------+
+| 【用户名】      | 【触发事件】       | 【触发对象】       |
++-----------------+--------------------+--------------------+
+
+
+#重新连接 WHH_USER3
+
+#重新连接 WHH_USER2
+
+#重新连接 WHH_USER1
+
+#重新连接 sys
+
+select USERNAME,ACTION,OBJECT from WHH_USER1.tab_log order by id;
++-----------------+---------------------------------+--------------------+
+| USERNAME        | ACTION                          | OBJECT             |
++-----------------+---------------------------------+--------------------+
+| 【用户名】      | 【触发事件】                    | 【触发对象】       |
+| SYS             | before_logoff_database_trigger4 | database           |
+| WHH_USER3       | before_logoff_database_trigger4 | database           |
+| WHH_USER2       | before_logoff_database_trigger4 | database           |
+| WHH_USER1       | after_logon_database_trigger3   | database           |
+| WHH_USER1       | before_logoff_database_trigger4 | database           |
+| SYS             | after_logon_database_trigger3   | database           |
++-----------------+---------------------------------+--------------------+
+
+DROP TRIGGER after_logon_database_trigger3;
+DROP TRIGGER before_logoff_database_trigger4;
+
+
+#############################################
+#### proxy 切路由场景，确认是否触发触发器
+#连接 WHH_USER1
+
+call WHH_USER1.delete_all_objects(user);
+
+SELECT user,SYS_CONTEXT('USERENV','CURRENT_SCHEMA') schema FROM dual;
++-----------+-----------+
+| USER      | SCHEMA    |
++-----------+-----------+
+| WHH_USER1 | WHH_USER1 |
++-----------+-----------+
+
+DROP TRIGGER WHH_USER1.after_logon_trigger11;
+DROP TRIGGER WHH_USER1.before_logoff_trigger12;
+
+CREATE OR REPLACE TRIGGER after_logon_trigger11
+AFTER LOGON ON SCHEMA
+DECLARE
+  v number;
+  PRAGMA AUTONOMOUS_TRANSACTION;
+BEGIN
+  v := my_pack2.set_pack_cunt(my_pack2.get_pack_cunt() + 1);
+  insert into tab02 values (11,11);
+  insert into tab02 values (12,seq1.nextval);
+  insert into tab02 values (13,my_pack2.get_pack_cunt());
+  insert into tab_log values (seq1.nextval,user,systimestamp,'after_logon_trigger11 SCHEMA','get_pack_cunt='||my_pack2.get_pack_cunt());
+  commit;
+END;
+/
+CREATE OR REPLACE TRIGGER before_logoff_trigger12
+BEFORE LOGOFF ON database
+DECLARE
+  v number;
+  PRAGMA AUTONOMOUS_TRANSACTION;
+BEGIN
+  v := my_pack2.set_pack_cunt(my_pack2.get_pack_cunt() + 2);
+  insert into tab02 values (21,12);
+  insert into tab02 values (22,seq1.nextval);
+  insert into tab02 values (23,my_pack2.get_pack_cunt());
+  insert into tab_log values (seq1.nextval,user,systimestamp,'before_logoff_trigger12 database','get_pack_cunt='||my_pack2.get_pack_cunt());
+  commit;
+END;
+/
+
+delete from whh_user1.tab02 where id > 0;
+delete from whh_user1.tab_log where id > 0;
+select * from whh_user1.tab02 where id > 0 order by 1;
++------+------+
+| ID   | C1   |
++------+------+
++------+------+
+select USERNAME,ACTION,OBJECT from WHH_USER1.tab_log order by id;
++-----------------+--------------------+--------------------+
+| USERNAME        | ACTION             | OBJECT             |
++-----------------+--------------------+--------------------+
+| 【用户名】      | 【触发事件】       | 【触发对象】       |
++-----------------+--------------------+--------------------+
+select my_pack2.set_pack_cunt() from dual;
++--------------------------+
+| MY_PACK2.SET_PACK_CUNT() |
++--------------------------+
+|                        1 |
++--------------------------+
+select my_pack2.get_pack_cunt() from dual;
++--------------------------+
+| MY_PACK2.GET_PACK_CUNT() |
++--------------------------+
+|                        1 |
++--------------------------+
+
+
+#重新连接 sys
+
+#重新连接 WHH_USER2
+
+#重新连接 WHH_USER1
+
+select * from tab01 order by 1,2;
++------+------+
+| ID   | C1   |
++------+------+
+|    0 |    1 |
+|    0 |    2 |
+|    0 |    3 |
+|    0 |    4 |
+|    0 |    5 |
+|    0 |    6 |
+|    0 |    7 |
+|    0 |    8 |
+|    0 |    9 |
+|    0 |   10 |
++------+------+
+select my_pack2.get_pack_cunt() from dual;
++--------------------------+
+| MY_PACK2.GET_PACK_CUNT() |
++--------------------------+
+|                        2 |
++--------------------------+
+select USERNAME,ACTION,OBJECT from WHH_USER1.tab_log order by id;
++-----------------+----------------------------------+--------------------+
+| USERNAME        | ACTION                           | OBJECT             |
++-----------------+----------------------------------+--------------------+
+| 【用户名】      | 【触发事件】                     | 【触发对象】       |
+| WHH_USER1       | before_logoff_trigger12 database | get_pack_cunt=3    |
+| SYS             | before_logoff_trigger12 database | get_pack_cunt=3    |
+| WHH_USER2       | before_logoff_trigger12 database | get_pack_cunt=3    |
+| WHH_USER1       | after_logon_trigger11 SCHEMA     | get_pack_cunt=2    |
++-----------------+----------------------------------+--------------------+
+select * from whh_user1.tab02 where id > 0 order by 1,2;
++------+------+
+| ID   | C1   |
++------+------+
+|   11 |   11 |
+|   12 |   39 |
+|   13 |    2 |
+|   21 |   12 |
+|   21 |   12 |
+|   21 |   12 |
+|   22 |   33 |
+|   22 |   35 |
+|   22 |   37 |
+|   23 |    3 |
+|   23 |    3 |
+|   23 |    3 |
++------+------+
+
+select * from tab01 where c1 =1;
++------+------+
+| ID   | C1   |
++------+------+
+|    0 |    1 |
++------+------+
+select my_pack2.get_pack_cunt() from dual;
++--------------------------+
+| MY_PACK2.GET_PACK_CUNT() |
++--------------------------+
+|                        2 |
++--------------------------+
+select USERNAME,ACTION,OBJECT from WHH_USER1.tab_log order by id;
++-----------------+----------------------------------+--------------------+
+| USERNAME        | ACTION                           | OBJECT             |
++-----------------+----------------------------------+--------------------+
+| 【用户名】      | 【触发事件】                     | 【触发对象】       |
+| WHH_USER1       | before_logoff_trigger12 database | get_pack_cunt=3    |
+| SYS             | before_logoff_trigger12 database | get_pack_cunt=3    |
+| WHH_USER2       | before_logoff_trigger12 database | get_pack_cunt=3    |
+| WHH_USER1       | after_logon_trigger11 SCHEMA     | get_pack_cunt=2    |
++-----------------+----------------------------------+--------------------+
+select * from whh_user1.tab02 where id > 0 order by 1,2;
++------+------+
+| ID   | C1   |
++------+------+
+|   11 |   11 |
+|   12 |   39 |
+|   13 |    2 |
+|   21 |   12 |
+|   21 |   12 |
+|   21 |   12 |
+|   22 |   33 |
+|   22 |   35 |
+|   22 |   37 |
+|   23 |    3 |
+|   23 |    3 |
+|   23 |    3 |
++------+------+
+
+select * from tab01 where c1 =2;
++------+------+
+| ID   | C1   |
++------+------+
+|    0 |    2 |
++------+------+
+select my_pack2.get_pack_cunt() from dual;
++--------------------------+
+| MY_PACK2.GET_PACK_CUNT() |
++--------------------------+
+|                        2 |
++--------------------------+
+select USERNAME,ACTION,OBJECT from WHH_USER1.tab_log order by id;
++-----------------+----------------------------------+--------------------+
+| USERNAME        | ACTION                           | OBJECT             |
++-----------------+----------------------------------+--------------------+
+| 【用户名】      | 【触发事件】                     | 【触发对象】       |
+| WHH_USER1       | before_logoff_trigger12 database | get_pack_cunt=3    |
+| SYS             | before_logoff_trigger12 database | get_pack_cunt=3    |
+| WHH_USER2       | before_logoff_trigger12 database | get_pack_cunt=3    |
+| WHH_USER1       | after_logon_trigger11 SCHEMA     | get_pack_cunt=2    |
++-----------------+----------------------------------+--------------------+
+select * from whh_user1.tab02 where id > 0 order by 1,2;
++------+------+
+| ID   | C1   |
++------+------+
+|   11 |   11 |
+|   12 |   39 |
+|   13 |    2 |
+|   21 |   12 |
+|   21 |   12 |
+|   21 |   12 |
+|   22 |   33 |
+|   22 |   35 |
+|   22 |   37 |
+|   23 |    3 |
+|   23 |    3 |
+|   23 |    3 |
++------+------+
+
+select * from tab01 where c1 =3;
++------+------+
+| ID   | C1   |
++------+------+
+|    0 |    3 |
++------+------+
+select my_pack2.get_pack_cunt() from dual;
++--------------------------+
+| MY_PACK2.GET_PACK_CUNT() |
++--------------------------+
+|                        2 |
++--------------------------+
+select USERNAME,ACTION,OBJECT from WHH_USER1.tab_log order by id;
++-----------------+----------------------------------+--------------------+
+| USERNAME        | ACTION                           | OBJECT             |
++-----------------+----------------------------------+--------------------+
+| 【用户名】      | 【触发事件】                     | 【触发对象】       |
+| WHH_USER1       | before_logoff_trigger12 database | get_pack_cunt=3    |
+| SYS             | before_logoff_trigger12 database | get_pack_cunt=3    |
+| WHH_USER2       | before_logoff_trigger12 database | get_pack_cunt=3    |
+| WHH_USER1       | after_logon_trigger11 SCHEMA     | get_pack_cunt=2    |
++-----------------+----------------------------------+--------------------+
+select * from whh_user1.tab02 where id > 0 order by 1,2;
++------+------+
+| ID   | C1   |
++------+------+
+|   11 |   11 |
+|   12 |   39 |
+|   13 |    2 |
+|   21 |   12 |
+|   21 |   12 |
+|   21 |   12 |
+|   22 |   33 |
+|   22 |   35 |
+|   22 |   37 |
+|   23 |    3 |
+|   23 |    3 |
+|   23 |    3 |
++------+------+
+
+select * from tab01 where c1 =4;
++------+------+
+| ID   | C1   |
++------+------+
+|    0 |    4 |
++------+------+
+select my_pack2.get_pack_cunt() from dual;
++--------------------------+
+| MY_PACK2.GET_PACK_CUNT() |
++--------------------------+
+|                        2 |
++--------------------------+
+select USERNAME,ACTION,OBJECT from WHH_USER1.tab_log order by id;
++-----------------+----------------------------------+--------------------+
+| USERNAME        | ACTION                           | OBJECT             |
++-----------------+----------------------------------+--------------------+
+| 【用户名】      | 【触发事件】                     | 【触发对象】       |
+| WHH_USER1       | before_logoff_trigger12 database | get_pack_cunt=3    |
+| SYS             | before_logoff_trigger12 database | get_pack_cunt=3    |
+| WHH_USER2       | before_logoff_trigger12 database | get_pack_cunt=3    |
+| WHH_USER1       | after_logon_trigger11 SCHEMA     | get_pack_cunt=2    |
++-----------------+----------------------------------+--------------------+
+select * from whh_user1.tab02 where id > 0 order by 1,2;
++------+------+
+| ID   | C1   |
++------+------+
+|   11 |   11 |
+|   12 |   39 |
+|   13 |    2 |
+|   21 |   12 |
+|   21 |   12 |
+|   21 |   12 |
+|   22 |   33 |
+|   22 |   35 |
+|   22 |   37 |
+|   23 |    3 |
+|   23 |    3 |
+|   23 |    3 |
++------+------+
+
+DROP TRIGGER WHH_USER1.after_logon_trigger11;
+DROP TRIGGER WHH_USER1.before_logoff_trigger12;
+
+
+
+drop user whh_user1 cascade;
+drop user whh_user2 cascade;
+drop user whh_user3 cascade;
+
+
+
+purge recyclebin;

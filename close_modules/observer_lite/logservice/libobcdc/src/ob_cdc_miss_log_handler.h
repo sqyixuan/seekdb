@@ -1,0 +1,144 @@
+/*
+ * Copyright (c) 2025 OceanBase.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#ifndef  OCEANBASE_LIBOBCDC_MISS_LOG_HANDLER_H_
+#define  OCEANBASE_LIBOBCDC_MISS_LOG_HANDLER_H_
+
+#include "lib/net/ob_addr.h"
+#include "logservice/palf/log_entry.h"
+#include "close_modules/observer_lite/logservice/logfetcher/ob_log_fetch_stat_info.h"     // TransStatInfo
+#include "ob_log_ls_fetch_ctx.h"                              // LSFetchCtx
+#include "ob_cdc_part_trans_resolver.h"                       // MissingLogInfo
+#include "ob_log_fetch_log_rpc.h"
+
+namespace oceanbase
+{
+using namespace palf;
+using namespace common;
+using namespace logfetcher;
+using namespace obrpc;
+
+namespace libobcdc
+{
+
+struct MissLogTask
+{
+public:
+  MissLogTask(
+      const common::ObAddr &orig_svr,
+      IObLogRpc &rpc,
+      LSFetchCtx &ls_fetch_ctx,
+      IObCDCPartTransResolver::MissingLogInfo &missing_info,
+      logfetcher::TransStatInfo &tsi);
+  ~MissLogTask() { reset(); }
+
+  void reset();
+public:
+  uint64_t get_tenant_id() const
+  { return ls_fetch_ctx_.get_tls_id().get_tenant_id(); }
+
+  const PartTransID &get_part_trans_id() const
+  { return missing_info_.get_part_trans_id(); }
+
+  int64_t get_handle_progress() const { return missing_info_.get_last_misslog_progress(); }
+
+  int try_change_server(const int64_t timeout, volatile bool &stop_flag);
+
+  TO_STRING_KV(K_(missing_info), K_(svr), K_(ls_fetch_ctx));
+public:
+  common::ObAddr svr_;
+  IObLogRpc &rpc_; // rpc client
+  LSFetchCtx &ls_fetch_ctx_;
+
+  IObCDCPartTransResolver::MissingLogInfo &missing_info_;
+  bool need_change_server_;
+  logfetcher::TransStatInfo &tsi_;
+};
+
+// NOTICE: SINGLETON TOOL TO HANDLE MISSLOG. NOT THREAD-SAFE. DO NOT ADD FIELD IN ObCDCMissLogHandler
+class ObCDCMissLogHandler
+{
+public:
+  static ObCDCMissLogHandler &get_instance();
+  ~ObCDCMissLogHandler() {}
+public:
+  int handle_log_miss(
+      const common::ObAddr &cur_svr,
+      IObLogRpc *rpc,
+      LSFetchCtx &ls_fetch_ctx,
+      IObCDCPartTransResolver::MissingLogInfo &missing_info,
+      logfetcher::TransStatInfo &tsi,
+      volatile bool &stop_flag);
+  static void configure(const ObLogConfig &config);
+private:
+  static int64_t g_rpc_timeout;
+  static const int64_t RETRY_LOG_PRINT_INTERVAL;
+  static const int64_t RETRY_TIMEOUT;
+  static const int64_t MAX_RPC_TIMEOUT;
+private:
+  int handle_miss_log_task_(MissLogTask &misslog_task, volatile bool &stop_flag);
+  int handle_miss_record_or_state_log_(
+      MissLogTask &misslog_task,
+      FetchLogSRpc &fetch_log_srpc,
+      volatile bool &stop_flag);
+  int handle_miss_redo_log_(
+      MissLogTask &misslog_task,
+      FetchLogSRpc &fetch_log_srpc,
+      volatile bool &stop_flag);
+  // split all miss_logs by batch
+  int build_batch_misslog_lsn_arr_(
+      const int64_t fetched_log_idx,
+      IObCDCPartTransResolver::MissingLogInfo &missing_log_info,
+      ObIArray<obrpc::ObCdcLSFetchMissLogReq::MissLogParam> &batched_misslog_lsn_arr);
+  // read batched misslog
+  int read_batch_misslog_(
+      LSFetchCtx &ls_fetch_ctx,
+      const obrpc::ObCdcLSFetchLogResp &resp,
+      int64_t &fetched_missing_log_cnt,
+      logfetcher::TransStatInfo &tsi,
+      IObCDCPartTransResolver::MissingLogInfo &missing_info);
+  int alloc_fetch_log_srpc_(const uint64_t tenant_id, FetchLogSRpc *&fetch_log_srpc);
+  void free_fetch_log_srpc_(FetchLogSRpc *fetch_log_srpc);
+
+  int fetch_miss_log_with_retry_(
+      MissLogTask &misslog_task,
+      const ObIArray<obrpc::ObCdcLSFetchMissLogReq::MissLogParam> &miss_log_array,
+      FetchLogSRpc &fetch_srpc,
+      volatile bool &stop_flag);
+  int fetch_miss_log_(
+      const ObIArray<obrpc::ObCdcLSFetchMissLogReq::MissLogParam> &miss_log_array,
+      const int64_t timeout,
+      MissLogTask &misslog_task,
+      FetchLogSRpc &fetch_srpc,
+      volatile bool &stop_flag);
+  int fetch_miss_log_direct_(
+      const ObIArray<obrpc::ObCdcLSFetchMissLogReq::MissLogParam> &miss_log_array,
+      const int64_t timeout,
+      FetchLogSRpc &fetch_log_srpc,
+      LSFetchCtx &ls_fetch_ctx);
+  void check_feedback_(
+      const obrpc::ObCdcLSFetchLogResp &resp,
+      bool &has_valid_feedback,
+      bool &rpc_fatal_err);
+private:
+  ObCDCMissLogHandler() {}
+  DISABLE_COPY_ASSIGN(ObCDCMissLogHandler);
+};
+
+} // namespace libobcdc
+} // namespace oceanbase
+
+#endif

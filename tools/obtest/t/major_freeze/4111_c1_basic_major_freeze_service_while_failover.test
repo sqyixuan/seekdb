@@ -1,0 +1,71 @@
+# owner: binifei.bnf
+# owner group: major freeze
+# restore_major_freeze_service should work when restore_mysql_tenant is standby tenant, and thus
+# restore_mysql_tenant is not allowed to actively launch major freeze. primary_major_freeze_service
+# turns to work when restore_mysql_tenant failover to primary tenant, and then restore_mysql_tenant
+# is allowed to actively launch major freeze.
+
+ob1=OBI(cluster=1, proxy_num=0);
+
+let $multi_zone_flag = 0;
+source include/create_backup_and_restore_tenant.inc;
+
+let $restore_mysql_tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = '$restore_mysql_tenant', tenant_id, 1);
+ob1.check_until_timeout select (frozen_scn - last_scn) as result from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $restore_mysql_tenant_id and frozen_scn = $max_frozen_scn, 0, 600;
+
+ob_connect(sys_conn, ob1.z1.obs0, root, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection sys_conn;
+select tenant_role from __all_virtual_tenant_info where tenant_id = 1004;
+#STANDBY
+
+################# test restore_major_freeze_service on restore_mysql_tenant ################
+# restore_mysql_tenant is not allowed to actively launch major freeze,
+# since restore_mysql_tenant is standby tenant
+ob_connect(restore_mysql_conn, ob1.z1.obs0, root@$restore_mysql_tenant, , test, , USE_MYSQL_CONNECTOR);
+connection restore_mysql_conn;
+--error 4217
+alter system major freeze;
+
+# 备租户开启归档
+let $restore_data_backup_dest = deploy_get_value(ob1.get_data_backup_dest $restore_mysql_tenant);
+let $restore_log_backup_dest = deploy_get_value(ob1.get_log_backup_dest $restore_mysql_tenant);
+ob_connect(sys_conn_mysql, ob1.z1.obs0, root@$restore_mysql_tenant, ,oceanbase, , USE_MYSQL_CONNECTOR);
+connection sys_conn_mysql;
+--disable_all_result_log
+eval alter system set data_backup_dest='$restore_data_backup_dest';
+eval alter system set log_archive_dest='location=$restore_log_backup_dest piece_switch_interval=1d';
+--enable_all_result_log
+
+# 系统租户switchover  mysql 普通租户
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tenant_info where tenant_id = 1002 and tenant_role = 'PRIMARY' and switchover_status = 'NORMAL', 1, 10;
+let $primary_switchover_epoch = deploy_get_value(ob1.select select switchover_epoch from oceanbase.__all_virtual_tenant_info where tenant_id = 1002, switchover_epoch, 1);
+ob_connect(conn_sys_ob1, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+eval ALTER SYSTEM SWITCHOVER TO STANDBY TENANT $backup_mysql_tenant;
+let $primary_sync_scn = deploy_get_value(ob1.select select sync_scn from oceanbase.__all_virtual_tenant_info where tenant_id = 1002, sync_scn, 1);
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tenant_info where tenant_id = 1002 and switchover_epoch = $primary_switchover_epoch, 0, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tenant_info where tenant_id = 1002 and tenant_role = 'STANDBY' and switchover_status = 'NORMAL' and replayable_scn = $primary_sync_scn, 1, 10;
+let $to_standby_tenant_id = 1002;
+let $to_primary_tenant_id = 1004;
+
+# 等待主租户变为备租户，并且完成归档
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tenant_info where tenant_id = $to_standby_tenant_id and tenant_role = 'STANDBY' and switchover_status = 'NORMAL', 1, 10;
+source include/check_archive_finish.inc;
+# 等待备租户switchover_status状态是normal
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tenant_info where tenant_id = $to_primary_tenant_id and tenant_role = 'STANDBY' and switchover_status = 'NORMAL', 1, 10;
+
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tenant_info where tenant_id = 1004 and tenant_role = 'STANDBY' and switchover_status = 'NORMAL', 1, 10;
+
+ob_connect(conn_sys, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+eval ALTER SYSTEM ACTIVATE STANDBY TENANT $restore_mysql_tenant;
+sleep 3;
+# TODO remove after trigger tenant info cache refresh
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tenant_info where tenant_id = 1004 and tenant_role = 'PRIMARY' and switchover_status = 'NORMAL' and recovery_until_scn = 4611686018427387903, 1, 10;
+
+################# test primary_major_freeze_service on restore_mysql_tenant ################
+# restore_mysql_tenant is allowed to actively launch major freeze,
+# since restore_mysql_tenant has failover to primary tenant
+connection restore_mysql_conn;
+alter system major freeze;
+let $max_frozen_scn = `select max(frozen_scn) from oceanbase.__all_freeze_info`;
+let $restore_tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = '$restore_mysql_tenant', tenant_id, 1);
+ob1.check_until_timeout select (frozen_scn - last_scn) as result from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $restore_tenant_id and frozen_scn = $max_frozen_scn, 0, 600;

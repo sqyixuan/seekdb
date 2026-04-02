@@ -1,0 +1,71 @@
+# owner:lixia.yq
+# owner group:storage
+# test get min end scn from dag
+
+ob1=OBI(cluster=1:1, proxy_num=0, init_unit_cpu=2);
+ob1.reboot;
+sleep 5;
+
+--source include/compaction/set_common_parameters.inc
+ob1.mysql alter system set minor_compact_trigger = 10 tenant obtest;
+
+let $tenant_id=deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name='obtest', tenant_id, 1);
+
+ob_connect(conn_mysql, ob1.z1.obs0, root@obtest, , test, , USE_MYSQL_CONNECTOR);
+connection conn_mysql;
+--source include/compaction/create_table_for_compaction.inc
+
+#########################################################################
+# TEST_1: hung in ObTabletMergeTask
+#########################################################################
+let $__cnt__=0;
+let $__row_cnt__=30;
+--source include/compaction/insert_rows_for_compaction.inc
+
+ob1.mysql alter system set_tp tp_name = 'EN_COMPACTION_TX_DATA_GET_MIN_SCN', error_code = 4023, frequency = 1;
+ob1.mysql set ob_global_debug_sync = 'reset';
+ob1.mysql set ob_global_debug_sync = 'MAJOR_MERGE_TASK_PROCESS wait_for signal1';
+
+--source include/compaction/alter_tenant_obtest_major_freeze_and_sleep.inc
+
+ob1.z1.obs0.check_until_timeout select count(*) > 0 from oceanbase.__all_virtual_dag where dag_type like "%MAJOR_MERGE%" or dag_type like "%CO_MERGE%", 1, 600;
+sleep 10;
+ob1.z1.obs0.check_until_timeout select count(*) > 0 from oceanbase.__all_virtual_dag where dag_type like "%MAJOR_MERGE%" or dag_type like "%CO_MERGE%", 1, 10;
+
+ob1.mysql alter system set _tx_result_retention = 1 tenant obtest;
+ob1.mysql alter system set minor_compact_trigger = 1 tenant obtest;
+ob1.mysql alter system set_tp tp_name = 'EN_COMPACTION_TX_DATA_GET_MIN_SCN', error_code = 4023, frequency = 0;
+ob1.z1.obs0.check_until_timeout select count(*) > 0 from oceanbase.__all_server_event_history where module='merge_errsim' and event='get_min_end_scn' and name2='min_end_scn', 1, 600;
+
+ob1.mysql set ob_global_debug_sync = 'reset';
+ob1.mysql set ob_global_debug_sync = 'now signal signal1';
+
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$tenant_id and LAST_SCN != GLOBAL_BROADCAST_SCN , 0, 1200;
+
+#########################################################################
+# TEST_1: hung in ObTabletMergePrepareTask
+#########################################################################
+ob1.mysql alter system set_tp tp_name = 'EN_COMPACTION_TX_DATA_GET_MIN_SCN', error_code = 4023, frequency = 1;
+ob1.mysql set ob_global_debug_sync = 'reset';
+ob1.mysql set ob_global_debug_sync = 'MAJOR_MERGE_PREPARE_TASK_PROCESS wait_for signal1';
+
+let $__row_cnt__=60;
+--source include/compaction/insert_rows_for_compaction.inc
+ob1.mysql alter system minor freeze tenant obtest;
+
+let $__row_cnt__=90;
+--source include/compaction/insert_rows_for_compaction.inc
+ob1.mysql alter system minor freeze tenant obtest;
+
+--source include/compaction/alter_tenant_obtest_major_freeze_and_sleep.inc
+ob1.z1.obs0.check_until_timeout select count(*) > 0 from oceanbase.__all_virtual_dag where dag_type like "%MAJOR_MERGE%" or dag_type like "%CO_MERGE%", 1, 600;
+sleep 10;
+ob1.z1.obs0.check_until_timeout select count(*) > 0 from oceanbase.__all_virtual_dag where dag_type like "%MAJOR_MERGE%" or dag_type like "%CO_MERGE%", 1, 10;
+
+ob1.mysql alter system set_tp tp_name = 'EN_COMPACTION_TX_DATA_GET_MIN_SCN', error_code = 4023, frequency = 0;
+ob1.z1.obs0.check_until_timeout select count(*) > 0 from oceanbase.__all_server_event_history where module='merge_errsim' and event='get_min_end_scn' and name2='min_end_scn', 1, 600;
+
+ob1.mysql set ob_global_debug_sync = 'reset';
+ob1.mysql set ob_global_debug_sync = 'now signal signal1';
+
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$tenant_id and LAST_SCN != GLOBAL_BROADCAST_SCN , 0, 1200;

@@ -1,0 +1,183 @@
+# owner: houhaojun.hhj
+# tags: storage
+# description: pushdown statistical information to storage layer
+
+--disable_query_log
+set global max_allowed_packet=60000000;
+set global ob_sql_work_area_percentage=80;
+alter system set _pushdown_storage_level=4;
+sleep 1;
+
+set @@recyclebin = off;
+set ob_query_timeout=1000000000;
+set ob_trx_timeout=1000000000;
+
+connect (conn_sys,$OBMYSQL_MS0,root@sys,,*NO-ONE*,$OBMYSQL_PORT);
+connect (conn_mysql,$OBMYSQL_MS0,root,,test,$OBMYSQL_PORT);
+
+--disable_warnings
+drop table if exists t_types,t_empty,t_null1,t_null2,t_default1,t_default2,t_padding,t1,t2,t3,pt1,pt2,pt3;
+--enable_warnings
+--enable_query_log
+
+# all types
+create table t_types(c0 bool, c1 tinyint, c2 smallint, c3 mediumint, c4 int, c5 bigint, c6 decimal(16,4), c7 float, c8 double, c10 date, c11 time, c12 datetime, c13 timestamp, c14 year, c15 char, c16 char(10), c17 varchar(10)) with column group (all columns, each column);
+insert into t_types values(0,1,2,3,4,5,6.0,7.0,8.0,'2022-05-16','16:52:10','2022-05-16 16:52:10','2022-05-16 16:52:10','2022','a','ab','abc');
+select sum_opnsize(c0),sum_opnsize(c1),sum_opnsize(c2),sum_opnsize(c3),sum_opnsize(c4),sum_opnsize(c5),sum_opnsize(c6),sum_opnsize(c7),sum_opnsize(c8),sum_opnsize(c10),sum_opnsize(c11),sum_opnsize(c12),sum_opnsize(c13),sum_opnsize(c14),sum_opnsize(c15),sum_opnsize(c16),sum_opnsize(c17) from t_types;
+select approx_count_distinct(c0),approx_count_distinct(c1),approx_count_distinct(c2),approx_count_distinct(c3),approx_count_distinct(c4),approx_count_distinct(c5),approx_count_distinct(c6),approx_count_distinct(c7),approx_count_distinct(c8),approx_count_distinct(c10),approx_count_distinct(c11),approx_count_distinct(c12),approx_count_distinct(c13),approx_count_distinct(c14),approx_count_distinct(c15),approx_count_distinct(c16),approx_count_distinct(c17) from t_types;
+
+# empty table
+create table t_empty(a int, b varchar(10)) with column group (all columns, each column);
+select a,sum_opnsize(a),approx_count_distinct(a) from t_empty;
+
+# null values
+create table t_null1(a int, b varchar(10)) with column group (all columns, each column);
+insert into t_null1 values(null, "a"),(1, null),(2, "ab"),(null, null);
+select sum_opnsize(a),approx_count_distinct(a) from t_null1;
+
+# default values
+create table t_default1(pk int primary key, a char(5)) row_format = compact with column group (all columns, each column);
+insert into t_default1 values(1,'a');
+insert into t_default1(pk) values(2),(3);
+select sum_opnsize(a),approx_count_distinct(a) from t_default1;
+
+--disable_query_log
+--let $loop=4
+while($loop < 1000)
+{
+  eval insert into t_default1(pk) values($loop);
+  inc $loop;
+}
+--enable_query_log
+
+create table t_default2(pk int primary key, a int default 10) row_format = compact with column group (all columns, each column);
+insert into t_default2 values(1,9);
+select sum_opnsize(a),approx_count_distinct(a) from t_default2;
+
+--disable_query_log
+--let $loop=2
+while($loop < 1000)
+{
+  eval insert into t_default2(pk) values($loop);
+  inc $loop;
+}
+--enable_query_log
+select a,sum_opnsize(a),approx_count_distinct(a) from t_default1;
+select a,sum_opnsize(a),approx_count_distinct(a) from t_default2;
+
+# padding
+create table t_padding(pk int primary key, a char(10) default 'a') with column group (all columns, each column);
+select a,sum_opnsize(a),approx_count_distinct(a) from t_padding;
+insert into t_padding values(1,'b');
+insert into t_padding values(2, 'bb');
+SET sql_mode = 'PAD_CHAR_TO_FULL_LENGTH';
+select char_length(a) from t_padding;
+select a,sum_opnsize(a),approx_count_distinct(a) from t_padding;
+SET sql_mode = '';
+
+# minor&major freeze
+create table t1 (a bigint auto_increment primary key, b bigint, c char(100), d varchar(100), e bigint not null) row_format = compressed block_size = 2048 with column group (all columns, each column);
+insert into t1 (a, b, c, d, e) values(1, 9, "a", repeat('a', 10),1);
+insert into t1 (a, b, c, d, e) values(2, 2, "ab", repeat("ab", 10),1);
+insert into t1 (a, b, c, d, e) values(3, 5, "abcd", repeat("ab", 10),1);
+insert into t1 (a, b, c, d, e) values(4, 7, NULL, repeat("abcd", 10),1);
+insert into t1 (a, b, c, d, e) values(5, NULL, "ab c ", repeat("a", 10),1);
+insert into t1 (a, b, c, d, e) values(6, 9, NULL, repeat("abbb", 10),1);
+insert into t1 (a, b, c, d, e) values(7, 1, "abc ", repeat("abcd", 10),1);
+insert into t1 (a, b, c, d, e) values(8, 3, "abcde", NULL,1);
+insert into t1 (a, b, c, d, e) values(9, 100, "abd", repeat("abc", 10),1);
+
+--let $loop=6
+while($loop > 0)
+{
+  eval insert into t1 (a, b, c, d, e) select a * 10 + $loop, b + 1, c, d, e from t1;
+  dec $loop;
+}
+insert into t1 (a, b, c, d, e) values(123456, 100, "abd", repeat("abc", 10),1);
+
+create table t2(a int) with column group (all columns, each column);
+--disable_query_log
+--let $loop=10000
+while($loop > 0)
+{
+  eval insert into t2(a) select $loop;
+  dec $loop;
+}
+
+create table t3 (c1 decimal(7,2)) with column group (each column);
+insert into t3 values (7.77);
+--enable_query_log
+alter table t2 add column b int default 11;
+
+# minor freeze
+alter system minor freeze;
+--source mysql_test/include/wait_minor_merge.inc
+
+select approx_count_distinct(b),sum_opnsize(a) from t1;
+select sum_opnsize(a),approx_count_distinct(a),sum_opnsize(b),approx_count_distinct(b),sum_opnsize(c),approx_count_distinct(c),sum_opnsize(d),approx_count_distinct(d) from t1;
+select sum_opnsize(a),approx_count_distinct(a),sum_opnsize(b),approx_count_distinct(b),sum_opnsize(c),approx_count_distinct(c),sum_opnsize(d),approx_count_distinct(d) from t1 where a > 5 and b is not null;
+select sum_opnsize(a),approx_count_distinct(a),sum_opnsize(b),approx_count_distinct(b),sum_opnsize(c),approx_count_distinct(c),sum_opnsize(d),approx_count_distinct(d) from t1 where a < 1;
+select sum_opnsize(a),approx_count_distinct(a),sum_opnsize(b),approx_count_distinct(b),sum_opnsize(c),approx_count_distinct(c),sum_opnsize(d),approx_count_distinct(d) from t1 where a = 123456;
+
+select sum_opnsize(b),approx_count_distinct(b) from t2;
+insert into t2(a,b) select a,a from t2;
+select sum_opnsize(b),approx_count_distinct(b) from t2;
+select a,sum_opnsize(a),approx_count_distinct(a) from t_default1;
+select a,sum_opnsize(a),approx_count_distinct(a) from t_default2;
+
+# minor freeze
+alter system minor freeze;
+--source mysql_test/include/wait_minor_merge.inc
+
+select sum_opnsize(b),approx_count_distinct(b) from t2;
+
+# major freeze
+alter system major freeze;
+--source mysql_test/include/wait_daily_merge.inc
+
+select approx_count_distinct(b),sum_opnsize(a) from t1;
+select sum_opnsize(a),approx_count_distinct(a),sum_opnsize(b),approx_count_distinct(b),sum_opnsize(c),approx_count_distinct(c),sum_opnsize(d),approx_count_distinct(d) from t1;
+select sum_opnsize(a),approx_count_distinct(a),sum_opnsize(b),approx_count_distinct(b),sum_opnsize(c),approx_count_distinct(c),sum_opnsize(d),approx_count_distinct(d) from t1 where a > 5 and b is not null;
+select sum_opnsize(a),approx_count_distinct(a),sum_opnsize(b),approx_count_distinct(b),sum_opnsize(c),approx_count_distinct(c),sum_opnsize(d),approx_count_distinct(d) from t1 where a < 1;
+select sum_opnsize(a),approx_count_distinct(a),sum_opnsize(b),approx_count_distinct(b),sum_opnsize(c),approx_count_distinct(c),sum_opnsize(d),approx_count_distinct(d) from t1 where a = 123456;
+select a,sum_opnsize(a),approx_count_distinct(a) from t_default1;
+select a,sum_opnsize(a),approx_count_distinct(a) from t_default2;
+
+# memtable
+insert into t1 (a, b, c, d, e) values(10000, 0, "ab c", repeat('ab ', 10),1);
+insert into t1 (a, b, c, d, e) values(null, null, null, null,1);
+
+select approx_count_distinct(b),sum_opnsize(a) from t1;
+select sum_opnsize(a),approx_count_distinct(a),sum_opnsize(b),approx_count_distinct(b),sum_opnsize(c),approx_count_distinct(c),sum_opnsize(d),approx_count_distinct(d) from t1;
+select sum_opnsize(a),approx_count_distinct(a),sum_opnsize(b),approx_count_distinct(b),sum_opnsize(c),approx_count_distinct(c),sum_opnsize(d),approx_count_distinct(d) from t1 where a > 5 and b is not null;
+select sum_opnsize(a),approx_count_distinct(a),sum_opnsize(b),approx_count_distinct(b),sum_opnsize(c),approx_count_distinct(c),sum_opnsize(d),approx_count_distinct(d) from t1 where a < 1;
+select sum_opnsize(a),approx_count_distinct(a),sum_opnsize(b),approx_count_distinct(b),sum_opnsize(c),approx_count_distinct(c),sum_opnsize(d),approx_count_distinct(d) from t1 where a = 123456;
+select sum_opnsize(a),approx_count_distinct(a),sum_opnsize(b),approx_count_distinct(b),sum_opnsize(c),approx_count_distinct(c),sum_opnsize(d),approx_count_distinct(d) from t1 where a is null;
+
+# partitioned table
+create table pt1(a int) with column group (all columns, each column);
+create table pt2(a int, b int, c int) partition by hash(a) partitions 4 with column group (all columns, each column);
+create table pt3(a int, b int, c int) partition by hash(a) partitions 4 with column group (all columns, each column);
+insert into pt1 values(1),(2),(3);
+insert into pt2 values(1,1,1),(2,2,2),(3,3,3);
+insert into pt3 values (null,null,null),(1,1,1),(2,2,2),(3,3,3);
+select a,sum_opnsize(a),approx_count_distinct(a),sum_opnsize(b),approx_count_distinct(b),sum_opnsize(c),approx_count_distinct(c) from pt2;
+select a,sum_opnsize(a),approx_count_distinct(a),sum_opnsize(b),approx_count_distinct(b),sum_opnsize(c),approx_count_distinct(c) from pt3;
+select/*+ leading(pt1,tt) use_nl(pt1,tt) NO_USE_NL_MATERIALIZATION(tt) */ * from pt1,(select a,sum_opnsize(a),approx_count_distinct(a),sum_opnsize(b),approx_count_distinct(b),sum_opnsize(c),approx_count_distinct(c) from pt2) as tt where pt1.a=tt.a;
+select/*+ leading(pt1,tt) use_nl(pt1,tt) NO_USE_NL_MATERIALIZATION(tt) */ * from pt1,(select a,sum_opnsize(a),approx_count_distinct(a),sum_opnsize(b),approx_count_distinct(b),sum_opnsize(c),approx_count_distinct(c) from pt3) as tt where pt1.a=tt.a;
+
+select min(c1), max(c1), count(c1), sum_opnsize(c1), approx_count_distinct(c1) from t3;
+connection conn_sys;
+alter system set _global_enable_rich_vector_format=false;
+connection conn_mysql;
+alter system set _enable_skip_index=false;
+sleep 2;
+--enable_query_log
+select min(c1), max(c1), count(c1), sum_opnsize(c1), approx_count_distinct(c1) from t3;
+
+--disable_warnings
+drop table if exists t_types,t_empty,t_null1,t_null2,t_default1,t_default2,t_padding,t1,t2,t3,pt1,pt2,pt3;
+alter system set _enable_skip_index=true;
+connection conn_sys;
+alter system set _global_enable_rich_vector_format=true;
+--enable_warnings

@@ -1,0 +1,239 @@
+#
+# owner:shuning.tsn
+# owner group:liboblog
+# description:
+# 测试点: 测试rollback savepoint语句处理
+#         TODO:待OB打开切主功能，测试savepoint切主
+
+
+ob1=OBI(cluster=1:1:1, init_unit_cpu=5);
+ob1.z1.obs0.set extra_config=_private_buffer_size='1B';
+ob1.z2.obs0.set extra_config=_private_buffer_size='1B';
+ob1.z3.obs0.set extra_config=_private_buffer_size='1B';
+ob1.reboot;
+
+let $tenant_name="oblog_tt";
+let $ls_id=1001;
+# 准备环境
+source include/liboblog/create_tenant_multiple_zone.inc;
+
+set ob_query_timeout=90000000;
+set ob_trx_timeout=1200000000;
+
+let $ip=deploy_get_value(ob1.proxy0.ip);
+let $port=deploy_get_value(ob1.proxy0.port);
+
+# 在oblog_tt租户下操作
+
+# 创建database和表
+create database oblog_db;
+use oblog_db;
+create table t1 (a int primary key, b int);
+create table t2 (a int, b int);
+create table t3 (a int, b int);
+
+let $start_tstamp_usec = query_get_value(select time_to_usec(now(6)) as now, now, 1);
+let $cnt=0;
+# 启动liboblog
+ob1.oblog.gen_conf tb_white_list=oblog_tt.oblog_db.* sort_trans_participants=1 log_level=TLOG.*:DEBUG skip_ob_version_compat_check=1 check_switch_server_interval_sec=10 log_router_background_refresh_interval_sec=10;
+ob1.oblog.restart;
+
+## 回滚空事务
+begin;
+savepoint sp1;
+insert into t1 values(123, 123);
+rollback to sp1;
+commit;
+select * from t1;
+
+## 回滚到第一条语句
+begin;
+savepoint sp1;
+insert into t1 values(122, 122);
+rollback to sp1;
+insert into t1 values(123, 123);
+update t1 set b = 12345 where a = 123;
+commit;
+inc $cnt;
+select * from t1;
+ob1.oblog.next_dml;
+
+## 回滚到中间
+begin;
+insert into t1 values(122, 122);
+savepoint sp1;
+update t1 set b = 345 where a = 122;
+insert into t1 values(124, 124);
+rollback to sp1;
+update t1 set b = 12346 where a = 123;
+commit;
+inc $cnt;
+select * from t1;
+ob1.oblog.next_dml;
+
+## savepoint嵌套
+begin;
+savepoint sp1;
+insert into t1 values(1234, 1234);
+savepoint sp2;
+delete from t1 where a = 1234;
+insert into t1 values(126, 126);
+rollback to sp2;
+update t1 set b = 12347 where a = 123;
+commit;
+inc $cnt;
+select * from t1;
+ob1.oblog.next_dml;
+
+## savepoint嵌套1
+begin;
+savepoint sp1;
+insert into t1 values(1238, 1238);
+savepoint sp2;
+insert into t1 values(127, 127);
+rollback to sp2;
+insert into t1 values(128, 128);
+delete from t1 where a = 1238;
+rollback to sp1;
+update t1 set b = 123481 where a = 123;
+commit;
+inc $cnt;
+select * from t1;
+ob1.oblog.next_dml;
+
+## savepoint嵌套2
+begin;
+savepoint sp1;
+insert into t1 values(129, 129);
+savepoint sp2;
+insert into t1 values(130, 130);
+rollback to sp1;
+insert into t1 values(131, 131);
+update t1 set b = 12349 where a = 123;
+commit;
+inc $cnt;
+select * from t1;
+ob1.oblog.next_dml;
+
+## savepoint嵌套3
+begin;
+savepoint sp1;
+insert into t1 values(132, 132);
+savepoint sp2;
+insert into t1 values(133, 133);
+source include/liboblog/switch_replica_leader.inc;
+sleep 5;
+connection oblog_conn_tt;
+rollback to sp1;
+insert into t1 values(134, 134);
+--error 1305
+rollback to sp2;
+insert into t1 values(135, 135);
+update t1 set b = 12350 where a = 123;
+commit;
+inc $cnt;
+select * from t1;
+ob1.oblog.next_dml;
+
+## release savepoint
+begin;
+update t1 set b = 12351 where a = 123;
+savepoint sp1;
+insert into t1 values(136, 136);
+savepoint sp2;
+insert into t1 values(137, 137);
+savepoint sp3;
+release savepoint sp2;
+--error 1305
+rollback to sp3;
+--error 1305
+rollback to sp2;
+rollback to sp1;
+commit;
+inc $cnt;
+select * from t1;
+ob1.oblog.next_dml;
+
+## savepoint 覆盖
+begin;
+savepoint sp1;
+update t1 set b = 12352 where a = 123;
+savepoint sp1;
+update t1 set b = 12353 where a = 123;
+rollback to sp1;
+commit;
+inc $cnt;
+select * from t1;
+ob1.oblog.next_dml;
+
+## 分布式事务回滚
+begin;
+savepoint sp1;
+delete from t1 where a = 123;
+insert into t2 values(123, 123);
+insert into t3 values(124, 124);
+savepoint sp2;
+update t2 set a = 321 where b = 123;
+update t3 set a = 421 where b = 124;
+rollback to sp2;
+commit;
+inc $cnt;
+select * from t1;
+select * from t2;
+select * from t3;
+ob1.oblog.next_dml;
+
+sleep 15;
+ob1.oblog.stop;
+ob1.oblog.stat_check_log_cnt "rollback row by RollbackToSavepoint";
+ob1.oblog.check_log "need_switch_server";
+ob1.oblog.check_log "exist higher priority server, need switch server";
+ob1.oblog.check_log "CHECK_NEED_SWITCH_SERVER] find different server";
+
+# 从历史位置启动
+ob1.oblog.set_start_tstamp_usec $start_tstamp_usec;
+ob1.oblog.gen_conf tb_white_list=oblog_tt.oblog_db.* sort_trans_participants=1 log_level=TLOG.*:DEBUG skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+
+while ($cnt>0)
+{
+  ob1.oblog.next_dml;
+  dec $cnt;
+}
+ob1.oblog.stop;
+ob1.oblog.stat_check_log_cnt "rollback row by RollbackToSavepoint";
+
+
+## DDL事务4.0暂时不测试DDL事务
+#connection oblog_conn_sys;
+#use oceanbase;
+#let $tid_ddl_operation = deploy_get_value(ob1.select select table_id from oceanbase.__all_table_history where table_name = "__all_ddl_operation", table_id, 1);
+#let $tid_ddl = query_get_value(select table_id from oceanbase.__all_virtual_table_history where table_name = "__all_ddl_operation", table_id, 1);
+#let $server = query_get_value(select concat(svr_ip,":",svr_port) addr from oceanbase.__all_virtual_partition_info where table_id = $tid_ddl and partition_state="L_WORKING", addr, 1);
+#ob1.oblog.gen_conf tb_white_list=sys.oceanbase.* log_level=DEBUG sort_trans_participants=1 log_level=TLOG.*:DEBUG skip_ob_version_compat_check=1;
+#ob1.oblog.restart;
+#begin;
+#insert into __all_ddl_operation (schema_version, tenant_id, user_id, database_id, database_name, tablegroup_id, table_id, table_name, operation_type, ddl_stmt_str, exec_tenant_id) values(111050, 1, 0, 0, '', 0, 0, '', 1503, '', 1);
+#savepoint sp1;
+#insert into __all_ddl_operation (schema_version, tenant_id, user_id, database_id, database_name, tablegroup_id, table_id, table_name, operation_type, ddl_stmt_str, exec_tenant_id) values(111060, 1, 0, 0, '', 0, 0, '', 1503, '', 1);
+#insert into __all_ddl_operation (schema_version, tenant_id, user_id, database_id, database_name, tablegroup_id, table_id, table_name, operation_type, ddl_stmt_str, exec_tenant_id) values(111041, 1, 0, 0, '', 0, 0, '', 1503, '', 1);
+#source include/liboblog/switch_replica_leader.inc;
+#sleep 1;
+#connection oblog_conn_sys;
+#rollback to sp1;
+#insert into __all_ddl_operation (schema_version, tenant_id, user_id, database_id, database_name, tablegroup_id, table_id, table_name, operation_type, ddl_stmt_str, exec_tenant_id) values(111010, 1, 0, 0, '', 0, 0, '', 1503, '', 1);
+#insert into __all_ddl_operation (schema_version, tenant_id, user_id, database_id, database_name, tablegroup_id, table_id, table_name, operation_type, ddl_stmt_str, exec_tenant_id) values(111030, 1, 0, 0, '', 0, 0, '', 1503, '', 1);
+#savepoint sp2;
+#insert into __all_ddl_operation (schema_version, tenant_id, user_id, database_id, database_name, tablegroup_id, table_id, table_name, operation_type, ddl_stmt_str, exec_tenant_id) values(111070, 1, 0, 0, '', 0, 0, '', 1503, '', 1);
+#insert into __all_ddl_operation (schema_version, tenant_id, user_id, database_id, database_name, tablegroup_id, table_id, table_name, operation_type, ddl_stmt_str, exec_tenant_id) values(111020, 1, 0, 0, '', 0, 0, '', 1503, '', 1);
+#rollback to sp2;
+#insert into __all_ddl_operation (schema_version, tenant_id, user_id, database_id, database_name, tablegroup_id, table_id, table_name, operation_type, ddl_stmt_str, exec_tenant_id) values(111080, 1, 0, 0, '', 0, 0, '', 1503, '', 1);
+#savepoint sp3;
+#rollback to sp3;
+#savepoint sp4;
+#insert into __all_ddl_operation (schema_version, tenant_id, user_id, database_id, database_name, tablegroup_id, table_id, table_name, operation_type, ddl_stmt_str, exec_tenant_id) values(111090, 1, 0, 0, '', 0, 0, '', 1503, '', 1);
+#rollback to sp4;
+#commit;
+#ob1.oblog.stop;
+
+#ob1.oblog.stat_check_log_cnt "rollback row by RollbackToSavepoint";

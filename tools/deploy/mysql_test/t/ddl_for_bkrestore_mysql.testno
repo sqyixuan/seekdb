@@ -1,0 +1,137 @@
+# owner: mingyin.wmy
+# owner group: SQL
+# description: 测试OB备份恢复中ddl的行为, 目标包括：
+# 1) view
+#   建view，如果依赖的table/view/column等不存在，不会报错
+#   基线备份时须要求从table schema中拿到expanede view definition
+#   建view时则直接将该view stmt放入table schema的view definition中
+# 2) create prefix index
+#   设置该column ID，会根据对应的column name做检查指定的column ID
+#
+# tags: ddl
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+
+connect (conn_sys,$OBMYSQL_MS0,root@sys,,*NO-ONE*,$OBMYSQL_PORT);
+connection conn_sys;
+
+--disable_warnings
+drop database if exists jx_db;
+--enable_warnings
+create database jx_db;
+use jx_db;
+
+create table t1(c1 int, c2 int);
+create view v1 as select * from t1;
+create view v2 as select c1 from t1;
+create view v3 as select c1, c2 from t1;
+
+create view v1_1 as select * from v1;
+create view v2_2 as select * from v2;
+create view v3_3 as select * from v3;
+
+drop table t1;
+drop view v1;
+drop view v2;
+drop view v3;
+
+--disable_warnings
+create user if not exists __oceanbase_inner_drc_user;
+--enable_warnings
+grant all privileges on *.* to __oceanbase_inner_drc_user;
+--source mysql_test/include/check_schema_sync.inc
+connect (conn_drc,$OBMYSQL_MS0,__oceanbase_inner_drc_user@sys,,*NO-ONE*,$OBMYSQL_PORT);
+connection conn_drc;
+sleep 5;
+
+# 这里需要设置db
+# 用于connection并没有指定db
+# 不然后面create view用的session database name 为NULL
+# 在rs端会检查db而报错
+use jx_db;
+show create view v1_1;
+show create view v2_2;
+show create view v3_3;
+
+--error 1146
+select 1 from t1;
+--error 1356
+select 1 from v1_1;
+--error 1356
+select 1 from v2_2;
+--error 1356
+select 1 from v3_3;
+
+# 这里和show create view v1效果一样
+let $view_def = query_get_value(select view_definition from oceanbase.__all_virtual_table where table_name = 'v1_1' and database_id = (select database_id from oceanbase.__all_virtual_database where database_name = 'jx_db') and view_definition is not null, view_definition, 1);
+eval create view v1_1_1 as $view_def;
+show create view v1_1_1;
+--error 1356
+select 1 from v1_1_1;
+
+let $view_def = query_get_value(select view_definition from oceanbase.__all_virtual_table where table_name = 'v2_2' and database_id = (select database_id from oceanbase.__all_virtual_database where database_name = 'jx_db') and view_definition is not null, view_definition, 1);
+eval create view v2_2_2 as $view_def;
+show create view v2_2_2;
+--error 1356
+select 1 from v2_2_2;
+
+let $view_def = query_get_value(select view_definition from oceanbase.__all_virtual_table where table_name = 'v3_3' and database_id = (select database_id from oceanbase.__all_virtual_database where database_name = 'jx_db') and view_definition is not null, view_definition, 1);
+eval create view v3_3_3 as $view_def;
+show create view v3_3_3;
+--error 1356
+select 1 from v3_3_3;
+
+create table jx_t1(c1 int primary key, c2 varchar(10) default '', c3 smallint);
+create view v4_1 as select jx_db.jx_t1.c1, jx_db.jx_t1.c2 from jx_db.jx_t1;
+show create view v4_1;
+create view v4_2 as select jx_db.jx_t1.c1, jx_db.jx_t1.c4 from jx_db.jx_t1;
+show create view v4_2;
+drop table jx_t1;
+
+########################################
+# create prefix index
+########################################
+# 备份恢复不需要建表和建索引在同一个sql内
+#create table jx_t2(c1 int primary key, c2 varchar(50) default 'wmy', index pre_idx(c2(10) id 16));
+#create table jx_t2(c1 int primary key, c2 varchar(50) default 'wmy', index pre_idx(c2(10) id 17));
+
+# 备份恢复不需要alter table add index
+#create table jx_t4(c1 int primary key, c2 varchar(50) default 'wmy');
+#alter table jx_t4 add index pre_idx(c2(10) id 16);
+#alter table jx_t4 add index pre_idx(c2(10) id 17);
+
+create table jx_t1(c1 int primary key, c2 varchar(50) default 'wmy', c3 char(50), c4 varchar(50) default '');
+--error 5311
+create index pre_idx on jx_t1(c2(10) id 19);
+--error 5311
+create index pre_idx on jx_t1(c2(10) id 19) local;
+create index pre_idx on jx_t1(c2(10) id 20);
+create index pre_idx2 on jx_t1(c3(10) id 21) local;
+#共用同一个生成列，id必须一致
+--error 5311
+create index pre_idx3 on jx_t1(c2(10) id 21);
+--error 5311
+create index pre_idx3 on jx_t1(c2(10) id 21) local;
+create index pre_idx3 on jx_t1(c2(10) id 20) local;
+create index pre_idx4 on jx_t1(c2(10) id 20);
+
+# 主表上column id不连续，有空洞，类似中间有add/drop column
+create table jx_t2(c1 int primary key, c2 varchar(50) default 'wmy', c3 char(50), c4 varchar(50) default '' id 30);
+# 主表内加生成列
+create index pre_idx on jx_t2(c2(10) id 20) local;
+create index pre_idx2 on jx_t2(c2(10) id 20);
+# 指定id非法 不在(16, 32767]
+--error 5311
+create index pre_idx3 on jx_t2(c4(10) id 4);
+--error 5311
+create index pre_idx3 on jx_t2(c4(10) id 4) local;
+--error 1210 
+create index pre_idx3 on jx_t2(c4(10) id 32767);
+--error 5311
+create index pre_idx3 on jx_t2(c4(10) id 32768) local;
+
+drop database if exists jx_db;
+set @@recyclebin = on;
+drop user __oceanbase_inner_drc_user;
+connection conn_sys;

@@ -1,0 +1,92 @@
+ob1=OBI(cluster=1:1:1,proxy_num=0,version=4_3_2_1);
+ob1.reboot;
+
+ob1.mysql create resource unit box max_cpu 4, memory_size='10G';
+ob1.mysql create resource pool pool unit = 'box', unit_num = 1;
+ob1.mysql create tenant mysql replica_num = 1, resource_pool_list=('pool');
+
+let $tenant_count = deploy_get_value(ob1.select select count(*) a from dba_ob_tenants, a, 1);
+let $start_version_int = deploy_get_value(ob1.select select column_value a from oceanbase.__all_core_table where column_name='target_data_version', a, 1);
+
+ob1.check_until_timeout select count(1) as unsync_cnt from GV\$OB_LOG_STAT where in_sync = 'NO', 0, 600;
+
+# 升级前检查
+ob1.upgrade_check_before;
+
+ob1.upgrade_commond_for_server pre;
+
+ob1.force_stop;
+ob1.upgrade;
+ob1.nstart;
+
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where start_service_time <= 0 or status='INACTIVE',0,180;
+ob1.check_until_timeout select count(1) as unsync_cnt from GV\$OB_LOG_STAT where in_sync = 'NO',0,600;
+source include/check_schema_sync_for_restart.inc;
+
+ob1.mysql alter system set enable_ddl=True;
+ob1.check_until_timeout select count(*) from gv\$ob_parameters where name='enable_ddl' and value='False', 0, 600;
+ob1.mysql alter system end rolling upgrade;
+
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+
+# 测试直接执行upgrade_finish，因为compatible没有推，预期会报错
+ob1.mysql alter system run upgrade job 'UPGRADE_FINISH';
+ob1.check_until_timeout select job_status from oceanbase.__all_rootservice_job where job_type='UPGRADE_FINISH' order by job_id desc limit 1, FAILED, 600;
+let $errcode = deploy_get_value(ob1.select select result_code a from oceanbase.__all_rootservice_job where job_type='UPGRADE_FINISH' order by job_id desc limit 1, a, 1);
+if ($errcode != -4179)
+{
+--echo "error: compatible not equal to DATA_CURRENT_VERSION, upgrade_finish should fail"
+}
+
+let $count = deploy_get_value(ob1.select select count(*) a from oceanbase.__all_virtual_core_table where column_name='upgrade_begin_data_version', a, 1);
+if ($count != 0)
+{
+--echo "error: upgrade_begin_data_version should not occur in __all_core_table in 4_3_2_1"
+}
+
+# 之前版本没有 upgrade_begin_data_version，在执行UPGRADE_BEGIN时需要初始化为升级前的版本
+ob1.mysql alter system run upgrade job 'UPGRADE_BEGIN';
+ob1.check_until_timeout select job_status from oceanbase.__all_rootservice_job where job_type='UPGRADE_BEGIN' order by job_id desc limit 1, SUCCESS, 600;
+
+let $count = deploy_get_value(ob1.select select count(*) a from oceanbase.__all_virtual_core_table where column_name='upgrade_begin_data_version' and column_value=$start_version_int, a, 1);
+if ($count != $tenant_count)
+{
+--echo "error: upgrade_begin_data_version should be initialized in upgrade begin stage"
+}
+
+ob1.mysql set ob_global_debug_sync = 'BEFORE_UPGRADE_FINISH_STAGE wait_for continue_signal';
+
+let $min_observer_version = deploy_get_value(ob1.select select value from gv\$ob_parameters where name='min_observer_version', value, 1);
+
+# 执行upgrade_all，等到所有机器compatible被推高
+ob1.mysql alter system run upgrade job 'UPGRADE_ALL';
+ob1.check_until_timeout select count(*) from oceanbase.gv\$ob_parameters where name='compatible' and value!='$min_observer_version', 0, 600;
+
+let $end_version_int = deploy_get_value(ob1.select select column_value a from oceanbase.__all_core_table where column_name='target_data_version', a, 1);
+
+# 强制重启所有机器
+ob1.force_stop;
+ob1.start;
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where start_service_time <= 0 or status='INACTIVE',0,180;
+ob1.check_until_timeout select count(1) as unsync_cnt from GV\$OB_LOG_STAT where in_sync = 'NO',0,600;
+source include/check_schema_sync_for_restart.inc;
+
+let $upgrade_begin_data_version = deploy_get_value(ob1.select select column_value a from oceanbase.__all_core_table where column_name='upgrade_begin_data_version', a, 1);
+
+if ($upgrade_begin_data_version == $end_version_int)
+{
+--echo "error: upgrade_begin_data_version should not equal to end_version_int"
+--exit
+}
+
+ob1.mysql update oceanbase.__all_rootservice_job set job_status='FAILED' where job_type like 'UPGRADE_%' and job_status='INPROGRESS';
+
+# 执行post脚本，预期会推高upgrade_begin_data_version
+ob1.upgrade_commond_for_server post;
+
+let $upgrade_begin_data_version = deploy_get_value(ob1.select select column_value a from oceanbase.__all_core_table where column_name='upgrade_begin_data_version', a, 1);
+if ($upgrade_begin_data_version != $end_version_int)
+{
+--echo "error: upgrade_begin_data_version should equal to end_version_int"
+--exit
+}

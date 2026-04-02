@@ -1,0 +1,315 @@
+result_format: 1
+explain_protocol: 2
+#########################
+###  默认只展示0号算子的op cost
+#########################
+#########################
+###  展示 -1 号算子的op cost
+#########################
+drop table if exists t1_subplan_filter;
+create table t1_subplan_filter(
+pk int primary key,
+c1 int,
+c2 number,
+c3 varchar(10),
+c4 json,
+c5 text);
+create index i1 on t1_subplan_filter(c2);
+call dbms_stats.set_table_stats(
+NULL,
+'t1_subplan_filter',
+numrows => 1000000,
+avgrlen => 100,
+nummicroblks => 6000
+);
+#########################
+###  onetime subquery
+#########################
+explain select (select /*+no_unnest*/ count(*) from t1_subplan_filter) as ref from t1_subplan_filter;
+Query Plan
+====================================================================
+|ID|OPERATOR           |NAME                 |EST.ROWS|EST.TIME(us)|
+--------------------------------------------------------------------
+|0 |SUBPLAN FILTER     |                     |1000000 |26069       |
+|1 |├─TABLE FULL SCAN  |t1_subplan_filter(i1)|1000000 |2650        |
+|2 |└─SCALAR GROUP BY  |                     |1       |20774       |
+|3 |  └─TABLE FULL SCAN|t1_subplan_filter(i1)|1000000 |2650        |
+====================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([:0]), filter(nil), rowset=256
+      exec_params_(nil), onetime_exprs_([subquery(1)(:0)]), init_plan_idxs_(nil), use_batch=false
+  1 - output(nil), filter(nil), rowset=256
+      access(nil), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t1_subplan_filter.c2], [t1_subplan_filter.pk]), range(MIN,MIN ; MAX,MAX)always true
+  2 - output([T_FUN_COUNT_SUM(T_FUN_COUNT(*))]), filter(nil), rowset=256
+      group(nil), agg_func([T_FUN_COUNT_SUM(T_FUN_COUNT(*))])
+  3 - output([T_FUN_COUNT(*)]), filter(nil), rowset=256
+      access(nil), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t1_subplan_filter.c2], [t1_subplan_filter.pk]), range(MIN,MIN ; MAX,MAX)always true, 
+      pushdown_aggregation([T_FUN_COUNT(*)])
+#########################
+###  init plan
+#########################
+explain select /*+no_rewrite*/ 1 from t1_subplan_filter where c1 in (select /*+no_unnest*/ c1 from t1_subplan_filter);
+Query Plan
+==============================================================
+|ID|OPERATOR         |NAME             |EST.ROWS|EST.TIME(us)|
+--------------------------------------------------------------
+|0 |SUBPLAN FILTER   |                 |500000  |2790609149  |
+|1 |├─TABLE FULL SCAN|t1_subplan_filter|1000000 |25791       |
+|2 |└─TABLE FULL SCAN|t1_subplan_filter|1000000 |25791       |
+==============================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([1]), filter([t1_subplan_filter.c1 = ANY(subquery(1))]), rowset=256
+      exec_params_(nil), onetime_exprs_(nil), init_plan_idxs_([1]), use_batch=false
+  1 - output([t1_subplan_filter.c1]), filter(nil), rowset=256
+      access([t1_subplan_filter.c1]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t1_subplan_filter.pk]), range(MIN ; MAX)always true
+  2 - output([t1_subplan_filter.c1]), filter(nil), rowset=256
+      access([t1_subplan_filter.c1]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t1_subplan_filter.pk]), range(MIN ; MAX)always true
+#########################
+###  none batch correlated subquery
+#########################
+explain select /*+no_rewrite*/ 1 from t1_subplan_filter A where exists(select /*+no_unnest*/ 1 from t1_subplan_filter B where A.c1 = B.c1);
+Query Plan
+=============================================================
+|ID|OPERATOR                     |NAME|EST.ROWS|EST.TIME(us)|
+-------------------------------------------------------------
+|0 |SUBPLAN FILTER               |    |500000  |34271119345 |
+|1 |├─TABLE FULL SCAN            |A   |1000000 |25791       |
+|2 |└─DISTRIBUTED TABLE FULL SCAN|B   |99      |34271       |
+=============================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([1]), filter([(T_OP_EXISTS, subquery(1))]), rowset=256
+      exec_params_([A.c1(:0)]), onetime_exprs_(nil), init_plan_idxs_(nil), use_batch=false
+  1 - output([A.c1]), filter(nil), rowset=256
+      access([A.c1]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([A.pk]), range(MIN ; MAX)always true
+  2 - output([1]), filter([:0 = B.c1]), rowset=256
+      access([B.c1]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([B.pk]), range(MIN ; MAX)always true
+#########################
+###  batch correlated subquery
+#########################
+explain select /*+no_rewrite*/ 1 from t1_subplan_filter A where exists(select /*+no_unnest*/ 1 from t1_subplan_filter B where A.c1 = B.c2);
+Query Plan
+===============================================================
+|ID|OPERATOR                      |NAME |EST.ROWS|EST.TIME(us)|
+---------------------------------------------------------------
+|0 |SUBPLAN FILTER                |     |500000  |15610483    |
+|1 |├─TABLE FULL SCAN             |A    |1000000 |25791       |
+|2 |└─DISTRIBUTED TABLE RANGE SCAN|B(i1)|99      |16          |
+===============================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([1]), filter([(T_OP_EXISTS, subquery(1))]), rowset=256
+      exec_params_([A.c1(:0)]), onetime_exprs_(nil), init_plan_idxs_(nil), use_batch=true
+  1 - output([A.c1]), filter(nil), rowset=256
+      access([A.c1]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([A.pk]), range(MIN ; MAX)always true
+  2 - output([1]), filter(nil), rowset=256
+      access([GROUP_ID]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([B.c2], [B.pk]), range(MIN,MIN ; MAX,MAX)always true, 
+      range_cond([cast(:0, DECIMAL_INT(10, 0)) = B.c2])
+explain select 1 from t1_subplan_filter
+where c1 in (select /*+no_unnest*/ c1 from t1_subplan_filter)
+and exists(select /*+no_unnest*/ 1 from t1_subplan_filter);
+Query Plan
+==============================================================
+|ID|OPERATOR         |NAME             |EST.ROWS|EST.TIME(us)|
+--------------------------------------------------------------
+|0 |SUBPLAN FILTER   |                 |500000  |2790609151  |
+|1 |├─TABLE FULL SCAN|t1_subplan_filter|1000000 |25791       |
+|2 |├─TABLE FULL SCAN|t1_subplan_filter|1000000 |25791       |
+|3 |└─TABLE FULL SCAN|t1_subplan_filter|1       |3           |
+==============================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([1]), filter([t1_subplan_filter.c1 = ANY(subquery(1))]), rowset=256
+      exec_params_(nil), onetime_exprs_([(T_OP_EXISTS, subquery(2))(:0)]), init_plan_idxs_([1]), use_batch=false
+  1 - output([t1_subplan_filter.c1]), filter(nil), startup_filter([:0]), rowset=256
+      access([t1_subplan_filter.c1]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t1_subplan_filter.pk]), range(MIN ; MAX)always true
+  2 - output([t1_subplan_filter.c1]), filter(nil), rowset=256
+      access([t1_subplan_filter.c1]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t1_subplan_filter.pk]), range(MIN ; MAX)always true
+  3 - output([1]), filter(nil), rowset=256
+      access(nil), partitions(p0)
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
+      range_key([t1_subplan_filter.pk]), range(MIN ; MAX)always true
+explain select 1 from t1_subplan_filter A
+where exists(select /*+no_unnest*/ 1 from t1_subplan_filter B where A.c1 = B.c1)
+and exists(select /*+no_unnest*/ 1 from t1_subplan_filter);
+Query Plan
+=============================================================
+|ID|OPERATOR                     |NAME|EST.ROWS|EST.TIME(us)|
+-------------------------------------------------------------
+|0 |SUBPLAN FILTER               |    |500000  |34270859946 |
+|1 |├─TABLE FULL SCAN            |A   |1000000 |25791       |
+|2 |└─DISTRIBUTED TABLE FULL SCAN|B   |1       |34271       |
+=============================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([1]), filter([(T_OP_EXISTS, subquery(1))]), rowset=256
+      exec_params_([A.c1(:0)]), onetime_exprs_(nil), init_plan_idxs_(nil), use_batch=false
+  1 - output([A.c1]), filter(nil), rowset=256
+      access([A.c1]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([A.pk]), range(MIN ; MAX)always true
+  2 - output([1]), filter([:0 = B.c1]), rowset=256
+      access([B.c1]), partitions(p0)
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([B.pk]), range(MIN ; MAX)always true
+explain select 1 from t1_subplan_filter A
+where exists(select /*+no_unnest*/ 1 from t1_subplan_filter B where A.c1 = B.c2)
+and exists(select /*+no_unnest*/ 1 from t1_subplan_filter);
+Query Plan
+===================================================
+|ID|OPERATOR          |NAME |EST.ROWS|EST.TIME(us)|
+---------------------------------------------------
+|0 |SUBPLAN FILTER    |     |500000  |17951085    |
+|1 |├─TABLE FULL SCAN |A    |1000000 |25791       |
+|2 |└─TABLE RANGE SCAN|B(i1)|1       |18          |
+===================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([1]), filter([(T_OP_EXISTS, subquery(1))]), rowset=256
+      exec_params_([A.c1(:0)]), onetime_exprs_(nil), init_plan_idxs_(nil), use_batch=false
+  1 - output([A.c1]), filter(nil), rowset=256
+      access([A.c1]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([A.pk]), range(MIN ; MAX)always true
+  2 - output([1]), filter(nil), rowset=256
+      access(nil), partitions(p0)
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
+      range_key([B.c2], [B.pk]), range(MIN,MIN ; MAX,MAX)always true, 
+      range_cond([cast(:0, DECIMAL_INT(10, 0)) = B.c2])
+explain select 1 from t1_subplan_filter A
+where c1 in (select /*+no_unnest*/ c1 from t1_subplan_filter)
+and exists(select /*+no_unnest*/ 1 from t1_subplan_filter B where A.c1 = B.c1);
+Query Plan
+==========================================================================
+|ID|OPERATOR                     |NAME             |EST.ROWS|EST.TIME(us)|
+--------------------------------------------------------------------------
+|0 |SUBPLAN FILTER               |                 |353554  |37061440657 |
+|1 |├─TABLE FULL SCAN            |A                |1000000 |25791       |
+|2 |├─TABLE FULL SCAN            |t1_subplan_filter|1000000 |25791       |
+|3 |└─DISTRIBUTED TABLE FULL SCAN|B                |1       |34271       |
+==========================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([1]), filter([A.c1 = ANY(subquery(1))], [(T_OP_EXISTS, subquery(2))]), rowset=256
+      exec_params_([A.c1(:0)]), onetime_exprs_(nil), init_plan_idxs_([1]), use_batch=false
+  1 - output([A.c1]), filter(nil), rowset=256
+      access([A.c1]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([A.pk]), range(MIN ; MAX)always true
+  2 - output([t1_subplan_filter.c1]), filter(nil), rowset=256
+      access([t1_subplan_filter.c1]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t1_subplan_filter.pk]), range(MIN ; MAX)always true
+  3 - output([1]), filter([:0 = B.c1]), rowset=256
+      access([B.c1]), partitions(p0)
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([B.pk]), range(MIN ; MAX)always true
+explain select 1 from t1_subplan_filter A
+where c1 in (select /*+no_unnest*/ c1 from t1_subplan_filter)
+and exists(select /*+no_unnest*/ 1 from t1_subplan_filter B where A.c1 = B.c2);
+Query Plan
+===============================================================
+|ID|OPERATOR          |NAME             |EST.ROWS|EST.TIME(us)|
+---------------------------------------------------------------
+|0 |SUBPLAN FILTER    |                 |353554  |2808531796  |
+|1 |├─TABLE FULL SCAN |A                |1000000 |25791       |
+|2 |├─TABLE FULL SCAN |t1_subplan_filter|1000000 |25791       |
+|3 |└─TABLE RANGE SCAN|B(i1)            |1       |18          |
+===============================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([1]), filter([A.c1 = ANY(subquery(1))], [(T_OP_EXISTS, subquery(2))]), rowset=256
+      exec_params_([A.c1(:0)]), onetime_exprs_(nil), init_plan_idxs_([1]), use_batch=false
+  1 - output([A.c1]), filter(nil), rowset=256
+      access([A.c1]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([A.pk]), range(MIN ; MAX)always true
+  2 - output([t1_subplan_filter.c1]), filter(nil), rowset=256
+      access([t1_subplan_filter.c1]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t1_subplan_filter.pk]), range(MIN ; MAX)always true
+  3 - output([1]), filter(nil), rowset=256
+      access(nil), partitions(p0)
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
+      range_key([B.c2], [B.pk]), range(MIN,MIN ; MAX,MAX)always true, 
+      range_cond([cast(:0, DECIMAL_INT(10, 0)) = B.c2])
+explain select 1 from t1_subplan_filter A
+where exists(select /*+no_unnest*/ 1 from t1_subplan_filter B where A.c1 = B.c1)
+and exists(select /*+no_unnest*/ 1 from t1_subplan_filter B where A.c1 = B.c2);
+Query Plan
+===============================================================
+|ID|OPERATOR                      |NAME |EST.ROWS|EST.TIME(us)|
+---------------------------------------------------------------
+|0 |SUBPLAN FILTER                |     |353554  |34288782593 |
+|1 |├─TABLE FULL SCAN             |A    |1000000 |25791       |
+|2 |├─DISTRIBUTED TABLE FULL SCAN |B    |1       |34271       |
+|3 |└─DISTRIBUTED TABLE RANGE SCAN|B(i1)|1       |18          |
+===============================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([1]), filter([(T_OP_EXISTS, subquery(1))], [(T_OP_EXISTS, subquery(2))]), rowset=256
+      exec_params_([A.c1(:0)], [A.c1(:1)]), onetime_exprs_(nil), init_plan_idxs_(nil), use_batch=false
+  1 - output([A.c1]), filter(nil), rowset=256
+      access([A.c1]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([A.pk]), range(MIN ; MAX)always true
+  2 - output([1]), filter([:0 = B.c1]), rowset=256
+      access([B.c1]), partitions(p0)
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([B.pk]), range(MIN ; MAX)always true
+  3 - output([1]), filter(nil), rowset=256
+      access(nil), partitions(p0)
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
+      range_key([B.c2], [B.pk]), range(MIN,MIN ; MAX,MAX)always true, 
+      range_cond([cast(:1, DECIMAL_INT(10, 0)) = B.c2])
+explain select 1 from t1_subplan_filter A
+where c1 in (select /*+no_unnest*/ c1 from t1_subplan_filter)
+and exists(select /*+no_unnest*/ 1 from t1_subplan_filter)
+and exists(select /*+no_unnest*/ 1 from t1_subplan_filter B where A.c1 = B.c1);
+Query Plan
+==========================================================================
+|ID|OPERATOR                     |NAME             |EST.ROWS|EST.TIME(us)|
+--------------------------------------------------------------------------
+|0 |SUBPLAN FILTER               |                 |353554  |37061440657 |
+|1 |├─TABLE FULL SCAN            |A                |1000000 |25791       |
+|2 |├─TABLE FULL SCAN            |t1_subplan_filter|1000000 |25791       |
+|3 |└─DISTRIBUTED TABLE FULL SCAN|B                |1       |34271       |
+==========================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([1]), filter([A.c1 = ANY(subquery(1))], [(T_OP_EXISTS, subquery(2))]), rowset=256
+      exec_params_([A.c1(:0)]), onetime_exprs_(nil), init_plan_idxs_([1]), use_batch=false
+  1 - output([A.c1]), filter(nil), rowset=256
+      access([A.c1]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([A.pk]), range(MIN ; MAX)always true
+  2 - output([t1_subplan_filter.c1]), filter(nil), rowset=256
+      access([t1_subplan_filter.c1]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t1_subplan_filter.pk]), range(MIN ; MAX)always true
+  3 - output([1]), filter([:0 = B.c1]), rowset=256
+      access([B.c1]), partitions(p0)
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([B.pk]), range(MIN ; MAX)always true

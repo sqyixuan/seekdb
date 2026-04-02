@@ -1,0 +1,140 @@
+# ObTableSchema在以下RPC中会使用
+# + ObMVAdditionalInfo
+#   - 创建物化视图的时候用
+# + ObCreateTableArg
+#   - 创建表
+# + ObAlterTableArg
+#   - alter table
+# + ObCreateIndexArg
+#   - 创建索引
+# + ObCreateMLogArg
+#   - 创建物化视图
+# + ObBatchCreateTabletArg
+#   - create_tablet
+# + ObDependencyObjDDLArg
+#   - 编译视图
+#   - 创建视图后会触发
+# + ObBatchBroadcastSchemaArg
+#   - bootstrap和create_tenant的时候会用
+# + ObRecoverRestoreTableDDLArg
+
+# 总结一下可能会碰到的是以下场景
+# 1. 创建物化视图
+# 2. 创建索引
+# 3. 创建各类表
+# 4. alter table
+# 5. 备份恢复
+
+# 在ObTableSchema中序列化涉及不序列化的只有part_level_相关的
+# 其他情况下序列化反序列化的成员都有长度，因此只要一个过了其他都没问题
+# 因此需要针对以及分区表和二级分区表分别判断
+
+ob1=OBI(cluster=1:1,proxy_num=0,version=4_3_4_0);
+source include/mini_ob_config.inc;
+ob1.z1.obs0.set extra_config = "cache_wash_threshold='1G',_ob_minor_merge_schedule_interval='3s'";
+
+let $backup_ip       = deploy_get_value(ob1.z1.obs0.ip);
+let $backup_port     = deploy_get_value(ob1.z1.obs0.mysql_port);
+let $backup_dest = deploy_get_value(ob1.get_backup_dest);
+let $backup_mysql_tenant    = backup_mysql_tenant;
+let $log_backup_dest = deploy_get_value(ob1.get_log_backup_dest $backup_mysql_tenant);
+let $data_backup_dest = deploy_get_value(ob1.get_data_backup_dest $backup_mysql_tenant);
+
+ob1.force_stop;
+ob1.clean_backup_dest;
+ob1.reboot;
+
+let $ip = deploy_get_value(ob1.z1.obs0.ip);
+let $port = deploy_get_value(ob1.z1.obs0.port);
+
+
+ob1.mysql alter tenant sys set primary_zone = "z1";
+ob1.check_until_timeout select job_status from oceanbase.__all_rootservice_job where job_type='ALTER_TENANT_PRIMARY_ZONE' order by job_id desc limit 1, SUCCESS, 600;
+ob1.check_until_timeout select count(*)>0 from oceanbase.__all_rootservice_event_history where event='full_rootservice' and value1=0 and value2 like '%$ip:$port%' order by 1 desc, 1, 10;
+
+
+connect(backup_sys_conn, $backup_ip, root@sys,,oceanbase, $backup_port);
+connection backup_sys_conn;
+use oceanbase;
+
+ob1.mysql create resource unit box max_cpu 2, memory_size='2G';
+ob1.mysql create resource pool pool1 unit = 'box', unit_num = 1;
+ob1.mysql create tenant mysql1 replica_num = 1, resource_pool_list=('pool1'), locality='F@z1,F@z2', PRIMARY_ZONE='z2' set ob_tcp_invited_nodes='%', ob_compatibility_mode='mysql';
+
+source include/check_schema_sync.inc;
+ob1.check_until_timeout select count(1) as unsync_cnt from GV\$OB_LOG_STAT where in_sync = 'NO', 0, 600;
+
+# 升级前检查
+ob1.upgrade_check_before;
+
+let $z1_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $z1_port = deploy_get_value(ob1.z1.obs0.mysql_port);
+ob_connect(sys_conn, $z1_ip, root@sys,,, $z1_port);
+connection sys_conn;
+
+ob1.upgrade_commond_for_server pre;
+
+ob1.mysql alter system set enable_ddl=True;
+
+ob1.z1.obs0.stop;
+ob1.z1.obs0.upgrade;
+ob1.z1.obs0.nstart;
+
+source include/check_schema_sync_for_restart.inc;
+
+ob1.check_until_timeout select ROLE from oceanbase.CDB_OB_LS_LOCATIONS where LS_ID = 1 and TENANT_ID = 1 and ZONE = 'z1', LEADER, 600;
+
+let $z2_ip = deploy_get_value(ob1.z2.obs0.ip);
+let $z2_port = deploy_get_value(ob1.z2.obs0.mysql_port);
+let $ipz1=deploy_get_value(ob1.z1.obs0.ip);
+let $portz1=deploy_get_value(ob1.z1.obs0.mysql_port);
+let $server_portz1=deploy_get_value(ob1.z1.obs0.port);
+let $ipz2=deploy_get_value(ob1.z2.obs0.ip);
+let $portz2=deploy_get_value(ob1.z2.obs0.mysql_port);
+let $mysql_tenant_id=deploy_get_value(ob1.select select tenant_id from oceanbase.dba_ob_tenants where tenant_name='mysql1', tenant_id, 1);
+let $server_portz2=deploy_get_value(ob1.z2.obs0.port);
+
+ob_connect(conn1, $z2_ip, root@mysql1,,, $z2_port);
+
+connect(backup_sys_conn, $backup_ip, root@sys,,oceanbase, $backup_port);
+
+ob1.mysql alter system end upgrade;
+
+connection conn1;
+# 低版本tenant收到请求，发给高版本RS
+ob1.mysql alter system switch replica leader ls=1 server='$ipz2:$server_portz2' tenant='sys';
+ob1.mysql alter system switch replica leader ls=1001 server='$ipz1:$server_portz1' tenant='mysql1';
+ob1.mysql alter system switch replica leader ls=1 server='$ipz1:$server_portz1' tenant='mysql1';
+ob1.check_until_timeout select role from oceanbase.cdb_ob_ls_locations where tenant_id=1 and ls_id=1 and svr_ip='$ipz2' and svr_port=$server_portz2, LEADER, 600;
+ob1.check_until_timeout select role from oceanbase.cdb_ob_ls_locations where tenant_id=$mysql_tenant_id and ls_id=1 and svr_ip='$ipz1' and svr_port=$server_portz1, LEADER, 600;
+# ob1.check_until_timeout select role from oceanbase.cdb_ob_ls_locations where tenant_id=$mysql_tenant_id and ls_id=1001 and svr_ip='$ipz1' and svr_port=$server_portz1, LEADER, 600;
+
+source t/rootservice/yiping_ob_table_schema_ddl.inc;
+
+# 等几秒后查询一下这些表，确保这些表涉及的日志流正常工作
+sleep 10;
+--disable_result_log
+select*from tb1;
+select*from tb2;
+select*from tb3;
+--enable_result_log
+
+ob1.mysql alter system switch replica leader ls=1 server='$ipz1:$server_portz1' tenant='sys';
+ob1.mysql alter system switch replica leader ls=1001 server='$ipz2:$server_portz2' tenant='mysql1';
+ob1.mysql alter system switch replica leader ls=1 server='$ipz2:$server_portz2' tenant='mysql1';
+ob1.check_until_timeout select role from oceanbase.cdb_ob_ls_locations where tenant_id=1 and ls_id=1 and svr_ip='$ipz1' and svr_port=$server_portz1, LEADER, 600;
+ob1.check_until_timeout select role from oceanbase.cdb_ob_ls_locations where tenant_id=$mysql_tenant_id and ls_id=1 and svr_ip='$ipz2' and svr_port=$server_portz2, LEADER, 600;
+# ob1.check_until_timeout select role from oceanbase.cdb_ob_ls_locations where tenant_id=$mysql_tenant_id and ls_id=1001 and svr_ip='$ipz2' and svr_port=$server_portz2, LEADER, 600;
+
+# 高版本tenant收到请求，发给低版本RS
+
+connection conn1;
+source t/rootservice/yiping_ob_table_schema_ddl.inc;
+
+# 等几秒后查询一下这些表，确保这些表涉及的日志流正常工作
+sleep 10;
+--disable_result_log
+select*from tb1;
+select*from tb2;
+select*from tb3;
+--enable_result_log

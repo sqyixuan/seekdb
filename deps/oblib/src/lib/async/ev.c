@@ -433,11 +433,7 @@
 #endif
 
 #if EV_USE_INOTIFY
-# ifdef __APPLE__
-#  include <sys/mount.h>
-# else
-#  include <sys/statfs.h>
-# endif
+# include <sys/statfs.h>
 # include <sys/inotify.h>
 /* some very old inotify.h headers don't have IN_DONT_FOLLOW */
 # ifndef IN_DONT_FOLLOW

@@ -1,0 +1,124 @@
+#
+# owner:千溪
+# owner group:liboblog
+# description:
+# 测试点:
+# 验证bug:
+#
+# 1. 前缀索引增减, 导致columnID会出现重复，导致liboblog会退出以及OB数据正确性问题
+# 
+# 2. ObPartMgrUtils::get_part_diff()接口函数返回结果不对，导致liboblog误删除和误添加分区
+# 
+#
+##
+
+ob1=OBI(cluster=1);
+ob1.reboot;
+ob1.create_client;
+
+# 准备环境
+let $ip=deploy_get_value(ob1.proxy0.ip);
+let $port=deploy_get_value(ob1.proxy0.port);
+connect (oblog_conn_sys,$ip,admin@sys,admin,oceanbase,$port);
+connection oblog_conn_sys;
+
+--disable_warnings
+drop tenant if exists oblog_tt;
+--disable_warnings
+drop resource pool if exists oblog_pool;
+--disable_warnings
+drop resource unit if exists oblog_box;
+
+source include/liboblog/create_tenant_with_gts.inc;
+
+--disable_warnings
+drop database if exists oblog_db1;
+
+# DDL事务参与排序，不需要设置test_mode_on=1 test_mode_block_verify_participants_time_sec=5
+ob1.oblog.gen_conf tb_white_list=oblog_tt.oblog_db1.* sort_trans_participants=1 skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+
+# 创建database
+create database oblog_db1;
+ob1.oblog.next;
+use oblog_db1;
+
+create table t1(c1 varchar(10));
+ob1.oblog.next;
+
+# 创建前缀索引，虚拟列
+create index idx on t1(c1(3));
+ob1.oblog.next;
+
+insert into t1 values("oblog");
+drop index idx on t1;
+# DDL 数据先到
+ob1.oblog.next;
+ob1.oblog.next;
+drop table t1;
+ob1.oblog.next;
+sleep 1;
+
+ob1.oblog.gen_conf tb_white_list=oblog_tt.oblog_db1.* sort_trans_participants=1 skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+
+create table t1 (c1 varchar(10));
+ob1.oblog.next;
+create index idx on t1(c1(3));
+ob1.oblog.next;
+create index idx2 on t1(c1(8));
+ob1.oblog.next;
+insert into t1 values("1234567890");
+ob1.oblog.next;
+drop index idx2 on t1;
+ob1.oblog.next;
+insert into t1 values("0123456789");
+ob1.oblog.next;
+alter table t1 add column c6 int default 100;
+ob1.oblog.next;
+select * from t1;
+drop table t1;
+ob1.oblog.next;
+
+# stop liboblog
+ob1.oblog.stop;
+
+## bug  2
+# 
+ob1.oblog.gen_conf tb_white_list=oblog_tt.oblog_db1.* sort_trans_participants=1 skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+
+# p1 p2 p3
+create table t1 (c1 int primary key ,c2 int ,c3 int)  partition by range (c1)(partition p1 values less than (10),partition p2 values less than (100),partition p3 values less than (200));
+ob1.oblog.next;
+
+# p2 p3
+alter table t1 drop partition p1;
+ob1.oblog.next;
+
+
+# limit: table is in physial or logical split, ddl operation not allowed
+# p0  p3 p4
+connection oblog_conn_sys;
+alter system major freeze;
+sleep 30;
+ob1.check_version 2;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_table where partition_status !=0, 0, 300;
+
+connection oblog_conn_tt;
+use oblog_db1;
+alter table t1 add partition (partition p4 values less than (300));
+ob1.oblog.next;
+
+insert into t1 values(0, 1, 2);
+ob1.oblog.next;
+insert into t1 values(99, 1, 2);
+ob1.oblog.next;
+insert into t1 values(199, 1, 2);
+ob1.oblog.next;
+insert into t1 values(299, 1, 2);
+ob1.oblog.next;
+
+# 清理数据
+--disable_warnings
+drop database if exists oblog_db1;

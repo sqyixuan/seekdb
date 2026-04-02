@@ -1,0 +1,59 @@
+ob1=OBI(cluster=1:1,proxy_num=0);
+ob1.set extra_config=$mini_ob_config;
+ob1.reboot;
+ob1.mysql alter system set debug_sync_timeout = '1000s';
+ob1.mysql alter system set _transfer_start_trans_timeout = '60s';
+ob1.mysql alter system set _transfer_start_rpc_timeout = '10s';
+set @@session.ob_query_timeout = 1000000000;
+CREATE RESOURCE UNIT unit_1 MAX_CPU 1, MEMORY_SIZE '2G';
+CREATE RESOURCE POOL pool_1 UNIT = 'unit_1', UNIT_NUM = 1;
+CREATE TENANT mysql RESOURCE_POOL_LIST = ('pool_1'), primary_zone='z1,z2'  set ob_tcp_invited_nodes='%';
+create tablegroup tg_pre sharding = 'PARTITION';
+create table t_pre (c1 int primary key, c2 int) tablegroup='tg_pre' partition by hash(c1) partitions 3;
+create tablegroup tg_none_1 sharding = 'NONE';
+create tablegroup tg_none_2 sharding = 'NONE';
+create table t1 (c1 int primary key, c2 int) tablegroup='tg_none_1' partition by hash(c1) partitions 3;
+create table t2 (c1 int primary key, c2 int) tablegroup='tg_none_2' partition by hash(c1) partitions 3;
+ob1.check_until_timeout select count(distinct ls_id) from CDB_OB_TABLE_LOCATIONS where tenant_id = $my_sql_tenant_id and table_name = 't1', 1, 3;
+ob1.check_until_timeout select count(distinct ls_id) from CDB_OB_TABLE_LOCATIONS where tenant_id = $my_sql_tenant_id and table_name = 't2', 1, 3;
+select table_name, table_id, ls_id, count(*), tablegroup_name, sharding from oceanbase.DBA_OB_TABLE_LOCATIONS where table_name in ('t_pre', 't1', 't2') and role='LEADER' group by ls_id, table_id order by table_id;
+table_name	table_id	ls_id	count(*)	tablegroup_name	sharding
+t_pre	500003	1001	2	tg_pre	PARTITION
+t_pre	500003	1002	1	tg_pre	PARTITION
+t1	500009	1002	3	tg_none_1	NONE
+t2	500013	1001	3	tg_none_2	NONE
+create tablegroup tg_partition sharding = 'PARTITION';
+alter table t1 tablegroup = 'tg_partition';
+alter table t2 tablegroup = 'tg_partition';
+select table_name, table_id, ls_id, count(*), tablegroup_name, sharding from oceanbase.DBA_OB_TABLE_LOCATIONS where table_name in ('t_pre', 't1', 't2') and role='LEADER' group by ls_id, table_id order by table_id, ls_id;
+table_name	table_id	ls_id	count(*)	tablegroup_name	sharding
+t_pre	500003	1001	2	tg_pre	PARTITION
+t_pre	500003	1002	1	tg_pre	PARTITION
+t1	500009	1002	3	tg_partition	PARTITION
+t2	500013	1001	3	tg_partition	PARTITION
+alter tenant mysql primary_zone = 'z1';
+ob1.check_until_timeout select count(*) from CDB_OB_BALANCE_JOB_HISTORY where tenant_id = $my_sql_tenant_id and JOB_TYPE = 'LS_BALANCE' and status = 'COMPLETED', 1, 100;
+ob1.check_until_timeout select count(distinct ls_id) from CDB_OB_TABLE_LOCATIONS where tenant_id = $my_sql_tenant_id and table_name in ('t1', 't2'), 1, 3;
+select table_name, table_id, ls_id, count(*), tablegroup_name, sharding from oceanbase.DBA_OB_TABLE_LOCATIONS where table_name in ('t_pre', 't1', 't2') and role='LEADER' group by ls_id, table_id order by table_id, ls_id;
+table_name	table_id	ls_id	count(*)	tablegroup_name	sharding
+t_pre	500003	1001	3	tg_pre	PARTITION
+t1	500009	1001	3	tg_partition	PARTITION
+t2	500013	1001	3	tg_partition	PARTITION
+alter system set partition_balance_schedule_interval = '10s';
+alter tenant mysql primary_zone = 'z1,z2';
+ob1.check_until_timeout select count(*) from CDB_OB_BALANCE_JOB_HISTORY where tenant_id = $my_sql_tenant_id and job_type = 'PARTITION_BALANCE' and status = 'COMPLETED', 1, 100;
+ob1.check_until_timeout select count(distinct ls_id) from CDB_OB_TABLE_LOCATIONS where tenant_id = $my_sql_tenant_id and table_name = 't1', 2, 3;
+ob1.check_until_timeout select count(distinct ls_id) from CDB_OB_TABLE_LOCATIONS where tenant_id = $my_sql_tenant_id and table_name = 't2', 2, 3;
+select task_type, src_ls, dest_ls, finished_part_list, status from oceanbase.DBA_OB_BALANCE_TASK_HISTORY;
+task_type	src_ls	dest_ls	finished_part_list	status
+LS_MERGE	1002	1001	500003:500005,500009:500010,500009:500011,500009:500012	COMPLETED
+LS_SPLIT	1001	1003	500003:500006,500009:500012,500013:500016	COMPLETED
+LS_TRANSFER	1001	1003	500009:500011,500013:500015	COMPLETED
+select table_name, table_id, ls_id, count(*), tablegroup_name, sharding from oceanbase.DBA_OB_TABLE_LOCATIONS where table_name in ('t_pre', 't1', 't2') and role='LEADER' group by ls_id, table_id order by table_id, ls_id;
+table_name	table_id	ls_id	count(*)	tablegroup_name	sharding
+t_pre	500003	1001	2	tg_pre	PARTITION
+t_pre	500003	1003	1	tg_pre	PARTITION
+t1	500009	1001	1	tg_partition	PARTITION
+t1	500009	1003	2	tg_partition	PARTITION
+t2	500013	1001	1	tg_partition	PARTITION
+t2	500013	1003	2	tg_partition	PARTITION

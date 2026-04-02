@@ -1,0 +1,367 @@
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+
+# owner: yibo.tyf
+# owner group: sql1
+# tags: optimizer
+# 测试选择率估算
+
+--disable_warnings
+drop table if exists t1, t2, t3, t4, t5, t6;
+--enable_warnings
+
+--echo SCHEMA
+create table t1 (deci decimal(20, 5));
+create table t2 (c1 int) partition by range columns(c1) (
+    partition p0 VALUES LESS THAN (500),
+    partition p1 VALUES LESS THAN (1000));
+
+create table t3 (c1 int) partition by range columns(c1) (
+    partition p0 VALUES LESS THAN (500),
+    partition p1 VALUES LESS THAN (1000));
+
+create table t4 (c1 int, c2 decimal(15, 2));
+
+create table t5 (c1 int primary key, c2 int) partition by range columns(c1) (
+    partition p0 VALUES LESS THAN (51),
+    partition p1 VALUES LESS THAN (101),
+    partition p2 VALUES LESS THAN (151),
+    partition p3 VALUES LESS THAN (201));
+
+create table t6 (c1 int, c2 int, c3 int, primary key (c1, c2)) partition by range columns(c1) 
+subpartition by hash (c2) subpartitions 3
+(
+    partition p0 VALUES LESS THAN (51),
+    partition p1 VALUES LESS THAN (101),
+    partition p2 VALUES LESS THAN (151),
+    partition p3 VALUES LESS THAN (201)
+);
+
+
+--disable_query_log
+let $i = 0;
+while ($i <= 1000)
+{
+  --let $stmt = insert into t1 values ($i / 1000);
+  eval $stmt;
+  inc $i;
+}
+# | t2  | p0   | p1   |
+# |-----|------|------|
+# | row | 100  | 200  |
+# | ndv | 1    | 200  |
+# 
+# | t3  | p0   | p1   |
+# |-----|------|------|
+# | row | 200  | 100  |
+# | ndv | 1    | 100  |
+let $i = 0;
+while ($i < 100)
+{
+  --let $stmt = insert into t2 values (6);
+  eval $stmt;
+  --let $stmt = insert into t3 values (600 + $i);
+  eval $stmt;
+  inc $i;
+}
+let $i = 0;
+while ($i < 200)
+{
+  --let $stmt = insert into t2 values (600 + $i);
+  eval $stmt;
+  --let $stmt = insert into t3 values (6);
+  eval $stmt;
+  inc $i;
+}
+
+let $i = 0;
+while ($i <= 1000)
+{
+  --let $stmt = insert into t4 values ($i/4, $i%50 + 1);
+  eval $stmt;
+  inc $i;
+}
+
+let $i = 0;
+while ($i <= 200)
+{
+  --let $stmt = insert into t5 values ($i, $i + 2);
+  eval $stmt;
+  inc $i;
+}
+
+let $i = 0;
+while ($i <= 200)
+{
+  --let $stmt = insert into t6 values ($i, $i + 1, $i + 2);
+  eval $stmt;
+  inc $i;
+}
+--enable_query_log
+--source mysql_test/include/minor_merge_tenant.inc
+call dbms_stats.gather_table_stats('TEST', 't1');
+call dbms_stats.gather_table_stats('TEST', 't2');
+call dbms_stats.gather_table_stats('TEST', 't3');
+call dbms_stats.gather_table_stats('TEST', 't4');
+call dbms_stats.gather_table_stats('TEST', 't5');
+call dbms_stats.gather_table_stats('TEST', 't6');
+--source mysql_test/include/check_stat.inc
+
+# diffrent data type
+
+--echo DECIMAL
+select count(*), min(deci), max(deci) from t1;
+# expect 1000 row
+explain select * from t1 where deci > 0;
+explain select * from t1 where deci < 1;
+# expect 500 row
+explain select * from t1 where deci > 0.5;
+explain select * from t1 where deci < 0.5;
+
+# expect 600 row
+explain select * from t1 where deci between 0.2 and 0.8;
+# expect 60 row
+explain select * from t1 where deci between 0.02 and 0.08;
+# expect 6 row
+explain select * from t1 where deci between 0.002 and 0.008;
+
+explain select * from t1 where deci between 123456789012345678901234567890 and 123456789098765432101234567890;
+
+--echo JOIN
+explain select /*+ LEADING(a b) */ * from t2 a join t2 b where a.c1 = b.c1;
+explain select /*+ LEADING(a b) */ * from t2 a join t3 b where a.c1 = b.c1;
+explain select /*+ LEADING(a b) */ * from t3 a join t3 b where a.c1 = b.c1;
+
+explain select c1 from t4 group by c1 having sum(c2) > 100;
+explain select c1 from t4 group by c1 having sum(c2) between 50 and 120;
+
+# range谓词在一级分区的非分区键上，无法进行分区裁剪
+explain select * from t5 where c2 >= 60 and c2 < 130;
+explain select * from t5 where c2 >= 1 and c2 < 50;
+
+# range谓词在二级分区的hash分区键上，无法进行分区裁剪
+explain select * from t6 where c2 >= 60 and c2 < 130;
+explain select * from t6 where c2 >= 1 and c2 < 50;
+
+# range谓词在二级分区的非分区间键上，无法进行分区裁剪
+explain select * from t6 where c3 >= 60 and c3 < 130;
+explain select * from t6 where c3 >= 1 and c3 < 50;
+
+# bug: 
+--disable_warnings
+drop table if exists `PART`;
+--enable_warnings
+CREATE TABLE `PART` (
+  `P_PARTKEY` NUMBER NOT NULL,
+  `P_NAME` VARCHAR(55) DEFAULT NULL,
+  PRIMARY KEY (`P_PARTKEY`)
+);
+insert into PART values (1, '1green');
+insert into PART values (2, '12green');
+insert into PART values (3, '%green');
+insert into PART values (4, '_green');
+explain select * from PART where P_NAME LIKE '%%green%%';
+explain select * from PART where P_NAME LIKE '_green%%';
+explain select * from PART where P_NAME LIKE '1%green%%' escape '1';
+
+# bug 
+explain select * from PART where P_NAME LIKE '\%green%%' escape '';
+select * from PART where P_NAME LIKE '\%green%%' escape '';
+explain select * from PART where P_NAME LIKE '\%green%%' escape NULL;
+select * from PART where P_NAME LIKE '\%green%%' escape NULL;
+explain select * from PART where P_NAME not LIKE '\%green%%' escape '';
+select * from PART where P_NAME not LIKE '\%green%%' escape '';
+explain select * from PART where P_NAME not LIKE '\%green%%' escape NULL;
+select * from PART where P_NAME not LIKE '\%green%%' escape NULL;
+
+# bug 
+--disable_warnings
+DROP TABLE IF EXISTS table10_bigint;
+DROP TABLE IF EXISTS table5_key_pk_parts_1_bigint;
+DROP TABLE IF EXISTS table0_key_pk_parts_1_bigint;
+--enable_warnings
+CREATE TABLE `table10_bigint` (
+    `pk` bigint(20) NOT NULL,
+    `col_bigint` bigint(20) DEFAULT NULL,
+    `col_decimal_20_0` decimal(20,0) DEFAULT NULL,
+    PRIMARY KEY (`pk`));
+
+CREATE TABLE `table5_key_pk_parts_1_bigint` (
+    `col_bigint` bigint(20) DEFAULT NULL,
+    `pk` bigint(20) NOT NULL,
+    PRIMARY KEY (`pk`)
+);
+
+CREATE TABLE `table0_key_pk_parts_1_bigint` (
+    `pk` bigint(20) NOT NULL,
+    `col_bigint` bigint(20) DEFAULT NULL,
+    PRIMARY KEY (`pk`)
+);
+
+EXPLAIN SELECT 1 FROM table10_bigint WHERE pk in (
+    (SELECT pk
+     FROM table5_key_pk_parts_1_bigint
+     WHERE 'bbb' NOT LIKE 'aaa'
+     OR col_bigint <> 6991
+     OR EXISTS (SELECT col_bigint FROM table0_key_pk_parts_1_bigint)
+     AND (col_bigint < 6991 AND (col_decimal_20_0 = 1))));
+
+SELECT 1 FROM table10_bigint WHERE pk in (
+    (SELECT pk
+     FROM table5_key_pk_parts_1_bigint
+     WHERE 'bbb' NOT LIKE 'aaa'
+     OR col_bigint <> 6991
+     OR EXISTS (SELECT col_bigint FROM table0_key_pk_parts_1_bigint)
+     AND (col_bigint < 6991 AND (col_decimal_20_0 = 1))));
+
+# bug 
+--disable_warnings
+drop table if exists g, k, l, bb, y, jj;
+--enable_warnings
+CREATE TABLE `g` (
+    `col_date` date DEFAULT NULL,
+    `col_int` int(11) DEFAULT NULL,
+    `col_varchar_20_key` varchar(20) DEFAULT NULL,
+    `col_int_key` int(11) DEFAULT NULL,
+    `col_varchar_10` varchar(10) DEFAULT NULL,
+    `col_date_key` date DEFAULT NULL,
+    `col_datetime` datetime DEFAULT NULL,
+    `col_datetime_key` datetime DEFAULT NULL,
+    `col_varchar_10_key` varchar(10) DEFAULT NULL,
+    `col_varchar_20` varchar(20) DEFAULT NULL,
+    `pk` int(11) NOT NULL,
+    PRIMARY KEY (`pk`),
+    KEY `idx5` (`pk`, `col_varchar_20_key`) ,
+    KEY `idx1` (`pk`, `col_int_key`) ,
+    KEY `idx7` (`pk`, `col_date_key`) ,
+    KEY `idx9` (`pk`, `col_datetime_key`) ,
+    KEY `idx3` (`pk`, `col_varchar_10_key`) 
+    ) ;
+
+INSERT INTO `g` VALUES ('2000-07-17',2034040832,'gluvg',1809907712,'u','2005-03-16','2004-09-13 15:52:12','2003-11-26 01:56:32','x','bgluvg',1),('2002-03-03',8,'u',NULL,'can\'t','2008-01-25','2000-07-16 02:30:13','2001-03-23 07:56:45','could','from',2),('2004-02-01',6,'NTNGR',NULL,'obgluvg','2004-05-23','2000-10-07 18:42:39','2008-06-12 01:31:11','or','IGQHM',3),('2009-02-09',NULL,'l',8,'cobgluv','2006-08-03','2002-09-23 11:21:11','2007-09-15 11:44:50','LHFIH','it\'s',4),('2005-03-10',4,'YRING',0,'NOXVG','2000-06-28','2009-01-26 04:44:48','2007-06-10 15:43:32','b','ccobgl',5),('2006-08-28',3,'dcc',1299185664,'KDPNM','2009-02-20','2002-07-20 04:58:06','2004-08-21 09:37:01','KLBLE','WHXHQ',6),('2005-04-08',807927808,'d',-549519360,'y','2003-08-14','2008-04-14 23:02:06','2002-08-09 16:31:19','JOGKX','you\'re',7);
+
+CREATE TABLE `k` (
+    `col_date` date DEFAULT NULL,
+    `col_datetime_key` datetime DEFAULT NULL,
+    `col_int_key` int(11) DEFAULT NULL,
+    `col_varchar_20` varchar(20) DEFAULT NULL,
+    `col_datetime` datetime DEFAULT NULL,
+    `col_varchar_10_key` varchar(10) DEFAULT NULL,
+    `col_int` int(11) DEFAULT NULL,
+    `pk` int(11) NOT NULL,
+    `col_date_key` date DEFAULT NULL,
+    `col_varchar_10` varchar(10) DEFAULT NULL,
+    `col_varchar_20_key` varchar(20) DEFAULT NULL,
+    PRIMARY KEY (`pk`),
+    KEY `idx9` (`pk`, `col_datetime_key`) ,
+    KEY `idx1` (`pk`, `col_int_key`) ,
+    KEY `idx3` (`pk`, `col_varchar_10_key`) ,
+    KEY `idx7` (`pk`, `col_date_key`) ,
+    KEY `idx5` (`pk`, `col_varchar_20_key`) 
+    ) ;
+
+INSERT INTO `k` VALUES ('2000-05-20','2001-10-24 01:37:02',1714946048,'say','2001-05-09 12:04:37','DGDNB',267976704,1,'2008-07-05','SOWZO','FTRLS'),('2002-10-21','2006-08-16 09:40:13',NULL,'she','2004-12-22 07:04:35','h',2,2,'2004-09-16','pwydqmt','WKSPB'),('2002-04-06','2002-07-09 23:25:40',NULL,'g','2007-06-10 10:50:41','BLCVY',5,3,'2006-02-22','it','right'),('2009-01-23','2004-12-25 13:25:46',6,'UDUFE','2006-06-12 19:47:32','kpw',1596588032,4,'2001-03-12','ZHUHV','tkpwydqmt'),('2003-10-11','2009-03-21 22:50:58',1685782528,'FCRVP','2007-10-20 18:13:48','qtkpwydqmt',4,5,'2008-02-17','TWRDV','vqtkpwydq'),('2005-08-19','2000-09-14 21:28:26',3,'qvq','2003-08-07 15:29:32','is',8,6,'2008-12-25','EUXAE','IJKCU'),('2002-07-14','2001-12-06 02:19:43',820969472,'e','2007-06-17 14:12:08','some',476643328,7,'2002-08-14','back','from'),('2009-02-24','2001-06-27 22:58:30',-962134016,'jq','2007-04-06 11:02:34','if',4,8,'2005-02-15','hjqvqtkpw','a'),('2006-05-07','2008-05-17 00:53:50',4,'bhjqvqtkpw','2003-06-12 16:27:31','OZPOO',7,9,'2008-10-22','why','dbh'),('2006-08-27','2008-04-09 21:53:44',2,'gdbhj','2002-12-26 23:27:27','had',NULL,10,'2001-12-25','and','all'),('2006-11-04','2002-02-24 02:43:20',8,'h','2005-09-10 17:23:42','p',0,11,'2006-07-25','jpgdbhjqv','tjp');
+
+CREATE TABLE `l` (
+    `col_date` date DEFAULT NULL,
+    `col_varchar_10_key` varchar(10) DEFAULT NULL,
+    `col_int_key` int(11) DEFAULT NULL,
+    `col_int` int(11) DEFAULT NULL,
+    `col_date_key` date DEFAULT NULL,
+    `col_varchar_20` varchar(20) DEFAULT NULL,
+    `col_varchar_10` varchar(10) DEFAULT NULL,
+    `col_varchar_20_key` varchar(20) DEFAULT NULL,
+    `col_datetime` datetime DEFAULT NULL,
+    `col_datetime_key` datetime DEFAULT NULL,
+    `pk` int(11) NOT NULL,
+    PRIMARY KEY (`pk`),
+    KEY `idx3` (`pk`, `col_varchar_10_key`) ,
+    KEY `idx1` (`pk`, `col_int_key`) ,
+    KEY `idx7` (`pk`, `col_date_key`) ,
+    KEY `idx5` (`pk`, `col_varchar_20_key`) ,
+    KEY `idx9` (`pk`, `col_datetime_key`) 
+    ) ;
+INSERT INTO `l` VALUES ('2004-10-05','gtjpgdbhjq',-202375168,-1824784384,'2000-07-12','wgtjpgd','o','want','2000-06-18 22:41:29','2004-04-24 13:09:04',1),('2006-10-12','f',NULL,NULL,'2006-07-07','to','tw','utwgtjpgd','2007-07-05 13:49:21','2005-04-25 01:01:16',2),('2001-11-28','outwg',NULL,-1044316160,'2000-03-16','ZCTRJ','QYOUY','KWRSB','2008-04-15 10:08:49','2007-06-11 18:12:34',3),('2003-01-05','XMSLA',NULL,NULL,'2008-04-25','oout','think','ASJMV','2009-04-11 08:32:23','2005-01-02 05:31:39',4),('2005-03-15','good',NULL,NULL,'2001-04-17','b','I\'m','v','2004-09-27 22:49:22','2000-03-10 16:57:59',5),('2006-12-24','would',39124992,8,'2000-12-17','p','mooutw','k','2005-06-20 14:57:22','2006-04-20 20:23:56',6),('2002-07-02','UBLUU',NULL,NULL,'2009-08-08','l','VXDPG','wmoo','2000-12-09 21:39:12','2008-06-05 07:22:02',7),('2000-01-08','it',-1397948416,-960233472,'2004-09-10','YDWYH','INRIY','vw','2006-08-07 12:45:17','2007-02-02 06:35:18',8),('2005-06-12','r',9,2,'2005-01-01','and','fvwmoout','UMQUJ','2004-05-19 07:15:58','2004-10-02 23:50:47',9),('2001-07-26','d',9,2,'2008-01-24','BLGJG','look','your','2005-08-28 20:23:56','2002-02-25 17:07:14',10),('2003-11-08','out',0,-625541120,'2007-06-22','did','bfvwmoou','come','2008-01-03 21:59:18','2008-08-01 13:09:48',11),('2009-07-10','when',-1642790912,NULL,'2001-03-02','k','gbfvwmoou','sgb','2007-02-08 08:55:04','2009-10-21 12:20:59',12);
+
+CREATE TABLE `bb` (
+    `col_date` date DEFAULT NULL,
+    `col_date_key` date DEFAULT NULL,
+    `col_int_key` int(11) DEFAULT NULL,
+    `col_datetime` datetime DEFAULT NULL,
+    `col_datetime_key` datetime DEFAULT NULL,
+    `col_varchar_20` varchar(20) DEFAULT NULL,
+    `col_varchar_10_key` varchar(10) DEFAULT NULL,
+    `col_varchar_20_key` varchar(20) DEFAULT NULL,
+    `col_varchar_10` varchar(10) DEFAULT NULL,
+    `pk` int(11) NOT NULL,
+    `col_int` int(11) DEFAULT NULL,
+    PRIMARY KEY (`pk`),
+    KEY `idx7` (`pk`, `col_date_key`) ,
+    KEY `idx1` (`pk`, `col_int_key`) ,
+    KEY `idx9` (`pk`, `col_datetime_key`) ,
+    KEY `idx3` (`pk`, `col_varchar_10_key`) ,
+    KEY `idx5` (`pk`, `col_varchar_20_key`) 
+    );
+INSERT INTO `bb` VALUES ('2000-11-18','2004-04-08',-1067253760,'2001-07-17 04:32:46','2000-05-02 06:52:33','in','DBVRE','RCAWC','KOPAJ',1,1895432192),('2000-10-24','2000-07-22',-1881997312,'2007-09-15 05:44:37','2009-10-23 23:17:10','tywf','mt','QUKPR','not',2,7),('2005-10-13','2007-09-23',9,'2008-06-11 03:41:46','2000-06-17 08:07:53','look','smty','because','t',3,NULL),('2007-04-03','2001-12-07',9,'2006-12-19 12:35:17','2001-03-07 20:53:01','dsmtyw','about','want','oh',4,-1352466432),('2009-11-03','2004-11-21',NULL,'2008-07-23 09:02:06','2003-08-10 06:52:27','k','e','x','CDHTB',5,511967232),('2009-03-14','2009-06-01',NULL,'2002-07-15 23:50:13','2002-12-12 10:20:06','to','mdsmt','the','your',6,1139539968),('2005-05-25','2008-12-27',-1236664320,'2008-02-10 13:25:32','2008-10-10 12:51:06','f','p','hmdsmt','ORVDG',7,6),('2008-08-03','2007-03-16',2116419584,'2007-12-26 10:22:18','2009-11-09 01:56:44','it\'s','hhmdsmtywf','ihhmdsm','p',8,4),('2001-01-21','2006-04-09',-1280376832,'2001-08-27 19:50:23','2003-02-03 21:41:24','d','l','had','NIINB',9,NULL),('2002-11-27','2001-12-23',NULL,'2007-07-15 22:59:33','2006-01-05 21:53:42','aihhmds','HXNYE','taihhmdsmt','utaihhm',10,-129761280),('2003-03-11','2006-12-27',195166208,'2004-11-12 19:35:29','2005-05-21 05:38:06','gutaih','v','GOVMF','u',11,7),('2008-04-23','2004-11-05',9,'2004-03-07 09:31:04','2002-04-04 21:12:30','avguta','XKLUI','b','s',12,-1045102592),('2009-09-16','2009-06-08',NULL,'2006-10-12 00:39:13','2009-02-07 05:50:01','some','b','VZAAR','mean',13,1440415744),('2007-06-16','2006-09-09',6,'2002-06-21 14:15:03','2007-06-21 03:02:00','to','c','would','about',14,1219428352),('2006-04-15','2008-02-18',-437256192,'2001-02-21 01:13:55','2001-10-27 13:40:16','the','x','cxa','do',15,3),('2006-11-13','2000-11-19',7,'2001-08-07 11:18:44','2001-09-25 11:28:12','ucxavgut','bucx','URDYF','his',16,1715798016),('2004-02-05','2007-06-05',1534787584,'2001-09-06 11:30:29','2008-05-21 19:16:50','do','fb','l','i',17,-182583296),('2003-06-11','2004-04-08',5,'2008-01-28 18:41:25','2004-09-18 18:26:15','r','all','y','i',18,-1669595136),('2000-08-15','2001-05-10',721027072,'2000-09-27 06:40:46','2005-09-02 15:32:53','if','because','QOESD','going',19,1307443200),('2002-06-18','2001-11-27',-1476329472,'2006-09-02 23:38:09','2007-11-19 20:56:21','the','RBVWF','TFMVN','efb',20,2),('2009-09-24','2004-10-07',NULL,'2002-02-19 18:03:20','2004-03-27 03:44:30','xefbucx','just','i','a',21,7),('2009-10-22','2001-04-16',NULL,'2004-12-12 23:41:55','2002-08-18 11:41:10','AUHHP','rxefb','yes','that',22,4),('2003-01-15','2008-11-16',-974520320,'2008-03-23 06:12:36','2008-03-24 02:35:19','wrxefbucx','h','at','we',23,0),('2009-05-07','2001-11-03',1084424192,'2004-07-11 23:21:02','2000-04-04 09:25:10','with','q','I\'m','h',24,8),('2009-05-17','2004-04-14',1,'2008-10-24 18:53:13','2006-06-19 02:26:52','something','all','e','k',25,5),('2006-07-12','2007-11-27',5,'2006-08-05 21:34:46','2003-08-21 18:08:03','sqwrx','when','bsqwr','j',26,943325184),('2001-01-06','2000-08-26',-824377344,'2001-10-25 07:05:51','2003-10-07 10:23:34','him','know','this','this',27,NULL),('2007-02-09','2007-08-25',2,'2007-08-13 17:35:03','2009-07-11 16:03:24','HMLGG','really','just','so',28,831324160);
+
+  CREATE TABLE `y` (
+      `col_int_key` int(11) DEFAULT NULL,
+      `col_datetime` datetime DEFAULT NULL,
+      `col_datetime_key` datetime DEFAULT NULL,
+      `col_varchar_20` varchar(20) DEFAULT NULL,
+      `pk` int(11) NOT NULL,
+      `col_varchar_20_key` varchar(20) DEFAULT NULL,
+      `col_varchar_10` varchar(10) DEFAULT NULL,
+      `col_date_key` date DEFAULT NULL,
+      `col_varchar_10_key` varchar(10) DEFAULT NULL,
+      `col_int` int(11) DEFAULT NULL,
+      `col_date` date DEFAULT NULL,
+      PRIMARY KEY (`pk`),
+      KEY `idx1` (`pk`, `col_int_key`) ,
+      KEY `idx9` (`pk`, `col_datetime_key`) ,
+      KEY `idx5` (`pk`, `col_varchar_20_key`) ,
+      KEY `idx7` (`pk`, `col_date_key`) ,
+      KEY `idx3` (`pk`, `col_varchar_10_key`) 
+      ) ;
+INSERT INTO `y` VALUES (0,'2003-05-28 00:47:35','2004-01-06 00:18:28','cpodenhk',1,'hcpodenh','YFJLS','2004-11-11','is',1115226112,'2007-08-06'),(NULL,'2001-05-27 10:42:53','2007-11-05 14:24:11','hhcpodenhk',2,'BHWAH','k','2009-02-26','YERBC',4,'2002-08-08'),(6,'2000-01-21 15:13:49','2004-07-01 20:25:49','SFDKL',3,'uhhcpodenh','NLQEG','2002-01-02','didn\'t',227999744,'2004-10-27'),(-1080688640,'2009-09-07 22:46:12','2009-01-07 19:16:44','EZFFL',4,'suhhcpo','z','2005-09-08','TVSCA',-4128768,'2006-02-07'),(NULL,'2002-06-05 21:40:59','2002-07-06 06:24:41','well',5,'k','DLVUH','2001-10-13','msuhhcpo',-824901632,'2008-09-02'),(2,'2001-08-23 02:19:57','2006-03-12 08:10:57','this',6,'know','t','2001-07-23','e',-1358823424,'2005-03-13'),(NULL,'2001-08-22 16:24:14','2006-04-25 22:07:30','e',7,'y','fms','2002-04-10','yfmsuh',-733151232,'2009-09-25'),(NULL,'2009-07-08 05:42:38','2000-02-18 00:16:34','v',8,'vyfmsuh','he','2000-08-15','zvyfmsu',2,'2004-02-05'),(NULL,'2009-09-06 00:27:01','2009-05-09 17:46:15','DNMSD',9,'TPROF','CMQXF','2007-09-13','t',NULL,'2004-05-23'),(NULL,'2003-11-06 13:52:15','2001-03-25 02:41:38','QUOLL',10,'n','BQQPH','2001-02-16','okay',1277558784,'2007-03-03'),(NULL,'2009-08-26 10:57:45','2005-02-21 07:51:58','o',11,'n','tzvyf','2007-12-24','he\'s',2,'2000-10-25'),(507707392,'2006-06-04 07:33:39','2003-09-18 11:34:42','ctzvy',12,'because','n','2002-09-01','PWUIE',658964480,'2001-10-02'),(NULL,'2007-02-18 23:02:14','2002-07-16 02:20:56','YEWSS',13,'dctzvyfmsu','c','2007-11-04','what',981204992,'2007-07-18'),(7,'2003-03-24 03:01:16','2004-03-09 03:10:56','come',14,'MYYBX','m','2003-04-14','WFNZT',NULL,'2008-09-03'),(NULL,'2001-02-26 20:44:59','2009-01-24 01:21:17','o',15,'got','ok','2003-02-07','VNTJC',-1706360832,'2003-01-26'),(543686656,'2005-08-19 09:21:54','2004-04-16 10:54:10','locdct',16,'tlo','up','2004-07-07','n',NULL,'2005-01-06'),(7,'2001-10-12 18:13:56','2006-07-12 20:07:02','SDTKH',17,'IDFEW','c','2007-02-17','o',7,'2003-04-11'),(1928921088,'2007-05-27 16:00:27','2003-05-04 12:58:21','xtlo',18,'you','GMVPZ','2008-10-12','RTRRA',NULL,'2000-02-08'),(5,'2006-08-17 20:44:13','2002-06-07 21:49:02','kxtlocdctz',19,'c','EUVAX','2006-10-11','PSXKJ',5,'2003-01-17'),(9,'2008-03-22 23:52:59','2003-04-23 14:40:33','want',20,'to','h','2007-09-13','ukxtlo',NULL,'2000-06-14'),(758513664,'2002-08-12 12:06:23','2008-01-04 16:09:35','g',21,'of','EDJDZ','2008-01-02','hukxtlo',-409010176,'2001-02-22'),(9,'2000-07-04 00:22:31','2006-04-13 16:45:17','is',22,'really','khukxtl','2009-08-14','p',1687748608,'2000-06-04'),(2,'2004-11-24 23:41:21','2009-04-06 14:34:23','d',23,'one','rkhukxtloc','2008-02-14','jrkhukxtlo',8,'2000-06-08'),(5,'2001-03-07 15:40:25','2005-03-20 00:36:41','v',24,'say','q','2007-01-16','VPCBN',2126446592,'2002-02-25'),(0,'2006-01-17 14:18:30','2002-09-25 05:14:10','can\'t',25,'j','a','2003-07-07','e',9,'2000-08-28');
+
+CREATE TABLE `jj` (
+    `col_date` date DEFAULT NULL,
+    `col_date_key` date DEFAULT NULL,
+    `col_datetime` datetime DEFAULT NULL,
+    `pk` int(11) NOT NULL,
+    `col_int_key` int(11) DEFAULT NULL,
+    `col_varchar_20_key` varchar(20) DEFAULT NULL,
+    `col_varchar_10` varchar(10) DEFAULT NULL,
+    `col_varchar_20` varchar(20) DEFAULT NULL,
+    `col_int` int(11) DEFAULT NULL,
+    `col_datetime_key` datetime DEFAULT NULL,
+    `col_varchar_10_key` varchar(10) DEFAULT NULL,
+    PRIMARY KEY (`pk`),
+    KEY `idx7` (`pk`, `col_date_key`) ,
+    KEY `idx1` (`pk`, `col_int_key`) ,
+    KEY `idx5` (`pk`, `col_varchar_20_key`) ,
+    KEY `idx9` (`pk`, `col_datetime_key`) ,
+    KEY `idx3` (`pk`, `col_varchar_10_key`) 
+    ) ;
+INSERT INTO `jj` VALUES ('2005-11-21','2000-07-06','2002-05-26 11:35:05',1,5,'UFIGY','lbwt','x',2,'2005-04-16 14:39:50','x'),('2007-03-24','2006-03-08','2009-09-03 12:37:51',2,2,'wl','w','know',9,'2005-01-17 20:46:35','RNWII'),('2006-07-24','2001-12-07','2009-05-21 23:44:10',3,1501429760,'okay','y','vwlbwtbusk',2040463360,'2003-06-14 09:10:21','LQEDS'),('2006-10-15','2008-09-09','2006-12-03 08:59:28',4,NULL,'vvwlbwtbus','m','all',-1220149248,'2008-03-04 15:25:29','jmvv'),('2008-06-13','2009-01-11','2001-03-19 13:46:25',5,4,'RMZGM','q','n',2,'2001-08-12 16:03:23','a'),('2004-06-05','2000-07-11','2004-02-27 13:29:22',6,-1144193024,'ljmvvwlbwt','oljmvvwlbw','XKIID',0,'2006-09-24 05:18:24','l'),('2000-03-20','2001-11-22','2005-11-03 04:53:11',7,-673382400,'qoljmv','from','my',NULL,'2007-06-15 02:55:15','q'),('2000-08-23','2005-08-23','2008-05-28 03:50:43',8,92864512,'we','XIQBP','DDVKY',135069696,'2005-03-26 09:28:35','will'),('2006-10-17','2002-12-05','2004-03-10 16:26:07',9,1335754752,'LSWKJ','bqol','lbqoljmvv',-86245376,'2002-04-11 22:05:00','x'),('2003-07-13','2000-04-07','2004-12-10 15:00:23',10,NULL,'have','QAIFK','yeah',904790016,'2009-11-23 07:58:13','ylbqoljmv'),('2009-09-03','2007-12-05','2004-06-14 16:02:25',11,NULL,'MOTKK','you','n',4,'2000-02-14 06:10:05','QTNID'),('2004-05-07','2004-01-21','2008-06-10 10:53:11',12,5,'VHGDF','kylb','UXPAB',419889152,'2008-03-11 15:04:50','kkylbqol'),('2002-10-14','2006-12-09','2000-05-04 01:40:28',13,-1725497344,'WJTKP','FALKA','could',-1030619136,'2006-07-06 18:34:41','DDXDN'),('2005-08-05','2005-06-11','2004-01-19 07:12:35',14,1181089792,'wkkylbqol','ECURE','IBIDM',2,'2004-04-14 15:57:40','q'),('2007-05-04','2008-03-02','2008-04-08 00:51:13',15,-319029248,'pwkkylbqol','o','k',94765056,'2006-11-22 07:58:54','xpwkky'),('2002-10-07','2003-09-11','2004-07-20 10:14:28',16,NULL,'v','IAEPI','ECAKK',6,'2008-09-16 09:45:40','i'),('2007-04-26','2002-02-05','2006-10-02 23:36:19',17,-1265434624,'vxpwkkyl','ev','d',NULL,'2005-11-14 11:27:09','z'),('2009-12-19','2009-01-06','2004-03-09 11:59:08',18,589889536,'devxpwkky','vdevxpwkk','i',4,'2003-10-20 16:33:26','t'),('2004-12-12','2000-05-08','2005-07-07 19:00:02',19,1127809024,'when','z','do',5,'2002-12-19 01:54:25','evd'),('2004-07-17','2007-08-27','2007-01-13 17:25:08',20,541130752,'could','oh','d',5,'2000-03-22 11:09:51','WPZJY'),('2000-04-04','2006-11-26','2001-01-25 07:40:21',21,3,'say','I','SOWEG',1018036224,'2005-05-02 05:47:15','that\'s'),('2001-05-24','2002-09-11','2005-08-01 21:46:54',22,NULL,'SEIIS','were','ide',NULL,'2006-05-02 07:40:45','m'),('2000-12-03','2000-12-16','2001-06-16 02:31:52',23,397475840,'had','YOUUK','PCPQZ',-1597964288,'2006-01-15 01:17:03','BXZWT'),('2007-11-18','2003-10-21','2004-08-01 02:11:21',24,4,'ridevdevxp','aride','e',5,'2002-11-23 14:52:01','d'),('2006-08-06','2001-07-12','2006-01-12 03:09:57',25,NULL,'but','mari','XJKDF',-2122448896,'2004-01-13 02:22:56','there'),('2006-02-09','2008-09-08','2009-11-05 22:17:02',26,4,'think','who','are',5,'2004-07-12 07:54:24','k'),('2000-02-07','2009-04-14','2006-06-03 14:58:31',27,1547304960,'h','z','ZPXCH',NULL,'2005-05-07 23:52:50','YQSSR'),('2004-10-26','2006-09-01','2006-06-03 02:39:16',28,8,'l','LNOUQ','out',6,'2009-08-24 16:34:26','for'),('2007-02-28','2000-05-19','2006-02-26 08:35:33',29,-1383071744,'xmarid','JSERG','QYDIC',NULL,'2003-02-24 11:29:45','u'),('2004-07-04','2006-08-09','2009-06-05 13:10:33',30,3,'v','fxmaridevd','your',NULL,'2001-11-26 15:04:25','about'),('2000-03-03','2005-01-17','2006-10-28 17:36:24',31,3,'didn\'t','MKAUF','TFTUL',-660078592,'2003-06-24 22:09:49','DOUIS'),('2004-05-04','2001-04-27','2002-01-25 00:17:01',32,NULL,'g','b','gfx',5,'2007-05-27 20:18:59','kgfxmari'),('2007-08-22','2006-03-12','2002-05-05 17:37:43',33,NULL,'ykgfxma','u','c',1630470144,'2007-11-09 18:38:20','FTWWN'),('2002-10-13','2001-09-15','2005-03-17 02:25:02',34,NULL,'l','IDBPU','KKENR',0,'2002-01-03 08:36:20','n'),('2008-06-15','2008-08-05','2007-12-10 10:42:42',35,3,'pykg','IVMEK','that\'s',NULL,'2004-04-09 16:00:45','now'),('2000-12-12','2001-07-02','2008-12-08 21:22:39',36,-1755906048,'JUUKI','l','no',6,'2004-10-01 14:50:59','llpy');
+
+SELECT DISTINCT GRANDPARENT1 . col_datetime_key AS G1 FROM jj AS GRANDPARENT1 LEFT JOIN g AS GRANDPARENT2 ON ( GRANDPARENT2 . `col_int_key` >= GRANDPARENT1 . `col_int_key` ) WHERE GRANDPARENT1 . `col_int` IN ( SELECT DISTINCT PARENT1 . `pk` AS P1 FROM k AS PARENT1 LEFT JOIN bb AS PARENT2 USING ( col_datetime_key ) WHERE GRANDPARENT1 . `col_int_key` IN ( SELECT  CHILD1 . `col_int_key` AS C1 FROM y AS CHILD1 LEFT JOIN l AS CHILD2 USING ( col_datetime_key ) WHERE ( ( CHILD1 . `col_int_key` = CHILD1 . `col_int` ) OR ( ( PARENT1 . `col_varchar_10_key` > 'v' ) AND ( GRANDPARENT1 . `col_varchar_10_key` < 'x' ) ) ) ORDER BY CHILD1 . col_datetime_key ) AND ( ( PARENT1 . `col_int` >= PARENT1 . `pk` ) AND ( PARENT1 . `pk` <= 3 ) )  ) AND GRANDPARENT1 . `col_datetime_key` BETWEEN '2008-01-13' AND '2003-09-16' GROUP BY GRANDPARENT1 . col_datetime_key  ORDER BY GRANDPARENT1 . col_datetime_key LIMIT 6;
+
+explain SELECT DISTINCT GRANDPARENT1 . col_datetime_key AS G1 FROM jj AS GRANDPARENT1 LEFT JOIN g AS GRANDPARENT2 ON ( GRANDPARENT2 . `col_int_key` >= GRANDPARENT1 . `col_int_key` ) WHERE GRANDPARENT1 . `col_int` IN ( SELECT DISTINCT PARENT1 . `pk` AS P1 FROM k AS PARENT1 LEFT JOIN bb AS PARENT2 USING ( col_datetime_key ) WHERE GRANDPARENT1 . `col_int_key` IN ( SELECT  CHILD1 . `col_int_key` AS C1 FROM y AS CHILD1 LEFT JOIN l AS CHILD2 USING ( col_datetime_key ) WHERE ( ( CHILD1 . `col_int_key` = CHILD1 . `col_int` ) OR ( ( PARENT1 . `col_varchar_10_key` > 'v' ) AND ( GRANDPARENT1 . `col_varchar_10_key` < 'x' ) ) ) ORDER BY CHILD1 . col_datetime_key ) AND ( ( PARENT1 . `col_int` >= PARENT1 . `pk` ) AND ( PARENT1 . `pk` <= 3 ) )  ) AND GRANDPARENT1 . `col_datetime_key` BETWEEN '2008-01-13' AND '2003-09-16' GROUP BY GRANDPARENT1 . col_datetime_key  ORDER BY GRANDPARENT1 . col_datetime_key LIMIT 6;
+
+## outer join的估行测试
+explain select * from t1 left join t4 on t1.deci = t4.c1 where t4.c2 is null ;
+
+explain select * from t4 right join t1 on t1.deci = t4.c1 where t4.c2 is null ;
+
+explain select * from t4 full join t1 on t1.deci = t4.c1 where t4.c2 is null and t1.deci is null;
+
+--disable_warnings
+drop table if exists t1, t2, t3, t4, t5, t6, `PART`;
+drop table if exists g, k, l, bb, y, jj;
+DROP TABLE table10_bigint;
+DROP TABLE table5_key_pk_parts_1_bigint;
+DROP TABLE table0_key_pk_parts_1_bigint;
+--enable_warnings

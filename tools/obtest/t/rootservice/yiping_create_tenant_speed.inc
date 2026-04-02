@@ -1,0 +1,11 @@
+ob1.mysql create resource pool pool unit = 'box', unit_num = 1, zone_list=($zone_list);
+$executor.mysql create tenant mysql resource_pool_list('pool'), primary_zone '$primary_zone', locality '$locality' set ob_compatibility_mode='$tenant_type';
+let $tenant_id=deploy_get_value(ob1.select select max(tenant_id) a from __all_tenant, a, 1);
+let $start_time=deploy_get_value(ob1.select select gmt_create from __all_tenant where tenant_id=$tenant_id, gmt_create, 1);
+let $tenant_normal=deploy_get_value(ob1.select select gmt_modified from __all_tenant where tenant_id=$tenant_id, gmt_modified, 1);
+let $ls_normal=deploy_get_value(ob1.select select min(gmt_modified) a from __all_virtual_ls_status where tenant_id=$tenant_id and ls_id!=1, a, 1);
+let $ls_election=deploy_get_value(ob1.select select min(gmt_modified) a from __all_virtual_ls_meta_table where tenant_id=$tenant_id and ls_id!=1 and role=1, a, 1);
+ob1.mysql insert into $table_name values($tenant_id, '$locality', '$primary_zone', '$tenant_type', '$executor', '$start_time', '$ls_normal', '$ls_election', '$tenant_normal');
+ob1.mysql drop tenant mysql force;
+ob1.check_until_timeout select count(*) from gv\$ob_units where tenant_id=$tenant_id, 0, 180;
+ob1.mysql drop resource pool pool;

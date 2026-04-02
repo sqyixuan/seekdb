@@ -1,0 +1,96 @@
+# owner: zhuangyifeng.zyf
+# owner group: sql1
+# tags: optimizer
+# description: 笛卡尔积的一支是 select from dual 表时支持视图合并
+
+--disable_warnings
+DROP TABLE IF EXISTS t1;
+DROP TABLE IF EXISTS res_view;
+--enable_warnings
+
+CREATE TABLE t1(c1 int);
+INSERT INTO t1 VALUES(1),(2),(3),(4),(5);
+
+--explain_protocol 2
+--result_format 4
+
+# 可以合并视图
+SELECT c1+a, c1+b FROM t1, (select 1 a, 2 b);
+SELECT /*+no_rewrite*/ c1+a, c1+b FROM t1, (select 1 a, 2 b);
+# 不能合并视图
+SELECT c1+a, c1+b FROM t1 LEFT JOIN (select 1 a, 2 b) on c1 = a;
+SELECT /*+no_rewrite*/ c1+a, c1+b FROM t1 LEFT JOIN (select 1 a, 2 b) on c1 = a;
+
+CREATE TABLE res_view (
+  id varchar(200) NOT NULL,
+  snap_date date NOT NULL ,
+  market_name varchar(200) NOT NULL ,
+  pdt varchar(200) NOT NULL ,
+  subcategory varchar(200) NOT NULL ,
+  snap_month date DEFAULT NULL,
+  update_brand varchar(200) DEFAULT NULL ,
+  is_brand tinyint(1) DEFAULT NULL ,
+  is_asin tinyint(1) DEFAULT NULL ,
+  price_by_rate double DEFAULT NULL ,
+  end_price_by_rate double DEFAULT NULL ,
+  price double DEFAULT NULL ,
+  end_price double DEFAULT NULL ,
+  coupon_revenue double DEFAULT NULL,
+  sales_volume_revision double DEFAULT NULL
+)
+PARTITION BY RANGE COLUMNS (snap_date)
+SUBPARTITION BY KEY(market_name, pdt, subcategory) SUBPARTITIONS 14
+(PARTITION  p202101 VALUES LESS THAN('2021/02/01')
+, PARTITION p202201 VALUES LESS THAN('2022/02/01')
+, PARTITION p202301 VALUES LESS THAN('2023/02/01')
+, PARTITION p202401 VALUES LESS THAN('2024/02/01')
+, PARTITION p202501 VALUES LESS THAN('2025/02/01')
+);
+
+# cte 的第一张表是常量表, 可以合并视图
+SELECT
+  price_range AS _col_3,
+  avg(CAST(rank_price AS DECIMAL(27, 9))) AS _col_9
+FROM 
+(
+  WITH price_range_info AS
+       (
+         SELECT 0 AS min_price,
+                0 + ceil((100 - 0) / 20) * 20 AS max_price,
+                20 AS price_step
+       ),
+       listing_info AS
+       (
+         SELECT a.snap_month AS snap_date,
+                a.update_brand AS brand,
+                CASE WHEN a.price_by_rate< b.max_price AND a.price_by_rate>= b.min_price 
+                     THEN '[0-100]'
+                     ELSE '' END AS price_range,
+                CASE WHEN a.price_by_rate< b.max_price AND a.price_by_rate>= b.min_price 
+                     THEN 1
+                     ELSE 0 END AS min_price
+         FROM res_view a
+         LEFT JOIN price_range_info b ON 1=1  # outer to inner 会把这个连接改为笛卡尔积
+         WHERE 
+           a.snap_date <= DATE_ADD(CAST('2024-10-29' AS DATE), INTERVAL -1 DAY)
+           AND (
+                 CASE WHEN '原价'= "折后价" THEN a.end_price_by_rate 
+                      WHEN '原价'= "原价" THEN a.price 
+                      ELSE a.end_price END
+               ) >= b.min_price
+           AND a.end_price_by_rate >=0
+           AND a.end_price>=0
+           AND a.market_name = 'amazon'
+           AND a.subcategory = 'Portable Charger'
+           AND a.pdt = 'Battery'
+         GROUP BY 1, 2
+      )
+  SELECT a.snap_date,
+         a.price_range,
+         a.brand,
+         rank() over(ORDER BY min_price ASC) rank_price
+  FROM listing_info a
+) AS dc_1;
+
+DROP TABLE t1;
+DROP TABLE res_view;

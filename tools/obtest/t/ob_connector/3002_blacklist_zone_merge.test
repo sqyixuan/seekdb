@@ -1,0 +1,148 @@
+##############################
+#owner: kyle.sj
+#owner group: ob_connecor
+#description: ob_connector黑名单,zone meger
+###############################
+
+ob1=OBI(cluster=3:3:3,proxy_num=0,init_unit_cpu=8);
+ob1.reboot;
+ob1.mysql alter system set merger_switch_leader_duration_time='0s';
+
+ob1.create_client tenant=obtest,user=admin,passwd=admin,database=test;
+ob1.set_ds_global_config serverStateRefreshInterval=1000,minKeepCongestionInterval=1000;
+
+# 创建3个table:obtest1,obtest2,obtest3
+let $tablenum = 3;
+source sql/init_table.sql;
+
+###############################################################
+--echo 1. one zone is merging
+ob1.mysql alter system suspend merge zone = 'z1';
+sleep 2;
+
+ob1.mysql alter system major freeze;
+sleep 5;
+ob1.mysql alter system start merge zone='z1';
+sleep 2;
+
+ob1.z1.obs0.check_state_in_congest ACTIVE;
+ob1.z1.obs1.check_state_in_congest ACTIVE;
+ob1.z1.obs0.check_not_exsit_in_congest;
+ob1.z1.obs1.check_not_exsit_in_congest;
+let $stat =deploy_get_value(ob1.z2.obs0.get_congestion_info alive_congested);
+--echo ob1.z2.obs0 alive_congested state : $stat
+let $stat =deploy_get_value(ob1.z2.obs1.get_congestion_info alive_congested);
+--echo ob1.z2.obs1 alive_congested state : $stat
+let $stat =deploy_get_value(ob1.z2.obs0.get_congestion_info dead_congested);
+--echo ob1.z2.obs0 dead_congested state : $stat
+let $stat =deploy_get_value(ob1.z2.obs1.get_congestion_info dead_congested);
+--echo ob1.z2.obs1 dead_congested state : $stat
+
+#check sql no in z1;
+--disable_query_log
+--disable_result_log
+let $cnt=10;
+while($cnt>0)
+{
+  select /*+READ_CONSISTENCY (weak)*/ * from obtest1;
+  source include/get_ob_connector_last_query_addr.inc;
+  if($zone != z2)
+  {
+    if($zone != z3)
+    {
+      --echo flow  in $zone. bug!
+      --exit
+    }
+  }
+
+  eval select /*+READ_CONSISTENCY (weak)*/ * from obtest2 where i1=$cnt and v3='$cnt_obtest' and d6='1970-01-01 08:00:00';
+  source include/get_ob_connector_last_query_addr.inc;
+  if($zone != z2)
+  {
+    if($zone != z3)
+    {
+      --echo flow  in $zone. bug!
+      --exit
+    }
+  }
+  dec $cnt;
+}
+
+source sql/check_sys_ddl.sql;
+
+ob1.mysql alter system resume merge zone = 'z1';
+ob1.z1.check_version 2;
+ob1.z2.check_version 2;
+ob1.z3.check_version 2;
+sleep 2;
+
+ob1.z1.obs0.check_state_in_congest ACTIVE;
+ob1.z1.obs1.check_state_in_congest ACTIVE;
+ob1.z1.check_state_in_congest ACTIVE;
+ob1.z1.obs0.check_not_exsit_in_congest;
+ob1.z1.obs1.check_not_exsit_in_congest;
+
+sleep 2;
+
+###############################################################
+--echo 2. multi zone is merging
+ob1.mysql alter system suspend merge zone = 'z1';
+ob1.mysql alter system suspend merge zone = 'z2';
+sleep 2;
+
+ob1.mysql alter system major freeze;
+sleep 8;
+ob1.mysql alter system start merge zone='z1';
+ob1.mysql alter system start merge zone='z2';
+sleep 2;
+
+ob1.z3.check_state_in_congest ACTIVE;
+ob1.z1.check_state_in_congest MERGE;
+ob1.z2.check_state_in_congest MERGE;
+ob1.z1.obs0.check_not_exsit_in_congest;
+ob1.z1.obs1.check_not_exsit_in_congest;
+ob1.z2.obs0.check_not_exsit_in_congest;
+ob1.z2.obs1.check_not_exsit_in_congest;
+
+
+#check sql only in z3;
+--disable_query_log
+--disable_result_log
+let $cnt=10;
+while($cnt>0)
+{
+  select /*+READ_CONSISTENCY (weak)*/ * from obtest1;
+  source include/get_ob_connector_last_query_addr.inc;
+  if($zone != z3)
+  {
+    --echo flow not in z3. bug!
+    --exit
+  }
+  eval select /*+READ_CONSISTENCY (weak)*/ * from obtest2 where i1=$cnt and v3='$cnt_obtest' and d6='1970-01-01 08:00:00';
+  source include/get_ob_connector_last_query_addr.inc;
+  if($zone != z3)
+  {
+    --echo flow not in z3. bug!
+    --exit
+  }
+  dec $cnt;
+}
+
+source sql/check_sys_ddl.sql;
+
+ob1.mysql alter system resume merge zone = 'z1';
+ob1.mysql alter system resume merge zone = 'z2';
+ob1.z1.check_version 3;
+ob1.z2.check_version 3;
+ob1.z3.check_version 3;
+sleep 2;
+
+ob1.z1.check_state_in_congest ACTIVE;
+ob1.z2.check_state_in_congest ACTIVE;
+ob1.z1.obs0.check_not_exsit_in_congest;
+ob1.z1.obs1.check_not_exsit_in_congest;
+ob1.z2.obs0.check_not_exsit_in_congest;
+ob1.z2.obs1.check_not_exsit_in_congest;
+
+sleep 2;
+

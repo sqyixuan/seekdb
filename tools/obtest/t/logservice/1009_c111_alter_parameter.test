@@ -1,0 +1,137 @@
+##########################
+# owner : debin.jdb
+# owner group: clog
+# description: test for palf log sync
+# 测试点：
+# 1. 多副本日志同步
+# 2. 切主
+# 3. 宕机重启
+##########################
+
+ob1=OBI(cluster=1:1:1, proxy_num=0);
+
+let $extra_conf = "cpu_count=8,memory_limit='16G',system_memory='5G',__min_full_resource_pool_memory='1073741824',cache_wash_threshold='1G',log_disk_size='50G',cluster_id=1";
+ob1.z1.obs0.set extra_config=$extra_conf;
+ob1.z2.obs0.set extra_config=$extra_conf;
+ob1.z3.obs0.set extra_config=$extra_conf;
+
+# case 1. 验证bootstrap
+ob1.reboot;
+sleep 3;
+
+ob1.mysql alter system set enable_rebalance='false';
+
+# case 2. 验证建租户
+let $max_cpu = 2;
+let $min_cpu = 1;
+let $memory_size = 4294967296;
+let $log_disk_size = 10737418240;
+let $max_iops = 100000;
+let $min_iops = 1024;
+
+ob_connect(conn_sys, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+set @@session.ob_query_timeout = 1000000000;
+
+# mysql tenant
+eval CREATE RESOURCE UNIT unit_1 MAX_CPU $max_cpu, MIN_CPU $min_cpu, MEMORY_SIZE $memory_size, LOG_DISK_SIZE $log_disk_size, MAX_IOPS $max_iops, MIN_IOPS $min_iops;
+eval CREATE RESOURCE POOL pool_1 UNIT = 'unit_1', UNIT_NUM = 1, zone_list = ('z1', 'z2', 'z3');;
+eval CREATE TENANT tenant_1 RESOURCE_POOL_LIST = ('pool_1'), primary_zone='z1;z2;z3' set ob_tcp_invited_nodes='%';
+
+eval CREATE RESOURCE POOL pool_2 UNIT = 'unit_1', UNIT_NUM = 1, zone_list = ('z1', 'z2', 'z3');;
+
+eval CREATE TENANT tenant_2 RESOURCE_POOL_LIST = ('pool_2'), primary_zone='z1;z2;z3' set ob_tcp_invited_nodes='%';
+
+source include/check_schema_sync.inc;
+
+let $t1_tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = 'tenant_1', tenant_id, 1);
+let $t2_tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = 'tenant_2', tenant_id, 1);
+
+##修改tenant_1
+ob_connect(conn_tenant1, ob1.z1.obs0, root@tenant_1, , test, , USE_MYSQL_CONNECTOR);
+connection conn_tenant1;
+##
+alter system set log_disk_throttling_percentage=85;
+--error 1210
+alter system set log_disk_utilization_limit_threshold=85;
+--error 1210
+alter system set log_disk_utilization_limit_threshold=81;
+alter system set log_disk_utilization_limit_threshold=90;
+--error 1210
+alter system set log_disk_throttling_percentage=97;
+alter system set log_disk_throttling_percentage=100;
+alter system set log_disk_utilization_limit_threshold=85;
+
+--error 1210
+alter system set log_disk_throttling_percentage=90;
+--error 1210
+alter system set log_disk_throttling_percentage=85;
+alter system set log_disk_utilization_limit_threshold=90;
+alter system set log_disk_throttling_percentage=85;
+
+
+ob_connect(conn_tenant2, ob1.z1.obs0, root@tenant_2, , test, , USE_MYSQL_CONNECTOR);
+--error 4147
+alter system set log_disk_throttling_percentage=30;
+--error 4147
+alter system set log_disk_throttling_percentage=110;
+--error 4147
+alter system set log_disk_throttling_maximum_duration='0s';
+--error 4147
+alter system set log_disk_throttling_maximum_duration='4d';
+alter system set log_disk_throttling_maximum_duration='30m';
+
+alter system set log_disk_throttling_percentage=70;
+alter system set log_disk_utilization_limit_threshold=80;
+
+sleep 10;
+--replace_column 1 zone 3 svr_ip 4 svr_port
+show parameters like 'log_disk_utilization_limit_threshold';
+--replace_column 1 zone 3 svr_ip 4 svr_port
+show parameters like 'log_disk_throttling_percentage';
+--replace_column 1 zone 3 svr_ip 4 svr_port
+show parameters like 'log_disk_throttling_maximum_duration';
+
+ob_connect(conn_sys, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection conn_sys;
+alter system set log_disk_throttling_percentage=80 tenant=sys;
+--error 1210
+alter system set log_disk_throttling_percentage=80 tenant=all_user;
+alter system set log_disk_throttling_percentage=80 tenant=all_meta;
+
+alter system set log_disk_utilization_limit_threshold=85 tenant=sys;
+--error 1210
+alter system set log_disk_utilization_limit_threshold=85 tenant=all_user;
+alter system set log_disk_utilization_limit_threshold=85 tenant=all_meta;
+
+alter system set log_disk_utilization_limit_threshold=86 tenant=sys;
+alter system set log_disk_utilization_limit_threshold=86 tenant=all_user;
+alter system set log_disk_utilization_limit_threshold=86 tenant=all_meta;
+
+--error 1210
+alter system set log_disk_utilization_limit_threshold=80 tenant=tenant_1;
+--error 1210
+alter system set log_disk_throttling_percentage=90 tenant=tenant_1;
+
+alter system set log_disk_utilization_limit_threshold=86 tenant=tenant_1;
+alter system set log_disk_throttling_percentage=83 tenant=tenant_1;
+
+--error 1210
+alter system set log_disk_throttling_percentage=87 tenant=tenant_2;
+--error 1210
+alter system set log_disk_throttling_percentage=86 tenant=tenant_2;
+
+alter system set log_disk_throttling_percentage=78 tenant=tenant_2;
+
+--error 4147
+alter system set log_disk_utilization_limit_threshold=79 tenant=tenant_2;
+
+alter system set log_disk_utilization_limit_threshold=82 tenant=tenant_2;
+
+
+--error 4147
+alter system set log_disk_throttling_maximum_duration='0s' tenant = tenant_1;
+--error 4147
+alter system set log_disk_throttling_maximum_duration='4d' tenant = tenant_1;
+alter system set log_disk_throttling_maximum_duration='30m' tenant = tenant_1;
+sleep 10;
+select  tenant_id,  name, value, count(1) from __all_virtual_tenant_parameter_info WHERE  name in ("log_disk_throttling_maximum_duration", "log_disk_throttling_percentage", "log_disk_utilization_limit_threshold") group by tenant_id, name, value;

@@ -1,0 +1,62 @@
+# CASE_OWNER:
+#    @msy164651
+# CASE_DESC:
+#    验证空备租户创建的版本号不能大于主租户
+
+ob1=OBI(cluster=1, proxy_num=0, version=4_3_0_0);
+ob2=OBI(cluster=1, proxy_num=0);
+source include/mini_ob_config.inc;
+ob1.set extra_config=$mini_ob_config;
+ob2.set extra_config=$mini_ob_config;
+ob1.reboot;
+ob2.reboot;
+
+# 固定sys租户规格
+ob1.mysql alter resource unit sys_unit_config memory_size='2G';
+
+ob_connect(sys_conn, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+CREATE RESOURCE UNIT large_unit MAX_CPU=2, MEMORY_SIZE='2G';
+CREATE RESOURCE POOL pool UNIT large_unit, UNIT_NUM 1;
+CREATE RESOURCE POOL pool_1 UNIT large_unit, UNIT_NUM 1;
+
+ob2.mysql CREATE RESOURCE UNIT large_unit MAX_CPU=2, MEMORY_SIZE='2G';
+ob2.mysql  CREATE RESOURCE POOL pool UNIT large_unit, UNIT_NUM 1;
+
+ob1.mysql alter system set _backup_idle_time = '10s';
+ob1.mysql alter system set merger_check_interval = '10s';
+ob1.mysql alter system set enable_async_syslog=false;
+
+# create oracle tenant, test create tenant before major freeze
+ob1.mysql CREATE TENANT oracle RESOURCE_POOL_LIST = ('pool'), primary_zone = "z1" set ob_tcp_invited_nodes='%', ob_compatibility_mode='oracle';
+let $oracle_id = query_get_value(select tenant_id from oceanbase.__all_tenant where tenant_name='oracle', tenant_id, 1);
+
+ob_connect(sys_conn, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+# create log restore source user
+ob_connect(primary_tenant_conn, ob1.z1.obs0,SYS@oracle,,SYS,,USE_OB_CONNECTOR);
+connection primary_tenant_conn;
+create user mytest identified by "test";
+grant connect to mytest;
+GRANT SELECT on SYS.DBA_OB_ACCESS_POINT to mytest;
+GRANT SELECT on SYS.GV$OB_UNITS to mytest;
+GRANT SELECT on SYS.DBA_OB_TENANTS to mytest;
+GRANT SELECT on SYS.GV$OB_PARAMETERS to mytest;
+GRANT SELECT on SYS.GV$OB_LOG_STAT to mytest;
+GRANT SELECT on SYS.DBA_OB_LS to mytest;
+GRANT SELECT on SYS.DBA_OB_LS_HISTORY to mytest;
+# get primary tenant access point
+let $server_ip_port_1=deploy_get_value(ob1.select select concat(svr_ip,':',sql_port) as host from CDB_OB_LS_LOCATIONS where tenant_id = $oracle_id and ls_id = 1 and role = 'LEADER' order by svr_ip, sql_port limit 1;, host, 1);
+--disable_all_result_log
+ob1.mysql CREATE STANDBY TENANT IF NOT EXISTS standby_oracle_tenant LOG_RESTORE_SOURCE = 'service=$server_ip_port_1 USER=mytest@oracle PASSWORD=test' PRIMARY_ZONE='z1', RESOURCE_POOL_LIST=('pool_1'),locality='F@z1', comment='aaaaaaaa';
+--enable_all_result_log
+
+ob_connect(sys_conn1, ob2.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+alter system set _ob_ddl_timeout = '50s';
+connection sys_conn1;
+--disable_all_result_log
+send CREATE STANDBY TENANT IF NOT EXISTS standby_oracle_tenant LOG_RESTORE_SOURCE = 'service=$server_ip_port_1 USER=mytest@oracle PASSWORD=test' PRIMARY_ZONE='z1', RESOURCE_POOL_LIST=('pool'),locality='F@z1', comment='aaaaaaaa';
+--enable_all_result_log
+sleep 30;
+ob2.z1.obs0.check_rs_log_until_success -c "standby version is larger than primary version";
+connection sys_conn1;
+--error 4012
+reap;

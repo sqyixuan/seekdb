@@ -211,7 +211,7 @@ public:
    *               rollback task from doing to waiting, and clean balance_job and transfer_task_id
    *  @param[in] tenant_id : user_tenant_id
    *  @param[in] job_id : the correlated balance job id
-   *  @param[in] trans: must be in trans
+   *  @param[in] trans: must be in trans 
    * */
   static int rollback_all_to_waitting(const uint64_t tenant_id,
                            const ObBalanceJobID &job_id,

@@ -1,0 +1,82 @@
+##############################
+# owner: wenduo
+# owner group: rs
+# 功能点：用于测试locality变更回滚的功能
+
+# 部署：
+# 5台observer，每个zone一台server：z1~z5
+# 部署在5个机房：全部部署在一个region里面。
+#
+# case:
+# 系统租户启动时为三副本，通过locality变更变成f@z1,f@z3,f@z3,r@z4,r@z5
+
+ob1=OBI(cluster=1:1:1:1:1,proxy_num=0,init_unit_cpu=0);
+
+ob1.z4.obs0.set status=disable;
+ob1.z5.obs0.set status=disable;
+
+ob1.reboot;
+
+ob1.z4.add;
+ob1.z4.start_zone;
+ob1.z4.obs0.set status=enable;
+ob1.z4.obs0.start;
+ob1.z4.obs0.add;
+
+ob1.z5.add;
+ob1.z5.start_zone;
+ob1.z5.obs0.set status=enable;
+ob1.z5.obs0.start;
+ob1.z5.obs0.add;
+
+sleep 30;
+
+source include/fast_auto_rebalance_configuration.inc;
+# 关闭自动切主，后面会切RS
+ob1.mysql alter system set enable_auto_leader_switch = 'false';
+
+# 创建系统租户resource_pool sys_pool1
+ob1.mysql create resource pool sys_pool1 unit = 'sys_unit_config', unit_num = 1, zone_list = ('z4', 'z5');
+# 创建一个普通租户tt1
+
+##### case 1 ##### 将系统租户补充为5副本
+# 调整系统租户的locality，给系统租户在z4, z5上各添加一个只读副本
+ob1.mysql alter tenant sys resource_pool_list=('sys_pool', 'sys_pool1'), primary_zone = 'z1', locality = 'F@z1,F@z2,F@z3,R@z4,R@z5';
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = "sys", tenant_id, 1);
+let $resource_pool_id = deploy_get_value(ob1.select select resource_pool_id from oceanbase.__all_resource_pool where name = "sys_pool1", resource_pool_id, 1);
+
+# 校验系统租户locality本次变更成功
+ob1.check_until_timeout select count(*) c from oceanbase.__all_tenant where tenant_id = $tenant_id and previous_locality != "", 0, 600;
+
+# 检查z4上的变更
+let $svr_port = deploy_get_value(ob1.select select svr_port from oceanbase.__all_unit where zone = 'z4' and resource_pool_id = $resource_pool_id, svr_port, 1);
+let $svr_ip = deploy_get_value(ob1.select select svr_ip from oceanbase.__all_unit where zone = 'z4' and resource_pool_id = $resource_pool_id, svr_ip, 1);
+# 校验all core table表加副本成功
+ob1.check_until_timeout select count(*) c from oceanbase.__all_virtual_core_meta_table where svr_ip='$svr_ip' and svr_port=$svr_port and replica_type=16, 1, 360;
+# 校验all root table表加副本成功
+ob1.check_until_timeout select count(*) c from oceanbase.__all_core_table where table_name = '__all_root_table' and column_name = 'zone' and column_value='z4', 1, 360;
+# 校验其他系统表加副本成功
+let $sys_table_num = deploy_get_value(ob1.select select count(*) as count from (select count(*) c from oceanbase.__all_root_table group by tenant_id, table_id, partition_id) X, count, 1);
+ob1.check_until_timeout select count(*) c from oceanbase.__all_root_table where svr_ip='$svr_ip' and svr_port=$svr_port and replica_type=16, $sys_table_num, 360;
+
+# 检查z5上的变更
+let $svr_port = deploy_get_value(ob1.select select svr_port from oceanbase.__all_unit where zone = 'z5' and resource_pool_id = $resource_pool_id, svr_port, 1);
+let $svr_ip = deploy_get_value(ob1.select select svr_ip from oceanbase.__all_unit where zone = 'z5' and resource_pool_id = $resource_pool_id, svr_ip, 1);
+# 校验all core table表加副本成功
+ob1.check_until_timeout select count(*) c from oceanbase.__all_virtual_core_meta_table where svr_ip='$svr_ip' and svr_port=$svr_port and replica_type=16, 1, 360;
+# 校验all root table表加副本成功
+ob1.check_until_timeout select count(*) c from oceanbase.__all_core_table where table_name = '__all_root_table' and column_name = 'zone' and column_value='z5', 1, 360;
+# 校验其他系统表加副本成功
+let $sys_table_num = deploy_get_value(ob1.select select count(*) as count from (select count(*) c from oceanbase.__all_root_table group by tenant_id, table_id, partition_id) X, count, 1);
+ob1.check_until_timeout select count(*) c from oceanbase.__all_root_table where svr_ip='$svr_ip' and svr_port=$svr_port and replica_type=16, $sys_table_num, 360;
+
+# 把负载均衡关闭，防止负载均衡相关流程触发汇报
+ob1.mysql alter system set enable_rebalance = 'false';
+ob1.mysql alter system set enable_rereplication = 'false';
+
+# 把rs切走，然后查core_meta_table表
+let $follower = deploy_get_value(ob1.get_follower sys:oceanbase:__all_core_table);
+$follower.switch_rs;
+sleep 5;
+$follower.check_leader sys:oceanbase:__all_core_table;
+ob1.check_until_timeout select count(*) c from oceanbase.__all_virtual_core_meta_table where replica_type=16, 2, 360;

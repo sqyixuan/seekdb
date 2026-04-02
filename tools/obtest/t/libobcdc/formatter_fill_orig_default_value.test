@@ -1,0 +1,116 @@
+#
+# owner:千溪
+# owner group:liboblog
+# description:
+# 测试点:
+#   test formatter fill default value
+##
+
+ob1=OBI(cluster=1,init_unit_cpu=5);
+ob1.reboot;
+ob1.create_client;
+
+# 准备环境
+source include/liboblog/create_tenant.inc;
+
+--disable_warnings
+drop database if exists oblog_db1;
+
+let $start_tstamp = query_get_value(select round(time_to_usec(now()) / 1000000) as now, now, 1);
+
+# 启动liboblog
+ob1.oblog.set_start_tstamp $start_tstamp;
+ob1.oblog.gen_conf tb_white_list=oblog_tt.oblog*.* skip_ob_version_compat_check=1 enable_output_by_table_def=1 enable_output_hidden_primary_key=1;
+ob1.oblog.restart;
+
+let $t1_dml_count = 0;
+
+# 创建database 1
+create database oblog_db1;
+ob1.oblog.next;
+use oblog_db1;
+
+create table t1(c1 int, c2 int, c3 int);
+ob1.oblog.next;
+insert into t1 values(11, 21, 31);
+ob1.oblog.next;
+inc $t1_dml_count;
+
+# add first
+alter table t1 add column c4 varchar(20) default 'hello_ant' first;
+ob1.oblog.next;
+begin;
+update t1 set c1=110 where c1=11;
+insert into t1 values("c4_oblog1", 12, 22, 32);
+commit;
+ob1.oblog.next;
+inc $t1_dml_count;
+
+# add before
+alter table t1 add column c5 int default 123456789 before c2;
+ob1.oblog.next;
+begin;
+update t1 set c1=111 where c1=110;
+insert into t1 values("c4_oblog2", 13, 500, 23, 33);
+commit;
+ob1.oblog.next;
+inc $t1_dml_count;
+
+# add after
+alter table t1 add column c6 datetime(6) default '20180418' after c2;
+ob1.oblog.next;
+begin;
+update t1 set c1=112 where c1=111;
+insert into t1 values("c4_oblog3", 14, 501, 24, '20180430', 34);
+commit;
+ob1.oblog.next;
+inc $t1_dml_count;
+
+# add first+before+after
+alter table t1 add column c7 int after c2, add column c8 smallint first, add column c9 int before c5;
+ob1.oblog.next;
+begin;
+update t1 set c1=113 where c1=112;
+insert into t1 values(81, "c4_oblog4", 15, 91, 502, 25, 71, '20180430', 35);
+commit;
+ob1.oblog.next;
+inc $t1_dml_count;
+
+# drop column
+alter table oblog_db1.t1 drop c2;
+ob1.oblog.next;
+begin;
+update t1 set c1=114 where c1=113;
+insert into t1 values(82, "c4_oblog5", 16, 92, 503, 72, '20180429', 36);
+commit;
+ob1.oblog.next;
+inc $t1_dml_count;
+
+# c8 c4 c1 c9 c5 c7 c6 c3
+show columns from t1;
+select * from t1;
+
+# stop liboblog
+ob1.oblog.stop;
+
+# reboot
+ob1.oblog.set_start_tstamp $start_tstamp;
+# 设置data ddl schema version
+ob1.oblog.gen_conf log_level=TLOG.*:DEBUG tb_white_list=oblog_tt.oblog*.* skip_ob_version_compat_check=1 enable_output_by_table_def=1 enable_output_hidden_primary_key=1;
+
+ob1.oblog.restart;
+while ($t1_dml_count > 0)
+{
+  ob1.oblog.next_dml;
+  dec $t1_dml_count;
+}
+ob1.oblog.stop;
+
+ob1.oblog.set_start_tstamp $start_tstamp;
+# 1. 回拉历史日志
+# 2. 采用最新的schema version, 测试格式化数据填充默认值
+# 由于offline ddl, 预期只感知到t1表最后一个DDL对应的table_schema,之前的table_schema因table_id变化而感知不到。故预期只拉到最后一个数据
+ob1.oblog.gen_conf log_level=TLOG.*:DEBUG tb_white_list=oblog_tt.oblog*.* skip_ob_version_compat_check=1 enable_output_by_table_def=1 enable_output_hidden_primary_key=1;
+ob1.oblog.restart;
+ob1.oblog.next_dml;
+ob1.oblog.stop;

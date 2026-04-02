@@ -1,0 +1,173 @@
+# owner:wyh329796
+# owner group: data
+# Testing Case: broadcast table route 
+
+ob1=OBI(cluster=1:1:1, proxy_num=0);
+
+source include/mini_ob_config.inc;
+ob1.set extra_config=$mini_ob_config;
+ob1.z1.obs0.set extra_config = "cache_wash_threshold='1G',_ob_minor_merge_schedule_interval='3s'";
+ob1.z2.obs0.set extra_config = "cache_wash_threshold='1G',_ob_minor_merge_schedule_interval='3s'";
+ob1.z3.obs0.set extra_config = "cache_wash_threshold='1G',_ob_minor_merge_schedule_interval='3s'";
+
+let $mysql_tenant = mysql_tenant;
+
+let $z1_ip       = deploy_get_value(ob1.z1.obs0.ip);
+let $z1_port     = deploy_get_value(ob1.z1.obs0.mysql_port);
+let $z1_rpc_port = deploy_get_value(ob1.z1.obs0.port);
+let $z2_ip       = deploy_get_value(ob1.z2.obs0.ip);
+let $z2_port     = deploy_get_value(ob1.z2.obs0.mysql_port);
+let $z2_rpc_port = deploy_get_value(ob1.z2.obs0.port);
+
+# 必须先stop掉老的，删除才能有效，不然可能会有残留。
+ob1.force_stop;
+ob1.reboot;
+
+# 固定sys租户规格
+ob1.mysql alter resource unit sys_unit_config memory_size='2G';
+
+connect(sys_conn, $z1_ip, root@sys,,oceanbase, $z1_port);
+connection sys_conn;
+use oceanbase;
+alter system set resource_hard_limit = 1000;
+alter system set _restore_idle_time = '10s';
+alter system set syslog_level = 'TRACE';
+CREATE RESOURCE UNIT small_unit MIN_CPU=1, MAX_CPU=1, MEMORY_SIZE='4G';
+
+--echo ===============================================================
+--echo ==================     create tenant   ========================
+--echo ===============================================================
+
+ob1.mysql CREATE RESOURCE POOL resource_pool UNIT = "small_unit", UNIT_NUM = 1, ZONE_LIST = ('z1', 'z2');
+ob1.mysql CREATE TENANT mysql_tenant resource_pool_list=('resource_pool'), locality = "F@z1,F@z2", primary_zone = "z1" set ob_tcp_invited_nodes='%', ob_compatibility_mode='mysql';
+source include/check_schema_sync.inc;
+connection sys_conn;
+let $mysql_tenant_id = query_get_value(select tenant_id from oceanbase.__all_tenant where tenant_name='$mysql_tenant', tenant_id, 1);
+let $resource_pool_id = deploy_get_value(ob1.select select resource_pool_id from oceanbase.__all_resource_pool where tenant_id = $mysql_tenant_id, resource_pool_id, 1);
+let $ls_cnt = deploy_get_value(ob1.select select count(unique(ls_id)) as ls_cnt from oceanbase.__all_virtual_ls_info where tenant_id = $mysql_tenant_id, ls_cnt, 1);
+let $src_ls_id = 1001;
+
+--echo ===============================================================
+--echo ==================     create table ===========================
+--echo ===============================================================
+connect(sys_conn_mysql, $z1_ip, root@$mysql_tenant,,oceanbase, $z1_port);
+connection sys_conn_mysql;
+
+connection sys_conn_mysql;
+create user test IDENTIFIED BY "test";
+grant all on *.* to test WITH GRANT OPTION;
+
+connect(mysql_conn, $z1_ip,test@$mysql_tenant,test,test, $z1_port);
+connection mysql_conn;
+
+# mv3 dep on mv1 and mv2
+# mv2 dep on mv1 and tc
+# mv1 dep on ta and tb
+
+create table ta(id int primary key, name varchar(30));
+create table tb(id int primary key, age int);
+create table tc(id int primary key, salary int);
+
+create materialized view log on ta with primary key (name) including new values;
+create materialized view log on tb with primary key (age) including new values;
+create materialized view log on tc with primary key (salary) including new values;
+
+create materialized view mv1 (primary key (id_a)) refresh fast as select ta.id id_a, tb.id as ib_b, ta.name, tb.age from ta, tb where ta.id = tb.id;
+create materialized view log on mv1 with primary key (name, age) including new values;
+let $mv1_id = query_get_value(select table_id from oceanbase.__all_table where table_name = 'mv1', table_id, 1);
+
+create materialized view mv2 (primary key (id_a)) refresh fast as select mv1.id_a, tc.id id_c, mv1.name, tc.salary from mv1, tc where mv1.id_a = tc.id;
+create materialized view log on mv2 with primary key (name, salary) including new values;
+let $mv2_id = query_get_value(select table_id from oceanbase.__all_table where table_name = 'mv2', table_id, 1);
+
+create materialized view mv3 refresh fast as select count(*) cnt, count(age) age_cnt, sum(age) age_sum, count(salary) salary_cnt, sum(salary) salary_sum from mv1 , mv2 where mv1.id_a = mv2.id_a;
+let $mv3_id = query_get_value(select table_id from oceanbase.__all_table where table_name = 'mv3', table_id, 1);
+
+insert into ta values (1, 'j');
+insert into tb values (1, 21);
+insert into tc values (1, 10000);
+
+###### 测试点1: 存在多个依赖一个mv的级联调度, mv刷新时从最小的目标位点开始刷新
+
+connection sys_conn;
+alter system set debug_sync_timeout = '100000s';
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'BEFORE_NESTED_MV_REFRESH clear';
+set ob_global_debug_sync = 'BEFORE_NESTED_MV_REFRESH wait_for signalxxx execute 10000';
+set ob_global_debug_sync = 'BEFORE_MV_FINISH_RUNNING_JOB wait_for signalyyy execute 10000';
+sleep 3;
+
+connect(mysql_conn_1, $z1_ip,test@$mysql_tenant,test,test, $z1_port);
+connect(mysql_conn_2, $z1_ip,test@$mysql_tenant,test,test, $z1_port);
+connect(mysql_conn_3, $z1_ip,test@$mysql_tenant,test,test, $z1_port);
+
+connection mysql_conn;
+send CALL DBMS_MVIEW.REFRESH('mv2', 'f', nested=>true, nested_refresh_mode=>'CONSISTENT');
+sleep 3;
+
+connection mysql_conn_1;
+send CALL DBMS_MVIEW.REFRESH('mv3', 'f', nested=>true, nested_refresh_mode=>'CONSISTENT');
+
+connection mysql_conn_2;
+send CALL DBMS_MVIEW.REFRESH('mv1', 'f');
+
+connection mysql_conn_3;
+let $nested_mv2_scn = query_get_value(select target_data_sync_scn from oceanbase.__all_virtual_mview_running_job where job_type = 4 and table_id = $mv2_id, target_data_sync_scn, 1);
+let $nested_mv3_scn = query_get_value(select target_data_sync_scn from oceanbase.__all_virtual_mview_running_job where job_type = 4 and table_id = $mv3_id, target_data_sync_scn, 1); 
+let $min_target_scn = query_get_value(select min(target_data_sync_scn) as min_scn from oceanbase.__all_virtual_mview_running_job where job_type = 4, min_scn, 1);
+--disable_query_log
+
+connection sys_conn;
+set ob_global_debug_sync = 'now signal signalyyy';
+
+connection mysql_conn_2;
+reap;
+eval select is_synced = 1 as sync_check, data_sync_scn = $min_target_scn as data_sync_check from oceanbase.__all_mview where mview_id = $mv1_id;
+
+####  rs 切主
+connection sys_conn;
+ob1.mysql alter system switch replica leader ls = 1 server = '$z2_ip:$z2_rpc_port' tenant = 'mysql_tenant';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_ls_info where ls_id = 1 and SVR_IP = '$z2_ip' and SVR_PORT = '$z2_rpc_port' and tenant_id = $mysql_tenant_id and ls_state = 'leader' , 1, 30;
+
+connection mysql_conn_2;
+send CALL DBMS_MVIEW.REFRESH('mv2', 'f');
+
+connection mysql_conn_3;
+eval select target_data_sync_scn = $min_scn as res from oceanbase.__all_virtual_mview_running_job where table_id = $mv2_id and job_type = 2;
+
+connection sys_conn;
+set ob_global_debug_sync = 'now signal signalyyy';
+
+connection mysql_conn_2;
+reap;
+eval select is_synced = 1 as sync_check , data_sync_scn = $min_target_scn as data_sync_check from oceanbase.__all_mview where mview_id = $mv2_id;
+
+connection sys_conn;
+set ob_global_debug_sync = 'BEFORE_MV_FINISH_RUNNING_JOB clear';
+set ob_global_debug_sync = 'BEFORE_NESTED_MV_REFRESH clear';
+set ob_global_debug_sync = 'now broadcast signalyyy';
+set ob_global_debug_sync = 'now broadcast signalxxx';
+set ob_global_debug_sync = 'now broadcast signalxxx';
+
+###### 检查满足mv3的级联刷新位点
+connection mysql_conn;
+reap;
+connection mysql_conn_1;
+reap;
+sleep 3;
+eval select is_synced = 1 as sync_check, data_sync_scn = $nested_mv3_scn as data_sync_check from oceanbase.__all_mview where mview_id = $mv1_id;
+eval select is_synced = 1 as sync_check, data_sync_scn = $nested_mv3_scn as data_sync_check from oceanbase.__all_mview where mview_id = $mv2_id;
+eval select is_synced = 1 as sync_check, data_sync_scn = $nested_mv3_scn as data_sync_check from oceanbase.__all_mview where mview_id = $mv3_id;
+--enable_query_log
+
+
+
+
+
+
+
+
+
+
+
+

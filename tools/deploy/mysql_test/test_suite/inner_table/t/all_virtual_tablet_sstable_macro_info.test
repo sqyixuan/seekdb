@@ -1,0 +1,102 @@
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+#owner: jiahua.cjh
+#owner group: storage
+#description: test __all_virtual_tablet_sstable_macro_info
+--disable_warnings
+--disable_query_log
+--source mysql_test/include/index_quick_major.inc
+--disable_query_log
+
+connect (obsys1,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+#防止触发mini minor, 影响case稳定性
+alter system set minor_compact_trigger = 16 tenant sys;
+alter system set minor_compact_trigger = 16 tenant all_user;
+alter system set minor_compact_trigger = 16 tenant all_meta;
+connection obsys1;
+
+#step 1: 建表，插入数据，获取表的table_id
+connection default;
+alter system set undo_retention = 0;
+alter system set minor_compact_trigger = 10;
+drop table if exists yuanfeng_test;
+create table yuanfeng_test (c1 int, c2 int);
+
+#wait for minorfreeze introduced by multi-source
+set ob_query_timeout = 300000000;
+SELECT SLEEP(30);
+
+--disable_query_log
+let $cnt = 1;
+while ($cnt < 10)
+{
+  eval insert into yuanfeng_test values($cnt, $cnt);
+  inc $cnt;
+}
+
+connection obsys1;
+let $table_id = query_get_value(select table_id from oceanbase.__all_virtual_table where table_name = 'yuanfeng_test', table_id, 1);
+let $tenant_id = query_get_value(select tenant_id from oceanbase.__all_virtual_tablet_to_ls where table_id = $table_id, tenant_id, 1);
+let $ls_id = query_get_value(select ls_id from oceanbase.__all_virtual_tablet_to_ls where table_id = $table_id, ls_id, 1);
+let $tablet_id = query_get_value(select tablet_id from oceanbase.__all_virtual_tablet_to_ls where table_id = $table_id, tablet_id, 1);
+
+###### start case1 ####
+#合并前检查数据是否正确，此时yuanfeng_test对应的数据应该为空
+--disable_query_log
+eval select sum(row_count) from oceanbase.__all_virtual_tablet_sstable_macro_info where tenant_id=$tenant_id and ls_id=$ls_id and tablet_id=$tablet_id group by svr_ip, svr_port limit 1;
+###### end case2 ####
+
+
+###### start case2 ####
+#做一次每日合并，查看对应的数据是否正确
+--source mysql_test/include/minorfreeze.inc
+--source mysql_test/include/wait_minor_merge.inc
+--disable_query_log
+connection obsys1;
+eval select sum(row_count) from oceanbase.__all_virtual_tablet_sstable_macro_info where tenant_id=$tenant_id and ls_id=$ls_id and tablet_id=$tablet_id group by svr_ip, svr_port limit 1;
+###### end case2 ####
+
+
+###### start case3 ####
+#增加一行数据，查看对应的数据是否正确
+connection default;
+eval insert into yuanfeng_test values ($cnt, $cnt);
+--source mysql_test/include/minorfreeze.inc
+--source mysql_test/include/wait_minor_merge.inc
+--disable_query_log
+connection obsys1;
+eval select sum(row_count) from oceanbase.__all_virtual_tablet_sstable_macro_info where tenant_id=$tenant_id and ls_id=$ls_id and tablet_id=$tablet_id group by svr_ip, svr_port limit 1;
+###### end case3 ####
+
+###### start case4 ####
+#删除一行数据， 查看对应的数据是否正确
+connection default;
+delete from yuanfeng_test where c1 = 1;
+--source mysql_test/include/minorfreeze.inc
+--source mysql_test/include/wait_minor_merge.inc
+--disable_query_log
+connection obsys1;
+eval select sum(row_count) from oceanbase.__all_virtual_tablet_sstable_macro_info where tenant_id=$tenant_id and ls_id=$ls_id and tablet_id=$tablet_id group by svr_ip, svr_port limit 1;
+###### end case4 ####
+
+###### start case5 ####
+#更新一行数据，查看对应数据是否正确
+connection default;
+update yuanfeng_test set c2 = 3 where c1 = 2;
+--source mysql_test/include/minorfreeze.inc
+--source mysql_test/include/wait_minor_merge.inc
+--disable_query_log
+connection obsys1;
+eval select sum(row_count) from oceanbase.__all_virtual_tablet_sstable_macro_info where tenant_id=$tenant_id and ls_id=$ls_id and tablet_id=$tablet_id group by svr_ip, svr_port limit 1;
+###### end case5 ####
+
+connection obsys1;
+alter system set minor_compact_trigger = 2 tenant sys;
+alter system set minor_compact_trigger = 2 tenant all_user;
+alter system set minor_compact_trigger = 2 tenant all_meta;
+
+connection default;
+alter system set minor_compact_trigger = 2;
+drop table yuanfeng_test;
+--enable_query_log

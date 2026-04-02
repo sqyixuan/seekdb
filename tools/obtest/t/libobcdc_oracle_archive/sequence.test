@@ -1,0 +1,84 @@
+##########################
+#owner :  qianxi
+#owner group: liboblog
+#description:
+# 测试点：
+# sequence
+# bug
+# 
+#
+
+##########################
+
+ob1=OBI(cluster=1,init_unit_cpu=2);
+ob1.force_stop;
+ob1.clean_backup_dest;
+ob1.reboot;
+
+ob1.mysql alter system set resource_hard_limit= 800;
+sleep 2;
+ob_connect(conn_sys, ob1.proxy0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+
+--disable_warnings
+drop tenant if exists oracle;
+--disable_warnings
+drop resource pool if exists oblog_pool;
+--disable_warnings
+drop resource unit if exists oblog_box;
+
+###create oracle tenant
+ob1.mysql create resource unit oblog_box max_cpu=2, memory_size='10G';
+ob1.mysql create resource pool oblog_pool unit = 'oblog_box', unit_num = 1;
+ob1.mysql create tenant oracle replica_num = 1, resource_pool_list=('oblog_pool') set ob_tcp_invited_nodes='%', ob_compatibility_mode='oracle';
+sleep 2;
+ob_connect(conn_oracle, ob1.z1.obs0, SYS@oracle, ,SYS, , USE_OB_CONNECTOR);
+
+create user obtest IDENTIFIED BY "obtest";
+grant all on *.* to obtest WITH GRANT OPTION;
+grant dba to obtest;
+ob_connect(conn_oracle_obtest,ob1.z1.obs0,OBTEST@oracle,obtest,obtest,,USE_OB_CONNECTOR);
+
+let $oracle_tenant_name=oracle;
+let $original_conn=conn_oracle_obtest;
+source include/liboblog/enable_oracle_archive.inc;
+
+# 启动oblog
+ob1.oblog.gen_conf tb_white_list=oracle.*.* log_level=DEBUG test_mode_force_fetch_archive=1 skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+
+create user oblog_db identified by "passwd";
+ob1.oblog.next;
+alter session set current_schema = oblog_db;
+sleep 1;
+
+# sys-mysql租户获取
+ob_connect(conn_sys, ob1.proxy0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+let $start_tstamp = query_get_value(select round(time_to_usec(now()) / 1000000) as now, now, 1);
+ob_connect(conn_oracle, ob1.z1.obs0, SYS@oracle, ,SYS, , USE_OB_CONNECTOR);
+
+create sequence s2x;
+ob1.oblog.next;
+
+alter sequence s2x maxvalue 123;
+ob1.oblog.next;
+
+drop sequence s2x;
+ob1.oblog.next;
+
+# 回拉历史
+ob1.oblog.set_start_tstamp $start_tstamp;
+ob1.oblog.gen_conf tb_white_list=oracle.*.* log_level=DEBUG test_mode_force_fetch_archive=1 skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+
+let $DDL_CNT = 3;
+while ($DDL_CNT > 0)
+{
+  ob1.oblog.next;
+  dec $DDL_CNT;
+}
+
+drop user oblog_db cascade;
+ob1.oblog.next;
+
+# stop liboblog
+ob1.oblog.stop;

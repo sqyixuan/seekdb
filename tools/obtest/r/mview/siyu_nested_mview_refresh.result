@@ -1,0 +1,59 @@
+ob1=OBI(cluster=1:1:1, proxy_num=0);
+ob1.set extra_config=$mini_ob_config;
+ob1.z1.obs0.set extra_config = "cache_wash_threshold='1G',_ob_minor_merge_schedule_interval='3s'";
+ob1.z2.obs0.set extra_config = "cache_wash_threshold='1G',_ob_minor_merge_schedule_interval='3s'";
+ob1.z3.obs0.set extra_config = "cache_wash_threshold='1G',_ob_minor_merge_schedule_interval='3s'";
+ob1.force_stop;
+ob1.reboot;
+ob1.mysql alter resource unit sys_unit_config memory_size='2G';
+use oceanbase;
+alter system set resource_hard_limit = 1000;
+alter system set _restore_idle_time = '10s';
+alter system set syslog_level = 'TRACE';
+CREATE RESOURCE UNIT small_unit MIN_CPU=1, MAX_CPU=1, MEMORY_SIZE='4G';
+===============================================================
+==================     create tenant   ========================
+===============================================================
+ob1.mysql CREATE RESOURCE POOL resource_pool UNIT = "small_unit", UNIT_NUM = 1, ZONE_LIST = ('z1', 'z2');
+ob1.mysql CREATE TENANT mysql_tenant resource_pool_list=('resource_pool'), locality = "F@z1,F@z2", primary_zone = "z1" set ob_tcp_invited_nodes='%', ob_compatibility_mode='mysql';
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_server_schema_info as a join oceanbase.__all_virtual_server_schema_info as b on a.tenant_id = b.tenant_id  where a.refreshed_schema_version != b.refreshed_schema_version, 0, 60;
+===============================================================
+==================     create table ===========================
+===============================================================
+create user test IDENTIFIED BY "test";
+grant all on *.* to test WITH GRANT OPTION;
+create table ta(id int primary key, name varchar(30));
+create table tb(id int primary key, age int);
+create table tc(id int primary key, salary int);
+create materialized view log on ta with primary key (name) including new values;
+create materialized view log on tb with primary key (age) including new values;
+create materialized view log on tc with primary key (salary) including new values;
+create materialized view mv1 (primary key (id_a)) refresh fast as select ta.id id_a, tb.id as ib_b, ta.name, tb.age from ta, tb where ta.id = tb.id;
+create materialized view log on mv1 with primary key (name, age) including new values;
+create materialized view mv2 (primary key (id_a)) refresh fast as select mv1.id_a, tc.id id_c, mv1.name, tc.salary from mv1, tc where mv1.id_a = tc.id;
+create materialized view log on mv2 with primary key (name, salary) including new values;
+create materialized view mv3 refresh fast as select count(*) cnt, count(age) age_cnt, sum(age) age_sum, count(salary) salary_cnt, sum(salary) salary_sum from mv1 , mv2 where mv1.id_a = mv2.id_a;
+insert into ta values (1, 'j');
+insert into tb values (1, 21);
+insert into tc values (1, 10000);
+alter system set debug_sync_timeout = '100000s';
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'BEFORE_NESTED_MV_REFRESH clear';
+set ob_global_debug_sync = 'BEFORE_NESTED_MV_REFRESH wait_for signalxxx execute 10000';
+set ob_global_debug_sync = 'BEFORE_MV_FINISH_RUNNING_JOB wait_for signalyyy execute 10000';
+CALL DBMS_MVIEW.REFRESH('mv2', 'f', nested=>true, nested_refresh_mode=>'CONSISTENT');
+CALL DBMS_MVIEW.REFRESH('mv3', 'f', nested=>true, nested_refresh_mode=>'CONSISTENT');
+CALL DBMS_MVIEW.REFRESH('mv1', 'f');
+sync_check	data_sync_check
+1	1
+ob1.mysql alter system switch replica leader ls = 1 server = '$z2_ip:$z2_rpc_port' tenant = 'mysql_tenant';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_ls_info where ls_id = 1 and SVR_IP = '$z2_ip' and SVR_PORT = '$z2_rpc_port' and tenant_id = $mysql_tenant_id and ls_state = 'leader' , 1, 30;
+res
+sync_check	data_sync_check
+1	1
+sync_check	data_sync_check
+1	1
+sync_check	data_sync_check
+1	1
+sync_check	data_sync_check
+1	1

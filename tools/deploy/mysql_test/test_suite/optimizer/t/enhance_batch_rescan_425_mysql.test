@@ -1,0 +1,98 @@
+# owner: zhanyue.zzy
+# owner group: SQL1
+#description: test nlj/spf batch rescan behaviors adjusted in 4_2_5
+# tags: optimizer
+
+--result_format 4
+
+--disable_warnings
+drop table if exists t1;
+--enable_warnings
+
+create table t1(c1 int primary key, c2 int ,c3 int, c4 int) partition by hash(c1) partitions 4;
+insert into t1
+with recursive cte as (select 1 as c1 union all select c1+1 from cte where c1 < 1000)
+select c1, c1, c1, c1 from cte;
+
+--explain_protocol 1
+
+--echo ==================================================================================
+--echo ====================== test new behaviors in 4_2_5 ===============================
+--echo ==================================================================================
+
+## basic test
+select /*+leading(a) use_nl(b)*/ sum(a.c1+a.c2+a.c3+a.c4), sum(b.c1+b.c2+b.c3+b.c4) from t1 a, t1 b where a.c2 = b.c1;
+
+## allowed all rescan path use das
+select /*+leading(a) use_nl(v)*/ sum(a.c1+a.c2+a.c3+a.c4), sum(v.c1+v.c2+v.c3) from t1 a, (
+    select c1, c2, c3 from t1 b union all select c3, c2, c1 from t1 c where c1 < 4
+) v where a.c2 = v.c1;
+
+## enhance batch rescan 1. upper op is subplan filter/semi join/anti join
+select /*+no_rewrite*/ sum((select /*+leading(b) use_nl(c)*/ 1 from t1 b, t1 c where b.c2 = c.c1 and b.c1 = a.c3)) s_val
+from t1 a;
+select /*+no_semi_to_inner leading(a) use_nl(view1)*/ sum(c1 + c2 + c3 + c4) from t1 a
+where exists (select /*+leading(b) use_nl(c)*/ 1 from t1 b, t1 c where b.c2 = c.c1 and b.c1 = a.c3);
+select /*+no_semi_to_inner leading(a) use_nl(view1)*/ sum(c1 + c2 + c3 + c4) from t1 a
+where not exists (select /*+leading(b) use_nl(c)*/ 1 from t1 b, t1 c where b.c2 = c.c1 and b.c1 = a.c3);
+
+## enhance batch rescan 2. semi/anti join
+select /*+no_semi_to_inner leading(a) use_nl(b)*/ sum(c1 + c2 + c3 + c4) from t1 a where exists (select 1 from t1 b where a.c2 = b.c1);
+select /*+no_semi_to_inner leading(a) use_nl(b)*/ sum(c1 + c2 + c3 + c4) from t1 a where not exists (select 1 from t1 b where a.c2 = b.c1);
+
+## enhance batch rescan 3. subplan contain limit
+select /*+no_rewrite*/ sum((select a.c2+a.c3 from t1 a where a.c1 = t_outer.c2 limit 1)) s_val from t1 t_outer;
+select /*+no_rewrite leading(a) use_nl(v)*/ sum(a.c1+a.c2+a.c3+a.c4), sum(v.c1+v.c2+v.c3) from t1 a, lateral (select c1, c2, c3 from t1 b where a.c2 = b.c1 limit 1) v;
+
+## enhance batch rescan 4. start_up filter contain exec param
+select /*+no_rewrite*/ sum((select sum(a.c2+a.c3) from t1 a where a.c1 > 1 and t_outer.c2 = 1)) s_val
+from t1 t_outer;
+select /*+no_rewrite leading(a) use_nl(v)*/ sum(a.c1+a.c2+a.c3+a.c4), sum(v.c1+v.c2+v.c3) from t1 a left join (select c1, c2, c3 from t1 b) v
+on a.c2 = v.c1 and a.c1 >= 0;
+
+## enhance batch rescan 5. global index is index back and contain index scan filter
+create index g_idx_t1_c4_c1_c2 on t1(c4, c1, c2) global;
+select /*+full(a) leading(a) use_nl(b) use_das(b) index(b g_idx_t1_c4_c1_c2)*/ sum(a.c1+a.c2+a.c3+a.c4), sum(b.c1+b.c2+b.c3+b.c4) from t1 a, t1 b where a.c2 = b.c4 and a.c1 <= 100000 and b.c2 >= 0;
+select /*+full(a) leading(a) use_nl(b) no_use_das(b) index(b g_idx_t1_c4_c1_c2)*/ sum(a.c1+a.c2+a.c3+a.c4), sum(b.c1+b.c2+b.c3+b.c4) from t1 a, t1 b where a.c2 = b.c4 and a.c1 < 100000 and b.c2 >= 0;
+drop index g_idx_t1_c4_c1_c2 on t1;
+
+## enhance batch rescan 6. exec_pram contain subquery
+select sum(s_val2), sum(s_val2) from (
+    select /*+no_rewrite*/ (select sum(a.c2+a.c3) from t1 a where a.c1 = t_outer.c2) s_val1,
+           /*+no_rewrite*/ (select sum(a.c2+a.c3) from t1 a where a.c1 = s_val1) s_val2
+    from t1 t_outer);
+
+## enhance batch rescan 7. exists onetime expr / init plan
+select /*+no_rewrite*/ sum((select /*+use_das(a)*/ sum(a.c2+a.c3) from t1 a where a.c1 = t_outer.c2)) s_val,
+        sum((select /*+use_das(a)*/ sum(a.c2+a.c3) from t1 a where a.c1 = 3)) onetime_val
+from t1 t_outer;
+
+select /*+no_rewrite*/ sum((select sum(a.c2+a.c3) from t1 a where a.c1 = t_outer.c2)) s_val,
+        sum(t_outer.c1 in (select a.c2+a.c3 from t1 a where a.c1 < 3)) use_init_plan_val
+from t1 t_outer;
+
+## can not batch rescan: 1. right child contain gi
+select /*+leading(a) use_nl(v)*/ sum(a.c1+a.c2+a.c3+a.c4), sum(v.c1+v.c2+v.c3+v.c4)
+from t1 a, (select /*+no_rewrite no_use_das(b)*/ * from t1 b) v
+where a.c2 = v.c1;
+
+## can not batch rescan: 2. right child contain join/subplan filter
+select /*+no_rewrite leading(a) use_nl(v)*/ sum(a.c1+a.c2+a.c3+a.c4), sum(v.c1+v.c2+v.c3)
+from t1 a, (select a.c1, a.c2, b.c3 from t1 a, t1 b where a.c2 = b.c1) v
+where a.c2 = v.c1;
+
+select /*+leading(a) use_nl(v)*/ sum(a.c1+a.c2+a.c3+a.c4), sum(v.c1+v.s_val)
+from t1 a, (select /*+no_rewrite*/ c1, (select sum(b.c2+b.c3) sum_val from t1 b where a.c2 = b.c1) s_val from t1 a) v
+where a.c2 = v.c1;
+
+select /*+no_rewrite*/ sum((select sum(a.c2+b.c3) from t1 a, t1 b where a.c1 = t_outer.c2 and a.c2 = b.c1)) s_val
+from t1 t_outer;
+
+select /*+no_rewrite*/ sum((select (select sum(b.c2+b.c3) from t1 b where a.c2 = b.c1) from t1 a where a.c1 = t_outer.c2)) s_val
+from t1 t_outer;
+
+## can not batch rescan: 3. right child use index desc scan
+select /*+no_rewrite leading(a) use_nl(v)*/ sum(a.c1+a.c2+a.c3+a.c4), sum(v.c1+v.c2+v.c3) from t1 a, lateral (select c1, c2, c3 from t1 b where a.c2 > b.c1 order by b.c1 desc limit 1) v;
+select /*+no_rewrite leading(a) use_nl(v)*/ sum(a.c1+a.c2+a.c3+a.c4), sum(v.c1+v.c2+v.c3) from t1 a, lateral (select c1, c2, c3 from t1 b where a.c2 > b.c1 order by b.c1 limit 1) v;
+
+drop table if exists t1;

@@ -1,0 +1,212 @@
+# CASE_OWNER:
+#    @cangming.zl
+# CASE_DESC:
+#    C副本异常场景测试
+
+ob1=OBI(cluster=2:2:2:2, proxy_num=0, init_unit_cpu=0);
+ob1.reboot;
+ob1.mysql alter system set balancer_idle_time = '10s';
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+ob1.mysql alter system set enable_rebalance = 'false';
+sleep 5;
+
+ob_connect(sys_conn, ob1.z1.obs0,root@sys, ,oceanbase, , USE_MYSQL_CONNECTOR);
+connection sys_conn;
+
+## create tenant and init data
+CREATE RESOURCE UNIT uc MAX_CPU 2, MEMORY_SIZE '4G';
+CREATE RESOURCE POOL rp UNIT = 'uc', UNIT_NUM = 2;
+CREATE TENANT tt1 RESOURCE_POOL_LIST = ('rp'), primary_zone = 'z1', LOCALITY = 'F@z1,R@z2,C@z3,F@z4' set ob_tcp_invited_nodes='%';
+ob1.mysql set ob_global_debug_sync = 'BEFORE_TRY_DISASTER_RECOVERY wait_for signal1 execute 10000';
+ob1.mysql set ob_global_debug_sync = 'BEFORE_SEND_DRTASK_RPC wait_for signal2 execute 10000';
+sleep 5;
+let $tenant_id = query_get_value(select tenant_id from DBA_OB_TENANTS where tenant_name = 'tt1', tenant_id, 1);
+ob_connect(conn1, ob1.z1.obs0, root@tt1, , test,, USE_MYSQL_CONNECTOR);
+connection conn1;
+CREATE TABLE t1 (c1 int,c2 int) PARTITION BY HASH(c1) PARTITIONS 8;
+connection sys_conn;
+
+let $z2_dst_ip0 = deploy_get_value(ob1.z2.obs0.ip);
+let $z2_dst_port0 = deploy_get_value(ob1.z2.obs0.port);
+let $z2_dst0 = $z2_dst_ip0:$z2_dst_port0;
+let $z3_dst_ip0 = deploy_get_value(ob1.z3.obs0.ip);
+let $z3_dst_port0 = deploy_get_value(ob1.z3.obs0.port);
+let $z3_dst0 = $z3_dst_ip0:$z3_dst_port0;
+let $z4_dst_ip0 = deploy_get_value(ob1.z4.obs0.ip);
+let $z4_dst_port0 = deploy_get_value(ob1.z4.obs0.port);
+let $z4_dst0 = $z4_dst_ip0:$z4_dst_port0;
+let $z4_dst_ip1 = deploy_get_value(ob1.z4.obs1.ip);
+let $z4_dst_port1 = deploy_get_value(ob1.z4.obs1.port);
+let $z4_dst1 = $z4_dst_ip1:$z4_dst_port1;
+
+
+# !! sleep 30s is for waiting ls GC, do not remove it
+
+--echo =========================================================
+--echo case 1: wrong replica type for normal ls
+--echo =========================================================
+let $normal_ls_id = query_get_value(select ls_id from CDB_OB_LS_LOCATIONS where svr_ip = '$z3_dst_ip0' and svr_port = $z3_dst_port0 and tenant_id = $tenant_id and ls_id != 1, ls_id, 1);
+let $ls_id = $normal_ls_id;
+let $ls_leader_ip = query_get_value(select svr_ip from CDB_OB_LS_LOCATIONS where tenant_id = $tenant_id and ls_id = $ls_id and ROLE = 'LEADER', svr_ip, 1);
+let $ls_leader_port = query_get_value(select svr_port from CDB_OB_LS_LOCATIONS where tenant_id = $tenant_id and ls_id = $ls_id and ROLE = 'LEADER', svr_port, 1);
+--echo -- normal ls F in C-zone
+# remove C
+ob1.sh ./etc/ob_admin -h $ls_leader_ip -p $ls_leader_port remove_ls_replica tenant_id = $tenant_id , ls_id = $ls_id, replica_type = 'C', server = '$z3_dst0';
+ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_OB_LS_LOCATIONS where tenant_id = $tenant_id and ls_id = $ls_id and svr_ip = '$z3_dst_ip0' and svr_port = $z3_dst_port0, 0, 60;
+sleep 30;
+# add F
+ob1.sh ./etc/ob_admin -h $z3_dst_ip0 -p $z3_dst_port0 add_ls_replica tenant_id = $tenant_id , ls_id = $ls_id, replica_type = 'F', new_paxos_replica_number = 3;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_OB_LS_LOCATIONS where tenant_id = $tenant_id and ls_id = $ls_id and role = "LEADER" and member_list like "%$z3_dst0%", 1, 60;
+# one step, remove F
+source include/balance/disaster_recovery_one_step.inc;
+# one step, add C
+sleep 30;
+source include/balance/disaster_recovery_one_step.inc;
+
+--echo -- normal ls R in C-zone
+# remove C
+ob1.sh ./etc/ob_admin -h $ls_leader_ip -p $ls_leader_port remove_ls_replica tenant_id = $tenant_id , ls_id = $ls_id, replica_type = 'C', server = '$z3_dst0';
+ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_OB_LS_LOCATIONS where tenant_id = $tenant_id and ls_id = $ls_id and svr_ip = '$z3_dst_ip0' and svr_port = $z3_dst_port0, 0, 60;
+sleep 30;
+# add R
+ob1.sh ./etc/ob_admin -h $z3_dst_ip0 -p $z3_dst_port0 add_ls_replica tenant_id = $tenant_id , ls_id = $ls_id, replica_type = 'R';
+ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_OB_LS_LOCATIONS where tenant_id = $tenant_id and ls_id = $ls_id and role = "LEADER" and REGEXP_LIKE(learner_list, "$z3_dst0:[0-9]*:0") = 1, 1, 60;
+# one step, remove R
+source include/balance/disaster_recovery_one_step.inc;
+# one step, add C
+sleep 30;
+source include/balance/disaster_recovery_one_step.inc;
+
+--echo -- normal ls C in F-zone
+# remove F
+ob1.sh ./etc/ob_admin -h $ls_leader_ip -p $ls_leader_port remove_ls_replica tenant_id = $tenant_id , ls_id = $ls_id, replica_type = 'F', new_paxos_replica_number = 1, server = '$z4_dst0';
+ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_OB_LS_LOCATIONS where tenant_id = $tenant_id and ls_id = $ls_id and svr_ip = '$z4_dst_ip0' and svr_port = $z4_dst_port0, 0, 60;
+sleep 30;
+# add C
+ob1.sh ./etc/ob_admin -h $z4_dst_ip0 -p $z4_dst_port0 add_ls_replica tenant_id = $tenant_id , ls_id = $ls_id, replica_type = 'C';
+ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_OB_LS_LOCATIONS where tenant_id = $tenant_id and ls_id = $ls_id and role = "LEADER" and REGEXP_LIKE(learner_list, "$z4_dst0:[0-9]*:1") = 1, 1, 60;
+# one step, remove C
+source include/balance/disaster_recovery_one_step.inc;
+sleep 30;
+# one step, add F
+source include/balance/disaster_recovery_one_step.inc;
+
+
+--echo -- normal ls C in R-zone
+# remove R
+ob1.sh ./etc/ob_admin -h $ls_leader_ip -p $ls_leader_port remove_ls_replica tenant_id = $tenant_id , ls_id = $ls_id, replica_type = 'R', server = '$z2_dst0';
+ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_OB_LS_LOCATIONS where tenant_id = $tenant_id and ls_id = $ls_id and svr_ip = '$z2_dst_ip0' and svr_port = $z2_dst_port0, 0, 60;
+sleep 30;
+# add C
+ob1.sh ./etc/ob_admin -h $z2_dst_ip0 -p $z2_dst_port0 add_ls_replica tenant_id = $tenant_id , ls_id = $ls_id, replica_type = 'C';
+ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_OB_LS_LOCATIONS where tenant_id = $tenant_id and ls_id = $ls_id and role = "LEADER" and REGEXP_LIKE(learner_list, "$z2_dst0:[0-9]*:1") = 1, 1, 60;
+# one step, remove C
+source include/balance/disaster_recovery_one_step.inc;
+# one step, add R
+sleep 30;
+source include/balance/disaster_recovery_one_step.inc;
+
+
+--echo =========================================================================
+--echo case 2: wrong replica type during shrinking, do locality alignment first
+--echo =========================================================================
+## start shrink first
+# it is expected that only one ls need to migrate for shrinking
+alter resource tenant tt1 unit_num = 1 delete unit_group = (1002);
+
+# setup normal_ls for wrong replica_type, take F in C zone as example
+let $ls_id = $normal_ls_id;
+let $ls_leader_ip = query_get_value(select svr_ip from CDB_OB_LS_LOCATIONS where tenant_id = $tenant_id and ls_id = $ls_id and ROLE = 'LEADER', svr_ip, 1);
+let $ls_leader_port = query_get_value(select svr_port from CDB_OB_LS_LOCATIONS where tenant_id = $tenant_id and ls_id = $ls_id and ROLE = 'LEADER', svr_port, 1);
+# remove C
+ob1.sh ./etc/ob_admin -h $ls_leader_ip -p $ls_leader_port remove_ls_replica tenant_id = $tenant_id , ls_id = $ls_id, replica_type = 'C', server = '$z3_dst0';
+ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_OB_LS_LOCATIONS where tenant_id = $tenant_id and ls_id = $ls_id and svr_ip = '$z3_dst_ip0' and svr_port = $z3_dst_port0, 0, 60;
+sleep 30;
+# add F
+ob1.sh ./etc/ob_admin -h $z3_dst_ip0 -p $z3_dst_port0 add_ls_replica tenant_id = $tenant_id , ls_id = $ls_id, replica_type = 'F', new_paxos_replica_number = 3;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_OB_LS_LOCATIONS where tenant_id = $tenant_id and ls_id = $ls_id and role = "LEADER" and member_list like "%$z3_dst0%", 1, 60;
+# one step, add C (because unit_group_id has changed)
+source include/balance/disaster_recovery_one_step.inc;
+# one step, remove F
+source include/balance/disaster_recovery_one_step.inc;
+sleep 30;
+
+## revert shrink
+alter resource tenant tt1 unit_num = 2;
+ob1.check_until_timeout select count(*) cnt from __all_virtual_balance_task, 0, 120;
+ob1.check_until_timeout select count(*) cnt from __all_virtual_balance_job, 0, 120;
+# one step, migrate C (because C is in another unit group now)
+source include/balance/disaster_recovery_one_step.inc;
+ob1.check_until_timeout select job_status from __all_rootservice_job where job_type = 'ALTER_RESOURCE_TENANT_UNIT_NUM' order by job_id desc limit 1, SUCCESS, 60;
+
+
+--echo =========================================================
+--echo case 3: wrong replica type for duplicate ls
+--echo =========================================================
+connection conn1;
+CREATE TABLE dup_t1 (c1 int,c2 int) DUPLICATE_SCOPE= 'cluster';
+connection sys_conn;
+let $dup_ls_id = query_get_value(select ls_id from __all_virtual_ls where flag like '%duplicate%', ls_id, 1);
+let $ls_id = $dup_ls_id;
+let $ls_leader_ip = query_get_value(select svr_ip from CDB_OB_LS_LOCATIONS where tenant_id = $tenant_id and ls_id = $ls_id and ROLE = 'LEADER', svr_ip, 1);
+let $ls_leader_port = query_get_value(select svr_port from CDB_OB_LS_LOCATIONS where tenant_id = $tenant_id and ls_id = $ls_id and ROLE = 'LEADER', svr_port, 1);
+--echo -- duplicate ls F in C-zone
+# remove C
+ob1.sh ./etc/ob_admin -h $ls_leader_ip -p $ls_leader_port remove_ls_replica tenant_id = $tenant_id , ls_id = $ls_id, replica_type = 'C', server = '$z3_dst0';
+ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_OB_LS_LOCATIONS where tenant_id = $tenant_id and ls_id = $ls_id and svr_ip = '$z3_dst_ip0' and svr_port = $z3_dst_port0, 0, 60;
+sleep 30;
+# add F
+ob1.sh ./etc/ob_admin -h $z3_dst_ip0 -p $z3_dst_port0 add_ls_replica tenant_id = $tenant_id , ls_id = $ls_id, replica_type = 'F', new_paxos_replica_number = 3;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_OB_LS_LOCATIONS where tenant_id = $tenant_id and ls_id = $ls_id and role = "LEADER" and member_list like "%$z3_dst0%", 1, 60;
+# one step, remove F
+source include/balance/disaster_recovery_one_step.inc;
+# one step, add C
+sleep 30;
+source include/balance/disaster_recovery_one_step.inc;
+
+
+--echo -- duplicate ls R in C-zone
+# remove C
+ob1.sh ./etc/ob_admin -h $ls_leader_ip -p $ls_leader_port remove_ls_replica tenant_id = $tenant_id , ls_id = $ls_id, replica_type = 'C', server = '$z3_dst0';
+ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_OB_LS_LOCATIONS where tenant_id = $tenant_id and ls_id = $ls_id and svr_ip = '$z3_dst_ip0' and svr_port = $z3_dst_port0, 0, 60;
+sleep 30;
+# add R
+ob1.sh ./etc/ob_admin -h $z3_dst_ip0 -p $z3_dst_port0 add_ls_replica tenant_id = $tenant_id , ls_id = $ls_id, replica_type = 'R';
+ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_OB_LS_LOCATIONS where tenant_id = $tenant_id and ls_id = $ls_id and role = "LEADER" and REGEXP_LIKE(learner_list, "$z3_dst0:[0-9]*:0") = 1, 1, 60;
+# one step, remove R
+source include/balance/disaster_recovery_one_step.inc;
+# one step, add C
+sleep 30;
+source include/balance/disaster_recovery_one_step.inc;
+
+
+--echo -- duplicate ls C in F-zone
+# remove F
+ob1.sh ./etc/ob_admin -h $ls_leader_ip -p $ls_leader_port remove_ls_replica tenant_id = $tenant_id , ls_id = $ls_id, replica_type = 'F', new_paxos_replica_number = 1, server = '$z4_dst1';
+ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_OB_LS_LOCATIONS where tenant_id = $tenant_id and ls_id = $ls_id and svr_ip = '$z4_dst_ip1' and svr_port = $z4_dst_port1, 0, 60;
+sleep 30;
+# add C
+ob1.sh ./etc/ob_admin -h $z4_dst_ip1 -p $z4_dst_port1 add_ls_replica tenant_id = $tenant_id , ls_id = $ls_id, replica_type = 'C';
+ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_OB_LS_LOCATIONS where tenant_id = $tenant_id and ls_id = $ls_id and role = "LEADER" and REGEXP_LIKE(learner_list, "$z4_dst1:[0-9]*:1") = 1, 1, 60;
+# one step, type transfom R->F
+source include/balance/disaster_recovery_one_step.inc;
+# one step, remove C
+source include/balance/disaster_recovery_one_step.inc;
+sleep 30;
+# one step, add R
+source include/balance/disaster_recovery_one_step.inc;
+
+
+--echo -- duplicate ls C in R-zone
+# remove R
+ob1.sh ./etc/ob_admin -h $ls_leader_ip -p $ls_leader_port remove_ls_replica tenant_id = $tenant_id , ls_id = $ls_id, replica_type = 'R', server = '$z2_dst0';
+ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_OB_LS_LOCATIONS where tenant_id = $tenant_id and ls_id = $ls_id and svr_ip = '$z2_dst_ip0' and svr_port = $z2_dst_port0, 0, 60;
+sleep 30;
+# add C
+ob1.sh ./etc/ob_admin -h $z2_dst_ip0 -p $z2_dst_port0 add_ls_replica tenant_id = $tenant_id , ls_id = $ls_id, replica_type = 'C';
+ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_OB_LS_LOCATIONS where tenant_id = $tenant_id and ls_id = $ls_id and role = "LEADER" and REGEXP_LIKE(learner_list, "$z2_dst0:[0-9]*:1") = 1, 1, 60;
+# one step, remove C
+source include/balance/disaster_recovery_one_step.inc;
+# one step, add R
+sleep 30;
+source include/balance/disaster_recovery_one_step.inc;

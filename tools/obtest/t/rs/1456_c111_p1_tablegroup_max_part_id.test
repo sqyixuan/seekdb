@@ -1,0 +1,88 @@
+# owner: rongxuan.lc
+# description: 本case是为了验证修改tablegroup的分区属性时，会同步修改table的max_part_id,并且会先提交max_part_id的更新事务；
+
+##case设计：
+### 1. 测试正常情况：检查tablegroup和table的max_part_id正确；
+### 1.1 tablegroup add partition;
+### 1.2 tablegroup split partition;
+
+###2. 测试异常情况：
+### 2.1 tablegroup add partition失败后重试，不重用max_part_id;
+### 2.1 tablegroup split partition失败后重试，不重用max_part_id;
+
+ob1=OBI(cluster=1:1:1, proxy_num=0, ct_num = 0,init_unit_cpu=5);
+ob1.reboot;
+
+### 1.1 tablegroup add partition;
+let $rs = deploy_get_value(ob1.get_leader sys:oceanbase:__all_core_table:0);
+let $rs_ip = deploy_get_value($rs.ip);
+let $rs_port = deploy_get_value($rs.port);
+let $rs_mysql_port = deploy_get_value($rs.mysql_port);
+connect (conn_sys,$rs_ip,admin@sys,admin,oceanbase,$rs_mysql_port);
+connect (conn1,$rs_ip,admin@obtest,admin,test,$rs_mysql_port);
+
+connection conn1;
+use test;
+
+create tablegroup tg;
+create table test(c1 int primary key, c2 int) tablegroup tg;
+create table test2(c1 int primary key, c2 int) tablegroup tg;
+
+create tablegroup tg_partition partition by range (PARTITION c0 VALUES LESS THAN (199),PARTITION c1 VALUES LESS THAN (2000),PARTITION c2 VALUES LESS THAN (3000));
+create table test_partition(c1 int primary key, c2 int) tablegroup tg_partition partition by range(c1) (PARTITION c0 VALUES LESS THAN (199),PARTITION c1 VALUES LESS THAN (2000),PARTITION c2 VALUES LESS THAN (3000)); 
+create table test_partition2(c1 int primary key, c2 int) tablegroup tg_partition partition by range(c1) (PARTITION c0 VALUES LESS THAN (199),PARTITION c1 VALUES LESS THAN (2000),PARTITION c2 VALUES LESS THAN (3000));
+
+ob1.mysql_p select max_used_part_id from oceanbase.__all_virtual_table where table_name in ("test", "test2", "test_partition", "test_partition2");
+ob1.mysql_p select max_used_part_id from oceanbase.__all_virtual_tablegroup where tablegroup_name in ("tg", "tg_partition");
+
+
+### 1.1 tablegroup add partition;
+alter tablegroup tg_partition add partition (partition p3 values less than(4000), partition p4 values less than(5000)); 
+ob1.mysql_p select max_used_part_id from oceanbase.__all_virtual_table where table_name in ("test", "test2", "test_partition", "test_partition2");
+ob1.mysql_p select max_used_part_id from oceanbase.__all_virtual_tablegroup where tablegroup_name in ("tg", "tg_partition");
+
+### 1.2 tablegroup split partition;
+#alter table test modify partition by hash(c1) partitions 1;
+#alter table test2 modify partition by hash(c1) partitions 1;
+#alter tablegroup tg modify partition by hash partitions 3;
+#ob1.mysql_p select max_used_part_id from oceanbase.__all_virtual_table where table_name in ("test", "test2", "test_partition", "test_partition2");
+#ob1.mysql_p select max_used_part_id from oceanbase.__all_virtual_tablegroup where tablegroup_name in ("tg", "tg_partition");
+#
+drop table test;
+drop table test2;
+drop table test_partition;
+drop table test_partition2;
+drop tablegroup tg;
+drop tablegroup tg_partition;
+###2. 测试异常情况：
+create tablegroup tg;
+create table test(c1 int primary key, c2 int) tablegroup tg;
+create table test2(c1 int primary key, c2 int) tablegroup tg;
+
+create tablegroup tg_partition partition by range (PARTITION c0 VALUES LESS THAN (199),PARTITION c1 VALUES LESS THAN (2000),PARTITION c2 VALUES LESS THAN (3000));
+create table test_partition(c1 int primary key, c2 int) tablegroup tg_partition partition by range(c1) (PARTITION c0 VALUES LESS THAN (199),PARTITION c1 VALUES LESS THAN (2000),PARTITION c2 VALUES LESS THAN (3000)); 
+create table test_partition2(c1 int primary key, c2 int) tablegroup tg_partition partition by range(c1) (PARTITION c0 VALUES LESS THAN (199),PARTITION c1 VALUES LESS THAN (2000),PARTITION c2 VALUES LESS THAN (3000));
+
+ob1.mysql_p select max_used_part_id from oceanbase.__all_virtual_table where table_name in ("test", "test2", "test_partition", "test_partition2");
+ob1.mysql_p select max_used_part_id from oceanbase.__all_virtual_tablegroup where tablegroup_name in ("tg", "tg_partition");
+
+ob1.mysql alter system set debug_sync_timeout = '10s';
+sleep 3;
+ob1.mysql set ob_global_debug_sync = 'DEFORE_OBS_CREATE_PARTITION wait_for begin execute 10';
+sleep 2;
+### 2.1 tablegroup add partition失败后重试，不重用max_part_id;
+--error 4012,4672
+alter tablegroup tg_partition add partition (partition p3 values less than(4000), partition p4 values less than(5000)); 
+ob1.mysql_p select max_used_part_id from oceanbase.__all_virtual_table where table_name in ("test", "test2", "test_partition", "test_partition2");
+ob1.mysql_p select max_used_part_id from oceanbase.__all_virtual_tablegroup where tablegroup_name in ("tg", "tg_partition");
+
+#### 2.1 tablegroup split partition失败后重试，不重用max_part_id;
+#alter table test modify partition by hash(c1) partitions 1;
+#alter table test2 modify partition by hash(c1) partitions 1;
+#--error 4012
+#alter tablegroup tg modify partition by hash partitions 3;
+#ob1.mysql_p select max_used_part_id from oceanbase.__all_virtual_table where table_name in ("test", "test2", "test_partition", "test_partition2");
+#ob1.mysql_p select max_used_part_id from oceanbase.__all_virtual_tablegroup where tablegroup_name in ("tg", "tg_partition");
+#set ob_global_debug_sync= 'now signal begin';
+#
+#alter system set debug_sync_timeout = '0';

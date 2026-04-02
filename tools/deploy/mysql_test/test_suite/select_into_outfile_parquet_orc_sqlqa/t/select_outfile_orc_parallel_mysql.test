@@ -1,0 +1,306 @@
+# owner: linyi.cl
+# owner group: 技术部-SQL-外表
+# tags: external_table
+# description: test select into outfile orc
+
+--result_format 4
+PURGE RECYCLEBIN;
+--source mysql_test/include/select_into_outfile/get_host_ip.inc
+let $DATA_FOLDER_NAME = outfile_data_orc;
+--source mysql_test/include/select_into_outfile/delete_dir.inc
+--source mysql_test/include/select_into_outfile/mkdir_for_dump.inc
+let $FILE_NAME = tmp_orc;
+
+
+####single false####
+##分配文件优先级:##
+##parallel>batch(alter system set _rowsets_max_rows修改)>max file size##
+##select stmt中包含lob列batch为1##
+--error 0,1051
+drop table zct1;
+create table zct1(a int , B varchar(50), c date, D datetime, e timestamp, F varbinary(50), g smallint, H blob(10), i text, J float, k double, L decimal(10, 2), m bigint);
+insert into zct1 values(1, '一', '2020-01-01', '2020-01-01 00:00:00', '2020-01-01 00:00:00', '00:00:00', 2020, 'blob', 'text', 1.1, 2.2, 3.3, 1 );
+insert into zct1 values(2, ' ', '2020-01-02', '2020-01-02 00:00:00', '2020-01-02 00:00:00', '00:00:01', 2021, 'Blob', 'Text', 2.1, 3.2, 4.3, 2 );
+insert into zct1 values(3, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL );
+insert into zct1 values(4, '', '2020-01-04', '2020-01-04 00:00:00', '2020-01-04 00:00:00', '00:00:03', 2023, 'bloB', 'TexT', 4.1, 5.2, 6.3, 4 );
+insert into zct1 values(5, '!@#$%^&*()', '2020-01-05', '2020-01-05 00:00:00', '2020-01-05 00:00:00', '00:00:04', 2024, 'BLOB', 'TEXT', 5.1, 6.2, 7.3, 5 );
+
+alter table zct1 add index idx_zct1(a,b);
+
+##10##
+insert into zct1 select * from zct1;
+##20##
+insert into zct1 select * from zct1;
+##40##
+insert into zct1 select * from zct1;
+##80##
+insert into zct1 select * from zct1;
+##160##
+insert into zct1 select * from zct1;
+
+##导出3个文件，一个文件2000左右，目前meta data不参与max file计算
+##COMPRESSION_BLOCK_SIZE范围100B以上
+let $FILE_NAME = tmp_orc;
+--source mysql_test/include/select_into_outfile/delete_files.inc
+--error 1210
+select /*+parallel(3)*/ a,b,c,d,f from zct1 t into outfile 'outfile_data_orc/tmp_orc'
+format(
+type = 'orc'
+COMPRESSION = 'UNCOMPRESSED'
+COMPRESSION_BLOCK_SIZE = '1B'
+STRIPE_SIZE = '1B'
+ROW_INDEX_STRIDE = 10
+) single = false MAX_FILE_SIZE = '1B' BUFFER_SIZE = '1B';
+
+--error 0,1051
+drop table ex_par;
+create external table ex_par(
+c1 INT as (get_path(external$filerow, 'a')),
+c2 varchar(50) as (get_path(external$filerow, 'b')),
+c3 date as (get_path(external$filerow, 'c')),
+c4 datetime as (get_path(external$filerow, 'd')),
+c6 varbinary(50) as (get_path(external$filerow, 'f'))
+)
+format(type = 'orc') location 'outfile_data_orc/' pattern = 'tmp_orc';
+
+SELECT count(*) FROM ex_par;
+SELECT * FROM ex_par limit 10;
+
+##parallel(1) true->单文件##
+--source mysql_test/include/select_into_outfile/delete_files.inc
+select /*+parallel(1)*/ a,b,c,d,f from zct1 t into outfile 'outfile_data_orc/tmp_orc'
+format(
+type = 'orc'
+COMPRESSION = 'ZSTD'
+COMPRESSION_BLOCK_SIZE = '1kB'
+STRIPE_SIZE = '1kB'
+ROW_INDEX_STRIDE = 10
+) single = true MAX_FILE_SIZE = '1kB' BUFFER_SIZE = '1kB';
+
+alter external table ex_par refresh;
+SELECT count(*) FROM ex_par;
+SELECT * FROM ex_par limit 10;
+
+##parallel(1) false->按batch再按max size分成3文件##
+--source mysql_test/include/select_into_outfile/delete_files.inc
+select /*+parallel(1)*/ a,b,c,d,f from zct1 t into outfile 'outfile_data_orc/tmp_orc'
+format(
+type = 'orc'
+COMPRESSION = 'UNCOMPRESSED'
+COMPRESSION_BLOCK_SIZE = '5kB'
+STRIPE_SIZE = '1B'
+ROW_INDEX_STRIDE = 100
+) single = false MAX_FILE_SIZE = '1B' BUFFER_SIZE = '1B';
+
+alter external table ex_par refresh;
+SELECT count(*) FROM ex_par;
+
+##parallel(2) true->单文件##
+--source mysql_test/include/select_into_outfile/delete_files.inc
+select /*+parallel(2)*/ a,b,c,d,f from zct1 t into outfile 'outfile_data_orc/tmp_orc'
+format(
+type = 'orc'
+COMPRESSION = 'UNCOMPRESSED'
+COMPRESSION_BLOCK_SIZE = '5kB'
+STRIPE_SIZE = '1B'
+ROW_INDEX_STRIDE = 100
+) single = true MAX_FILE_SIZE = '10B' BUFFER_SIZE = '1MB';
+
+alter external table ex_par refresh;
+SELECT count(*) FROM ex_par;
+
+##parallel(2) false->4个文件，每个线程写2个文件##
+--source mysql_test/include/select_into_outfile/delete_files.inc
+select /*+parallel(2)*/ a,b,c,d,f from zct1 t into outfile 'outfile_data_orc/tmp_orc'
+format(
+type = 'orc'
+COMPRESSION = 'UNCOMPRESSED'
+COMPRESSION_BLOCK_SIZE = '5kb'
+STRIPE_SIZE = '1B'
+ROW_INDEX_STRIDE = 10
+) single = false MAX_FILE_SIZE = '10B' BUFFER_SIZE = '1MB';
+
+alter external table ex_par refresh;
+SELECT count(*) FROM ex_par;
+
+##parallel(2) false max size为数据文件大小->2个文件每个线程写一个##
+--source mysql_test/include/select_into_outfile/delete_files.inc
+select /*+parallel(2)*/ a,b,c,d,f from zct1 t into outfile 'outfile_data_orc/tmp_orc'
+format(
+type = 'orc'
+COMPRESSION = 'UNCOMPRESSED'
+) single = false MAX_FILE_SIZE = '3157B' BUFFER_SIZE = '1MB';
+
+alter external table ex_par refresh;
+SELECT count(*) FROM ex_par;
+
+##parallel(2) false 2行数据->2行数据的单文件，limit限制串行写##
+--source mysql_test/include/select_into_outfile/delete_files.inc
+select /*+parallel(2)*/ a,b,c,d,f from zct1 t limit 2 into outfile 'outfile_data_orc/tmp_orc'
+format(
+type = 'orc'
+COMPRESSION = 'UNCOMPRESSED'
+COMPRESSION_BLOCK_SIZE = '5kb'
+STRIPE_SIZE = '1B'
+ROW_INDEX_STRIDE = 10
+) single = false MAX_FILE_SIZE = '256B' BUFFER_SIZE = '1MB';
+
+alter external table ex_par refresh;
+SELECT count(*) FROM ex_par;
+
+##parallel(2) false 2行数据->两个1行数据的文件##
+--error 0,1051
+drop table zct2;
+create table zct2(a int , B varchar(50), c date, D datetime, e timestamp, F varbinary(50), g smallint, H blob(10), i text, J float, k double, L decimal(10, 2), m bigint);
+insert into zct2 values(1, '一', '2020-01-01', '2020-01-01 00:00:00', '2020-01-01 00:00:00', '00:00:00', 2020, 'blob', 'text', 1.1, 2.2, 3.3, 1 );
+insert into zct2 values(2, ' ', '2020-01-02', '2020-01-02 00:00:00', '2020-01-02 00:00:00', '00:00:01', 2021, 'Blob', 'Text', 2.1, 3.2, 4.3, 2 );
+
+--source mysql_test/include/select_into_outfile/delete_files.inc
+select /*+parallel(2)*/ a,b,c,d,f from zct2 t  into outfile 'outfile_data_orc/tmp_orc'
+format(
+type = 'orc'
+COMPRESSION = 'UNCOMPRESSED'
+COMPRESSION_BLOCK_SIZE = '5kb'
+STRIPE_SIZE = '1B'
+ROW_INDEX_STRIDE = 10
+) single = false MAX_FILE_SIZE = '256B' BUFFER_SIZE = '1MB';
+
+alter external table ex_par refresh;
+SELECT * FROM ex_par;
+
+##parallel(2) false 1行数据->1个1行数据的单文件##
+--source mysql_test/include/select_into_outfile/delete_files.inc
+delete from zct2 where a = 1;
+select /*+parallel(2)*/ a,b,c,d,f from zct2 t  into outfile 'outfile_data_orc/tmp_orc'
+format(
+type = 'orc'
+COMPRESSION = 'UNCOMPRESSED'
+COMPRESSION_BLOCK_SIZE = '5kb'
+STRIPE_SIZE = '1B'
+ROW_INDEX_STRIDE = 10
+) single = false MAX_FILE_SIZE = '256B' BUFFER_SIZE = '1MB';
+
+alter external table ex_par refresh;
+SELECT * FROM ex_par;
+
+##parallel(1) false max size小于一行->160个1行数据的文件##
+--source mysql_test/include/select_into_outfile/delete_files.inc
+select /*+parallel(1)*/ a,b,c,d,f,g,h,i from zct1 t  into outfile 'outfile_data_orc/tmp_orc'
+format(
+type = 'orc'
+COMPRESSION = 'UNCOMPRESSED'
+COMPRESSION_BLOCK_SIZE = '5kb'
+STRIPE_SIZE = '1B'
+ROW_INDEX_STRIDE = 10
+) single = false MAX_FILE_SIZE = '1B' BUFFER_SIZE = '1MB';
+
+alter external table ex_par refresh;
+SELECT count(*) FROM ex_par ;
+
+##parallel(2) false max size小于一行->160个1行数据的文件,每个线程写80个##
+--source mysql_test/include/select_into_outfile/delete_files.inc
+select /*+parallel(2)*/ a,b,c,d,f,g,h,i from zct1 t  into outfile 'outfile_data_orc/tmp_orc'
+format(
+type = 'orc'
+COMPRESSION = 'UNCOMPRESSED'
+COMPRESSION_BLOCK_SIZE = '5kb'
+STRIPE_SIZE = '1B'
+ROW_INDEX_STRIDE = 10
+) single = false MAX_FILE_SIZE = '1B' BUFFER_SIZE = '1MB';
+
+alter external table ex_par refresh;
+SELECT count(*) FROM ex_par ;
+
+
+##parallel(5) false->数据平均分配5个文件##
+--source mysql_test/include/select_into_outfile/delete_files.inc
+select /*+parallel(5)*/ a,b,c,d,f from zct1 t into outfile 'outfile_data_orc/tmp_orc'
+format(
+type = 'orc'
+COMPRESSION = 'UNCOMPRESSED'
+COMPRESSION_BLOCK_SIZE = '5kb'
+STRIPE_SIZE = '1B'
+ROW_INDEX_STRIDE = 10
+) single = false MAX_FILE_SIZE = '1B' BUFFER_SIZE = '1MB';
+
+--error 0,1051
+drop table ex_par;
+create external table ex_par(
+c1 INT as (get_path(external$filerow, 'a')),
+c2 varchar(50) as (get_path(external$filerow, 'b')),
+c3 date as (get_path(external$filerow, 'c')),
+c4 datetime as (get_path(external$filerow, 'd')),
+c6 varbinary(50) as (get_path(external$filerow, 'f'))
+)
+format(type = 'orc') location 'outfile_data_orc/' pattern = 'tmp_orc_0_2_0';
+
+SELECT count(*) FROM ex_par;
+SELECT * FROM ex_par ;
+
+##parallel(5) false含lob类型->1行数据一个文件分5个线程每个线程32个文件写入##
+--source mysql_test/include/select_into_outfile/delete_files.inc
+select /*+parallel(5)*/ a,b,c,d,f,g,h,i from zct1 t into outfile 'outfile_data_orc/tmp_orc'
+format(
+type = 'orc'
+COMPRESSION = 'UNCOMPRESSED'
+COMPRESSION_BLOCK_SIZE = '5kb'
+STRIPE_SIZE = '1B'
+ROW_INDEX_STRIDE = 10
+) single = false MAX_FILE_SIZE = '1B' BUFFER_SIZE = '1MB';
+
+--error 0,1051
+drop table ex_par;
+create external table ex_par(
+c1 INT as (get_path(external$filerow, 'a')),
+c2 varchar(50) as (get_path(external$filerow, 'b')),
+c3 date as (get_path(external$filerow, 'c')),
+c4 datetime as (get_path(external$filerow, 'd')),
+c6 varbinary(50) as (get_path(external$filerow, 'f')),
+c7 smallint as (get_path(external$filerow, 'g')),
+c8 varchar(50) as (get_path(external$filerow, 'h')),
+c9 varchar(50) as (get_path(external$filerow, 'i'))
+)
+format(type = 'orc') location 'outfile_data_orc/' pattern = 'tmp_orc_0_2_0';
+
+SELECT count(*) FROM ex_par;
+SELECT * FROM ex_par ;
+
+##parallel(5) false 9行数据->每个线程写一个文件，最后一个文件一行##
+insert into zct2 values(2, ' ', '2020-01-02', '2020-01-02 00:00:00', '2020-01-02 00:00:00', '00:00:01', 2021, 'Blob', 'Text', 2.1, 3.2, 4.3, 2 );
+insert into zct2 select * from zct2;
+insert into zct2 select * from zct2;
+insert into zct2 values(2, ' ', '2020-01-02', '2020-01-02 00:00:00', '2020-01-02 00:00:00', '00:00:01', 2021, 'Blob', 'Text', 2.1, 3.2, 4.3, 2 );
+
+--source mysql_test/include/select_into_outfile/delete_files.inc
+select /*+parallel(5)*/ a,b,c,d,f,g,h,i from zct2 t into outfile 'outfile_data_orc/tmp_orc'
+format(
+type = 'orc'
+COMPRESSION = 'UNCOMPRESSED'
+COMPRESSION_BLOCK_SIZE = '5kb'
+STRIPE_SIZE = '1B'
+ROW_INDEX_STRIDE = 10
+) single = false MAX_FILE_SIZE = '256mB' BUFFER_SIZE = '1MB';
+
+--error 0,1051
+drop table ex_par;
+create external table ex_par(
+c1 INT as (get_path(external$filerow, 'a')),
+c2 varchar(50) as (get_path(external$filerow, 'b')),
+c3 date as (get_path(external$filerow, 'c')),
+c4 datetime as (get_path(external$filerow, 'd')),
+c6 varbinary(50) as (get_path(external$filerow, 'f')),
+c7 smallint as (get_path(external$filerow, 'g')),
+c8 varchar(50) as (get_path(external$filerow, 'h')),
+c9 varchar(50) as (get_path(external$filerow, 'i'))
+)
+format(type = 'orc') location 'outfile_data_orc/' pattern = 'tmp_orc_0_4_0';
+
+SELECT count(*) FROM ex_par;
+SELECT * FROM ex_par ;
+
+
+--disable_warnings
+DROP TABLE IF EXISTS zct1;
+DROP TABLE IF EXISTS zct2;
+--enable_warnings
+--source mysql_test/include/select_into_outfile/delete_dir.inc

@@ -1,0 +1,60 @@
+# owner: msy164651 
+# description: 本case是为了解决有大于100个延迟删除对象时failover的处理
+
+ob1=OBI(cluster=1,proxy_num=0);
+ob2=OBI(cluster=1,leaderob=ob1,proxy_num=0);
+ob1.reboot;
+ob2.reboot;
+let $case_index = 1;
+let $unit_num = 1;
+let $locality = 'f@z1';
+let $zone_list = 'z1';
+source include/create_tenant_1.inc;
+ob1.mysql alter system set debug_sync_timeout = '1000s';
+ob2.mysql alter system set debug_sync_timeout = '1000s';
+
+ob_connect(tt1_conn, ob1.z1.obs0, root@tenant_1, , test, , USE_MYSQL_CONNECTOR);
+connection tt1_conn;
+set recyclebin = off;
+#创建300张表
+let $i = 1;
+let $count = 301;
+while ($i < $count)
+{
+  eval create table t$i (c1 int primary key,c3 int);
+  inc $i;
+}
+
+ob_connect(tt2_conn, ob2.z1.obs0, root, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection tt2_conn;
+source include/standby_sync_ddl.inc;
+
+ob1.check_until_timeout select switchover_status from oceanbase.__all_virtual_cluster, TO STANDBY, 500;
+ob2.mysql set global ob_query_timeout = 100000000;
+#卡住主集群的gc
+ob1.mysql set ob_global_debug_sync = 'BLOCK_GARBAGE_COLLECTOR wait_for signal';
+connection tt1_conn;
+let $i = 1;
+while ($i < $count)
+{
+  eval drop table t$i;
+  inc $i;
+}
+ob1.check_until_timeout select switchover_status from oceanbase.__all_virtual_cluster, TO STANDBY, 100;
+ob2.check_until_timeout select count(*) from oceanbase.__all_virtual_table_history where  drop_schema_version != '-1', 300, 20;
+ob1.force_stop;
+ob2.mysql set ob_global_debug_sync = 'DEBUG_FAILOVER_FLASHBACK_INNER wait_for debug_failover_flashback_inner';
+
+ob2.mysql alter system set _mini_merge_concurrency = 16;
+ob2.mysql alter system set _ob_minor_merge_schedule_interval = '3s';
+ob_connect(conn2, ob2.z1.obs0, root@sys, ,oceanbase, , USE_OB_CONNECTOR);
+connection conn2;
+set ob_query_timeout=200000000;
+--error 4012
+ALTER SYSTEM ACTIVATE PHYSICAL STANDBY CLUSTER;
+
+ob2.mysql set ob_global_debug_sync = 'now signal debug_failover_flashback_inner';
+ALTER SYSTEM ACTIVATE PHYSICAL STANDBY CLUSTER;
+ob2.mysql alter system set _mini_merge_concurrency = 3;
+ob2.mysql alter system set _ob_minor_merge_schedule_interval = '20s';
+

@@ -1,0 +1,217 @@
+# owner: yongle.xh
+# owner group: physical_backup
+# Testing Case: The Basic testing case
+
+ob1=OBI(cluster=1, proxy_num=0);
+ob2=OBI(cluster=1, proxy_num=0);
+
+source include/mini_ob_config.inc;
+ob1.z1.obs0.set extra_config=$mini_ob_config;
+ob2.z1.obs0.set extra_config=$mini_ob_config;
+
+let $backup_cluster_name = deploy_get_value(ob1.get_cluster_name);
+let $backup_cluster_id = deploy_get_value(ob1.get_cluster_id);
+let $backup_ip       = deploy_get_value(ob1.z1.obs0.ip);
+let $backup_port     = deploy_get_value(ob1.z1.obs0.mysql_port);
+let $restore_ip         = deploy_get_value(ob2.z1.obs0.ip);
+let $restore_port       = deploy_get_value(ob2.z1.obs0.mysql_port);
+let $backup_dest = deploy_get_value(ob1.get_backup_dest);
+let $backup_oracle_tenant   = backup_oracle_tenant;
+let $backup_mysql_tenant    = backup_mysql_tenant;
+let $restore_oracle_tenant = restore_oracle_tenant;
+let $restore_mysql_tenant = restore_mysql_tenant;
+
+# 必须先stop掉老的，删除才能有效，不然可能会有残留。
+ob1.force_stop;
+ob1.clean_backup_dest;
+ob1.reboot;
+
+# 固定sys租户规格
+ob1.mysql alter resource unit sys_unit_config min_memory='1G',max_memory='1G';
+
+connect(backup_sys_conn, $backup_ip, root@sys,,oceanbase, $backup_port);
+connection backup_sys_conn;
+use oceanbase;
+source sql/physical_backup/prepare_single_zone_mini_resource.sql;
+
+#let $backup_cluster_id = query_get_value(select value from __all_virtual_sys_parameter_stat where name='cluster_id' limit 1, value, 1);
+#let $backup_cluster_name = query_get_value(select value from __all_virtual_sys_parameter_stat where name='cluster' limit 1, value, 1);
+
+ob1.mysql alter system set backup_dest='$backup_dest';
+
+# create oracle tenant, test create tenant before major freeze
+ob1.mysql CREATE TENANT $backup_oracle_tenant RESOURCE_POOL_LIST = ('small_pool'), primary_zone = "z1" set ob_tcp_invited_nodes='%', ob_compatibility_mode='oracle';
+let $backup_oracle_tenant_id = query_get_value(select tenant_id from oceanbase.__all_tenant where tenant_name='$backup_oracle_tenant', tenant_id, 1);
+ob_connect(sys_conn_oracle, ob1.z1.obs0, SYS@$backup_oracle_tenant, ,SYS, , USE_OB_CONNECTOR);
+set global wait_timeout = 288000;
+
+create user test IDENTIFIED BY "test";
+grant all on *.* to test WITH GRANT OPTION;
+grant dba to test;
+ob_connect(backup_oracle_conn, ob1.z1.obs0,TEST@$backup_oracle_tenant,test,test,,USE_OB_CONNECTOR);
+connection backup_oracle_conn;
+
+create table t1(a int, b int, c int, CONSTRAINT "c1" PRIMARY KEY ("A")) partition by hash(a) partitions 2;
+insert into t1(a, b) values(1, 1);
+create index i11 on t1(c) global;
+create index i12 on t1(b) local;
+
+create tablegroup tg1 binding true partition by hash  partitions 2;
+create table t2(a int , b int, c int, CONSTRAINT "c2" PRIMARY KEY ("A")) tablegroup tg1 partition by hash(a) partitions 2;
+create index i21 on t2(c) global;
+create index i22 on t2(b) local;
+insert into t2(a, b) values(1, 1);
+
+ob1.mysql alter system archivelog;
+ob1.check_until_timeout select status from oceanbase.CDB_OB_BACKUP_ARCHIVELOG, DOING, 60;
+
+ob1.mysql alter system major freeze;
+sleep 30;
+ob1.check_version 2;
+
+insert into t1(a, b) values(2, 2);
+insert into t2(a, b) values(2, 2);
+
+create table t3(a int , b int, c int, CONSTRAINT "c3" PRIMARY KEY ("A")) partition by hash(a) partitions 2;
+insert into t3(a, b) values(1, 1);
+create index i31 on t3(c) global;
+create index i32 on t3(b) local;
+
+create table t4(a int , b int, c int, CONSTRAINT "c4" PRIMARY KEY ("A")) tablegroup tg1 partition by hash(a) partitions 2;
+create index i41 on t4(c) global;
+create index i42 on t4(b) local;
+insert into t4(a, b) values(1, 1);
+
+create tablegroup tg2 binding true partition by hash  partitions 2;
+create table t5(a int , b int, CONSTRAINT "c5" PRIMARY KEY ("A")) tablegroup tg2 partition by hash(a) partitions 2;
+insert into t5(a, b) values(1, 1);
+
+# create mysql, test create tenant after major freeze
+connection backup_sys_conn;
+ob1.mysql CREATE TENANT $backup_mysql_tenant RESOURCE_POOL_LIST = ('small_pool_0'), primary_zone = "z1" set ob_tcp_invited_nodes='%';
+let $backup_mysql_tenant_id = query_get_value(select tenant_id from oceanbase.__all_tenant where tenant_name='$backup_mysql_tenant', tenant_id, 1);
+connect(backup_mysql_conn, $backup_ip,root@$backup_mysql_tenant,,oceanbase, $backup_port);
+connection backup_mysql_conn;
+create database backup_db;
+use backup_db;
+create table t1(a int primary key, b int) partition by hash(a) partitions 2;;
+insert into t1(a) values(1);
+create index i11 on t1(a) global;
+create index i12 on t1(b) local;
+
+create tablegroup tg1 binding true partition by hash  partitions 2;
+create table t2(a int primary key, b int) tablegroup tg1 partition by hash(a) partitions 2;
+insert into t2(a) values(1);
+
+ob1.check_until_timeout select status from oceanbase.CDB_OB_BACKUP_ARCHIVELOG where tenant_id=$backup_mysql_tenant_id, DOING, 60;
+# do backup
+sleep 10;
+ob1.mysql alter system backup database;
+
+connection backup_oracle_conn;
+create table t6(a int , b int, c int, CONSTRAINT "c6" PRIMARY KEY ("A")) partition by hash(a) partitions 2;
+insert into t6(a, b) values(1, 1);
+create index i61 on t6(c) global;
+create index i62 on t6(b) local;
+
+create tablegroup tg3 binding true partition by hash  partitions 2;
+create table t7(a int , b int, CONSTRAINT "c7" PRIMARY KEY ("A")) tablegroup tg3 partition by hash(a) partitions 2;
+insert into t7(a, b) values(1, 1);
+
+create table t8(a int , b int, c int, CONSTRAINT "c8" PRIMARY KEY ("A")) tablegroup tg1 partition by hash(a) partitions 2;
+create index i81 on t8(c) global;
+create index i82 on t8(b) local;
+insert into t8(a, b) values(1, 1);
+
+create table t9(a int, b int, c int as (b + a)) partition by hash(c) partitions 3;
+insert into t9(a, b) values(1, 1), (2, 2), (3, 3);
+
+connection backup_oracle_conn;
+create table t10 as select rowid rowid_alias, a, b, c from t9;
+
+ob1.mysql alter system major freeze;
+sleep 60;
+ob1.check_version 3;
+
+insert into t9(a, b) values(4,5), (6,7), (8,9);
+insert into t10(rowid_alias, a, b) values('*AAIPAQEAwAEAAAAKAQAAAAAAAAA=', 4, 5);
+
+ob1.check_until_timeout select value from oceanbase.__all_tenant_backup_info where name = 'backup_set_id', 1, 10;
+ob1.check_until_timeout select value from oceanbase.__all_tenant_backup_info where name = 'backup_status', STOP, 20;
+ob1.check_until_timeout select result from oceanbase.__all_backup_task_history where tenant_id = $backup_oracle_tenant_id, 0, 10;
+ob1.check_until_timeout select result from oceanbase.__all_backup_task_history where tenant_id = $backup_mysql_tenant_id, 0, 10;
+ob1.mysql_p select tenant_id, incarnation, backup_set_id, status, result from oceanbase.__all_backup_task_history;
+
+insert into t1(a, b) values(3, 3);
+insert into t2(a, b) values(3, 3);
+insert into t6(a, b) values(2, 2);
+insert into t7(a, b) values(2, 2);
+
+##测试OB_LOG_AGGR及cluster_id 替换
+connection backup_mysql_conn;
+alter system set _clog_aggregation_buffer_amount=4;
+sleep 10;
+create table t11(a int primary key, b varchar(8192), c  varchar(8192)) partition by hash(a) partitions 2;
+set autocommit=0;
+insert into t11 values(1, repeat("1111", 1024), repeat("1111", 1024)), (3, repeat("2222", 1024), repeat("2222", 1024)), (5, repeat("3333", 1024), repeat("3333", 1024)), (7, repeat("4444", 1024), repeat("4444", 1024));
+insert into t11 values(2, repeat("1111", 1024), repeat("1111", 1024)), (4, repeat("2222", 1024), repeat("2222", 1024)), (6, repeat("3333", 1024), repeat("3333", 1024)), (8, repeat("4444", 1024), repeat("4444", 1024));
+commit;
+set autocommit=1;
+
+connection backup_sys_conn;
+let $restore_checkpoint = `select current_timestamp(6)`;
+ob1.check_until_timeout select max_next_time > timestamp'$restore_checkpoint' from oceanbase.CDB_OB_BACKUP_ARCHIVELOG, 1, 120;
+
+# 校验系统租户
+#connection backup_sys_conn;
+#ob1.mysql alter system validate database;
+## 需要查看内部表
+#ob1.check_until_timeout select value from oceanbase.__all_tenant_backup_info where name = 'job_id', 1, 10;
+#ob1.check_until_timeout select status from oceanbase.__all_backup_validation_job_history where job_id = 1, FINISHED, 120;
+#ob1.check_until_timeout select status from oceanbase.__all_backup_validation_task_history where job_id = 1 and tenant_id = $backup_oracle_tenant_id, FINISHED, 10;
+#ob1.check_until_timeout select status from oceanbase.__all_backup_validation_task_history where job_id = 1 and tenant_id = $backup_mysql_tenant_id, FINISHED, 10;
+
+# do restore oracle
+ob1.z1.obs0.force_stop;
+sleep 10;
+
+ob2.reboot;
+connect(restore_sys_conn, $restore_ip, root@sys,,oceanbase, $restore_port);
+connection restore_sys_conn;
+source sql/physical_backup/prepare_single_zone_mini_resource.sql;
+
+ob2.oblog.gen_conf tb_white_list=*.*.* log_level=DEBUG skip_ob_version_compat_check=1;
+ob2.oblog.restart;
+
+sleep 5;
+
+ob2.check_until_timeout select column_value > (time_to_usec('$restore_checkpoint') + 10 * 1000 * 1000) from __all_core_table where column_name = 'snapshot_gc_ts', 1, 60;
+
+sleep 10;
+ob2.mysql alter system restore $restore_oracle_tenant from $backup_oracle_tenant at '$backup_dest' until '$restore_checkpoint' with 'backup_cluster_name=$backup_cluster_name&backup_cluster_id=$backup_cluster_id&pool_list=small_pool_1&locality=F@z1&primary_zone=z1';
+ob2.check_until_timeout select status from CDB_OB_RESTORE_HISTORY where tenant_name = '$restore_oracle_tenant', RESTORE_SUCCESS, 690;
+ob2.check_until_timeout select status from __all_tenant where tenant_name = '$restore_oracle_tenant', TENANT_STATUS_NORMAL, 690;
+ob_connect(restore_oracle_conn, ob2.z1.obs0,TEST@$restore_oracle_tenant,test,test,,USE_OB_CONNECTOR);
+let $i=1;
+while ($i <= 10)
+{
+  eval select * from t$i order by 1,2;
+  inc $i;
+}
+insert into t1(a, b) values (6, 6);
+ob2.oblog.next_dml;
+ob2.mysql alter system restore $restore_mysql_tenant from $backup_mysql_tenant at '$backup_dest' until '$restore_checkpoint' with 'backup_cluster_name=$backup_cluster_name&backup_cluster_id=$backup_cluster_id&pool_list=small_pool_2&locality=F@z1&primary_zone=z1';
+ob2.check_until_timeout select status from CDB_OB_RESTORE_HISTORY where tenant_name = '$restore_mysql_tenant', RESTORE_SUCCESS, 690;
+ob2.check_until_timeout select status from __all_tenant where tenant_name = '$restore_mysql_tenant', TENANT_STATUS_NORMAL,690;
+connect(restore_mysql_conn, $restore_ip,root@$restore_mysql_tenant,,oceanbase, $restore_port);
+use backup_db;
+select * from t1;
+select * from t2;
+insert into t1(a, b) values (6, 6);
+ob2.oblog.next_dml;
+
+create table tt(a int primary key);
+ob2.oblog.next;
+insert into tt values(1);
+ob2.oblog.next;
+ob2.oblog.stop;

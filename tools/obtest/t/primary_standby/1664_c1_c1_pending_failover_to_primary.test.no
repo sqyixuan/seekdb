@@ -1,0 +1,91 @@
+# owner: msy164651
+# description: 测试从pending的状态转成主库可以正常,去掉了pending状态
+# case1：同步成功后，主库切换成备库，控制备库在pending状态的时候，停掉，然后failover成主库可以成功
+ob1=OBI(cluster=1,proxy_num=0);
+ob2=OBI(cluster=1,leaderob=ob1,proxy_num=0);
+ob1.reboot;
+ob2.reboot;
+let $cpu = 2;
+let $memory = 2073741824;
+let $min_memory = 2073741824;
+let $disk = 536870912;
+let $iops = 100000;
+let $session = 64;
+ob1.mysql set @@global.ob_query_timeout = 100000000;
+
+ob1.mysql CREATE RESOURCE UNIT unit_1 MAX_CPU $cpu, MAX_MEMORY $memory, MAX_IOPS $iops, MAX_DISK_SIZE $disk, MAX_SESSION_NUM $session, MIN_CPU=1, MIN_MEMORY=$min_memory, MIN_IOPS=128;
+ob1.mysql CREATE RESOURCE POOL pool_1 UNIT = 'unit_1', UNIT_NUM = 1, ZONE_LIST = ('z1');
+ob1.mysql CREATE TENANT tt RESOURCE_POOL_LIST = ('pool_1'), primary_zone='z1' set ob_tcp_invited_nodes='%',ob_compatibility_mode='oracle';
+
+sleep 3;
+ob_connect(conn1, ob1.z1.obs0, SYS@tt, , sys, , USE_OB_CONNECTOR);
+connection conn1;
+create table t(c1 int primary key, c2 int, c3 int);
+insert into t values (1,2,3);
+insert into t values (3,4,5);
+insert into t values (5,6,7);
+select * from t;
+ob_connect(sys_conn, ob2.z1.obs0, root, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection sys_conn;
+sleep 3;
+alter system set balancer_idle_time = '10s';
+alter system set server_data_copy_out_concurrency = 30;
+alter system set server_data_copy_in_concurrency = 30;
+alter system set data_copy_concurrency = 60;
+alter system set max_stale_time_for_weak_consistency = '120s';
+alter system set debug_sync_timeout = '100000s';
+let $partition_cnt = deploy_get_value(ob1.select select count(*) c from __all_virtual_meta_table where tenant_id = 1001, c, 1);
+ob2.check_until_timeout select count(*) c from __all_virtual_meta_table where tenant_id = 1001 and zone = 'z1', $partition_cnt, 120;
+ob1.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO STANDBY, 100;
+ob1.mysql alter system major freeze;
+ob1.check_version 2;
+ob2.check_version 2;
+ob1.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO STANDBY, 30;
+ob1.mysql set @@global.ob_query_timeout = 100000000;
+ob1.mysql alter system commit to switchover to physical standby;
+ob2.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO PRIMARY, 30;
+#会卡住切主之前
+ob2.mysql set ob_global_debug_sync = 'BEFORE_SWITCHOVER_FROM_PENDING_TO_PRIMARY wait_for continue_signal';
+connection sys_conn;
+--error 4012
+alter system commit to switchover to primary;
+ob2.force_stop;
+sleep 15;
+ob2.start;
+#不能start成功，因为没有pending状态了
+#ob2.check_until_timeout select count(*) from oceanbase.__all_server where status ='active' and start_service_time > 0, 1, 100;
+ob2.check_until_timeout select count(*) from oceanbase.__all_virtual_core_meta_table, 1, 100;
+#ob2.check_until_timeout select count(*) from oceanbase.__all_virtual_server_schema_info where tenant_id = 1001 and refreshed_schema_version > 1, 1, 150; 
+ob_connect(sys_conn, ob2.z1.obs0, root, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection sys_conn;
+set @@session.ob_query_timeout = 100000000;
+alter system ACTIVATE PHYSICAL STANDBY CLUSTER; 
+let $cluster_id = deploy_get_value(ob1.select select value from oceanbase.__all_virtual_sys_parameter_stat where name = 'cluster_id', value, 1);
+ob2.mysql_p select cluster_status from oceanbase.__all_cluster where cluster_id = $cluster_id;
+sleep 5;
+#备库应该是disable的状态
+ob1.mysql_p select switchover_status,cluster_role,cluster_status from oceanbase.v\$ob_cluster;
+#可以直接enable，没有failover的过程
+let $cluster_name = deploy_get_value(ob1.select select info from oceanbase.__all_zone where name = 'cluster', info, 1);
+ob1.force_stop;
+sleep 10;
+let $failover_scn = deploy_get_value(ob2.select select standby_became_primary_scn from oceanbase.__all_virtual_cluster, standby_became_primary_scn, 1);
+ob1.z1.obs0.nstart -m physical_flashback -f $failover_scn;
+sleep 120;
+ob1.start;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_core_meta_table,1, 100;
+ob1.mysql alter system convert to physical standby;
+--disable_query_log
+ob2.mysql alter system enable cluster synchronization '$cluster_name' cluster_id = $cluster_id;
+--enable_query_log
+ob2.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO STANDBY, 100;
+ob_connect(tt2_conn, ob2.z1.obs0, SYS@tt, , sys, , USE_OB_CONNECTOR);
+connection tt2_conn;
+select * from t;
+alter table  t add c4 int;
+insert into t values (4,4,4,4);
+ob2.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO STANDBY, 30;
+ob_connect(conn1, ob1.z1.obs0, SYS@tt, , sys, , USE_OB_CONNECTOR);
+connection conn1;
+select /*+ read_consistency(weak) */* from t;
+

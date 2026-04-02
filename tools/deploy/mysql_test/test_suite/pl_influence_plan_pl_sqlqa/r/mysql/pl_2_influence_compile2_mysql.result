@@ -1,0 +1,2033 @@
+result_format: 4
+alter system flush pl cache global;
+alter system flush plan cache global;
+
+
+drop user if exists whh_test0;
+drop user if exists u2;
+drop database if exists whh_test0;
+
+create user 'whh_test0' identified by 'whh_test0';
+create database whh_test0 character set utf8;
+grant all on *.* to 'whh_test0'@'%' with grant option;
+
+create user u2 identified by '123';
+grant all on *.* to u2;
+revoke trigger ON *.* FROM u2;
+
+
+
+set global ob_plan_cache_percentage = 50;
+
+
+set @save_sqlmode = @@global.sql_mode;
+
+#### 16、 _force_parallel_ddl_dop （不影响pl缓存，不影响pl编译结果）
+drop table tab1;
+drop table tab2;
+create table tab1(c1 int,c2 int);
+insert into tab1 values(1,1),(2,2),(3,2),(4,2),(5,2),(6,2),(7,2);
+
+drop PROCEDURE my_pro01;
+
+CREATE PROCEDURE my_pro01()
+begin
+  PREPARE stmt FROM 'CREATE TABLE tab2 PARALLEL 4 AS SELECT * FROM tab1';
+  EXECUTE stmt;
+  DEALLOCATE PREPARE stmt;
+end;
+$
+
+alter system flush pl cache global;
+alter system flush plan cache global;
+
+set @@session._force_parallel_ddl_dop = 4;
+select @@session._force_parallel_ddl_dop from dual;
++-----------------------------------+
+| @@session._force_parallel_ddl_dop |
++-----------------------------------+
+|                                 4 |
++-----------------------------------+
+
+call my_pro01();
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO01'and OBJECT_TYPE = 'PROCEDURE';
++--------------------+-------------+-----------+
+| STATEMENT          | OBJECT_TYPE | hit_count |
++--------------------+-------------+-----------+
+| whh_test0.my_pro01 | PROCEDURE   |         0 |
++--------------------+-------------+-----------+
+
+set @@session._force_parallel_ddl_dop = 3;
+select @@session._force_parallel_ddl_dop from dual;
++-----------------------------------+
+| @@session._force_parallel_ddl_dop |
++-----------------------------------+
+|                                 3 |
++-----------------------------------+
+
+drop table tab2;
+call my_pro01();
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO01'and OBJECT_TYPE = 'PROCEDURE';
++--------------------+-------------+-----------+
+| STATEMENT          | OBJECT_TYPE | hit_count |
++--------------------+-------------+-----------+
+| whh_test0.my_pro01 | PROCEDURE   |         1 |
++--------------------+-------------+-----------+
+
+set @@session._force_parallel_ddl_dop = 2;
+select @@session._force_parallel_ddl_dop from dual;
++-----------------------------------+
+| @@session._force_parallel_ddl_dop |
++-----------------------------------+
+|                                 2 |
++-----------------------------------+
+
+drop table tab2;
+call my_pro01();
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO01'and OBJECT_TYPE = 'PROCEDURE';
++--------------------+-------------+-----------+
+| STATEMENT          | OBJECT_TYPE | hit_count |
++--------------------+-------------+-----------+
+| whh_test0.my_pro01 | PROCEDURE   |         2 |
++--------------------+-------------+-----------+
+
+set @@session._force_parallel_ddl_dop = 1;
+select @@session._force_parallel_ddl_dop from dual;
++-----------------------------------+
+| @@session._force_parallel_ddl_dop |
++-----------------------------------+
+|                                 1 |
++-----------------------------------+
+
+drop table tab2;
+call my_pro01();
+SELECT * FROM tab1 order by 1,2;
++------+------+
+| c1   | c2   |
++------+------+
+|    1 |    1 |
+|    2 |    2 |
+|    3 |    2 |
+|    4 |    2 |
+|    5 |    2 |
+|    6 |    2 |
+|    7 |    2 |
++------+------+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO01'and OBJECT_TYPE = 'PROCEDURE';
++--------------------+-------------+-----------+
+| STATEMENT          | OBJECT_TYPE | hit_count |
++--------------------+-------------+-----------+
+| whh_test0.my_pro01 | PROCEDURE   |         3 |
++--------------------+-------------+-----------+
+
+#### 17、 _force_order_preserve_set（影响plan计划，不影响pl缓存，不影响pl编译结果）
+drop table t1;
+drop table t2;
+drop table t3;
+drop table t4;
+create table t1(c1 int, c2 int, c3 int);
+create table t2(c1 int, c2 int, c3 int);
+create table t3(c1 int, c2 int, c3 int);
+create table t4(c1 int, c2 int, c3 int);
+
+INSERT INTO t1 VALUES (5,6,7);
+INSERT INTO t1 VALUES (7,5,9);
+INSERT INTO t1 VALUES (9,4,11);
+INSERT INTO t1 VALUES (12,12,3);
+INSERT INTO t2 VALUES (2,3,4);
+INSERT INTO t2 VALUES (4,5,6);
+INSERT INTO t2 VALUES (5,6,7);
+INSERT INTO t2 VALUES (9,3,11);
+INSERT INTO t3 VALUES (1,2,3);
+INSERT INTO t3 VALUES (10,11,12);
+INSERT INTO t3 VALUES (3,4,5);
+INSERT INTO t3 VALUES (5,6,7);
+INSERT INTO t3 VALUES (9,4,11);
+INSERT INTO t4 VALUES (1,2,3);
+INSERT INTO t4 VALUES (10,11,12);
+INSERT INTO t4 VALUES (3,4,5);
+INSERT INTO t4 VALUES (5,6,7);
+INSERT INTO t4 VALUES (9,4,11);
+
+drop PROCEDURE my_pro01;
+
+create procedure my_pro01()
+begin
+  select count(1) from (select /*+parallel(2)*/ * from t1 union all select * from t2 union all select * from (select * from t4 order by c3 ASC)) t;
+  select count(1) from (select /*+parallel(2)NO_USE_HASH_SET(@"SET$1") NO_SIMPLIFY_ORDER_BY(@"SET$1")*/ * from (select c1,c2,c3 from t1 order by c3,c2,c1) union select c1,c2,c3 from t2 order by c2) t;
+end;
+$
+
+alter system flush pl cache global;
+alter system flush plan cache global;
+
+set @@session._force_order_preserve_set =  1;
+select @@session._force_order_preserve_set from dual;
++-------------------------------------+
+| @@session._force_order_preserve_set |
++-------------------------------------+
+|                                   0 |
++-------------------------------------+
+
+call my_pro01();
++----------+
+| count(1) |
++----------+
++----------+
+| count(1) |
++----------+
+|       13 |
+|        7 |
++----------+
++----------+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO01'and OBJECT_TYPE = 'PROCEDURE';
++--------------------+-------------+-----------+
+| STATEMENT          | OBJECT_TYPE | hit_count |
++--------------------+-------------+-----------+
+| whh_test0.my_pro01 | PROCEDURE   |         0 |
++--------------------+-------------+-----------+
+
+set @@session._force_order_preserve_set =  1;
+select @@session._force_order_preserve_set from dual;
++-------------------------------------+
+| @@session._force_order_preserve_set |
++-------------------------------------+
+|                                   0 |
++-------------------------------------+
+
+call my_pro01();
++----------+
+| count(1) |
++----------+
++----------+
+| count(1) |
++----------+
+|       13 |
+|        7 |
++----------+
++----------+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO01'and OBJECT_TYPE = 'PROCEDURE';
++--------------------+-------------+-----------+
+| STATEMENT          | OBJECT_TYPE | hit_count |
++--------------------+-------------+-----------+
+| whh_test0.my_pro01 | PROCEDURE   |         1 |
++--------------------+-------------+-----------+
+
+set @@session._force_order_preserve_set =  0;
+select @@session._force_order_preserve_set from dual;
++-------------------------------------+
+| @@session._force_order_preserve_set |
++-------------------------------------+
+|                                   0 |
++-------------------------------------+
+
+call my_pro01();
++----------+
+| count(1) |
++----------+
++----------+
+| count(1) |
++----------+
+|       13 |
+|        7 |
++----------+
++----------+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO01'and OBJECT_TYPE = 'PROCEDURE';
++--------------------+-------------+-----------+
+| STATEMENT          | OBJECT_TYPE | hit_count |
++--------------------+-------------+-----------+
+| whh_test0.my_pro01 | PROCEDURE   |         2 |
++--------------------+-------------+-----------+
+
+set @@session._force_order_preserve_set =  0;
+select @@session._force_order_preserve_set from dual;
++-------------------------------------+
+| @@session._force_order_preserve_set |
++-------------------------------------+
+|                                   0 |
++-------------------------------------+
+
+call my_pro01();
++----------+
+| count(1) |
++----------+
++----------+
+| count(1) |
++----------+
+|       13 |
+|        7 |
++----------+
++----------+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO01'and OBJECT_TYPE = 'PROCEDURE';
++--------------------+-------------+-----------+
+| STATEMENT          | OBJECT_TYPE | hit_count |
++--------------------+-------------+-----------+
+| whh_test0.my_pro01 | PROCEDURE   |         3 |
++--------------------+-------------+-----------+
+
+#### 18、 parallel_degree_policy （影响plan计划，不影响pl缓存，不影响pl编译结果）
+drop table t1;
+create table t1(c1 int, c2 int, c3 int, c4 int) partition by hash(c1) partitions 2;
+INSERT INTO t1 VALUES (1,5,6,7),(2,5,6,7),(3,5,6,7),(4,5,6,7),(5,5,6,7),(6,5,6,7),(7,5,6,7);
+
+drop PROCEDURE my_pro01;
+
+create procedure my_pro01()
+begin
+  select count(1)  from t1;
+  select /*+parallel(auto)*/ count(1) from t1;
+  select /*+parallel(manual)*/ count(1)  from t1;
+  select /*+parallel(auto) parallel(3)*/ count(1)  from t1;
+  select /*+parallel(manual)  parallel(3)*/ count(1) from t1;
+end;
+$
+
+alter system flush pl cache global;
+alter system flush plan cache global;
+
+set @@session.parallel_degree_policy =  auto;
+select @@session.parallel_degree_policy from dual;
++----------------------------------+
+| @@session.parallel_degree_policy |
++----------------------------------+
+| AUTO                             |
++----------------------------------+
+
+call my_pro01();
++----------+
+| count(1) |
++----------+
++----------+
+| count(1) |
++----------+
++----------+
+| count(1) |
++----------+
++----------+
+| count(1) |
++----------+
++----------+
+| count(1) |
++----------+
+|        7 |
+|        7 |
+|        7 |
+|        7 |
+|        7 |
++----------+
++----------+
++----------+
++----------+
++----------+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO01'and OBJECT_TYPE = 'PROCEDURE';
++--------------------+-------------+-----------+
+| STATEMENT          | OBJECT_TYPE | hit_count |
++--------------------+-------------+-----------+
+| whh_test0.my_pro01 | PROCEDURE   |         0 |
++--------------------+-------------+-----------+
+
+set @@session.parallel_degree_policy =  auto;
+select @@session.parallel_degree_policy from dual;
++----------------------------------+
+| @@session.parallel_degree_policy |
++----------------------------------+
+| AUTO                             |
++----------------------------------+
+
+call my_pro01();
++----------+
+| count(1) |
++----------+
++----------+
+| count(1) |
++----------+
++----------+
+| count(1) |
++----------+
++----------+
+| count(1) |
++----------+
++----------+
+| count(1) |
++----------+
+|        7 |
+|        7 |
+|        7 |
+|        7 |
+|        7 |
++----------+
++----------+
++----------+
++----------+
++----------+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO01'and OBJECT_TYPE = 'PROCEDURE';
++--------------------+-------------+-----------+
+| STATEMENT          | OBJECT_TYPE | hit_count |
++--------------------+-------------+-----------+
+| whh_test0.my_pro01 | PROCEDURE   |         1 |
++--------------------+-------------+-----------+
+
+set @@session.parallel_degree_policy =  MANUAL;
+select @@session.parallel_degree_policy from dual;
++----------------------------------+
+| @@session.parallel_degree_policy |
++----------------------------------+
+| MANUAL                           |
++----------------------------------+
+
+call my_pro01();
++----------+
+| count(1) |
++----------+
++----------+
+| count(1) |
++----------+
++----------+
+| count(1) |
++----------+
++----------+
+| count(1) |
++----------+
++----------+
+| count(1) |
++----------+
+|        7 |
+|        7 |
+|        7 |
+|        7 |
+|        7 |
++----------+
++----------+
++----------+
++----------+
++----------+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO01'and OBJECT_TYPE = 'PROCEDURE';
++--------------------+-------------+-----------+
+| STATEMENT          | OBJECT_TYPE | hit_count |
++--------------------+-------------+-----------+
+| whh_test0.my_pro01 | PROCEDURE   |         2 |
++--------------------+-------------+-----------+
+
+set @@session.parallel_degree_policy =  MANUAL;
+select @@session.parallel_degree_policy from dual;
++----------------------------------+
+| @@session.parallel_degree_policy |
++----------------------------------+
+| MANUAL                           |
++----------------------------------+
+
+call my_pro01();
++----------+
+| count(1) |
++----------+
++----------+
+| count(1) |
++----------+
++----------+
+| count(1) |
++----------+
++----------+
+| count(1) |
++----------+
++----------+
+| count(1) |
++----------+
+|        7 |
+|        7 |
+|        7 |
+|        7 |
+|        7 |
++----------+
++----------+
++----------+
++----------+
++----------+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO01'and OBJECT_TYPE = 'PROCEDURE';
++--------------------+-------------+-----------+
+| STATEMENT          | OBJECT_TYPE | hit_count |
++--------------------+-------------+-----------+
+| whh_test0.my_pro01 | PROCEDURE   |         3 |
++--------------------+-------------+-----------+
+
+#### 19、 parallel_degree_limit （影响plan计划，不影响pl缓存，不影响pl编译结果）
+drop table if exists t1;
+create table t1(c1 int, c2 int, c3 int, c4 int) partition by hash(c1) partitions 10;
+insert /*+parallel(8) enable_parallel_dml*/ into t1 
+(with recursive cte as ( select 1 as c1 union all select c1+1 from cte where c1 < 1000)
+ select c1 % 2, c1, c1, c1 from cte);
+insert /*+parallel(8) enable_parallel_dml*/ into t1 select * from t1;
+select count(1) from t1;
++----------+
+| count(1) |
++----------+
+|     2000 |
++----------+
+
+drop PROCEDURE my_pro01;
+
+create procedure my_pro01()
+begin
+  explain basic select * from t1;
+  explain basic select /*+parallel(auto)*/* from t1;
+end;
+$
+
+alter system flush pl cache global;
+alter system flush plan cache global;
+
+set parallel_min_scan_time_threshold = 10;
+set @@session.parallel_degree_limit =  256;
+select @@session.parallel_degree_limit from dual;
++---------------------------------+
+| @@session.parallel_degree_limit |
++---------------------------------+
+|                             256 |
++---------------------------------+
+
+call my_pro01();
++---------------------------------------------------------------------------+
+| Query Plan                                                                |
++---------------------------------------------------------------------------+
++---------------------------------------------------------------------------+
+| Query Plan                                                                |
++---------------------------------------------------------------------------+
+| =======================================                                   |
+| |ID|OPERATOR                 |NAME    |                                   |
+| ---------------------------------------                                   |
+| |0 |PX COORDINATOR           |        |                                   |
+| |1 |└─EXCHANGE OUT DISTR     |:EX10000|                                   |
+| |2 |  └─PX PARTITION ITERATOR|        |                                   |
+| |3 |    └─TABLE FULL SCAN    |t1      |                                   |
+| =======================================                                   |
+| Outputs & filters:                                                        |
+| -------------------------------------                                     |
+|   0 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4]), filter(nil), rowset=256 |
+|   1 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4]), filter(nil), rowset=256 |
+|       dop=1                                                               |
+|   2 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4]), filter(nil), rowset=256 |
+|       force partition granule                                             |
+|   3 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4]), filter(nil), rowset=256 |
+|       access([t1.c1], [t1.c2], [t1.c3], [t1.c4]), partitions(p[0-9])      |
+|       is_index_back=false, is_global_index=false,                         |
+|       range_key([t1.__pk_increment]), range(MIN ; MAX)always true         |
+| =======================================                                   |
+| |ID|OPERATOR                 |NAME    |                                   |
+| ---------------------------------------                                   |
+| |0 |PX COORDINATOR           |        |                                   |
+| |1 |└─EXCHANGE OUT DISTR     |:EX10000|                                   |
+| |2 |  └─PX PARTITION ITERATOR|        |                                   |
+| |3 |    └─TABLE FULL SCAN    |t1      |                                   |
+| =======================================                                   |
+| Outputs & filters:                                                        |
+| -------------------------------------                                     |
+|   0 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4]), filter(nil), rowset=256 |
+|   1 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4]), filter(nil), rowset=256 |
+|       dop=1                                                               |
+|   2 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4]), filter(nil), rowset=256 |
+|       force partition granule                                             |
+|   3 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4]), filter(nil), rowset=256 |
+|       access([t1.c1], [t1.c2], [t1.c3], [t1.c4]), partitions(p[0-9])      |
+|       is_index_back=false, is_global_index=false,                         |
+|       range_key([t1.__pk_increment]), range(MIN ; MAX)always true         |
++---------------------------------------------------------------------------+
++---------------------------------------------------------------------------+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO01'and OBJECT_TYPE = 'PROCEDURE';
++--------------------+-------------+-----------+
+| STATEMENT          | OBJECT_TYPE | hit_count |
++--------------------+-------------+-----------+
+| whh_test0.my_pro01 | PROCEDURE   |         0 |
++--------------------+-------------+-----------+
+
+set parallel_min_scan_time_threshold = 100;
+set @@session.parallel_degree_limit =  200;
+select @@session.parallel_degree_limit from dual;
++---------------------------------+
+| @@session.parallel_degree_limit |
++---------------------------------+
+|                             200 |
++---------------------------------+
+
+call my_pro01();
++---------------------------------------------------------------------------+
+| Query Plan                                                                |
++---------------------------------------------------------------------------+
++---------------------------------------------------------------------------+
+| Query Plan                                                                |
++---------------------------------------------------------------------------+
+| =======================================                                   |
+| |ID|OPERATOR                 |NAME    |                                   |
+| ---------------------------------------                                   |
+| |0 |PX COORDINATOR           |        |                                   |
+| |1 |└─EXCHANGE OUT DISTR     |:EX10000|                                   |
+| |2 |  └─PX PARTITION ITERATOR|        |                                   |
+| |3 |    └─TABLE FULL SCAN    |t1      |                                   |
+| =======================================                                   |
+| Outputs & filters:                                                        |
+| -------------------------------------                                     |
+|   0 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4]), filter(nil), rowset=256 |
+|   1 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4]), filter(nil), rowset=256 |
+|       dop=1                                                               |
+|   2 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4]), filter(nil), rowset=256 |
+|       force partition granule                                             |
+|   3 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4]), filter(nil), rowset=256 |
+|       access([t1.c1], [t1.c2], [t1.c3], [t1.c4]), partitions(p[0-9])      |
+|       is_index_back=false, is_global_index=false,                         |
+|       range_key([t1.__pk_increment]), range(MIN ; MAX)always true         |
+| =======================================                                   |
+| |ID|OPERATOR                 |NAME    |                                   |
+| ---------------------------------------                                   |
+| |0 |PX COORDINATOR           |        |                                   |
+| |1 |└─EXCHANGE OUT DISTR     |:EX10000|                                   |
+| |2 |  └─PX PARTITION ITERATOR|        |                                   |
+| |3 |    └─TABLE FULL SCAN    |t1      |                                   |
+| =======================================                                   |
+| Outputs & filters:                                                        |
+| -------------------------------------                                     |
+|   0 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4]), filter(nil), rowset=256 |
+|   1 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4]), filter(nil), rowset=256 |
+|       dop=1                                                               |
+|   2 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4]), filter(nil), rowset=256 |
+|       force partition granule                                             |
+|   3 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4]), filter(nil), rowset=256 |
+|       access([t1.c1], [t1.c2], [t1.c3], [t1.c4]), partitions(p[0-9])      |
+|       is_index_back=false, is_global_index=false,                         |
+|       range_key([t1.__pk_increment]), range(MIN ; MAX)always true         |
++---------------------------------------------------------------------------+
++---------------------------------------------------------------------------+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO01'and OBJECT_TYPE = 'PROCEDURE';
++--------------------+-------------+-----------+
+| STATEMENT          | OBJECT_TYPE | hit_count |
++--------------------+-------------+-----------+
+| whh_test0.my_pro01 | PROCEDURE   |         1 |
++--------------------+-------------+-----------+
+
+set parallel_min_scan_time_threshold = 1000;
+set @@session.parallel_degree_limit =  1;
+select @@session.parallel_degree_limit from dual;
++---------------------------------+
+| @@session.parallel_degree_limit |
++---------------------------------+
+|                               1 |
++---------------------------------+
+
+call my_pro01();
++---------------------------------------------------------------------------+
+| Query Plan                                                                |
++---------------------------------------------------------------------------+
++---------------------------------------------------------------------------+
+| Query Plan                                                                |
++---------------------------------------------------------------------------+
+| =======================================                                   |
+| |ID|OPERATOR                 |NAME    |                                   |
+| ---------------------------------------                                   |
+| |0 |PX COORDINATOR           |        |                                   |
+| |1 |└─EXCHANGE OUT DISTR     |:EX10000|                                   |
+| |2 |  └─PX PARTITION ITERATOR|        |                                   |
+| |3 |    └─TABLE FULL SCAN    |t1      |                                   |
+| =======================================                                   |
+| Outputs & filters:                                                        |
+| -------------------------------------                                     |
+|   0 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4]), filter(nil), rowset=256 |
+|   1 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4]), filter(nil), rowset=256 |
+|       dop=1                                                               |
+|   2 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4]), filter(nil), rowset=256 |
+|       force partition granule                                             |
+|   3 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4]), filter(nil), rowset=256 |
+|       access([t1.c1], [t1.c2], [t1.c3], [t1.c4]), partitions(p[0-9])      |
+|       is_index_back=false, is_global_index=false,                         |
+|       range_key([t1.__pk_increment]), range(MIN ; MAX)always true         |
+| =======================================                                   |
+| |ID|OPERATOR                 |NAME    |                                   |
+| ---------------------------------------                                   |
+| |0 |PX COORDINATOR           |        |                                   |
+| |1 |└─EXCHANGE OUT DISTR     |:EX10000|                                   |
+| |2 |  └─PX PARTITION ITERATOR|        |                                   |
+| |3 |    └─TABLE FULL SCAN    |t1      |                                   |
+| =======================================                                   |
+| Outputs & filters:                                                        |
+| -------------------------------------                                     |
+|   0 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4]), filter(nil), rowset=256 |
+|   1 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4]), filter(nil), rowset=256 |
+|       dop=1                                                               |
+|   2 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4]), filter(nil), rowset=256 |
+|       force partition granule                                             |
+|   3 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4]), filter(nil), rowset=256 |
+|       access([t1.c1], [t1.c2], [t1.c3], [t1.c4]), partitions(p[0-9])      |
+|       is_index_back=false, is_global_index=false,                         |
+|       range_key([t1.__pk_increment]), range(MIN ; MAX)always true         |
++---------------------------------------------------------------------------+
++---------------------------------------------------------------------------+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO01'and OBJECT_TYPE = 'PROCEDURE';
++--------------------+-------------+-----------+
+| STATEMENT          | OBJECT_TYPE | hit_count |
++--------------------+-------------+-----------+
+| whh_test0.my_pro01 | PROCEDURE   |         2 |
++--------------------+-------------+-----------+
+
+set parallel_min_scan_time_threshold = 1000;
+set @@session.parallel_degree_limit =  0;
+select @@session.parallel_degree_limit from dual;
++---------------------------------+
+| @@session.parallel_degree_limit |
++---------------------------------+
+|                               0 |
++---------------------------------+
+
+call my_pro01();
++---------------------------------------------------------------------------+
+| Query Plan                                                                |
++---------------------------------------------------------------------------+
++---------------------------------------------------------------------------+
+| Query Plan                                                                |
++---------------------------------------------------------------------------+
+| =======================================                                   |
+| |ID|OPERATOR                 |NAME    |                                   |
+| ---------------------------------------                                   |
+| |0 |PX COORDINATOR           |        |                                   |
+| |1 |└─EXCHANGE OUT DISTR     |:EX10000|                                   |
+| |2 |  └─PX PARTITION ITERATOR|        |                                   |
+| |3 |    └─TABLE FULL SCAN    |t1      |                                   |
+| =======================================                                   |
+| Outputs & filters:                                                        |
+| -------------------------------------                                     |
+|   0 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4]), filter(nil), rowset=256 |
+|   1 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4]), filter(nil), rowset=256 |
+|       dop=1                                                               |
+|   2 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4]), filter(nil), rowset=256 |
+|       force partition granule                                             |
+|   3 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4]), filter(nil), rowset=256 |
+|       access([t1.c1], [t1.c2], [t1.c3], [t1.c4]), partitions(p[0-9])      |
+|       is_index_back=false, is_global_index=false,                         |
+|       range_key([t1.__pk_increment]), range(MIN ; MAX)always true         |
+| =======================================                                   |
+| |ID|OPERATOR                 |NAME    |                                   |
+| ---------------------------------------                                   |
+| |0 |PX COORDINATOR           |        |                                   |
+| |1 |└─EXCHANGE OUT DISTR     |:EX10000|                                   |
+| |2 |  └─PX PARTITION ITERATOR|        |                                   |
+| |3 |    └─TABLE FULL SCAN    |t1      |                                   |
+| =======================================                                   |
+| Outputs & filters:                                                        |
+| -------------------------------------                                     |
+|   0 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4]), filter(nil), rowset=256 |
+|   1 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4]), filter(nil), rowset=256 |
+|       dop=1                                                               |
+|   2 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4]), filter(nil), rowset=256 |
+|       force partition granule                                             |
+|   3 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4]), filter(nil), rowset=256 |
+|       access([t1.c1], [t1.c2], [t1.c3], [t1.c4]), partitions(p[0-9])      |
+|       is_index_back=false, is_global_index=false,                         |
+|       range_key([t1.__pk_increment]), range(MIN ; MAX)always true         |
++---------------------------------------------------------------------------+
++---------------------------------------------------------------------------+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO01'and OBJECT_TYPE = 'PROCEDURE';
++--------------------+-------------+-----------+
+| STATEMENT          | OBJECT_TYPE | hit_count |
++--------------------+-------------+-----------+
+| whh_test0.my_pro01 | PROCEDURE   |         3 |
++--------------------+-------------+-----------+
+
+#### 20、 parallel_min_scan_time_threshold （影响plan计划，不影响pl缓存，不影响pl编译结果）
+alter system flush pl cache global;
+alter system flush plan cache global;
+
+set @@session.parallel_min_scan_time_threshold =  4000;
+select @@session.parallel_min_scan_time_threshold from dual;
++--------------------------------------------+
+| @@session.parallel_min_scan_time_threshold |
++--------------------------------------------+
+|                                       4000 |
++--------------------------------------------+
+
+call my_pro01();
++---------------------------------------------------------------------------+
+| Query Plan                                                                |
++---------------------------------------------------------------------------+
++---------------------------------------------------------------------------+
+| Query Plan                                                                |
++---------------------------------------------------------------------------+
+| =======================================                                   |
+| |ID|OPERATOR                 |NAME    |                                   |
+| ---------------------------------------                                   |
+| |0 |PX COORDINATOR           |        |                                   |
+| |1 |└─EXCHANGE OUT DISTR     |:EX10000|                                   |
+| |2 |  └─PX PARTITION ITERATOR|        |                                   |
+| |3 |    └─TABLE FULL SCAN    |t1      |                                   |
+| =======================================                                   |
+| Outputs & filters:                                                        |
+| -------------------------------------                                     |
+|   0 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4]), filter(nil), rowset=256 |
+|   1 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4]), filter(nil), rowset=256 |
+|       dop=1                                                               |
+|   2 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4]), filter(nil), rowset=256 |
+|       force partition granule                                             |
+|   3 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4]), filter(nil), rowset=256 |
+|       access([t1.c1], [t1.c2], [t1.c3], [t1.c4]), partitions(p[0-9])      |
+|       is_index_back=false, is_global_index=false,                         |
+|       range_key([t1.__pk_increment]), range(MIN ; MAX)always true         |
+| =======================================                                   |
+| |ID|OPERATOR                 |NAME    |                                   |
+| ---------------------------------------                                   |
+| |0 |PX COORDINATOR           |        |                                   |
+| |1 |└─EXCHANGE OUT DISTR     |:EX10000|                                   |
+| |2 |  └─PX PARTITION ITERATOR|        |                                   |
+| |3 |    └─TABLE FULL SCAN    |t1      |                                   |
+| =======================================                                   |
+| Outputs & filters:                                                        |
+| -------------------------------------                                     |
+|   0 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4]), filter(nil), rowset=256 |
+|   1 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4]), filter(nil), rowset=256 |
+|       dop=1                                                               |
+|   2 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4]), filter(nil), rowset=256 |
+|       force partition granule                                             |
+|   3 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4]), filter(nil), rowset=256 |
+|       access([t1.c1], [t1.c2], [t1.c3], [t1.c4]), partitions(p[0-9])      |
+|       is_index_back=false, is_global_index=false,                         |
+|       range_key([t1.__pk_increment]), range(MIN ; MAX)always true         |
++---------------------------------------------------------------------------+
++---------------------------------------------------------------------------+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO01'and OBJECT_TYPE = 'PROCEDURE';
++--------------------+-------------+-----------+
+| STATEMENT          | OBJECT_TYPE | hit_count |
++--------------------+-------------+-----------+
+| whh_test0.my_pro01 | PROCEDURE   |         0 |
++--------------------+-------------+-----------+
+
+set @@session.parallel_min_scan_time_threshold =  3000;
+select @@session.parallel_min_scan_time_threshold from dual;
++--------------------------------------------+
+| @@session.parallel_min_scan_time_threshold |
++--------------------------------------------+
+|                                       3000 |
++--------------------------------------------+
+
+call my_pro01();
++---------------------------------------------------------------------------+
+| Query Plan                                                                |
++---------------------------------------------------------------------------+
++---------------------------------------------------------------------------+
+| Query Plan                                                                |
++---------------------------------------------------------------------------+
+| =======================================                                   |
+| |ID|OPERATOR                 |NAME    |                                   |
+| ---------------------------------------                                   |
+| |0 |PX COORDINATOR           |        |                                   |
+| |1 |└─EXCHANGE OUT DISTR     |:EX10000|                                   |
+| |2 |  └─PX PARTITION ITERATOR|        |                                   |
+| |3 |    └─TABLE FULL SCAN    |t1      |                                   |
+| =======================================                                   |
+| Outputs & filters:                                                        |
+| -------------------------------------                                     |
+|   0 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4]), filter(nil), rowset=256 |
+|   1 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4]), filter(nil), rowset=256 |
+|       dop=1                                                               |
+|   2 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4]), filter(nil), rowset=256 |
+|       force partition granule                                             |
+|   3 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4]), filter(nil), rowset=256 |
+|       access([t1.c1], [t1.c2], [t1.c3], [t1.c4]), partitions(p[0-9])      |
+|       is_index_back=false, is_global_index=false,                         |
+|       range_key([t1.__pk_increment]), range(MIN ; MAX)always true         |
+| =======================================                                   |
+| |ID|OPERATOR                 |NAME    |                                   |
+| ---------------------------------------                                   |
+| |0 |PX COORDINATOR           |        |                                   |
+| |1 |└─EXCHANGE OUT DISTR     |:EX10000|                                   |
+| |2 |  └─PX PARTITION ITERATOR|        |                                   |
+| |3 |    └─TABLE FULL SCAN    |t1      |                                   |
+| =======================================                                   |
+| Outputs & filters:                                                        |
+| -------------------------------------                                     |
+|   0 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4]), filter(nil), rowset=256 |
+|   1 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4]), filter(nil), rowset=256 |
+|       dop=1                                                               |
+|   2 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4]), filter(nil), rowset=256 |
+|       force partition granule                                             |
+|   3 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4]), filter(nil), rowset=256 |
+|       access([t1.c1], [t1.c2], [t1.c3], [t1.c4]), partitions(p[0-9])      |
+|       is_index_back=false, is_global_index=false,                         |
+|       range_key([t1.__pk_increment]), range(MIN ; MAX)always true         |
++---------------------------------------------------------------------------+
++---------------------------------------------------------------------------+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO01'and OBJECT_TYPE = 'PROCEDURE';
++--------------------+-------------+-----------+
+| STATEMENT          | OBJECT_TYPE | hit_count |
++--------------------+-------------+-----------+
+| whh_test0.my_pro01 | PROCEDURE   |         1 |
++--------------------+-------------+-----------+
+
+set @@session.parallel_min_scan_time_threshold =  2000;
+select @@session.parallel_min_scan_time_threshold from dual;
++--------------------------------------------+
+| @@session.parallel_min_scan_time_threshold |
++--------------------------------------------+
+|                                       2000 |
++--------------------------------------------+
+
+call my_pro01();
++---------------------------------------------------------------------------+
+| Query Plan                                                                |
++---------------------------------------------------------------------------+
++---------------------------------------------------------------------------+
+| Query Plan                                                                |
++---------------------------------------------------------------------------+
+| =======================================                                   |
+| |ID|OPERATOR                 |NAME    |                                   |
+| ---------------------------------------                                   |
+| |0 |PX COORDINATOR           |        |                                   |
+| |1 |└─EXCHANGE OUT DISTR     |:EX10000|                                   |
+| |2 |  └─PX PARTITION ITERATOR|        |                                   |
+| |3 |    └─TABLE FULL SCAN    |t1      |                                   |
+| =======================================                                   |
+| Outputs & filters:                                                        |
+| -------------------------------------                                     |
+|   0 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4]), filter(nil), rowset=256 |
+|   1 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4]), filter(nil), rowset=256 |
+|       dop=1                                                               |
+|   2 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4]), filter(nil), rowset=256 |
+|       force partition granule                                             |
+|   3 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4]), filter(nil), rowset=256 |
+|       access([t1.c1], [t1.c2], [t1.c3], [t1.c4]), partitions(p[0-9])      |
+|       is_index_back=false, is_global_index=false,                         |
+|       range_key([t1.__pk_increment]), range(MIN ; MAX)always true         |
+| =======================================                                   |
+| |ID|OPERATOR                 |NAME    |                                   |
+| ---------------------------------------                                   |
+| |0 |PX COORDINATOR           |        |                                   |
+| |1 |└─EXCHANGE OUT DISTR     |:EX10000|                                   |
+| |2 |  └─PX PARTITION ITERATOR|        |                                   |
+| |3 |    └─TABLE FULL SCAN    |t1      |                                   |
+| =======================================                                   |
+| Outputs & filters:                                                        |
+| -------------------------------------                                     |
+|   0 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4]), filter(nil), rowset=256 |
+|   1 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4]), filter(nil), rowset=256 |
+|       dop=1                                                               |
+|   2 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4]), filter(nil), rowset=256 |
+|       force partition granule                                             |
+|   3 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4]), filter(nil), rowset=256 |
+|       access([t1.c1], [t1.c2], [t1.c3], [t1.c4]), partitions(p[0-9])      |
+|       is_index_back=false, is_global_index=false,                         |
+|       range_key([t1.__pk_increment]), range(MIN ; MAX)always true         |
++---------------------------------------------------------------------------+
++---------------------------------------------------------------------------+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO01'and OBJECT_TYPE = 'PROCEDURE';
++--------------------+-------------+-----------+
+| STATEMENT          | OBJECT_TYPE | hit_count |
++--------------------+-------------+-----------+
+| whh_test0.my_pro01 | PROCEDURE   |         2 |
++--------------------+-------------+-----------+
+
+set @@session.parallel_min_scan_time_threshold =  1000;
+select @@session.parallel_min_scan_time_threshold from dual;
++--------------------------------------------+
+| @@session.parallel_min_scan_time_threshold |
++--------------------------------------------+
+|                                       1000 |
++--------------------------------------------+
+
+call my_pro01();
++---------------------------------------------------------------------------+
+| Query Plan                                                                |
++---------------------------------------------------------------------------+
++---------------------------------------------------------------------------+
+| Query Plan                                                                |
++---------------------------------------------------------------------------+
+| =======================================                                   |
+| |ID|OPERATOR                 |NAME    |                                   |
+| ---------------------------------------                                   |
+| |0 |PX COORDINATOR           |        |                                   |
+| |1 |└─EXCHANGE OUT DISTR     |:EX10000|                                   |
+| |2 |  └─PX PARTITION ITERATOR|        |                                   |
+| |3 |    └─TABLE FULL SCAN    |t1      |                                   |
+| =======================================                                   |
+| Outputs & filters:                                                        |
+| -------------------------------------                                     |
+|   0 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4]), filter(nil), rowset=256 |
+|   1 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4]), filter(nil), rowset=256 |
+|       dop=1                                                               |
+|   2 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4]), filter(nil), rowset=256 |
+|       force partition granule                                             |
+|   3 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4]), filter(nil), rowset=256 |
+|       access([t1.c1], [t1.c2], [t1.c3], [t1.c4]), partitions(p[0-9])      |
+|       is_index_back=false, is_global_index=false,                         |
+|       range_key([t1.__pk_increment]), range(MIN ; MAX)always true         |
+| =======================================                                   |
+| |ID|OPERATOR                 |NAME    |                                   |
+| ---------------------------------------                                   |
+| |0 |PX COORDINATOR           |        |                                   |
+| |1 |└─EXCHANGE OUT DISTR     |:EX10000|                                   |
+| |2 |  └─PX PARTITION ITERATOR|        |                                   |
+| |3 |    └─TABLE FULL SCAN    |t1      |                                   |
+| =======================================                                   |
+| Outputs & filters:                                                        |
+| -------------------------------------                                     |
+|   0 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4]), filter(nil), rowset=256 |
+|   1 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4]), filter(nil), rowset=256 |
+|       dop=1                                                               |
+|   2 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4]), filter(nil), rowset=256 |
+|       force partition granule                                             |
+|   3 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4]), filter(nil), rowset=256 |
+|       access([t1.c1], [t1.c2], [t1.c3], [t1.c4]), partitions(p[0-9])      |
+|       is_index_back=false, is_global_index=false,                         |
+|       range_key([t1.__pk_increment]), range(MIN ; MAX)always true         |
++---------------------------------------------------------------------------+
++---------------------------------------------------------------------------+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO01'and OBJECT_TYPE = 'PROCEDURE';
++--------------------+-------------+-----------+
+| STATEMENT          | OBJECT_TYPE | hit_count |
++--------------------+-------------+-----------+
+| whh_test0.my_pro01 | PROCEDURE   |         3 |
++--------------------+-------------+-----------+
+
+#### 21、 runtime_filter_type （影响plan计划，不影响pl缓存，不影响pl编译结果）
+drop table if exists t1,t2;
+create table t1(c1 int, c2 int, c3 int, c4 int) partition by hash(c1) partitions 10;
+create table t2(c1 int, c2 int, c3 int, c4 int) partition by hash(c1) partitions 10;
+insert /*+parallel(8) enable_parallel_dml*/ into t1 
+(with recursive cte as ( select 1 as c1 union all select c1+1 from cte where c1 < 1000)
+ select c1 % 2, c1, c1, c1 from cte);
+insert /*+parallel(8) enable_parallel_dml*/ into t2 
+(with recursive cte as ( select 1 as c1 union all select c1+1 from cte where c1 < 1000)
+ select c1 % 2, c1, c1, c1 from cte);
+select count(1) from t1;
++----------+
+| count(1) |
++----------+
+|     1000 |
++----------+
+select count(1) from t2;
++----------+
+| count(1) |
++----------+
+|     1000 |
++----------+
+
+drop PROCEDURE my_pro01;
+
+create procedure my_pro01()
+begin
+  select /*+ pq_distribute(t2 none none) leading(t1 t2) px_join_filter(t2)  parallel(2)*/ count(1) from t1,t2 where t1.c1 = t2.c1;
+  select /*+ pq_distribute(t2 none none) leading(t1 t2) px_join_filter(t2)  parallel(2)*/ count(1) from t1,t2 where t1.c1 = t2.c1;
+  select /*+ pq_distribute(t2 none none) leading(t1 t2) px_join_filter(t2)  parallel(2)*/ count(1) from t1,t2 where t1.c1 = t2.c1;
+end;
+$
+
+alter system flush pl cache global;
+alter system flush plan cache global;
+
+set @@session.runtime_filter_type =  'BLOOM_FILTER';
+select @@session.runtime_filter_type from dual;
++-------------------------------+
+| @@session.runtime_filter_type |
++-------------------------------+
+| BLOOM_FILTER                  |
++-------------------------------+
+
+call my_pro01();
++----------+
+| count(1) |
++----------+
++----------+
+| count(1) |
++----------+
++----------+
+| count(1) |
++----------+
+|   500000 |
+|   500000 |
+|   500000 |
++----------+
++----------+
++----------+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO01'and OBJECT_TYPE = 'PROCEDURE';
++--------------------+-------------+-----------+
+| STATEMENT          | OBJECT_TYPE | hit_count |
++--------------------+-------------+-----------+
+| whh_test0.my_pro01 | PROCEDURE   |         0 |
++--------------------+-------------+-----------+
+
+set @@session.runtime_filter_type =  'RANGE';
+select @@session.runtime_filter_type from dual;
++-------------------------------+
+| @@session.runtime_filter_type |
++-------------------------------+
+| RANGE                         |
++-------------------------------+
+
+call my_pro01();
++----------+
+| count(1) |
++----------+
++----------+
+| count(1) |
++----------+
++----------+
+| count(1) |
++----------+
+|   500000 |
+|   500000 |
+|   500000 |
++----------+
++----------+
++----------+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO01'and OBJECT_TYPE = 'PROCEDURE';
++--------------------+-------------+-----------+
+| STATEMENT          | OBJECT_TYPE | hit_count |
++--------------------+-------------+-----------+
+| whh_test0.my_pro01 | PROCEDURE   |         1 |
++--------------------+-------------+-----------+
+
+set @@session.runtime_filter_type =  'IN';
+select @@session.runtime_filter_type from dual;
++-------------------------------+
+| @@session.runtime_filter_type |
++-------------------------------+
+| IN                            |
++-------------------------------+
+
+call my_pro01();
++----------+
+| count(1) |
++----------+
++----------+
+| count(1) |
++----------+
++----------+
+| count(1) |
++----------+
+|   500000 |
+|   500000 |
+|   500000 |
++----------+
++----------+
++----------+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO01'and OBJECT_TYPE = 'PROCEDURE';
++--------------------+-------------+-----------+
+| STATEMENT          | OBJECT_TYPE | hit_count |
++--------------------+-------------+-----------+
+| whh_test0.my_pro01 | PROCEDURE   |         2 |
++--------------------+-------------+-----------+
+
+set @@session.runtime_filter_type =  'BLOOM_FILTER,RANGE,IN';
+select @@session.runtime_filter_type from dual;
++-------------------------------+
+| @@session.runtime_filter_type |
++-------------------------------+
+| BLOOM_FILTER,RANGE,IN         |
++-------------------------------+
+
+call my_pro01();
++----------+
+| count(1) |
++----------+
++----------+
+| count(1) |
++----------+
++----------+
+| count(1) |
++----------+
+|   500000 |
+|   500000 |
+|   500000 |
++----------+
++----------+
++----------+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO01'and OBJECT_TYPE = 'PROCEDURE';
++--------------------+-------------+-----------+
+| STATEMENT          | OBJECT_TYPE | hit_count |
++--------------------+-------------+-----------+
+| whh_test0.my_pro01 | PROCEDURE   |         3 |
++--------------------+-------------+-----------+
+
+#### 22、 _enable_rich_vector_format （影响plan计划，不影响pl缓存，不影响pl编译结果）
+drop table if exists t1;
+drop table if exists t2;
+create table t1 (a int);
+insert into t1 values (1), (2), (3);
+
+drop PROCEDURE my_pro01;
+
+create procedure my_pro01()
+begin
+  select /*+ monitor opt_param('enable_rich_vector_format', 'true')*/ sum(a) from t1;
+  #select plan_line_id, plan_operation, sum(output_rows), sum(STARTS) rescan  from oceanbase.gv$sql_plan_monitor where trace_id = last_trace_id() group by plan_line_id, plan_operation order by plan_line_id;
+end;
+|
+
+alter system flush pl cache global;
+alter system flush plan cache global;
+
+set @@session._enable_rich_vector_format = 0;
+select @@session._enable_rich_vector_format from dual;
++--------------------------------------+
+| @@session._enable_rich_vector_format |
++--------------------------------------+
+|                                    0 |
++--------------------------------------+
+
+call my_pro01();
++--------+
+| sum(a) |
++--------+
+|      6 |
++--------+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO01'and OBJECT_TYPE = 'PROCEDURE';
++--------------------+-------------+-----------+
+| STATEMENT          | OBJECT_TYPE | hit_count |
++--------------------+-------------+-----------+
+| whh_test0.my_pro01 | PROCEDURE   |         0 |
++--------------------+-------------+-----------+
+
+set @@session._enable_rich_vector_format = 0;
+select @@session._enable_rich_vector_format from dual;
++--------------------------------------+
+| @@session._enable_rich_vector_format |
++--------------------------------------+
+|                                    0 |
++--------------------------------------+
+
+call my_pro01();
++--------+
+| sum(a) |
++--------+
+|      6 |
++--------+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO01'and OBJECT_TYPE = 'PROCEDURE';
++--------------------+-------------+-----------+
+| STATEMENT          | OBJECT_TYPE | hit_count |
++--------------------+-------------+-----------+
+| whh_test0.my_pro01 | PROCEDURE   |         1 |
++--------------------+-------------+-----------+
+
+set @@session._enable_rich_vector_format = 1;
+select @@session._enable_rich_vector_format from dual;
++--------------------------------------+
+| @@session._enable_rich_vector_format |
++--------------------------------------+
+|                                    1 |
++--------------------------------------+
+
+call my_pro01();
++--------+
+| sum(a) |
++--------+
+|      6 |
++--------+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO01'and OBJECT_TYPE = 'PROCEDURE';
++--------------------+-------------+-----------+
+| STATEMENT          | OBJECT_TYPE | hit_count |
++--------------------+-------------+-----------+
+| whh_test0.my_pro01 | PROCEDURE   |         2 |
++--------------------+-------------+-----------+
+
+set @@session._enable_rich_vector_format =  1;
+select @@session._enable_rich_vector_format from dual;
++--------------------------------------+
+| @@session._enable_rich_vector_format |
++--------------------------------------+
+|                                    1 |
++--------------------------------------+
+
+call my_pro01();
++--------+
+| sum(a) |
++--------+
+|      6 |
++--------+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO01'and OBJECT_TYPE = 'PROCEDURE';
++--------------------+-------------+-----------+
+| STATEMENT          | OBJECT_TYPE | hit_count |
++--------------------+-------------+-----------+
+| whh_test0.my_pro01 | PROCEDURE   |         3 |
++--------------------+-------------+-----------+
+
+alter system flush pl cache global;
+alter system flush plan cache global;
+
+
+drop table if exists t1, t2;
+CREATE TABLE t1(num_value INT);
+CREATE TABLE t2(user_str TEXT);
+
+CREATE TRIGGER trg1 AFTER INSERT ON t1 FOR EACH ROW 
+  INSERT INTO t2 VALUES(CURRENT_USER());
+CREATE TRIGGER trg2 AFTER INSERT ON t1 FOR EACH ROW 
+  INSERT INTO t2 VALUES(CURRENT_USER());
+
+drop trigger trg1;
+
+INSERT INTO t1 VALUES(1);
+
+select * from t1;
++-----------+
+| num_value |
++-----------+
+|         1 |
++-----------+
+select * from t2;
++-------------+
+| user_str    |
++-------------+
+| whh_test0@% |
++-------------+
+
+
+drop trigger trg2;
+ERROR 42000: TRIGGER command denied to user 'u2'@'%' for table 't1'
+
+CREATE TRIGGER trg1 AFTER INSERT ON t1 FOR EACH ROW 
+  INSERT INTO t2 VALUES(CURRENT_USER());
+ERROR 42000: TRIGGER command denied to user 'u2'@'%' for table 't1'
+
+INSERT INTO t1 VALUES(1);
+
+select * from t1;
++-----------+
+| num_value |
++-----------+
+|         1 |
+|         1 |
++-----------+
+select * from t2;
++-------------+
+| user_str    |
++-------------+
+| whh_test0@% |
+| whh_test0@% |
++-------------+
+
+#### 24、 cardinality_estimation_model （影响plan计划，不影响pl缓存，不影响pl编译结果）
+
+drop table if exists t1,t2;
+create table t1(pk int, c1 int, c2 decimal(12, 5), c3 int, c4 int, c5 int);
+create table t2(pk int, c1 int, c2 decimal(12, 5), c3 int, c4 int, c5 int);
+
+insert into t1 
+select v1.id, v1.num, v2.num / 100.0, v1.id % 100, v1.id % 10, 0
+from 
+(select row_number() over () as id, num from (select row_number() over () % 10000 as num from table(generator(20000)) order by random(1))) v1,
+(select row_number() over () as id, num from (select row_number() over () % 1000 as num from table(generator(20000)) order by random(2))) v2
+where v1.id = v2.id;
+
+insert into t2
+select v1.id, v1.num, v2.num / 100.0, v1.id % 100, v1.id % 10, 0
+from 
+(select row_number() over () as id, num from (select row_number() over () % 2000 as num from table(generator(20000)) order by random(3))) v1,
+(select row_number() over () as id, num from (select row_number() over () % 1000 as num from table(generator(20000)) order by random(4))) v2
+where v1.id = v2.id;
+
+drop PROCEDURE my_pro01;/
+CREATE PROCEDURE my_pro01()
+BEGIN
+  select count(1) from t1 where c3 = 1 and c4 = 1 and c1 < 5000;
+  select count(1) from t1 where c1 < 5000 or c2 < 5;
+  select count(1) from t1 where (c3, 1) != (1, c4);
+END ;
+/
+
+alter system flush pl cache global;
+alter system flush plan cache global;
+
+set @@session.cardinality_estimation_model =  'FULL';
+select @@session.cardinality_estimation_model from dual;
++----------------------------------------+
+| @@session.cardinality_estimation_model |
++----------------------------------------+
+| FULL                                   |
++----------------------------------------+
+
+call my_pro01();
++----------+
+| count(1) |
++----------+
++----------+
+| count(1) |
++----------+
++----------+
+| count(1) |
++----------+
+|      112 |
+|    14952 |
+|    19800 |
++----------+
++----------+
++----------+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO01'and OBJECT_TYPE = 'PROCEDURE';
++--------------------+-------------+-----------+
+| STATEMENT          | OBJECT_TYPE | hit_count |
++--------------------+-------------+-----------+
+| whh_test0.my_pro01 | PROCEDURE   |         0 |
++--------------------+-------------+-----------+
+
+set @@session.cardinality_estimation_model =  'FULL';
+select @@session.cardinality_estimation_model from dual;
++----------------------------------------+
+| @@session.cardinality_estimation_model |
++----------------------------------------+
+| FULL                                   |
++----------------------------------------+
+
+call my_pro01();
++----------+
+| count(1) |
++----------+
++----------+
+| count(1) |
++----------+
++----------+
+| count(1) |
++----------+
+|      112 |
+|    14952 |
+|    19800 |
++----------+
++----------+
++----------+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO01'and OBJECT_TYPE = 'PROCEDURE';
++--------------------+-------------+-----------+
+| STATEMENT          | OBJECT_TYPE | hit_count |
++--------------------+-------------+-----------+
+| whh_test0.my_pro01 | PROCEDURE   |         1 |
++--------------------+-------------+-----------+
+
+set @@session.cardinality_estimation_model =  'INDEPENDENT';
+select @@session.cardinality_estimation_model from dual;
++----------------------------------------+
+| @@session.cardinality_estimation_model |
++----------------------------------------+
+| INDEPENDENT                            |
++----------------------------------------+
+
+call my_pro01();
++----------+
+| count(1) |
++----------+
++----------+
+| count(1) |
++----------+
++----------+
+| count(1) |
++----------+
+|      112 |
+|    14952 |
+|    19800 |
++----------+
++----------+
++----------+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO01'and OBJECT_TYPE = 'PROCEDURE';
++--------------------+-------------+-----------+
+| STATEMENT          | OBJECT_TYPE | hit_count |
++--------------------+-------------+-----------+
+| whh_test0.my_pro01 | PROCEDURE   |         2 |
++--------------------+-------------+-----------+
+
+set @@session.cardinality_estimation_model =  'PARTIAL';
+select @@session.cardinality_estimation_model from dual;
++----------------------------------------+
+| @@session.cardinality_estimation_model |
++----------------------------------------+
+| PARTIAL                                |
++----------------------------------------+
+
+call my_pro01();
++----------+
+| count(1) |
++----------+
++----------+
+| count(1) |
++----------+
++----------+
+| count(1) |
++----------+
+|      112 |
+|    14952 |
+|    19800 |
++----------+
++----------+
++----------+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO01'and OBJECT_TYPE = 'PROCEDURE';
++--------------------+-------------+-----------+
+| STATEMENT          | OBJECT_TYPE | hit_count |
++--------------------+-------------+-----------+
+| whh_test0.my_pro01 | PROCEDURE   |         3 |
++--------------------+-------------+-----------+
+
+#### 25、 query_rewrite_enabled （不影响pl缓存，不影响pl编译结果）
+drop materialized view log on t1;
+drop table t1;
+drop materialized view log on t2;
+drop table t2;
+drop materialized view log on t3;
+drop table t3;
+drop materialized view t1_mv1;
+drop materialized view t1_mv2;
+drop materialized view t1_rt_mav;
+drop materialized view t1_t2_mv1;
+drop materialized view t1_t2_mv2;
+drop materialized view t1_t2_rt_mjv;
+drop materialized view t2_mv1;
+drop materialized view t2_mv2;
+drop materialized view t2_mv3;
+drop materialized view t2_mv4;
+drop materialized view t3_mv1;
+
+create table t1 (c1 int primary key, c2 int);
+insert into t1 values (1,2);
+insert into t1 values (2,3);
+insert into t1 values (3,4);
+
+create table t2 (c1 int primary key, c2 int);
+insert into t2 values (1,2);
+insert into t2 values (2,4);
+
+create table t3 (c1 int primary key, c2 int, c3 int, c4 int);
+insert into t3 values (1,2,3,4);
+insert into t3 values (2,4,6,8);
+
+create materialized view log on t1 with primary key, rowid, sequence (c2) including new values;
+create materialized view log on t2 with primary key, rowid, sequence (c2) including new values;
+create materialized view log on t3 with primary key, rowid, sequence (c2,c3,c4) including new values;
+create materialized view t1_mv1 as select * from t1;
+create materialized view t1_mv2 NEVER REFRESH enable query rewrite as select * from t1;
+create materialized view t1_rt_mav refresh fast on demand enable on query computation enable query rewrite as select count(*) cnt, c1 c1 from t1 group by c1;
+create materialized view t2_mv1 NEVER REFRESH enable query rewrite as select * from t2 where t2.c1 > 1 order by t2.c2;
+create materialized view t2_mv2 NEVER REFRESH enable query rewrite as select * from t2 where exists(select 1 from t3 where t3.c1 > 1);
+create materialized view t2_mv3 NEVER REFRESH enable query rewrite as select * from t2 where exists(select 1 from t3 where t3.c1 > t2.c1);
+create materialized view t2_mv4 NEVER REFRESH enable query rewrite as select * from t2 where t2.c1 >= 2;
+create materialized view t1_t2_mv1 NEVER REFRESH enable query rewrite as select t1.c1 t1c1, t1.c2 t1c2, t2.c2 t2c2 from t1, t2 where t1.c1 = t2.c2;
+create materialized view t1_t2_mv2 NEVER REFRESH enable query rewrite as select t1.c1 t1c1, t1.c2 t1c2, t2.c2 t2c2 from t1 join t2 on t1.c1 = t2.c2 where t1.c1 > 1;
+create materialized view t1_t2_rt_mjv never refresh enable on query computation enable query rewrite as select t1.c1 t1c1, t2.c1 t2c1, t2.c2 t2c2 from t1, t2 where t1.c1 = t2.c2;
+create materialized view t3_mv1 NEVER REFRESH enable query rewrite as select c1 c1, c2+c3 c2p3, c3+1 c31, 5*c4 c4t5 from t3;
+
+drop PROCEDURE my_pro01;
+
+create procedure my_pro01()
+begin
+  select t1.c1, t2.c2 from t1, t2 where t1.c1 = t2.c2 and t1.c1 in (1,3,5);
+  select /*+mv_rewrite(t2_mv1)*/ * from t2 where t2.c1 in (select /*+no_mv_rewrite*/ t1.c1 from t1 where t1.c1 > 1); # not support now
+  select /*+mv_rewrite(t2_mv1)*/ * from t2 where t2.c1 > 1 and exists(select /*+no_mv_rewrite*/ t1.c1 from t1 where t1.c1 > t2.c1); # not support now
+end;
+|
+
+alter system flush pl cache global;
+alter system flush plan cache global;
+
+set @@session.query_rewrite_enabled =  'true';
+select @@session.query_rewrite_enabled from dual;
++---------------------------------+
+| @@session.query_rewrite_enabled |
++---------------------------------+
+| TRUE                            |
++---------------------------------+
+
+call my_pro01();
++----+------+
+| c1 | c2   |
++----+------+
++----+------+
+| c1 | c2   |
++----+------+
++----+------+
+| c1 | c2   |
++----+------+
+|  2 |    4 |
+|  2 |    4 |
++----+------+
++----+------+
++----+------+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO01'and OBJECT_TYPE = 'PROCEDURE';
++--------------------+-------------+-----------+
+| STATEMENT          | OBJECT_TYPE | hit_count |
++--------------------+-------------+-----------+
+| whh_test0.my_pro01 | PROCEDURE   |         0 |
++--------------------+-------------+-----------+
+
+set @@session.query_rewrite_enabled =  'true';
+select @@session.query_rewrite_enabled from dual;
++---------------------------------+
+| @@session.query_rewrite_enabled |
++---------------------------------+
+| TRUE                            |
++---------------------------------+
+
+call my_pro01();
++----+------+
+| c1 | c2   |
++----+------+
++----+------+
+| c1 | c2   |
++----+------+
++----+------+
+| c1 | c2   |
++----+------+
+|  2 |    4 |
+|  2 |    4 |
++----+------+
++----+------+
++----+------+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO01'and OBJECT_TYPE = 'PROCEDURE';
++--------------------+-------------+-----------+
+| STATEMENT          | OBJECT_TYPE | hit_count |
++--------------------+-------------+-----------+
+| whh_test0.my_pro01 | PROCEDURE   |         1 |
++--------------------+-------------+-----------+
+
+set @@session.query_rewrite_enabled =  'force';
+select @@session.query_rewrite_enabled from dual;
++---------------------------------+
+| @@session.query_rewrite_enabled |
++---------------------------------+
+| FORCE                           |
++---------------------------------+
+
+call my_pro01();
++----+------+
+| c1 | c2   |
++----+------+
++----+------+
+| c1 | c2   |
++----+------+
++----+------+
+| c1 | c2   |
++----+------+
+|  2 |    4 |
+|  2 |    4 |
++----+------+
++----+------+
++----+------+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO01'and OBJECT_TYPE = 'PROCEDURE';
++--------------------+-------------+-----------+
+| STATEMENT          | OBJECT_TYPE | hit_count |
++--------------------+-------------+-----------+
+| whh_test0.my_pro01 | PROCEDURE   |         2 |
++--------------------+-------------+-----------+
+
+set @@session.query_rewrite_enabled =  'FALSE';
+select @@session.query_rewrite_enabled from dual;
++---------------------------------+
+| @@session.query_rewrite_enabled |
++---------------------------------+
+| FALSE                           |
++---------------------------------+
+
+call my_pro01();
++----+------+
+| c1 | c2   |
++----+------+
++----+------+
+| c1 | c2   |
++----+------+
++----+------+
+| c1 | c2   |
++----+------+
+|  2 |    4 |
+|  2 |    4 |
++----+------+
++----+------+
++----+------+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO01'and OBJECT_TYPE = 'PROCEDURE';
++--------------------+-------------+-----------+
+| STATEMENT          | OBJECT_TYPE | hit_count |
++--------------------+-------------+-----------+
+| whh_test0.my_pro01 | PROCEDURE   |         3 |
++--------------------+-------------+-----------+
+
+#### 26、 query_rewrite_integrity （不影响pl缓存，不影响pl编译结果）
+alter system flush pl cache global;
+alter system flush plan cache global;
+
+set @@session.query_rewrite_enabled =  'true';
+set @@session.query_rewrite_integrity =  'stale_tolerated';
+select @@session.query_rewrite_integrity from dual;
++-----------------------------------+
+| @@session.query_rewrite_integrity |
++-----------------------------------+
+| STALE_TOLERATED                   |
++-----------------------------------+
+
+call my_pro01();
++----+------+
+| c1 | c2   |
++----+------+
++----+------+
+| c1 | c2   |
++----+------+
++----+------+
+| c1 | c2   |
++----+------+
+|  2 |    4 |
+|  2 |    4 |
++----+------+
++----+------+
++----+------+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO01'and OBJECT_TYPE = 'PROCEDURE';
++--------------------+-------------+-----------+
+| STATEMENT          | OBJECT_TYPE | hit_count |
++--------------------+-------------+-----------+
+| whh_test0.my_pro01 | PROCEDURE   |         0 |
++--------------------+-------------+-----------+
+
+set @@session.query_rewrite_integrity =  'stale_tolerated';
+select @@session.query_rewrite_integrity from dual;
++-----------------------------------+
+| @@session.query_rewrite_integrity |
++-----------------------------------+
+| STALE_TOLERATED                   |
++-----------------------------------+
+
+call my_pro01();
++----+------+
+| c1 | c2   |
++----+------+
++----+------+
+| c1 | c2   |
++----+------+
++----+------+
+| c1 | c2   |
++----+------+
+|  2 |    4 |
+|  2 |    4 |
++----+------+
++----+------+
++----+------+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO01'and OBJECT_TYPE = 'PROCEDURE';
++--------------------+-------------+-----------+
+| STATEMENT          | OBJECT_TYPE | hit_count |
++--------------------+-------------+-----------+
+| whh_test0.my_pro01 | PROCEDURE   |         1 |
++--------------------+-------------+-----------+
+
+set @@session.query_rewrite_integrity =  'ENFORCED';
+select @@session.query_rewrite_integrity from dual;
++-----------------------------------+
+| @@session.query_rewrite_integrity |
++-----------------------------------+
+| ENFORCED                          |
++-----------------------------------+
+
+call my_pro01();
++----+------+
+| c1 | c2   |
++----+------+
++----+------+
+| c1 | c2   |
++----+------+
++----+------+
+| c1 | c2   |
++----+------+
+|  2 |    4 |
+|  2 |    4 |
++----+------+
++----+------+
++----+------+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO01'and OBJECT_TYPE = 'PROCEDURE';
++--------------------+-------------+-----------+
+| STATEMENT          | OBJECT_TYPE | hit_count |
++--------------------+-------------+-----------+
+| whh_test0.my_pro01 | PROCEDURE   |         2 |
++--------------------+-------------+-----------+
+
+set @@session.query_rewrite_integrity =  'ENFORCED';
+select @@session.query_rewrite_integrity from dual;
++-----------------------------------+
+| @@session.query_rewrite_integrity |
++-----------------------------------+
+| ENFORCED                          |
++-----------------------------------+
+
+call my_pro01();
++----+------+
+| c1 | c2   |
++----+------+
++----+------+
+| c1 | c2   |
++----+------+
++----+------+
+| c1 | c2   |
++----+------+
+|  2 |    4 |
+|  2 |    4 |
++----+------+
++----+------+
++----+------+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO01'and OBJECT_TYPE = 'PROCEDURE';
++--------------------+-------------+-----------+
+| STATEMENT          | OBJECT_TYPE | hit_count |
++--------------------+-------------+-----------+
+| whh_test0.my_pro01 | PROCEDURE   |         3 |
++--------------------+-------------+-----------+
+
+drop materialized view log on t1;
+drop table t1;
+drop materialized view log on t2;
+drop table t2;
+drop materialized view log on t3;
+
+#### 27、 enable_sql_plan_monitor （影响sql计划，不影响pl缓存，不影响pl编译结果）
+drop table tab11;
+create table tab11(id int AUTO_INCREMENT PRIMARY KEY,c1 varchar(2000),c2 timestamp,c3 timestamp null);
+INSERT INTO tab11(id,c1) values(1,' 【用户1 表tab1】');
+commit;
+
+drop PROCEDURE my_pro1;
+
+CREATE PROCEDURE my_pro()
+begin
+  insert into tab11 values(null,'my_pro 表插入数据 ',null,null);
+    select count(1) from tab11;
+end;
+$
+
+alter system flush pl cache global;
+alter system flush plan cache global;
+
+set @@session.enable_sql_plan_monitor = 1;
+select @@session.enable_sql_plan_monitor from dual;
++-----------------------------------+
+| @@session.enable_sql_plan_monitor |
++-----------------------------------+
+|                                 1 |
++-----------------------------------+
+
+call my_pro();
++----------+
+| count(1) |
++----------+
+|        2 |
++----------+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO'and OBJECT_TYPE = 'PROCEDURE';
++------------------+-------------+-----------+
+| STATEMENT        | OBJECT_TYPE | hit_count |
++------------------+-------------+-----------+
+| whh_test0.my_pro | PROCEDURE   |         0 |
++------------------+-------------+-----------+
+
+set @@session.enable_sql_plan_monitor = 1;
+select @@session.enable_sql_plan_monitor from dual;
++-----------------------------------+
+| @@session.enable_sql_plan_monitor |
++-----------------------------------+
+|                                 1 |
++-----------------------------------+
+
+call my_pro();
++----------+
+| count(1) |
++----------+
+|        3 |
++----------+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO'and OBJECT_TYPE = 'PROCEDURE';
++------------------+-------------+-----------+
+| STATEMENT        | OBJECT_TYPE | hit_count |
++------------------+-------------+-----------+
+| whh_test0.my_pro | PROCEDURE   |         1 |
++------------------+-------------+-----------+
+
+set @@session.enable_sql_plan_monitor = 0;
+select @@session.enable_sql_plan_monitor from dual;
++-----------------------------------+
+| @@session.enable_sql_plan_monitor |
++-----------------------------------+
+|                                 0 |
++-----------------------------------+
+
+call my_pro();
++----------+
+| count(1) |
++----------+
+|        4 |
++----------+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO'and OBJECT_TYPE = 'PROCEDURE';
++------------------+-------------+-----------+
+| STATEMENT        | OBJECT_TYPE | hit_count |
++------------------+-------------+-----------+
+| whh_test0.my_pro | PROCEDURE   |         2 |
++------------------+-------------+-----------+
+
+set @@session.enable_sql_plan_monitor =  0;
+select @@session.enable_sql_plan_monitor from dual;
++-----------------------------------+
+| @@session.enable_sql_plan_monitor |
++-----------------------------------+
+|                                 0 |
++-----------------------------------+
+
+call my_pro();
++----------+
+| count(1) |
++----------+
+|        5 |
++----------+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO'and OBJECT_TYPE = 'PROCEDURE';
++------------------+-------------+-----------+
+| STATEMENT        | OBJECT_TYPE | hit_count |
++------------------+-------------+-----------+
+| whh_test0.my_pro | PROCEDURE   |         3 |
++------------------+-------------+-----------+
+
+#### 28、 ob_table_access_policy （不影响pl缓存，不影响pl编译结果）
+drop table if exists t1,t2,t3;
+create table t1(c1 int, c2 int, c3 int, c4 int);
+create table t2(c1 int, c2 int, c3 int, c4 int)with column group(each column);
+create table t3(c1 int, c2 int, c3 int, c4 int)with column group(each column, all columns);
+
+insert into t1 values(1,1,1,1),(2,2,2,2),(3,3,3,3),(4,4,4,4),(5,5,5,5);
+insert into t2 values(1,1,1,1),(2,2,2,2),(3,3,3,3),(4,4,4,4),(5,5,5,5);
+insert into t3 values(1,1,1,1),(2,2,2,2),(3,3,3,3),(4,4,4,4),(5,5,5,5);
+
+create index t1_i1 on t1(c1);
+create index t1_i2 on t1(c2)with column group(each column);
+create index t1_i3 on t1(c3)with column group(each column, all columns);
+
+create index t2_i1 on t2(c1);
+create index t2_i2 on t2(c2)with column group(each column);
+create index t2_i3 on t2(c3)with column group(each column, all columns);
+
+create index t3_i1 on t3(c1);
+create index t3_i2 on t3(c2)with column group(each column);
+create index t3_i3 on t3(c3)with column group(each column, all columns);
+
+drop PROCEDURE my_pro01;$
+CREATE PROCEDURE my_pro01()
+BEGIN
+  select * from t1 A where c2 = 1;
+  select /*+opt_param('OB_TABLE_ACCESS_POLICY','COLUMN_STORE')*/* from t2 A where c2 = 1;
+  select /*+opt_param('OB_TABLE_ACCESS_POLICY','AUTO')*/* from t3 A where c2 = 1;
+END ;
+$
+
+alter system flush pl cache global;
+alter system flush plan cache global;
+
+set @@session.ob_table_access_policy = 'ROW_STORE';
+select @@session.ob_table_access_policy from dual;
++----------------------------------+
+| @@session.ob_table_access_policy |
++----------------------------------+
+| ROW_STORE                        |
++----------------------------------+
+
+call my_pro01();
++------+------+------+------+
+| c1   | c2   | c3   | c4   |
++------+------+------+------+
++------+------+------+------+
+| c1   | c2   | c3   | c4   |
++------+------+------+------+
++------+------+------+------+
+| c1   | c2   | c3   | c4   |
++------+------+------+------+
+|    1 |    1 |    1 |    1 |
+|    1 |    1 |    1 |    1 |
+|    1 |    1 |    1 |    1 |
++------+------+------+------+
++------+------+------+------+
++------+------+------+------+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO01'and OBJECT_TYPE = 'PROCEDURE';
++--------------------+-------------+-----------+
+| STATEMENT          | OBJECT_TYPE | hit_count |
++--------------------+-------------+-----------+
+| whh_test0.my_pro01 | PROCEDURE   |         0 |
++--------------------+-------------+-----------+
+
+set @@session.ob_table_access_policy = 'ROW_STORE';
+select @@session.ob_table_access_policy from dual;
++----------------------------------+
+| @@session.ob_table_access_policy |
++----------------------------------+
+| ROW_STORE                        |
++----------------------------------+
+
+call my_pro01();
++------+------+------+------+
+| c1   | c2   | c3   | c4   |
++------+------+------+------+
++------+------+------+------+
+| c1   | c2   | c3   | c4   |
++------+------+------+------+
++------+------+------+------+
+| c1   | c2   | c3   | c4   |
++------+------+------+------+
+|    1 |    1 |    1 |    1 |
+|    1 |    1 |    1 |    1 |
+|    1 |    1 |    1 |    1 |
++------+------+------+------+
++------+------+------+------+
++------+------+------+------+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO01'and OBJECT_TYPE = 'PROCEDURE';
++--------------------+-------------+-----------+
+| STATEMENT          | OBJECT_TYPE | hit_count |
++--------------------+-------------+-----------+
+| whh_test0.my_pro01 | PROCEDURE   |         1 |
++--------------------+-------------+-----------+
+
+set @@session.ob_table_access_policy = 'COLUMN_STORE';
+select @@session.ob_table_access_policy from dual;
++----------------------------------+
+| @@session.ob_table_access_policy |
++----------------------------------+
+| COLUMN_STORE                     |
++----------------------------------+
+
+call my_pro01();
++------+------+------+------+
+| c1   | c2   | c3   | c4   |
++------+------+------+------+
++------+------+------+------+
+| c1   | c2   | c3   | c4   |
++------+------+------+------+
++------+------+------+------+
+| c1   | c2   | c3   | c4   |
++------+------+------+------+
+|    1 |    1 |    1 |    1 |
+|    1 |    1 |    1 |    1 |
+|    1 |    1 |    1 |    1 |
++------+------+------+------+
++------+------+------+------+
++------+------+------+------+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO01'and OBJECT_TYPE = 'PROCEDURE';
++--------------------+-------------+-----------+
+| STATEMENT          | OBJECT_TYPE | hit_count |
++--------------------+-------------+-----------+
+| whh_test0.my_pro01 | PROCEDURE   |         2 |
++--------------------+-------------+-----------+
+
+set @@session.ob_table_access_policy =  'AUTO';
+select @@session.ob_table_access_policy from dual;
++----------------------------------+
+| @@session.ob_table_access_policy |
++----------------------------------+
+| AUTO                             |
++----------------------------------+
+
+call my_pro01();
++------+------+------+------+
+| c1   | c2   | c3   | c4   |
++------+------+------+------+
++------+------+------+------+
+| c1   | c2   | c3   | c4   |
++------+------+------+------+
++------+------+------+------+
+| c1   | c2   | c3   | c4   |
++------+------+------+------+
+|    1 |    1 |    1 |    1 |
+|    1 |    1 |    1 |    1 |
+|    1 |    1 |    1 |    1 |
++------+------+------+------+
++------+------+------+------+
++------+------+------+------+
+select STATEMENT,OBJECT_TYPE,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where upper(STATEMENT) = 'WHH_TEST0.MY_PRO01'and OBJECT_TYPE = 'PROCEDURE';
++--------------------+-------------+-----------+
+| STATEMENT          | OBJECT_TYPE | hit_count |
++--------------------+-------------+-----------+
+| whh_test0.my_pro01 | PROCEDURE   |         3 |
++--------------------+-------------+-----------+
+
+set @@global.sql_mode = @save_sqlmode;
+
+alter system flush pl cache global;
+alter system flush plan cache global;
+
+
+drop user if exists whh_test0;
+purge recyclebin;

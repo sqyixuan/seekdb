@@ -1,0 +1,86 @@
+ob1=OBI(cluster=2:2:2, proxy_num=0);
+ob1.set extra_config=$mini_ob_config;
+ob1.reboot;
+ob1.mysql alter resource unit sys_unit_config memory_size='2G';
+CREATE RESOURCE UNIT large_unit MAX_CPU=2, MEMORY_SIZE='2G';
+CREATE RESOURCE POOL pool UNIT large_unit, UNIT_NUM 2;
+CREATE RESOURCE POOL pool_1 UNIT large_unit, UNIT_NUM 2;
+ob1.mysql alter system set _backup_idle_time = '10s';
+ob1.mysql alter system set merger_check_interval = '10s';
+ob1.mysql alter system set enable_async_syslog=false;
+ob1.mysql CREATE TENANT oracle_tenant RESOURCE_POOL_LIST = ('pool'), primary_zone = "z1" set ob_tcp_invited_nodes='%', ob_compatibility_mode='oracle';
+create user mytest identified by "test";
+grant connect to mytest;
+GRANT SELECT on SYS.DBA_OB_ACCESS_POINT to mytest;
+GRANT SELECT on SYS.GV$OB_UNITS to mytest;
+GRANT SELECT on SYS.DBA_OB_TENANTS to mytest;
+GRANT SELECT on SYS.GV$OB_PARAMETERS to mytest;
+GRANT SELECT on SYS.GV$OB_LOG_STAT to mytest;
+GRANT SELECT on SYS.DBA_OB_LS to mytest;
+GRANT SELECT on SYS.DBA_OB_LS_HISTORY to mytest;
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+ob1.mysql set ob_global_debug_sync = 'STOP_RECOVERY_LS_THREAD0 wait_for continue_signal_1 execute 10000';
+ob1.mysql ALTER SYSTEM SET enable_rereplication = 'false';
+========================================================================
+||                    [MILESTONE] prepare finished                    ||
+========================================================================
+========================================================================
+||               [MILESTONE] case 1: 配置项基本设置能力                  ||
+========================================================================
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.__all_virtual_tenant_parameter_stat WHERE name = "replica_parallel_migration_mode" and tenant_id = 1002 and value = 'auto', 6, 10;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.__all_virtual_tenant_parameter_stat WHERE name = "replica_parallel_migration_mode" and tenant_id = 1002 and value = 'on', 6, 10;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.__all_virtual_tenant_parameter_stat WHERE name = "replica_parallel_migration_mode" and tenant_id = 1002 and value = 'off', 6, 10;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.__all_virtual_tenant_parameter_stat WHERE name = "replica_parallel_migration_mode" and tenant_id = 1002 and value = 'auto', 6, 10;
+========================================================================
+||               [MILESTONE] case 2: 主库默认不能并行迁移                 ||
+========================================================================
+ob1.mysql set ob_global_debug_sync = 'BEFORE_WAIT_LOG_REPLAY_SYNC wait_for signal1';
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $primary_tenant_id AND ls_id = $primary_tenant_ls_id AND role = "LEADER" AND learner_list LIKE '%$z1_obs1%', 1, 40;
+ERROR HY000: LS has task executing, current operation is not allowed
+ERROR HY000: LS has task executing, current operation is not allowed
+ERROR HY000: LS has task executing, current operation is not allowed
+========================================================================
+||             [MILESTONE] case 3: 主库关闭配置项不能并行迁移              ||
+========================================================================
+ERROR HY000: LS has task executing, current operation is not allowed
+ERROR HY000: LS has task executing, current operation is not allowed
+ERROR HY000: LS has task executing, current operation is not allowed
+========================================================================
+||             [MILESTONE] case 4: 主库打开配置项可以并行迁移              ||
+========================================================================
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $primary_tenant_id AND ls_id = $primary_tenant_ls_id AND role = "LEADER" AND learner_list LIKE '%$z2_obs1%', 1, 40;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $primary_tenant_id AND ls_id = $primary_tenant_ls_id AND role = "LEADER" AND learner_list LIKE '%$z3_obs1%', 1, 40;
+ERROR HY000: LS has task executing, current operation is not allowed
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS WHERE tenant_id = $primary_tenant_id, 3, 20;
+ob1.mysql set ob_global_debug_sync = 'now signal signal1';
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS WHERE tenant_id = $primary_tenant_id, 0, 20;
+========================================================================
+||             [MILESTONE] case 5: 备库关闭配置项不能并行迁移              ||
+========================================================================
+ob1.mysql set ob_global_debug_sync = 'BEFORE_WAIT_LOG_REPLAY_SYNC wait_for signal2';
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS WHERE tenant_id = $standby_tenant_id, 1, 20;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS WHERE tenant_id = $standby_tenant_id and TARGET_REPLICA_SVR_IP = '$z1_obs1_ip' and TARGET_REPLICA_SVR_PORT = $z1_obs1_port, 1, 20;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $standby_tenant_id AND ls_id = $standby_tenant_ls_id AND role = "LEADER", 1, 20;
+ERROR HY000: LS has task executing, current operation is not allowed
+ERROR HY000: LS has task executing, current operation is not allowed
+========================================================================
+||               [MILESTONE] case 6: 备库默认可以并行迁移                 ||
+========================================================================
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS WHERE tenant_id = $standby_tenant_id, 2, 20;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS WHERE tenant_id = $standby_tenant_id and TARGET_REPLICA_SVR_IP = '$z2_obs1_ip' and TARGET_REPLICA_SVR_PORT = $z2_obs1_port, 1, 20;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS WHERE tenant_id = $standby_tenant_id, 3, 20;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS WHERE tenant_id = $standby_tenant_id and TARGET_REPLICA_SVR_IP = '$z3_obs1_ip' and TARGET_REPLICA_SVR_PORT = $z3_obs1_port, 1, 20;
+ob1.mysql set ob_global_debug_sync = 'now signal signal2';
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS WHERE tenant_id = $standby_tenant_id, 0, 100;
+========================================================================
+||             [MILESTONE] case 7: 备库打开配置项可以并行迁移              ||
+========================================================================
+ob1.mysql set ob_global_debug_sync = 'BEFORE_WAIT_LOG_REPLAY_SYNC wait_for signal3';
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS WHERE tenant_id = $standby_tenant_id, 1, 20;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS WHERE tenant_id = $standby_tenant_id and TARGET_REPLICA_SVR_IP = '$z1_obs0_ip' and TARGET_REPLICA_SVR_PORT = $z1_obs0_port, 1, 20;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $standby_tenant_id AND ls_id = $standby_tenant_ls_id AND role = "LEADER", 1, 20;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS WHERE tenant_id = $standby_tenant_id, 2, 20;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS WHERE tenant_id = $standby_tenant_id and TARGET_REPLICA_SVR_IP = '$z2_obs0_ip' and TARGET_REPLICA_SVR_PORT = $z2_obs0_port, 1, 20;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS WHERE tenant_id = $standby_tenant_id, 3, 20;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS WHERE tenant_id = $standby_tenant_id and TARGET_REPLICA_SVR_IP = '$z3_obs0_ip' and TARGET_REPLICA_SVR_PORT = $z3_obs0_port, 1, 20;
+ob1.mysql set ob_global_debug_sync = 'now signal signal3';

@@ -1,0 +1,18 @@
+--disable_abort_on_error
+--source mysql_test/test_suite/charset_expr/all_test/expr_concat.inc
+--source mysql_test/test_suite/charset_expr/all_test/expr_to_number.inc
+--source mysql_test/test_suite/charset_expr/all_test/select_meta_table.inc
+--source mysql_test/test_suite/charset_expr/all_test/char_varchar_space_cmp.inc
+--source mysql_test/test_suite/charset_expr/all_test/expr_substrb.inc
+--source mysql_test/test_suite/charset_expr/all_test/expr_coalesce.inc
+--source mysql_test/test_suite/charset_expr/all_test/expr_rpad.inc
+--source mysql_test/test_suite/charset_expr/all_test/expr_sys_connect_by_path.inc
+--source mysql_test/test_suite/charset_expr/all_test/expr_convert.inc
+--source mysql_test/test_suite/charset_expr/all_test/expr_unistr.inc
+--source mysql_test/test_suite/charset_expr/all_test/expr_asciistr.inc
+--source mysql_test/test_suite/charset_expr/all_test/oracle_empty_string.inc
+--source mysql_test/test_suite/charset_expr/all_test/pl_execute_immediate.inc
+--source mysql_test/test_suite/charset_expr/all_test/generated_column.inc
+--source mysql_test/test_suite/charset_expr/all_test/to_char_date.inc
+--source mysql_test/test_suite/charset_expr/all_test/nlssort_oracle.inc
+--source mysql_test/test_suite/charset_expr/all_test/invalid_identifier.inc

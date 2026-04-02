@@ -1,0 +1,106 @@
+#owner: xiaoshi.xjl
+#owner group: transaction
+# 测试点：改选过程中的事务迁移
+##
+ob1=OBI(cluster=1:1,proxy_num=0,init_unit_cpu=5);
+ob1.reboot;
+sleep 5;
+
+#ob1.mysql alter system set enable_auto_leader_switch=false;
+
+let $ip0=deploy_get_value(ob1.z1.obs0.ip);
+let $port0=deploy_get_value(ob1.z1.obs0.port);
+let $sql_port0=deploy_get_value(ob1.z1.obs0.mysql_port);
+let $ip1=deploy_get_value(ob1.z2.obs0.ip);
+let $port1=deploy_get_value(ob1.z2.obs0.port);
+let $sql_port1=deploy_get_value(ob1.z2.obs0.mysql_port);
+
+let $tenant_id=deploy_get_value(ob1.select select tenant_id from __all_tenant where tenant_name='obtest', tenant_id, 1);
+ob1.mysql alter tenant obtest set primary_zone='z1';
+let $ls_id=deploy_get_value(ob1.select select ls_id from cdb_ob_ls where tenant_id=$tenant_id and ls_id != 1, ls_id, 1);
+ob1.check_until_timeout select count(1) from oceanbase.CDB_OB_LS_LOCATIONS where tenant_id=$tenant_id and ls_id=$ls_id and SVR_IP='$ip0' and svr_port='$port0' and ROLE='LEADER', 1, 100;
+
+connect (conn1,$ip0,root@obtest,,test,$sql_port0);
+connect (conn2,$ip0,root@sys,,oceanbase,$sql_port0);
+
+connection conn1;
+set ob_query_timeout=90000000;
+set ob_trx_timeout=1200000000;
+
+create database obtest;
+use obtest;
+## case:检查表结构
+create table t1(id1 int, id2 int);
+
+sleep 5;
+desc t1;
+
+# case:测试事务在执行过程中切主
+start transaction;
+insert into t1 values(1, 10);
+update t1 set id2=11 where id1 = 1;
+
+sleep 5;
+ob1.mysql alter tenant obtest set primary_zone='z2';
+ob1.check_until_timeout select count(1) from oceanbase.CDB_OB_LS_LOCATIONS where tenant_id=$tenant_id and ls_id=$ls_id and SVR_IP='$ip1' and svr_port='$port1' and ROLE='LEADER', 1, 100;
+sleep 5;
+
+connection conn1;
+select * from t1;
+update t1 set id2=12 where id1 = 1;
+select * from t1;
+
+sleep 5;
+ob1.mysql alter tenant obtest set primary_zone='z1';
+ob1.check_until_timeout select count(1) from oceanbase.CDB_OB_LS_LOCATIONS where tenant_id=$tenant_id and ls_id=$ls_id and SVR_IP='$ip0' and svr_port='$port0' and ROLE='LEADER', 1, 100;
+sleep 5;
+
+connection conn1;
+select * from t1;
+update t1 set id2=13 where id1 = 1;
+select * from t1;
+
+sleep 5;
+ob1.mysql alter tenant obtest set primary_zone='z2';
+ob1.check_until_timeout select count(1) from oceanbase.CDB_OB_LS_LOCATIONS where tenant_id=$tenant_id and ls_id=$ls_id and SVR_IP='$ip1' and svr_port='$port1' and ROLE='LEADER', 1, 100;
+sleep 5;
+
+connection conn1;
+select * from t1;
+update t1 set id2=14 where id1 = 1;
+select * from t1;
+commit;
+
+select * from t1;
+
+# case:测试事务在commit之前切主
+start transaction;
+update t1 set id2=15 where id1 = 1;
+sleep 5;
+ob1.mysql alter tenant obtest set primary_zone='z1';
+ob1.check_until_timeout select count(1) from oceanbase.CDB_OB_LS_LOCATIONS where tenant_id=$tenant_id and ls_id=$ls_id and SVR_IP='$ip0' and svr_port='$port0' and ROLE='LEADER', 1, 100;
+sleep 5;
+connection conn1;
+commit;
+
+select * from t1;
+
+# case:测试事务在切主之后回滚
+start transaction;
+update t1 set id2=16 where id1 = 1;
+sleep 5;
+ob1.mysql alter tenant obtest set primary_zone='z2';
+ob1.check_until_timeout select count(1) from oceanbase.CDB_OB_LS_LOCATIONS where tenant_id=$tenant_id and ls_id=$ls_id and SVR_IP='$ip1' and svr_port='$port1' and ROLE='LEADER', 1, 100;
+sleep 5;
+connection conn1;
+rollback;
+
+select * from t1;
+
+connection conn2;
+ob1.mysql alter system major freeze;
+#ob1.check_until_timeout select value from __all_zone where zone='' and name='last_merged_version', 2,3600;
+
+connection conn1;
+select * from t1;
+drop table t1;

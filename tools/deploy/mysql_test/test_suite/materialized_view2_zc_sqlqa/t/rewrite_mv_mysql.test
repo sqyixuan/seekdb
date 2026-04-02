@@ -1,0 +1,743 @@
+#owner:guohanyun.ghy
+#owner group:技术部-SQL-优化器
+#description:物化视图改写
+#tags: mv_optimizer,mview
+#author: wb-zc01084078
+
+--result_format 4
+PURGE RECYCLEBIN;
+
+##clean PLAN
+alter system flush plan cache global;
+
+--error 0,942,1146
+DROP MATERIALIZED VIEW LOG ON col_info;
+--error 0,942,1146
+DROP MATERIALIZED VIEW LOG ON col_item;
+--error 0,942,1051
+DROP table col_item;
+--error 0,942,1051
+DROP table col_info;
+
+--error 0,12003,9757
+DROP materialized view ZC_MV1;
+--error 0,12003,9757
+DROP materialized view ZC_MV2;
+--error 0,12003,9757
+DROP materialized view ZC_MV3;
+--error 0,12003,9757
+DROP materialized view ZC_MV4;
+
+CREATE table col_info(c1 int,c2 int,PRIMARY KEY(c2)) PARTITION by hash(c2) partitions 1000;
+CREATE TABLE col_item(c1 int PRIMARY KEY,c2 int,c3 VARCHAR(1000),FOREIGN KEY(C1) REFERENCES col_info(C2)) PARTITION by hash(c1) partitions 16;
+
+CREATE MATERIALIZED VIEW LOG ON col_info parallel 1 WITH PRIMARY KEY,ROWID,SEQUENCE(c1)INCLUDING NEW VALUES;
+CREATE MATERIALIZED VIEW LOG ON col_item parallel 2 WITH PRIMARY KEY,ROWID,SEQUENCE(c2,c3) INCLUDING NEW VALUES;
+
+##先添加数据
+INSERT INTO col_info SELECT 1,1 from dual;
+INSERT INTO col_info SELECT c1+1,c2+1 from col_info;
+INSERT INTO col_info SELECT c1+2,c2+2 from col_info;
+INSERT INTO col_info SELECT c1+4,c2+4 from col_info;
+INSERT INTO col_info SELECT c1+8,c2+8 from col_info;
+
+INSERT INTO col_item VALUES(1,1,'A');
+INSERT INTO col_item SELECT C1+1,C2+1,C3 FROM col_item;
+INSERT INTO col_item SELECT C1+2,C2+2,C3 FROM col_item;
+INSERT INTO col_item SELECT C1+4,C2+4,C3 FROM col_item;
+INSERT INTO col_item SELECT C1+8,C2+8,C3 FROM col_item;
+
+##MV
+create materialized view ZC_MV1 REFRESH FORCE ON DEMAND enable query rewrite AS
+select * from col_info ZT1;
+
+create materialized view ZC_MV2 REFRESH FORCE ON DEMAND enable query rewrite AS
+select * from col_item ZT2 WHERE zt2.c1 > 1;
+
+create materialized view ZC_MV3 never REFRESH enable query rewrite AS
+select zt1.c1 c1_1,zt1.c2 c2_1,zt2.c1 c1_2,zt2.c2 c2_2,zt2.c3 c3_2
+from col_info ZT1,col_item ZT2 WHERE zt1.c2 = zt2.c1;
+
+
+##建好物化视图后再次添加数据
+INSERT INTO col_info SELECT c1+16,c2+16 from col_info;
+INSERT INTO col_info SELECT c1+32,c2+32 from col_info WHERE C1 IS NOT NULL;
+INSERT INTO col_item SELECT C1+16,C2+16,C3 FROM col_item WHERE C3 IS NOT NULL;
+UPDATE col_info SET C1 = 999 WHERE C2 = 1;
+UPDATE col_item SET C3 = 'N' WHERE C2 = 2;
+DELETE FROM col_info WHERE C1 BETWEEN 55 AND 56;
+DELETE FROM col_item WHERE C3 LIKE '%N%';
+
+####收集统计信息
+CALL dbms_stats.gather_table_stats('test', 'col_info');
+CALL dbms_stats.gather_table_stats('test', 'col_item');
+CALL dbms_stats.gather_table_stats('test', 'ZC_MV1');
+CALL dbms_stats.gather_table_stats('test', 'ZC_MV2');
+CALL dbms_stats.gather_table_stats('test', 'ZC_MV3');
+
+####开启物化改写(检查开，非实时物化开)
+SET QUERY_REWRITE_ENABLED = TRUE;
+set QUERY_REWRITE_INTEGRITY = stale_tolerated;
+#ALTER SESSION SET QUERY_REWRITE_ENABLED = TRUE;
+#ALTER SESSION set QUERY_REWRITE_INTEGRITY = stale_tolerated;
+
+####SELECT
+##re
+select ZT1.c1 as c1,ZT1.C2 AS c2 from col_info ZT1 ORDER by c1;
+explain basic select ZT1.c1 as c1,ZT1.C2 AS c2 from col_info ZT1 ORDER by c1;
+
+##re
+select /*+mv_rewrite(ZC_MV1)*/ZT1.c1 as c1,ZT1.C2 AS c2 from col_info ZT1 order by c1;
+explain basic select /*+mv_rewrite(ZC_MV1)*/ZT1.c1 as c1,ZT1.C2 AS c2 from col_info ZT1 order by c1;
+
+##nore
+select /*+no_mv_rewrite*/ZT1.c1 as c1,ZT1.C2 AS c2 from col_info ZT1 order by 1;
+explain basic select /*+no_mv_rewrite*/ZT1.c1 as c1,ZT1.C2 AS c2 from col_info ZT1 order by 1;
+select /*+no_rewrite*/ZT1.c1 as c1,ZT1.C2 AS c2 from col_info ZT1 order by 1;
+
+##WHERE
+##nore
+SELECT * FROM col_info ZT1 WHERE ZT1.C1 >1 ORDER BY 1;
+EXPLAIN BASIC SELECT * FROM col_info ZT1 WHERE ZT1.C1 >1 ORDER BY 1;
+
+##re
+SELECT /*+mv_rewrite(ZC_MV1)*/* FROM col_info ZT1 WHERE ZT1.C1 >1 ORDER BY 1;
+EXPLAIN BASIC SELECT /*+mv_rewrite(zc_mv1)*/* FROM col_info ZT1 WHERE ZT1.C1 >1 ORDER BY 1;
+
+##nore
+SELECT /*+no_mv_rewrite*/* FROM col_info ZT1 WHERE ZT1.C1 >1 ORDER BY 1;
+SELECT /*+no_rewrite*/* FROM col_info ZT1 WHERE ZT1.C1 >1 ORDER BY 1;
+explain SELECT /*+no_mv_rewrite*/* FROM col_info ZT1 WHERE ZT1.C1 >1 ORDER BY 1;
+
+##CREATE INDEX
+CREATE INDEX in_mv1 ON zc_mv1(c1);
+
+##re
+SELECT * FROM col_info ZT1 WHERE ZT1.C1 >1 ORDER BY 1;
+EXPLAIN BASIC SELECT * FROM col_info ZT1 WHERE ZT1.C1 >1 ORDER BY 1;
+
+##指定无关的mv
+##nore
+SELECT /*+mv_rewrite(zc_mv2)*/* FROM col_info ZT1 WHERE ZT1.C1 >1 ORDER BY 1;
+EXPLAIN BASIC SELECT /*+mv_rewrite*/* FROM col_info ZT1 WHERE ZT1.C1 >1 ORDER BY 1;
+
+##指定多个mv
+##re
+SELECT /*+mv_rewrite(zc_mv2,zc_mv1)*/* FROM col_info ZT1 WHERE ZT1.C1 >1 ORDER BY 1;
+SELECT /*+rewrite(zc_mv2,zc_mv1)*/* FROM col_info ZT1 WHERE ZT1.C1 >1 ORDER BY 1;
+EXPLAIN BASIC SELECT /*+mv_rewrite(zc_mv2,zc_mv1)*/* FROM col_info ZT1 WHERE ZT1.C1 >1 ORDER BY 1;
+
+##指定空
+##re
+SELECT /*+mv_rewrite()*/* FROM col_info ZT1 WHERE ZT1.C1 >1 ORDER BY 1;
+SELECT /*+rewrite()*/* FROM col_info ZT1 WHERE ZT1.C1 >1 ORDER BY 1;
+EXPLAIN BASIC SELECT /*+mv_rewrite()*/* FROM col_info ZT1 WHERE ZT1.C1 >1 ORDER BY 1;
+
+##OR,AND
+##re
+SELECT * FROM col_info ZT1 WHERE ZT1.C1 >1 OR ZT1.C2 >10 ORDER BY 1;
+EXPLAIN BASIC SELECT * FROM col_info ZT1 WHERE ZT1.C1 >1 OR ZT1.C2 >10 ORDER BY 1;
+
+##re
+SELECT * FROM col_info ZT1 WHERE ZT1.C1 >1 AND ZT1.C2 >10 ORDER BY 1;
+EXPLAIN BASIC SELECT * FROM col_info ZT1 WHERE ZT1.C1 >1 AND ZT1.C2 >10 ORDER BY 1;
+
+####
+
+##CREATE INDEX
+CREATE INDEX in_mv2 ON zc_mv2(c1);
+
+##re
+SELECT /*+mv_rewrite(zc_mv2)*/* FROM col_item ZT1 WHERE ZT1.C1 >1 ORDER BY 1;
+EXPLAIN BASIC SELECT /*+mv_rewrite(zc_mv2)*/* FROM col_item ZT1 WHERE ZT1.C1 >1 ORDER BY 1;
+
+##nore
+SELECT * FROM col_item ZT1 WHERE ZT1.C1 >0 ORDER BY 1;
+##nore(直接走plan cache，不走改写,plan不稳定注释)
+#SELECT * FROM col_item ZT1 WHERE ZT1.C1 >1 ORDER BY 1;
+
+##clean PLAN
+alter system flush plan cache global;
+##re
+SELECT * FROM col_item ZT1 WHERE ZT1.C1 >1 ORDER BY 1;
+
+##nore
+SELECT * FROM col_item ZT1 WHERE ZT1.C1 >1 AND ZT1.C2 >10 ORDER BY 1;
+##re
+SELECT /*+mv_rewrite(zc_mv2)*/* FROM col_item ZT1 WHERE ZT1.C1 >1 AND ZT1.C2 >10 ORDER BY 1;
+EXPLAIN BASIC SELECT * FROM col_item ZT1 WHERE ZT1.C1 >1 AND ZT1.C2 >10 ORDER BY 1;
+EXPLAIN BASIC SELECT /*+mv_rewrite(zc_mv2)*/* FROM col_item ZT1 WHERE ZT1.C1 >1 AND ZT1.C2 >10 ORDER BY 1;
+
+CREATE INDEX in1_mv2 ON zc_mv2(c2);
+##re
+SELECT * FROM col_item ZT1 WHERE ZT1.C1 >1 AND ZT1.C2 >10 ORDER BY 1;
+
+#DROP INDEX in_mv2;
+DROP INDEX in_mv2 on zc_mv2;
+
+##re
+SELECT * FROM col_item ZT1 WHERE ZT1.C1 >1 AND ZT1.C2 >10 ORDER BY 1;
+explain basic SELECT * FROM col_item ZT1 WHERE ZT1.C1 >1 AND ZT1.C2 >10 ORDER BY 1;
+
+##nore
+SELECT * FROM col_item ZT1 WHERE ZT1.C1 >1 AND ZT1.C1 >10 ORDER BY 1;
+explain basic SELECT * FROM col_item ZT1 WHERE ZT1.C1 >1 AND ZT1.C1 >10 ORDER BY 1;
+
+##nore
+SELECT * FROM col_item ZT1 WHERE ZT1.C1 >1 or ZT1.C1 >10 ORDER BY 1;
+explain basic SELECT * FROM col_item ZT1 WHERE ZT1.C1 >1 AND ZT1.C1 >10 ORDER BY 1;
+
+##re
+SELECT /*+mv_rewrite(zc_mv2)*/* FROM col_item ZT1 WHERE ZT1.C1 >1 AND ZT1.C1 >10 ORDER BY 1;
+explain basic SELECT /*+mv_rewrite(zc_mv2)*/* FROM col_item ZT1 WHERE ZT1.C1 >1 AND ZT1.C1 >10 ORDER BY 1;
+
+##nore
+SELECT /*+mv_rewrite(zc_mv2)*/* FROM col_item ZT1 WHERE ZT1.C1 >1 or ZT1.C1 >10 ORDER BY 1;
+explain basic SELECT /*+mv_rewrite(zc_mv2)*/* FROM col_item ZT1 WHERE ZT1.C1 >1 OR ZT1.C1 >10 ORDER BY 1;
+
+##nore
+SELECT * FROM col_item ZT1 WHERE ZT1.C1 >1 or ZT1.C1 >1 ORDER BY 1;
+##nore
+SELECT /*+mv_rewrite(zc_mv2)*/* FROM col_item ZT1 WHERE ZT1.C1 >1 or ZT1.C1 >1 ORDER BY 1;
+
+create materialized view ZC_MV4 REFRESH FORCE ON DEMAND enable query rewrite AS
+select * from col_item ZT1 WHERE zt1.c1 > 1 OR ZT1.C1 >10;
+
+##re
+SELECT * FROM col_item ZT1 WHERE ZT1.C1 >1 or ZT1.C1 >10 ORDER BY 1;
+explain basic SELECT * FROM col_item ZT1 WHERE ZT1.C1 >1 or ZT1.C1 >10 ORDER BY 1;
+
+##nore
+explain basic SELECT * FROM col_item ZT1 WHERE ZT1.C1 >1 or ZT1.C1 >11 ORDER BY 1;
+
+CREATE INDEX in1_mv4 ON zc_mv4(c1);
+
+##nore
+explain basic SELECT /*+mv_rewrite(zc_mv4)*/* FROM col_item ZT1 WHERE ZT1.C1 >1 or ZT1.C1 >11 ORDER BY 1;
+
+DROP materialized view ZC_MV4;
+
+create materialized view ZC_MV4 REFRESH FORCE ON DEMAND enable query rewrite AS
+select * from col_item ZT1 WHERE zt1.c1 > ZT1.C2 ;
+
+##re
+select * from col_item WHERE c1 > C2 ;
+explain basic select * from col_item WHERE c1 > C2 ;
+
+##re
+select * from col_item WHERE c2 < C1 ;
+explain basic select * from col_item WHERE c2 < C1 ;
+
+##re
+select /*+mv_rewrite(zc_mv4)*/* from col_item WHERE c1 > C2 ;
+explain basic select /*+mv_rewrite(zc_mv4)*/* from col_item WHERE c1 > C2 ;
+
+DROP materialized view ZC_MV4;
+
+####=/<=>/<> / !=
+##re
+SELECT * from col_info zct1 WHERE zct1.c1 = zct1.c2 order by 1;
+explain basic SELECT * from col_info zct1 WHERE zct1.c1 = zct1.c2 order by 1;
+
+##nore
+SELECT /*+no_mv_rewrite*/* from col_info zct1 WHERE zct1.c1 = zct1.c2 order by 1;
+explain basic SELECT /*+no_mv_rewrite*/* from col_info zct1 WHERE zct1.c1 = zct1.c2 order by 1;
+
+##re
+SELECT * from col_info zct1 WHERE zct1.c1 <=> zct1.c2 order by 1;
+explain basic SELECT * from col_info zct1 WHERE zct1.c1 <=> zct1.c2 order by 1;
+
+##nore
+SELECT /*+no_mv_rewrite*/* from col_info zct1 WHERE zct1.c1 <=> zct1.c2 order by 1;
+explain basic SELECT /*+no_mv_rewrite*/* from col_info zct1 WHERE zct1.c1 <=> zct1.c2 order by 1;
+
+##re
+SELECT * from col_info zct1 WHERE zct1.c1 <> zct1.c2 order by 1;
+explain basic SELECT * from col_info zct1 WHERE zct1.c1 <> zct1.c2 order by 1;
+
+##nore
+SELECT /*+no_mv_rewrite*/* from col_info zct1 WHERE zct1.c1 <> zct1.c2 order by 1;
+explain basic SELECT /*+no_mv_rewrite*/* from col_info zct1 WHERE zct1.c1 <> zct1.c2 order by 1;
+
+##re
+SELECT * from col_info zct1 WHERE zct1.c1 != zct1.c2 order by 1;
+explain basic SELECT * from col_info zct1 WHERE zct1.c1 != zct1.c2 order by 1;
+
+##nore
+SELECT /*+no_mv_rewrite*/* from col_info zct1 WHERE zct1.c1 != zct1.c2 order by 1;
+explain basic SELECT /*+no_mv_rewrite*/* from col_info zct1 WHERE zct1.c1 != zct1.c2 order by 1;
+
+create materialized view ZC_MV4 REFRESH FORCE ON DEMAND enable query rewrite AS
+select * from col_item ZT1 WHERE zt1.c1 = 1 ;
+
+##nore
+SELECT * from col_item zct1 WHERE zct1.c1 <=> 1 order by 1;
+explain basic SELECT * from col_item zct1 WHERE zct1.c1 <=> 1 order by 1;
+##nore
+explain basic SELECT /*+mv_rewrite(zc_mv4)*/* from col_item zct1 WHERE zct1.c1 <=> 1 order by 1;
+
+DROP materialized view ZC_MV4;
+
+create materialized view ZC_MV4 REFRESH FORCE ON DEMAND enable query rewrite AS
+select * from col_item ZT1 WHERE zt1.c1 != 1 ;
+
+##nore
+SELECT * from col_item zct1 WHERE zct1.c1 <> 1 order by 1;
+explain basic SELECT * from col_item zct1 WHERE zct1.c1 <> 1 order by 1;
+
+DROP materialized view ZC_MV4;
+
+####in/not IN
+##re
+SELECT * from col_info zct1 WHERE zct1.c1 IN(1,10,20) order by 1;
+explain basic SELECT * from col_info zct1 WHERE zct1.c1 IN(1,10,20) order by 1;
+
+##re
+SELECT * from col_info zct1 WHERE zct1.c1 NOT IN(1,10,20) order by 1;
+explain basic SELECT * from col_info zct1 WHERE zct1.c1 NOT IN(1,10,20) order by 1;
+
+create materialized view ZC_MV4 REFRESH FORCE ON DEMAND enable query rewrite AS
+select * from col_item ZT1 WHERE zt1.c1 IN (1,10,20) ;
+CREATE INDEX in1_mv4 ON ZC_MV4(c1);
+
+##nore
+SELECT * from col_item zct1 WHERE zct1.c1 IN(1,10,20,30) order by 1;
+explain basic SELECT * from col_item zct1 WHERE zct1.c1 IN (1,10,20,30) order by 1;
+
+##nore
+SELECT /*+mv_rewrite(zc_mv4)*/* from col_item zct1 WHERE zct1.c1 IN(1,10) order by 1;
+explain basic SELECT /*+mv_rewrite(zc_mv4)*/* from col_item zct1 WHERE zct1.c1 IN (1,10) order by 1;
+
+##re
+SELECT * from col_item zct1 WHERE zct1.c1 IN(1,10,20) order by 1;
+explain basic SELECT * from col_item zct1 WHERE zct1.c1 IN (1,10,20) order by 1;
+
+DROP materialized view ZC_MV4;
+
+####is null/is not null
+##re
+SELECT * from col_info zct1 WHERE zct1.c1 IS NULL order by 1;
+explain basic SELECT * from col_info zct1 WHERE zct1.c1 IS NULL order by 1;
+
+##re
+SELECT * from col_info zct1 WHERE zct1.c1 is NOT NULL order by 1;
+explain basic SELECT * from col_info zct1 WHERE zct1.c1 is NOT NULL order by 1;
+
+create materialized view ZC_MV4 REFRESH FORCE ON DEMAND enable query rewrite AS
+select * from col_item ZT1 WHERE zt1.c1 IS NOT NULL ;
+CREATE INDEX in1_mv4 ON ZC_MV4(c1);
+
+##nore
+SELECT * from col_item zct1 WHERE zct1.c1 IS NULL order by 1;
+explain basic SELECT * from col_item zct1 WHERE zct1.c1 IS NULL order by 1;
+
+##nore
+SELECT /*+mv_rewrite(zc_mv4)*/* from col_item zct1 WHERE zct1.c1 IS NULL order by 1;
+explain basic SELECT /*+mv_rewrite(zc_mv4)*/* from col_item zct1 WHERE zct1.c1 IS NULL order by 1;
+
+##re
+SELECT * from col_item zct1 WHERE zct1.c1 IS NOT NULL order by 1;
+explain basic SELECT * from col_item zct1 WHERE zct1.c1 IS NOT NULL order by 1;
+
+DROP materialized view ZC_MV4;
+
+####between and/not between and
+##re
+SELECT * from col_info zct1 WHERE zct1.c1 between 1 and 10 order by 1;
+explain basic SELECT * from col_info zct1 WHERE zct1.c1 between 1 and 10 order by 1;
+
+##re
+SELECT * from col_info zct1 WHERE zct1.c1 not between 1 and 10 order by 1;
+explain basic SELECT * from col_info zct1 WHERE zct1.c1 not between 1 and 10 order by 1;
+
+create materialized view ZC_MV4 REFRESH FORCE ON DEMAND enable query rewrite AS
+select * from col_item ZT1 WHERE zt1.c1 between 1 and 10 ;
+CREATE INDEX in1_mv4 ON ZC_MV4(c1);
+
+##nore
+SELECT * from col_item zct1 WHERE zct1.c1 between 1 and 100 order by 1;
+explain basic SELECT * from col_item zct1 WHERE zct1.c1 between 1 and 100 order by 1;
+
+##nore
+SELECT /*+mv_rewrite(zc_mv4)*/* from col_item zct1 WHERE zct1.c1 NOT between 1 and 10 order by 1;
+explain basic SELECT /*+mv_rewrite(zc_mv4)*/* from col_item zct1 WHERE zct1.c1 NOT between 1 and 10 order by 1;
+
+##re
+SELECT * from col_item zct1 WHERE zct1.c1 between 1 and 10 order by 1;
+explain basic SELECT * from col_item zct1 WHERE zct1.c1 between 1 and 10 order by 1;
+
+DROP materialized view ZC_MV4;
+
+####like / not like
+##re
+SELECT * from col_info zct1 WHERE zct1.c1 LIKE 1 order by 1;
+explain basic SELECT * from col_info zct1 WHERE zct1.c1 LIKE 1 order by 1;
+
+##re
+SELECT /*+mv_rewrite(zc_mv1)*/* from col_info zct1 WHERE zct1.c2 not LIKE 1 order by 1;
+explain basic SELECT /*+mv_rewrite(zc_mv1)*/* from col_info zct1 WHERE zct1.c2 not LIKE 1 order by 1;
+
+create materialized view ZC_MV4 REFRESH FORCE ON DEMAND enable query rewrite AS
+select * from col_item ZT1 WHERE zt1.c1 NOT LIKE 1 ;
+CREATE INDEX in1_mv4 ON ZC_MV4(c1);
+
+##nore
+SELECT * from col_item zct1 WHERE zct1.c1 LIKE 1 order by 1;
+explain basic SELECT * from col_item zct1 WHERE zct1.c1 LIKE 1 order by 1;
+
+##nore
+SELECT /*+mv_rewrite(zc_mv4)*/* from col_item zct1 WHERE zct1.c1 NOT LIKE -1 order by 1;
+explain basic SELECT /*+mv_rewrite(zc_mv4)*/* from col_item zct1 WHERE zct1.c1 NOT LIKE -1 order by 1;
+
+##re
+SELECT /*+mv_rewrite(zc_mv4)*/* from col_item zct1 WHERE zct1.c1 NOT LIKE 1 order by 1;
+explain basic SELECT /*+mv_rewrite(zc_mv4)*/* from col_item zct1 WHERE zct1.c1 NOT LIKE 1 order by 1;
+
+DROP materialized view ZC_MV4;
+
+####+-*/
+##re
+SELECT * from col_info zct1 WHERE zct1.c1+zct1.c2 >1 order by 1;
+explain basic SELECT * from col_info zct1 WHERE zct1.c1+zct1.c2 >1 order by 1;
+
+##或者hint跳过检查
+#DROP INDEX in_mv1;
+DROP INDEX in_mv1 ON zc_mv1;
+##re
+SELECT /*+mv_rewrite(zc_mv1)*/* from col_info zct1 WHERE zct1.c1+zct1.c2 >1 order by 1;
+explain basic SELECT /*+mv_rewrite(zc_mv1)*/* from col_info zct1 WHERE zct1.c1+zct1.c2 >1 order by 1;
+
+##建一个多列索引
+CREATE INDEX in2_mv1 ON zc_mv1(c2,c1);
+##re
+SELECT * from col_info zct1 WHERE zct1.c1-zct1.c2 >1 order by 1;
+explain basic SELECT * from col_info zct1 WHERE zct1.c1-zct1.c2 >1 order by 1;
+
+##re
+SELECT * from col_info zct1 WHERE zct1.c1*zct1.c2 >1 order by 1;
+explain basic SELECT * from col_info zct1 WHERE zct1.c1*zct1.c2 >1 order by 1;
+
+##re
+SELECT * from col_info zct1 WHERE zct1.c1/zct1.c2 >1 order by 1;
+explain basic SELECT * from col_info zct1 WHERE zct1.c1/zct1.c2 >1 order by 1;
+
+##nore
+SELECT /*+no_mv_rewrite*/* from col_info zct1 WHERE zct1.c1 * zct1.c2 >1 order by 1;
+explain basic SELECT /*+no_mv_rewrite*/* from col_info zct1 WHERE zct1.c1 * zct1.c2 >1 order by 1;
+
+
+####GROUP by####
+##re
+SELECT zct1.c1 FROM col_info zct1 GROUP by zct1.c1 order by 1;
+explain basic SELECT zct1.c1 FROM col_info zct1 GROUP by zct1.c1 order by 1;
+
+##re
+SELECT /*+mv_rewrite(zc_mv1)*/zct1.c1 FROM col_info zct1 GROUP by zct1.c1 order by 1;
+explain basic SELECT /*+mv_rewrite(zc_mv1)*/zct1.c1 FROM col_info zct1 GROUP by zct1.c1 order by 1;
+
+##re
+SELECT zct1.c2 FROM col_info zct1 GROUP by zct1.c2 order by 1;
+explain basic SELECT zct1.c2 FROM col_info zct1 GROUP by zct1.c2 order by 1;
+
+##nore
+SELECT /*+no_mv_rewrite*/zct1.c2 FROM col_info zct1 GROUP by zct1.c2 order by 1;
+explain basic SELECT /*+no_mv_rewrite*/zct1.c2 FROM col_info zct1 GROUP by zct1.c2 order by 1;
+
+##re
+SELECT COUNT(*) FROM col_info zct1 GROUP by zct1.c2 order by 1;
+explain basic SELECT COUNT(*) FROM col_info zct1 GROUP by zct1.c2 order by 1;
+
+##re
+SELECT zct1.c1,COUNT(zct1.c2),SUM(zct1.c2),AVG(zct1.c2),MAX(zct1.c2),MIN(zct1.c2) FROM col_info zct1 GROUP by zct1.c1 order by 1;
+explain basic SELECT zct1.c1,SUM(zct1.c2),AVG(zct1.c2),MAX(zct1.c2),MIN(zct1.c2),COUNT(zct1.c2) FROM col_info zct1 GROUP by zct1.c1 order by 1;
+
+##STDDEV,VARIANCE nore(oracle)(bug)
+SELECT /*+mv_rewrite(zc_mv1)*/STDDEV(zct1.c1) FROM col_info zct1 GROUP by zct1.c1 order by 1;
+SELECT /*+mv_rewrite(zc_mv1)*/VARIANCE(zct1.c1) FROM col_info zct1 GROUP by zct1.c1 order by 1;
+
+##rollup(oracle mode)
+##nore
+#SELECT /*+mv_rewrite(zc_mv1)*/zct1.c2 FROM col_info zct1 GROUP by ROLLUP(zct1.c2) order by 1;
+#explain basic SELECT /*+mv_rewrite(zc_mv1)*/zct1.c2 FROM col_info zct1 GROUP by ROLLUP(zct1.c2) order by 1;
+
+##re
+SELECT COUNT(*) FROM col_info zct1 GROUP by zct1.c1+zct1.c2 order by 1;
+explain basic SELECT COUNT(*) FROM col_info zct1 GROUP by zct1.c1+zct1.c2 order by 1;
+
+##nore
+SELECT zct1.c1 FROM col_item zct1 GROUP by zct1.c1 order by 1;
+explain basic SELECT zct1.c1 FROM col_item zct1 GROUP by zct1.c1 order by 1;
+
+##re
+SELECT zct1.c1 FROM col_item zct1 WHERE zct1.c1 > 1 GROUP by zct1.c1 order by 1;
+explain basic SELECT zct1.c1 FROM col_item zct1 WHERE zct1.c1 > 1 GROUP by zct1.c1 order by 1;
+
+####有group BY的物化视图不能改写
+create materialized view ZC_MV4 REFRESH FORCE ON DEMAND enable query rewrite AS
+select zt1.c1 from col_info ZT1 GROUP BY zt1.c1;
+
+##re(mv1)
+SELECT zct1.c1 from col_info zct1 GROUP BY zct1.c1 order by 1;
+explain basic SELECT zct1.c1 from col_info zct1 GROUP BY zct1.c1 order by 1;
+
+##nore
+SELECT /*+mv_rewrite(zc_mv4)*/zct1.c1 from col_info zct1 GROUP BY zct1.c1 order by 1;
+explain basic SELECT /*+mv_rewrite(zc_mv4)*/zct1.c1 from col_info zct1 GROUP BY zct1.c1 order by 1;
+
+DROP materialized view ZC_MV4;
+
+####HAVING
+##re
+SELECT zct1.c1 FROM col_info zct1 GROUP by zct1.c1 HAVING zct1.c1 >1 order by 1;
+explain basic SELECT zct1.c1 FROM col_info zct1 GROUP by zct1.c1 HAVING zct1.c1 >1 order by 1;
+
+#DROP INDEX in2_mv1;
+DROP INDEX in2_mv1 ON zc_mv1;
+
+##re(与index无关having条件不会做检查)
+SELECT zct1.c1 FROM col_info zct1 GROUP by zct1.c1 HAVING zct1.c1 >1 order by 1;
+explain basic SELECT zct1.c1 FROM col_info zct1 GROUP by zct1.c1 HAVING zct1.c1 >1 order by 1;
+
+CREATE INDEX in2_mv1 ON zc_mv1(c1,c2);
+
+##nore
+SELECT zct1.c1 FROM col_item zct1 GROUP by zct1.c1 HAVING zct1.c1 >1 order by 1;
+explain basic SELECT zct1.c1 FROM col_item zct1 GROUP by zct1.c1 HAVING zct1.c1 >1 order by 1;
+
+##re
+SELECT zct1.c1 FROM col_item zct1 WHERE zct1.c1 >1 GROUP by zct1.c1 HAVING zct1.c1 >10 order by 1;
+explain basic SELECT zct1.c1 FROM col_item zct1 WHERE zct1.c1>1 GROUP by zct1.c1 HAVING zct1.c1 >1 order by 1;
+
+
+####SELECT item
+##DISTINCT
+##re
+SELECT zct1.c1+zct1.c2,zct1.c1-zct1.c2,zct1.c1*zct1.c2,zct1.c1/zct1.c2 FROM col_info zct1 WHERE zct1.c1 >1;
+explain basic SELECT zct1.c1+zct1.c2,zct1.c1-zct1.c2,zct1.c1*zct1.c2,zct1.c1/zct1.c2 FROM col_info zct1 WHERE zct1.c1 >1;
+
+##re
+SELECT DISTINCT zct1.c1,zct1.c2 FROM col_info zct1 WHERE zct1.c1 >1;
+explain basic SELECT DISTINCT zct1.c1,zct1.c2 FROM col_info zct1 WHERE zct1.c1 >1;
+
+##re
+SELECT UNIQUE zct1.c1,zct1.c2 FROM col_info zct1 WHERE zct1.c1 >1;
+explain basic SELECT UNIQUE zct1.c1,zct1.c2 FROM col_info zct1 WHERE zct1.c1 >1;
+
+##re
+SELECT ALL zct1.c1,zct1.c2 FROM col_info zct1 WHERE zct1.c1 >1;
+explain basic SELECT all zct1.c1,zct1.c2 FROM col_info zct1 WHERE zct1.c1 >1;
+
+##constant
+##re
+SELECT 1,NULL,'a' FROM col_info zct1 WHERE zct1.c1 >1;
+explain basic SELECT 1,NULL,'a' FROM col_info zct1 WHERE zct1.c1 >1;
+
+##CAST
+##re
+SELECT CAST(zct1.c1 as CHAR(10)) FROM col_info zct1 WHERE zct1.c1 >1;
+explain basic SELECT CAST(zct1.c1 as CHAR(10)) FROM col_info zct1 WHERE zct1.c1 >1;
+
+##CONCAT
+##re
+SELECT CONCAT(zct1.c1,zct1.c2) FROM col_info zct1 WHERE zct1.c1 >1;
+explain basic SELECT CONCAT(zct1.c1,zct1.c2) FROM col_info zct1 WHERE zct1.c1 >1;
+
+##MOD
+##re
+SELECT MOD(zct1.c1,zct1.c2) FROM col_info zct1 WHERE zct1.c1 >1;
+explain basic SELECT MOD(zct1.c1,zct1.c2) FROM col_info zct1 WHERE zct1.c1 >1;
+
+##LEAST
+##re
+SELECT LEAST(zct1.c1,zct1.c2) FROM col_info zct1 WHERE zct1.c1 >1;
+explain basic SELECT LEAST(zct1.c1,zct1.c2) FROM col_info zct1 WHERE zct1.c1 >1;
+
+##CASE WHEN
+##nore(已修复)
+SELECT CASE WHEN zct1.c1 > 10 THEN 'a' ELSE 'b' end FROM col_info zct1 WHERE zct1.c1 >1;
+explain basic SELECT CASE WHEN zct1.c1 > 10 THEN 'a' ELSE 'b' end FROM col_info zct1 WHERE zct1.c1 >1;
+
+##re(已修复)
+SELECT /*+mv_rewrite(zc_mv1)*/ CASE WHEN zct1.c1 > 10 THEN 'a' ELSE 'b' end FROM col_info zct1 WHERE zct1.c1 >1;
+explain basic SELECT /*+mv_rewrite(zc_mv1)*/ CASE WHEN zct1.c1 > 10 THEN 'a' ELSE 'b' end FROM col_info zct1 WHERE zct1.c1 >1;
+
+##NULLIF
+##re
+SELECT NULLIF(zct1.c1,zct1.c2) FROM col_info zct1 WHERE zct1.c1 >1;
+explain basic SELECT NULLIF(zct1.c1,zct1.c2) FROM col_info zct1 WHERE zct1.c1 >1;
+
+##mv不含查询列
+create materialized view ZC_MV4 REFRESH FORCE ON DEMAND enable query rewrite AS
+select zt1.c1 from col_item ZT1;
+
+##nore
+SELECT zct1.c2 from col_item zct1;
+explain basic SELECT zct1.c2 from col_item zct1;
+
+##nore
+SELECT /*+mv_rewrite(zc_mv4)*/zct1.c2 from col_item zct1 order by 1;
+explain basic SELECT /*+mv_rewrite(zc_mv4)*/zct1.c2 from col_item zct1 order by 1;
+
+##ROWID(oracle)
+##re
+#SELECT /*+mv_rewrite(zc_mv4)*/count(ROWID) from col_item zct1 order by 1;
+#explain basic SELECT /*+mv_rewrite(zc_mv4)*/count(ROWID) from col_item zct1 order by 1;
+
+##re
+SELECT 1,NULL from col_item zct1 order by 1;
+explain basic SELECT 1,NULL from col_item zct1 order by 1;
+
+##re(default mv2)
+SELECT zct1.c1 FROM col_item zct1 WHERE zct1.c1 >1 order by 1;
+explain basic SELECT zct1.c1 FROM col_item zct1 WHERE zct1.c1 >1 order by 1;
+
+##re(mv4)
+SELECT /*+mv_rewrite(zc_mv4)*/zct1.c1 FROM col_item zct1 WHERE zct1.c1 >1 order by 1;
+explain basic SELECT /*+mv_rewrite(zc_mv4)*/zct1.c1 FROM col_item zct1 WHERE zct1.c1 >1 order by 1;
+
+##re(mv2)
+SELECT /*+mv_rewrite(zc_mv2)*/zct1.c1 FROM col_item zct1 WHERE zct1.c1 >1 order by 1;
+explain basic SELECT /*+mv_rewrite(zc_mv2)*/zct1.c1 FROM col_item zct1 WHERE zct1.c1 >1 order by 1;
+
+##re(mv2)
+SELECT /*+mv_rewrite(zc_mv2,zc_mv4)*/zct1.c1 FROM col_item zct1 WHERE zct1.c1 >1 order by 1;
+explain basic SELECT /*+mv_rewrite(zc_mv2,zc_mv4)*/zct1.c1 FROM col_item zct1 WHERE zct1.c1 >1 order by 1;
+
+##re(mv2)
+SELECT /*+mv_rewrite(zc_mv4,zc_mv2)*/zct1.c1 FROM col_item zct1 WHERE zct1.c1 >1 order by 1;
+explain basic SELECT /*+mv_rewrite(zc_mv4,zc_mv2)*/zct1.c1 FROM col_item zct1 WHERE zct1.c1 >1 order by 1;
+
+
+####subquery
+##re
+select ZT1.c1 as c1,ZT1.C2 AS c2 from col_info ZT1 WHERE zt1.c1 = (SELECT a.c1 FROM col_info a WHERE a.c1 = 1) ORDER by c1;
+explain basic select ZT1.c1 as c1,ZT1.C2 AS c2 from col_info ZT1 WHERE zt1.c1 = (SELECT a.c1 FROM col_info a WHERE a.c1 = 1) ORDER by c1;
+
+##re
+select /*+mv_rewrite(zc_mv1)*/ZT1.c1 as c1,ZT1.C2 AS c2 from col_info ZT1 WHERE zt1.c1 = (SELECT a.c1 FROM col_info a WHERE a.c1 = 1) ORDER by c1;
+explain basic select /*+mv_rewrite(zc_mv1)*/ZT1.c1 as c1,ZT1.C2 AS c2 from col_info ZT1 WHERE zt1.c1 = (SELECT a.c1 FROM col_info a WHERE a.c1 = 1) ORDER by c1;
+
+##re
+select /*+no_mv_rewrite*/ZT1.c1 as c1,ZT1.C2 AS c2 from col_info ZT1 WHERE zt1.c1 = (SELECT a.c1 FROM col_info a WHERE a.c1 = 1) ORDER by c1;
+explain basic select /*+no_mv_rewrite*/ZT1.c1 as c1,ZT1.C2 AS c2 from col_info ZT1 WHERE zt1.c1 = (SELECT a.c1 FROM col_info a WHERE a.c1 = 1) ORDER by c1;
+
+##nore
+select ZT1.c1 as c1,ZT1.C2 AS c2 from col_info ZT1 WHERE zt1.c1 = (SELECT /*+no_mv_rewrite*/a.c1 FROM col_info a WHERE a.c1 = 1) ORDER by c1;
+explain basic select ZT1.c1 as c1,ZT1.C2 AS c2 from col_info ZT1 WHERE zt1.c1 = (SELECT /*+no_mv_rewrite*/a.c1 FROM col_info a WHERE a.c1 = 1) ORDER by c1;
+
+##re
+select ZT1.c1 as c1,ZT1.C2 AS c2 from col_info ZT1 WHERE zt1.c1 IN (SELECT a.c1 FROM col_item a WHERE a.c1 >1) ORDER by c1;
+explain basic select ZT1.c1 as c1,ZT1.C2 AS c2 from col_info ZT1 WHERE zt1.c1 IN (SELECT a.c1 FROM col_item a WHERE a.c1 >1) ORDER by c1;
+
+##re(oracle和mysql的计划有出入)
+select ZT1.c1 as c1,ZT1.C2 AS c2 from col_info ZT1 WHERE zt1.c1 IN (SELECT /*+mv_rewrite(zc_mv2)*/a.c1 FROM col_item a WHERE a.c1 > 1 AND a.c2 >10) ORDER by c1;
+explain basic select ZT1.c1 as c1,ZT1.C2 AS c2 from col_info ZT1 WHERE zt1.c1 IN (SELECT /*+mv_rewrite(zc_mv2)*/a.c1 FROM col_item a WHERE a.c1 > 1 AND a.c2 >10) ORDER by c1;
+
+##nore
+select ZT1.c1 as c1,ZT1.C2 AS c2 from col_info ZT1 WHERE zt1.c1 IN (SELECT a.c1 FROM col_item a WHERE a.c1 > 1 AND a.c2 >10) ORDER by c1;
+explain basic select ZT1.c1 as c1,ZT1.C2 AS c2 from col_info ZT1 WHERE zt1.c1 IN (SELECT a.c1 FROM col_item a WHERE a.c1 > 1 AND a.c2 >10) ORDER by c1;
+
+##nore
+select ZT1.c1 as c1,ZT1.C2 AS c2 from col_item ZT1 WHERE zt1.c1>1 AND zt1.c1 IN (SELECT a.c2 FROM col_item a) ORDER by c1;
+explain basic select ZT1.c1 as c1,ZT1.C2 AS c2 from col_item ZT1 WHERE zt1.c1>1 AND zt1.c1 IN (SELECT a.c2 FROM col_item a) ORDER by c1;
+
+##关联子查询
+##re
+select ZT1.c1 as c1,ZT1.C2 AS c2 from col_info ZT1 WHERE zt1.c1 = (SELECT zt1.c2 FROM col_info a WHERE a.c1 = zt1.c1) ORDER by c1;
+explain basic select ZT1.c1 as c1,ZT1.C2 AS c2 from col_info ZT1 WHERE zt1.c1 = (SELECT zt1.c2 FROM col_info a WHERE a.c1 = zt1.c1) ORDER by c1;
+
+##FROM
+##re
+select ZT1.c1 as c1,ZT1.C2 AS c2 from (SELECT * FROM col_info a WHERE a.c1 = 1) ZT1 ORDER by c1;
+explain basic select ZT1.c1 as c1,ZT1.C2 AS c2 from (SELECT * FROM col_info a WHERE a.c1 = 1) ZT1 ORDER by c1;
+
+##nore
+select ZT1.c1 as c1,ZT1.C2 AS c2 from (SELECT /*+no_mv_rewrite*/* FROM col_info a WHERE a.c1 = 1) ZT1 ORDER by c1;
+explain basic select ZT1.c1 as c1,ZT1.C2 AS c2 from (SELECT /*+no_mv_rewrite*/* FROM col_info a WHERE a.c1 = 1) ZT1 ORDER by c1;
+
+##re(mv4)
+select * from (SELECT /*+mv_rewrite(zc_mv4)*/a.c1 FROM col_item a WHERE a.c1 >1) ZT1 ORDER by c1;
+explain basic select * from (SELECT /*+mv_rewrite(zc_mv4)*/a.c1 FROM col_item a WHERE a.c1 >1) ZT1 ORDER by c1;
+
+##re(mv2)
+select * from (SELECT /*+mv_rewrite(zc_mv2)*/a.c1 FROM col_item a WHERE a.c1 >1) ZT1 ORDER by c1;
+explain basic select * from (SELECT /*+mv_rewrite(zc_mv2)*/a.c1 FROM col_item a WHERE a.c1 >1) ZT1 ORDER by c1;
+
+##re(两个子查询都会re)
+select ZT1.c1 as c1,ZT1.C2 AS c2 from (SELECT * FROM col_info a WHERE a.c1 = 1) ZT1 WHERE zt1.c1 in (SELECT b.c2 from col_info b) ORDER by c1;
+explain basic select ZT1.c1 as c1,ZT1.C2 AS c2 from (SELECT * FROM col_info a WHERE a.c1 = 1) ZT1 WHERE zt1.c1 in (SELECT b.c2 from col_info b) ORDER by c1;
+
+##re(两个子查询都会re)
+select ZT1.c1 as c1,ZT1.C2 AS c2 from (SELECT * FROM col_info a WHERE a.c1 = 1) ZT1 WHERE EXISTS (SELECT b.c2 from col_info b) ORDER by c1;
+explain basic select ZT1.c1 as c1,ZT1.C2 AS c2 from (SELECT * FROM col_info a WHERE a.c1 = 1) ZT1 WHERE EXISTS (SELECT b.c2 from col_info b) ORDER by c1;
+
+
+##select item
+##re
+select (SELECT a.c1 FROM col_info a WHERE a.c1 = 1) as c1 from col_info ZT1 ORDER by c1;
+explain basic select (SELECT a.c1 FROM col_info a WHERE a.c1 = 1) as c1 from col_info ZT1 ORDER by c1;
+
+##re
+select (SELECT /*+mv_rewrite(zc_mv2)*/c1 FROM col_item  WHERE c1 > 1 AND c2 = 1) as c1 from col_info ZT1 ORDER by c1;
+explain basic select (SELECT /*+mv_rewrite(zc_mv2)*/c1 FROM col_item  WHERE c1 > 1 AND c2 = 1) as c1 from col_info ZT1 ORDER by c1;
+
+--error 600,4177
+create materialized view ZC_MV5 REFRESH FORCE ON DEMAND enable query rewrite AS
+select 1 as c1 from dual;
+
+####join
+##re
+select zt1.c1 c1_1,zt1.c2 c2_1,zt2.c1 c1_2,zt2.c2 c2_2,zt2.c3 c3_2
+from col_info ZT1,col_item ZT2 WHERE zt1.c2 = zt2.c1 ORDER by 1;
+##mysql和oracle计划有出入
+explain basic select zt1.c1 c1_1,zt1.c2 c2_1,zt2.c1 c1_2,zt2.c2 c2_2,zt2.c3 c3_2 from col_info ZT1,col_item ZT2 WHERE zt1.c2 = zt2.c1 ORDER by 1;
+
+##nore
+select zt1.c1 c1_1,zt1.c2 c2_1 from col_info ZT1,col_item ZT2 WHERE zt1.c2 = zt2.c1 AND zt1.c1 > 1 ORDER by 1;
+--replace_regex /:[0-9]/:/
+explain basic select zt1.c1 c1_1,zt1.c2 c2_1 from col_info ZT1,col_item ZT2 WHERE zt1.c2 = zt2.c1 AND zt1.c1 > 1 ORDER by 1;
+
+##re(mv3)
+select /*+mv_rewrite(zc_mv3)*/zt1.c1 c1_1,zt1.c2 c2_1 from col_info ZT1,col_item ZT2 WHERE zt1.c2 = zt2.c1 AND zt1.c1 > 1 ORDER by 1;
+--replace_regex /:[0-9]/:/
+explain basic select /*+mv_rewrite(zc_mv3)*/zt1.c1 c1_1,zt1.c2 c2_1 from col_info ZT1,col_item ZT2 WHERE zt1.c2 = zt2.c1 AND zt1.c1 > 1 ORDER by 1;
+
+CREATE INDEX in_mv3 ON zc_mv3(c1_1);
+##re(mv3)
+select zt1.c1 c1_1,zt1.c2 c2_1 from col_info ZT1,col_item ZT2 WHERE zt1.c2 = zt2.c1 AND zt1.c1 > 1 ORDER by 1;
+--replace_regex /:[0-9]/:/
+explain basic select zt1.c1 c1_1,zt1.c2 c2_1 from col_info ZT1,col_item ZT2 WHERE zt1.c2 = zt2.c1 AND zt1.c1 > 1 ORDER by 1;
+
+##nore
+select /*+no_mv_rewrite*/zt1.c1 c1_1,zt1.c2 c2_1 from col_info ZT1,col_item ZT2 WHERE zt1.c2 = zt2.c1 AND zt1.c1 > 1 ORDER by 1;
+--replace_regex /:[0-9]/:/
+explain basic select /*+no_mv_rewrite*/zt1.c1 c1_1,zt1.c2 c2_1 from col_info ZT1,col_item ZT2 WHERE zt1.c2 = zt2.c1 AND zt1.c1 > 1 ORDER by 1;
+
+##nore
+select zt1.c1 c1_1,zt1.c2 c2_1 from col_info ZT1 inner join col_item ZT2 ON zt1.c2 = zt2.c1 AND zt1.c1 > 1 ORDER by 1;
+--replace_regex /:[0-9]/:/
+explain basic select zt1.c1 c1_1,zt1.c2 c2_1 from col_info ZT1 inner join col_item ZT2 ON zt1.c2 = zt2.c1 AND zt1.c1 > 1 ORDER by 1;
+
+
+DROP materialized view ZC_MV4;
+
+--error 0,942,1146
+DROP MATERIALIZED VIEW LOG ON col_info;
+--error 0,942,1146
+DROP MATERIALIZED VIEW LOG ON col_item;
+--error 0,942,1051
+DROP table col_item;
+--error 0,942,1051
+DROP table col_info;
+
+--error 0,12003,9757
+DROP materialized view ZC_MV1;
+--error 0,12003,9757
+DROP materialized view ZC_MV2;
+--error 0,12003,9757
+DROP materialized view ZC_MV3;
+--error 0,12003,9757
+DROP materialized view ZC_MV4;
+
+SET QUERY_REWRITE_ENABLED = 'FALSE';
+SET QUERY_REWRITE_INTEGRITY = ENFORCED;

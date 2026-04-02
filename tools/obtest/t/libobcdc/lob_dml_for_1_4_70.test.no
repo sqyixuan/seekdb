@@ -1,0 +1,181 @@
+#
+# owner:修铭
+# owner group:liboblog
+# description:
+# LOB类型与对应的长度限制：
+# - tinyetext tinyblob
+#   - 256 byte
+# - text blob
+#   - 64 KB
+# - mediumtext mediumblob
+#   - 16 MB
+# - longtext longblob
+#   - 48MB
+#
+# 一行长度限制：60M
+##
+
+ob1=OBI(cluster=1,version=1_4_70,oblog_version=current);
+ob1.reboot;
+ob1.create_client;
+
+# 启动liboblog
+# 1. 要求liboblog输出LOB数据时输出MD5值
+# 2. 打开test_mode，忽略前10条redo日志，校验MISSING LOG处理逻辑
+# 3. 排序参与者列表
+ob1.oblog.set_extra_argument -m;
+ob1.oblog.gen_conf tb_white_list=sys.oblog*.*  test_mode_on=1 test_mode_ignore_redo_count=10 sort_trans_participants=1 skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+
+# 准备环境
+let $ip=deploy_get_value(ob1.proxy0.ip);
+let $port=deploy_get_value(ob1.proxy0.port);
+connect (oblog_conn_sys,$ip,admin@sys,admin,oceanbase,$port);
+
+connection oblog_conn_sys;
+
+# 设置最大包大小 1G
+set global max_allowed_packet=1073741824;
+
+# 重新建立连接
+# 让包大小设置生效
+connect (oblog_conn_sys,$ip,admin@sys,admin,oceanbase,$port);
+
+# sys租户下操作
+connection oblog_conn_sys;
+
+# 设置事务超时时间: 100秒
+set ob_trx_timeout=100000000;
+
+# 创建database 1
+create database oblog_db1;
+use oblog_db1;
+
+create table t1(pk int primary key, tiny_text tinytext, tiny_blob tinyblob, text_type text, blob_type blob, medium_text mediumtext, medium_blob mediumblob, long_text longtext, long_blob longblob);
+
+# NULL
+insert into t1 values (1, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
+ob1.oblog.next_dml;
+
+# 空
+insert into t1 values (2, "", "", "", "", "", "", "", "");
+select md5(tiny_text) from t1 where pk = 2;
+ob1.oblog.next_dml;
+
+# 达到单列和单行限制
+# 除了longtext和longblob外，其他列达到限制
+insert into t1 values (3, repeat('1', 256), repeat('2', 256), repeat('3', 65536), repeat('4', 65536), repeat('5', 16777216), repeat('6', 16777216), "", "");
+select md5(tiny_text),  md5(tiny_blob), md5(text_type), md5(blob_type), md5(medium_text), md5(medium_blob), md5(long_text), md5(long_blob) from t1 where pk = 3;
+ob1.oblog.next_dml;
+
+# longtext达到48M限制 + longblob 11M = 59M
+# 注意：不能达到60M，还有其他列，总和加起来一定大于了60M
+insert into t1 values (4, "", "", "", "", "", "", repeat('a', 50331648), repeat('b', 11534336));
+select md5(long_text), md5(long_blob)  from t1 where pk = 4;
+ob1.oblog.next_dml;
+
+# longtext 11M + longblob 48M = 59M
+insert into t1 values (5, "", "", "", "", "", "", repeat('c',11534336), repeat('d', 50331648));
+select md5(long_text), md5(long_blob)  from t1 where pk = 5;
+ob1.oblog.next_dml;
+
+# longtext 11M + longblob 48M = 59M
+# update 把longtext的值与longblob的值交换
+update t1 set long_text=repeat('d', 50331648), long_blob=repeat('c', 11534336) where pk = 5;;
+select md5(long_text), md5(long_blob) from t1 where pk = 5;
+ob1.oblog.next_dml;
+
+# update
+# medium_text: 11M
+# medium_blob: 16M
+# long_text: 16M
+# long_blob: 16M
+update t1 set medium_text=repeat('e', 11534336), medium_blob=repeat('f', 16777216), long_text=repeat('g', 16777216), long_blob=repeat('h', 16777216) where pk=5;
+select md5(medium_text), md5(medium_blob), md5(long_text), md5(long_blob) from t1 where pk = 5;
+ob1.oblog.next_dml;
+
+# 単分区事务多行
+begin;
+# 小行
+insert into t1 values (100, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
+# 大行 2M
+update t1 set long_blob=repeat('1', 2097152) where pk = 100;
+select md5(long_blob) from t1 where pk = 100;
+
+# 小行 16K
+insert into t1 (pk, text_type) values (200, repeat('2', 16384));
+select md5(text_type) from t1 where pk = 200;
+
+# 大行 8M
+update t1 set medium_text=repeat('3', 8388608) where pk = 200;
+select md5(medium_text) from t1 where pk = 200;
+
+# 大行 48M + 8M
+update t1 set long_text=repeat('4', 50331648) where pk = 200;
+select md5(long_text) from t1 where pk = 200;
+commit;
+
+ob1.oblog.next_dml;
+
+# delete
+delete from t1;
+ob1.oblog.next_dml;
+
+# 分布式事务
+create table t2(pk int primary key, tiny_text tinytext, tiny_blob tinyblob, text_type text, blob_type blob, medium_text mediumtext, medium_blob mediumblob, long_text longtext, long_blob longblob);
+
+begin;
+# 普通行
+insert into t1 (pk) values (1);
+insert into t2 (pk) values (1);
+
+# 2M LOB行
+insert into t1 values (2, repeat('1', 256), repeat('2', 256), repeat('3', 65536), repeat('4', 65536), repeat('5', 1048576), repeat('6', 1048576), "", "");
+insert into t2 values (2, repeat('1', 256), repeat('2', 256), repeat('3', 65536), repeat('4', 65536), repeat('5', 1048576), repeat('6', 1048576), "", "");
+select md5(tiny_text),  md5(tiny_blob), md5(text_type), md5(blob_type), md5(medium_text), md5(medium_blob), md5(long_text), md5(long_blob) from t1 where pk = 2;
+
+# 普通行
+insert into t1 values (3, 'a', 'bb', 'ccc', 'dddd', 'eeee', 'fffff', 'gggggg', 'hhhhhhh');
+insert into t2 values (3, 'a', 'bb', 'ccc', 'dddd', 'eeee', 'fffff', 'gggggg', 'hhhhhhh');
+select md5(tiny_text),  md5(tiny_blob), md5(text_type), md5(blob_type), md5(medium_text), md5(medium_blob), md5(long_text), md5(long_blob) from t1 where pk = 3;
+
+# 16 M LOB行
+insert into t1 values (4, repeat('1', 256), repeat('2', 256), repeat('3', 65536), repeat('4', 65536), repeat('5', 1048576), repeat('6', 1048576), repeat('7', 6291456), repeat('8', 6291456));
+insert into t2 values (4, repeat('1', 256), repeat('2', 256), repeat('3', 65536), repeat('4', 65536), repeat('5', 1048576), repeat('6', 1048576), repeat('7', 6291456), repeat('8', 6291456));
+select md5(tiny_text),  md5(tiny_blob), md5(text_type), md5(blob_type), md5(medium_text), md5(medium_blob), md5(long_text), md5(long_blob) from t1 where pk = 4;
+
+# 60 M LOB行
+insert into t1 values (5, repeat('1', 256), repeat('2', 256), repeat('3', 65536), repeat('4', 65536), repeat('5', 16777216), repeat('6', 16777216), repeat('7', 13631488), repeat('8', 13631488));
+insert into t2 values (5, repeat('1', 256), repeat('2', 256), repeat('3', 65536), repeat('4', 65536), repeat('5', 16777216), repeat('6', 16777216), repeat('7', 13631488), repeat('8', 13631488));
+select md5(tiny_text),  md5(tiny_blob), md5(text_type), md5(blob_type), md5(medium_text), md5(medium_blob), md5(long_text), md5(long_blob) from t1 where pk = 5;
+commit;
+
+ob1.oblog.next_dml;
+
+begin;
+update t1 set long_blob="clear longblob";
+select md5(long_blob) from t1 where pk = 1;
+
+update t2 set medium_blob="clear mediumblob";
+select md5(medium_blob) from t2 where pk = 1;
+
+update t2 set medium_blob="clear mediumblob";
+select md5(medium_blob) from t2 where pk = 1;
+
+# 更新主键
+update t1 set pk = 6 where pk = 5;
+commit;
+
+ob1.oblog.next_dml;
+
+begin;
+delete from t1 where pk = 1;
+delete from t1 where pk = 4;
+delete from t1 where pk = 3;
+delete from t2 where pk = 2;
+delete from t2 where pk = 5;
+commit;
+
+ob1.oblog.next_dml;
+
+ob1.oblog.stop;

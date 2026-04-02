@@ -1,0 +1,215 @@
+# owner: guohanyun.ghy
+# owner group: SQL1
+# tags: optimizer
+
+--disable_warnings
+drop table if exists t1, t2, t3;
+drop view if exists v1;
+--enable_warnings
+
+create table t1(c1 int, c2 int, c3 int, c4 int, c5 int);
+create table t2(c1 int, c2 int, c3 int, c4 int, c5 int);
+create table t3(c1 int, c2 int, c3 int, c4 int, c5 int);
+
+create view v1 as select /*+parallel(8)*/ * from t1 order by c1 limit 20;
+
+set @rownum=0;
+insert into t1(c1, c2, c3, c4, c5) select (@rownum:=@rownum+1) % 7, (@rownum*2) % 7, (@rownum*3) % 7, (@rownum*5) % 7, (@rownum*11) % 7 from table(generator(100)) t;
+insert into t2(c1, c2, c3, c4, c5) select (@rownum:=@rownum+1) % 7, (@rownum*12) % 7, (@rownum*13) % 7, (@rownum*15) % 7, (@rownum*17) % 7 from table(generator(100)) t;
+insert into t3(c1, c2, c3, c4, c5) select (@rownum:=@rownum+1) % 7, (@rownum*22) % 7, (@rownum*23) % 7, (@rownum*25) % 7, (@rownum*21) % 7 from table(generator(100)) t;
+
+--explain_protocol 1
+
+## distinct re-parallel
+--sorted_result
+select distinct * from v1;
+--sorted_result
+select /*+NO_USE_HASH_DISTINCT(@"SEL$1")*/ distinct * from v1;
+--echo merge distinct without sort, does not need re-parallel
+--sorted_result
+select /*+NO_USE_HASH_DISTINCT(@"SEL$1")*/ distinct c1 from v1;
+--sorted_result
+select /*+NO_USE_HASH_DISTINCT(@"SEL$1") PQ_DISTINCT(@"SEL$1"  HASH)*/ distinct c1 from v1;
+--sorted_result
+select /*+PQ_DISTINCT(@"SEL$1"  HASH)*/ distinct * from v1;
+--sorted_result
+select /*+PQ_DISTINCT(@"SEL$1"  BASIC)*/ distinct * from v1;
+
+
+# group by re-parallel
+--sorted_result
+select c1, count(*) from v1 group by c1;
+--sorted_result
+select c2, count(*) from v1 group by c2;
+--sorted_result
+select c2, count(distinct c1) from v1 group by c2;
+--sorted_result
+select /*+PQ_GBY(@"SEL$1"  BASIC)*/ c1, count(*) from v1 group by c1;
+--sorted_result
+select /*+no_gby_pushdown*/ c2, count(distinct c1), count(distinct c3) from v1 group by c2;
+--sorted_result
+select /*+gby_pushdown*/ c2, count(distinct c1), count(distinct c3) from v1 group by c2;
+--sorted_result
+select count(*) from v1;
+--sorted_result
+select count(distinct c1) from v1;
+--sorted_result
+select count(distinct c2) from v1;
+--sorted_result
+select /*+PQ_GBY(@"SEL$1"  HASH)*/ count(distinct c1), count(distinct c2) from v1;
+--sorted_result
+select /*+PQ_GBY(@"SEL$1"  BASIC)*/ count(distinct c1), count(distinct c2) from v1;
+
+
+# window function re-parallel
+--sorted_result
+select c1, c2, rank() over (partition by c1, c2) as w2 from v1;
+--sorted_result
+select /*+PQ_DISTRIBUTE_WINDOW(@"SEL$1"  (0) NONE) */ 
+       c1, c2, rank() over (partition by c1, c2) as w2
+from v1;
+--sorted_result
+select /*+PQ_DISTRIBUTE_WINDOW(@"SEL$1"  (0) HASH) */ 
+       c1, c2, rank() over (partition by c1, c2) as w2
+from v1;
+--sorted_result
+select /*+PQ_DISTRIBUTE_WINDOW(@"SEL$1"  (0) RANGE) */ 
+       c1, c2, rank() over (partition by c1, c2) as w2
+from v1;
+--sorted_result
+select /*+PQ_DISTRIBUTE_WINDOW(@"SEL$1"  (0) LIST) */ 
+       c1, c2, rank() over (partition by c1, c2) as w2
+from v1;
+--echo partition exprs is empty, should not use hash dist method
+--sorted_result
+select c1, c2, rank() over (order by c1, c2 desc) as w1,
+       rank() over (partition by c1, c2 order by c3) as w2
+from v1;
+--sorted_result
+select /*+PQ_DISTRIBUTE_WINDOW(@"SEL$1"  (1,0) NONE) */ 
+       c1, c2, rank() over (order by c1, c2 desc) as w1,
+       rank() over (partition by c1, c2 order by c3) as w2
+from v1;
+--sorted_result
+select /*+PQ_DISTRIBUTE_WINDOW(@"SEL$1"  (1,0) HASH) */ 
+       c1, c2, rank() over (order by c1, c2 desc) as w1,
+       rank() over (partition by c1, c2 order by c3) as w2
+from v1;
+--sorted_result
+select /*+PQ_DISTRIBUTE_WINDOW(@"SEL$1"  (1,0) RANGE) */ 
+       c1, c2, rank() over (order by c1, c2 desc) as w1,
+       rank() over (partition by c1, c2 order by c3) as w2
+from v1;
+
+
+# union re-parallel
+--sorted_result
+select * from v1 union select * from v1;
+--sorted_result
+select /*+PQ_SET(@"SET$1")*/ * from v1 union select * from v1;
+--sorted_result
+select c1 from v1 union select c1 from v1;
+--sorted_result
+select /*+NO_USE_HASH_SET(@"SET$1") PQ_SET(@"SET$1"  HASH HASH)*/ c1 from v1 union select c1 from v1;
+--sorted_result
+select * from v1 union select 1,1,1,1,1 from dual;
+--sorted_result
+select /*+PQ_SET(@"SET$1"  HASH HASH)*/ * from v1 union select 1,1,1,1,1 from dual;
+--sorted_result
+select /*+PQ_SET(@"SET$1")*/ * from v1 union select 1,1,1,1,1 from dual;
+--sorted_result
+select /*+no_rewrite PQ_SET(@"SET$1"  HASH HASH)*/ 2,2,2,2,2 from dual union select 1,1,1,1,1 from dual;
+--sorted_result
+select * from v1 union select * from t1;
+--sorted_result
+select c1 from v1 union select c1 from t1;
+--sorted_result
+select  * from v1 union select 1,1,1,1,1 from dual;
+--sorted_result
+select * from v1 minus select * from v1;
+--echo UNION ALL no need to re-parallel
+--sorted_result
+select * from v1 union all select 1,1,1,1,1 from dual;
+--sorted_result
+select * from v1 union all select * from v1;
+
+
+# subplan filter re-parallel
+--sorted_result
+select * from v1 where c1 in (select /*+NO_UNNEST*/ c1 from t2 where t2.c2 = v1.c2);
+--sorted_result
+select * from v1 where exists (select /*+NO_UNNEST*/ c1 from t2 where t2.c2 = v1.c2);
+--sorted_result
+select * from v1 where exists (select /*+NO_UNNEST*/ t2.c1 from t2 inner join t3 on t2.c3 = t3.c3 where t2.c2 = v1.c2);
+--sorted_result
+select /*+PQ_SUBQUERY(@"SEL$26211548" ("SEL$3") BASIC)*/ * from v1 where c1 in (select /*+NO_UNNEST*/ c1 from t2 where t2.c2 = v1.c2);
+--sorted_result
+select /*+PQ_SUBQUERY(@"SEL$4D615D57" ("SEL$B0E633B8") BASIC)*/ * from v1 where exists (select /*+NO_UNNEST*/ t2.c1 from t2 inner join t3 on t2.c3 = t3.c3 where t2.c2 = v1.c2);
+--sorted_result
+select /*+parallel(8)*/ * from (select 1 c2 from dual) view1 where exists (select /*+NO_UNNEST*/ c1 from t2 where t2.c2 = view1.c2);
+--sorted_result
+select /*+parallel(8) no_rewrite*/ * from (select 1 c2 from dual) view1 where exists (select /*+NO_UNNEST*/ c1 from  (select 1 c1,1 c2 from dual) view2 where view2.c2 = view1.c2);
+--sorted_result
+select /*+no_rewrite*/ * from v1 where c1 in (select /*+NO_UNNEST*/ 1 from dual where v1.c2 > 3);
+--sorted_result
+select * from v1 where exists (select /*+NO_UNNEST*/ c1 from v1 sv1 where sv1.c2 = v1.c2);
+--echo exec params is empty, no need to re-parallel
+--sorted_result
+select * from v1 where c1 in (select /*+NO_UNNEST*/ c1 from t2 where t2.c2 = 3);
+--sorted_result
+select * from v1 where c1 in (select /*+NO_UNNEST*/ 1 from dual);
+
+
+# join re-parallel
+--sorted_result
+select * from v1 at1 join v1 at2 on at1.c2 = at2.c2;
+--sorted_result
+select /*+PQ_DISTRIBUTE(@"SEL$C6D21C0F" "at2"@"SEL$1")*/ * from v1 at1 join v1 at2 on at1.c2 = at2.c2;
+--sorted_result
+select /*+LEADING(@"SEL$C6D21C0F" ("at1"@"SEL$1" "at2"@"SEL$1")) USE_NL(@"SEL$C6D21C0F" "at2"@"SEL$1")*/ * from v1 at1 join v1 at2 on at1.c2 = at2.c2;
+--sorted_result
+select /*+LEADING(@"SEL$C6D21C0F" ("at1"@"SEL$1" "at2"@"SEL$1")) USE_NL(@"SEL$C6D21C0F" "at2"@"SEL$1") PQ_DISTRIBUTE(@"SEL$C6D21C0F" "at2"@"SEL$1" RANDOM ALL)*/ * from v1 at1 join v1 at2 on at1.c2 = at2.c2;
+--sorted_result
+select * from v1 at1 join v1 at2 on at1.c1 = at2.c1;
+--sorted_result
+select /*+LEADING(@"SEL$C6D21C0F" ("at1"@"SEL$1" "at2"@"SEL$1")) USE_MERGE(@"SEL$C6D21C0F" "at2"@"SEL$1") PQ_DISTRIBUTE(@"SEL$C6D21C0F" "at2"@"SEL$1" HASH HASH)*/ * from v1 at1 join v1 at2 on at1.c1 = at2.c1;
+--sorted_result
+select /*+LEADING(@"SEL$C6D21C0F" ("at1"@"SEL$1" "at2"@"SEL$1")) USE_HASH(@"SEL$C6D21C0F" "at1"@"SEL$1") PQ_DISTRIBUTE(@"SEL$C6D21C0F" "at2"@"SEL$1" HASH HASH)*/ * from v1 at1 join v1 at2 on at1.c1 = at2.c1;
+--sorted_result
+select /*+LEADING(@"SEL$C6D21C0F" ("at1"@"SEL$1" "at2"@"SEL$1")) USE_HASH(@"SEL$C6D21C0F" "at2"@"SEL$1") PQ_DISTRIBUTE(@"SEL$C6D21C0F" "at2"@"SEL$1")*/ * from v1 at1 join v1 at2 on at1.c1 = at2.c1;
+--sorted_result
+select * from v1 at1 join t2 on at1.c2 = t2.c2;
+--sorted_result
+select /*+parallel(8)*/ * from (select t1.c1 c1, t2.c2 c2 from t1 inner join t2 on t1.c2 = t2.c1 order by 1 limit 30) at1 join t3 on at1.c1 = t3.c1;
+--sorted_result
+select /*+parallel(8) NO_USE_MERGE(@"SEL$C6D21C0F" "at1"@"SEL$1") NO_USE_MERGE(@"SEL$C6D21C0F" "at3"@"SEL$1")*/ * from (select t1.c1 c1, t2.c2 c2 from t1 inner join t2 on t1.c2 = t2.c1 order by 1 limit 30) at1 join (select max(c1) mc1 from t3) at3 on at1.c1 = at3.mc1;
+--sorted_result
+select /*+parallel(8) opt_param('optimizer_sortmerge_join_enabled' 'false')*/ * from (select av1.c1 c1, av2.c2 c2 from v1 av1 inner join v1 av2 on av1.c1 = av2.c1 order by 1 limit 30) at1 join t3 on at1.c1 = t3.c1;
+--sorted_result
+select /*+parallel(8) opt_param('optimizer_sortmerge_join_enabled' 'false')*/ * from (select distinct av1.c1 c1, av2.c2 c2 from v1 av1 inner join v1 av2 on av1.c1 = av2.c1 order by 1 limit 30) at1 join (select max(c1) mc1 from t3) at3 on at1.c1 + 5 = at3.mc1;
+--sorted_result
+select /*+parallel(8) opt_param('optimizer_sortmerge_join_enabled' 'false')*/ * from (select /*+PQ_DISTRIBUTE(@"SEL$9DC52427" "av2"@"SEL$2")*/ distinct av1.c1 c1, av2.c2 c2 from v1 av1 inner join v1 av2 on av1.c1 = av2.c1 order by 1 limit 30) at1 join (select max(c1) mc1 from t3) at3 on at1.c1 + 5 = at3.mc1;
+--sorted_result
+select /*+parallel(8) opt_param('optimizer_sortmerge_join_enabled' 'false')*/ distinct * from (select /*+PQ_DISTRIBUTE(@"SEL$9DC52427" "av2"@"SEL$2")*/ distinct av1.c1 c1, av2.c2 c2 from v1 av1 inner join v1 av2 on av1.c1 = av2.c1 order by 1 limit 30) at1 join (select max(c1) mc1 from t3) at3 on at1.c1 + 5 = at3.mc1;
+--sorted_result
+select /*+no_rewrite opt_param('optimizer_sortmerge_join_enabled' 'false') */ * from v1 at1 join (select 1 c1, 2 c2, 3 c3 from dual)view2 on at1.c2 = view2.c2;
+--sorted_result
+select /*+no_rewrite  USE_MERGE(@"SEL$1" "at1"@"SEL$1")  PQ_DISTRIBUTE(@"SEL$1" "at1"@"SEL$1" HASH HASH) */ * from v1 at1 join (select 1 c1, 2 c2, 3 c3 from dual)view2 on at1.c2 = view2.c2;
+--sorted_result
+select /*+no_rewrite  USE_MERGE(@"SEL$1" "at1"@"SEL$1") */ distinct * from v1 at1 join (select 1 c1, 2 c2, 3 c3 from dual)view2 on at1.c2 = view2.c2;
+--sorted_result
+select /*+use_das(@"SEL$2" "t1")*/ * from v1 at1 join v1 at2 on at1.c2 = at2.c2;
+--sorted_result
+select /*+use_das(@"SEL$1" "t2")*/ * from v1 at1 join t2 on at1.c2 = t2.c2;
+--sorted_result
+select /*+use_das(@"SEL$2" "t1")*/ * from v1 at1 join t2 on at1.c2 = t2.c2;
+--echo all children is match all, should not re-parallel
+--sorted_result
+select /*+parallel(8) no_rewrite opt_param('optimizer_sortmerge_join_enabled' 'false') */ * from (select 1 c1, 2 c2, 3 c3 from dual) view1 join (select 1 c1, 2 c2, 3 c3 from dual)view2 on view1.c2 = view2.c2;
+--sorted_result
+select /*+use_das(@"SEL$2" "t1") use_das(@"SEL$3" "t1")*/ * from v1 at1 join v1 at2 on at1.c2 = at2.c2;
+--sorted_result
+select /*+use_das(@"SEL$2" "t1") use_das(@"SEL$1" "t2")*/ * from v1 at1 join t2 on at1.c2 = t2.c2;
+
+drop table t1, t2, t3;
+drop view v1;

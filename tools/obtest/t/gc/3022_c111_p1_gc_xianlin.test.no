@@ -1,0 +1,58 @@
+##
+# owner : xianlin.lh
+# owner group : transaction
+# description:
+# 测试Garbage Collection 2.0
+##
+ob1=OBI(cluster=2:2:2,proxy_num=0,init_unit_cpu=0);
+ob1.reboot;
+sleep 5;
+
+ob1.mysql alter system set balancer_idle_time='10s';
+ob1.mysql alter system set resource_soft_limit = 100;
+
+ob1.mysql create resource pool xx1 unit = 'sys_unit_config', unit_num = 1, zone_list = ('z1', 'z2', 'z3');
+ob1.mysql create tenant xx1 replica_num 3, primary_zone 'z1', resource_pool_list ('xx1') set ob_tcp_invited_nodes='%';
+
+let $unit_id = deploy_get_value(ob1.select select unit_id from __all_resource_pool a, __all_unit b, __all_tenant c where c.tenant_id=a.tenant_id and a.resource_pool_id=b.resource_pool_id and c.tenant_name = 'xx1' and zone='z1', unit_id, 1);
+let $src_ip = deploy_get_value(ob1.select select svr_ip from __all_resource_pool a, __all_unit b, __all_tenant c where c.tenant_id=a.tenant_id and a.resource_pool_id=b.resource_pool_id and c.tenant_name = 'xx1' and zone='z1', svr_ip, 1);
+let $src_port = deploy_get_value(ob1.select select svr_port from __all_resource_pool a, __all_unit b, __all_tenant c where c.tenant_id=a.tenant_id and a.resource_pool_id=b.resource_pool_id and c.tenant_name = 'xx1' and zone='z1', svr_port, 1);
+let $dst_host = deploy_get_value(ob1.select select concat(svr_ip, ':', svr_port) host from oceanbase.__all_server where zone='z1' and svr_ip != '$src_ip' and svr_port != '$src_port', host, 1);
+let $src_mysql_port = deploy_get_value(ob1.select select inner_port from __all_server where svr_ip = '$src_ip', inner_port, 1);
+
+connect(xx1_conn, $src_ip, root@xx1,, test, $src_mysql_port);
+connect(xx2_conn, $src_ip, root,, oceanbase, $src_mysql_port);
+connection xx1_conn;
+create table t1 (k int primary key, v int);
+create table t2 (k int primary key, v int);
+insert into t1 values(1,1);
+insert into t1 values(2,2);
+insert into t2 values(1,1);
+insert into t2 values(2,2);
+
+# gc drop table
+drop table t1;
+PURGE RECYCLEBIN;
+
+sleep 30;
+
+connection xx2_conn;
+
+select value2, count(*) from __all_server_event_history where module like "%gc%" group by value2 order by value2;
+
+# migrate
+ob1.mysql alter system migrate unit $unit_id destination = "$dst_host";
+
+sleep 60;
+
+connection xx2_conn;
+
+select value2, count(*) from __all_server_event_history where module like "%gc%" group by value2 order by value2;
+
+# gc drop tenant
+ob1.mysql drop tenant xx1 force;
+
+sleep 30;
+
+connection xx2_conn;
+select value2, count(*) from __all_server_event_history where module like "%gc%" group by value2 order by value2;
