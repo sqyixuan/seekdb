@@ -113,12 +113,6 @@ int ObAllVirtualMemoryInfo::inner_get_next_row(ObNewRow *&row)
                   ObCharset::get_default_collation(ObCharset::get_default_charset()));
               break;
             }
-          case ZONE: {
-              cells[i].set_varchar(GCONF.zone);
-              cells[i].set_collation_type(
-                  ObCharset::get_default_collation(ObCharset::get_default_charset()));
-              break;
-            }
           case HOLD: {
               cells[i].set_int(hold);
               break;

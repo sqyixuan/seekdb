@@ -104,11 +104,6 @@ int ObAllVirtualServerCompactionProgress::fill_cells()
       cells[i].set_varchar(merge_type_to_str(progress_.merge_type_));
       cells[i].set_collation_type(ObCharset::get_default_collation(ObCharset::get_default_charset()));
       break;
-    case ZONE:
-      //zone
-      cells[i].set_varchar(GCONF.zone);
-      cells[i].set_collation_type(ObCharset::get_default_collation(ObCharset::get_default_charset()));
-      break;
     case COMPACTION_SCN:
       cells[i].set_uint64(progress_.merge_version_ < 0 ? 0 : progress_.merge_version_);
       break;

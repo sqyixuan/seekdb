@@ -32,8 +32,6 @@
     FETCH_ALL_DDL_OPERATION_SQL" WHERE schema_version > %lu AND schema_version <= %lu"
 #define FETCH_ALL_SYS_VARIABLE_HISTORY_SQL  "SELECT * FROM %s WHERE tenant_id = %lu and schema_version <= %ld"
 
-#define FETCH_ALL_TENANT_HISTORY_SQL        COMMON_SQL
-
 #define FETCH_ALL_TABLE_SQL                     COMMON_SQL_WITH_TENANT
 #define FETCH_ALL_TABLE_HISTORY_SQL             COMMON_SQL_WITH_TENANT
 #define FETCH_ALL_COLUMN_SQL                    COMMON_SQL_WITH_TENANT
@@ -1021,7 +1019,6 @@ int ObSchemaServiceSQLImpl::get_mock_fk_parent_table_schema_from_inner_table(
   return ret;
 }
 
-#define FETCH_ALL_TENANT_HISTORY_SQL3           "SELECT * from %s where 1 = 1"
 #define FETCH_ALL_TABLE_HISTORY_SQL3            COMMON_SQL_WITH_TENANT
 #define FETCH_ALL_TABLE_HISTORY_FULL_SCHEMA     "SELECT /*+ leading(b a) use_nl(b a) no_rewrite() */ a.* FROM %s AS a JOIN "\
                                                 "(SELECT tenant_id, table_id, MAX(schema_version) AS schema_version FROM %s "\
@@ -1424,7 +1421,7 @@ int ObSchemaServiceSQLImpl::get_sys_variable_schema(
                                  fill_extract_tenant_id(schema_status, tenant_id),
                                  fetch_version))) {
         LOG_WARN("append sql failed", K(ret));
-      } else if (OB_FAIL(sql.append(" ORDER BY ZONE DESC, NAME DESC, SCHEMA_VERSION DESC"))) {
+      } else if (OB_FAIL(sql.append(" ORDER BY NAME DESC, SCHEMA_VERSION DESC"))) {
         LOG_WARN("append sql failed", K(ret));
       } else if (OB_FAIL(sql_client_retry_weak.read(res, exec_tenant_id, sql.ptr()))) {
         if (ret == -ER_NO_SUCH_TABLE && ObSchemaService::g_liboblog_mode_) {
@@ -1479,7 +1476,6 @@ int ObSchemaServiceSQLImpl::get_sys_variable_schema(
           ObSysParam sys_param;
           ObSysVarSchema sys_var_schema;
           sys_param.init(tenant_id,
-                          "",
                           ObSysVariables::get_name(i),
                           ObSysVariables::get_type(i),
                           ObSysVariables::get_value(i),
@@ -2509,38 +2505,63 @@ int ObSchemaServiceSQLImpl::fetch_all_tenant_info(
     const int64_t tenant_ids_size)
 {
   int ret = OB_SUCCESS;
-  SMART_VAR(ObMySQLProxy::MySQLResult, res) {
-    ObMySQLResult *result = NULL;
-    ObSqlString sql;
-    const uint64_t tenant_id = OB_SYS_TENANT_ID;
-    ObRefreshSchemaStatus dummy_schema_status;
+  if (OB_FAIL(construct_tenant_schema_(tenant_schema_array))) {
+    LOG_WARN("fail to construct tenant schema", KR(ret), K(schema_version));
+  }
+  return ret;
+}
 
-    if (OB_FAIL(sql.append_fmt(FETCH_ALL_TENANT_HISTORY_SQL, OB_ALL_TENANT_HISTORY_TNAME))) {
-      LOG_WARN("append sql failed", K(ret));
-    } else if (OB_FAIL(sql.append_fmt(" WHERE SCHEMA_VERSION <= %ld", schema_version))) {
-      LOG_WARN("append failed", K(ret));
-    } else if (NULL != tenant_ids && tenant_ids_size > 0) {
-      if (OB_FAIL(sql.append_fmt(" AND tenant_id IN "))) {
-        LOG_WARN("append sql failed", K(ret));
-      } else if (OB_FAIL(sql_append_pure_ids(dummy_schema_status, tenant_ids, tenant_ids_size, sql))) {
-        LOG_WARN("sql append tenant ids failed");
-      }
+int ObSchemaServiceSQLImpl::construct_tenant_schema_(
+    ObIArray<ObTenantSchema> &tenant_schema_array)
+{
+  int ret = OB_SUCCESS;
+  ObTenantSchema tenant_schema;
+  if (OB_FAIL(ObShareUtil::gen_default_sys_tenant_schema(tenant_schema))) {
+    LOG_WARN("fail to generate sys tenant schema", KR(ret));
+  } else if (OB_FAIL(tenant_schema_array.push_back(tenant_schema))) {
+    LOG_WARN("fail to push back", KR(ret), K(tenant_schema));
+  }
+  return ret;
+}
+
+int ObSchemaServiceSQLImpl::construct_tenant_schema_(
+    ObIArray<ObSimpleTenantSchema> &tenant_schema_array)
+{
+  int ret = OB_SUCCESS;
+  ObSimpleTenantSchema simple_tenant_schema;
+  ObTenantSchema tenant_schema;
+  if (OB_FAIL(ObShareUtil::gen_default_sys_tenant_schema(tenant_schema))) {
+    LOG_WARN("fail to generate sys tenant schema", KR(ret));
+  } else {
+    simple_tenant_schema.set_tenant_id(tenant_schema.get_tenant_id());
+    simple_tenant_schema.set_schema_version(tenant_schema.get_schema_version());
+    simple_tenant_schema.set_name_case_mode(tenant_schema.get_name_case_mode());
+    simple_tenant_schema.set_read_only(tenant_schema.is_read_only());
+    simple_tenant_schema.set_status(tenant_schema.get_status());
+    simple_tenant_schema.set_in_recyclebin(tenant_schema.is_in_recyclebin());
+    simple_tenant_schema.set_compatibility_mode(tenant_schema.get_compatibility_mode());
+    simple_tenant_schema.set_gmt_modified(0); // not used
+    if (OB_FAIL(simple_tenant_schema.set_tenant_name(tenant_schema.get_tenant_name()))) {
+      LOG_WARN("fail to set tenant name", KR(ret));
+    } else if (OB_FAIL(tenant_schema_array.push_back(simple_tenant_schema))) {
+      LOG_WARN("fail to push back", KR(ret), K(simple_tenant_schema));
     }
-    if (OB_SUCC(ret)) {
-      if (OB_FAIL(sql.append(" ORDER BY TENANT_ID DESC, SCHEMA_VERSION DESC"))) {
-        LOG_WARN("sql append failed", K(ret));
-      }
-    }
-    DEFINE_SQL_CLIENT_RETRY_WEAK(sql_client);
-    if (OB_FAIL(ret)) {
-    } else if (OB_FAIL(sql_client_retry_weak.read(res, sql.ptr()))) {
-      LOG_WARN("execute sql failed", K(ret), K(tenant_id), K(sql));
-    } else if (OB_UNLIKELY(NULL == (result = res.get_result()))) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("fail to get result. ", K(ret));
-    } else if (OB_FAIL(ObSchemaRetrieveUtils::retrieve_tenant_schema(sql_client_retry_weak, *result, tenant_schema_array))) {
-      LOG_WARN("failed to retrieve all tenant schema", K(ret));
-    }
+  }
+  return ret;
+}
+
+int ObSchemaServiceSQLImpl::construct_schema_version_his_val_(
+    VersionHisVal &version_his_val)
+{
+  int ret = OB_SUCCESS;
+  ObTenantSchema tenant_schema;
+  if (OB_FAIL(ObShareUtil::gen_default_sys_tenant_schema(tenant_schema))) {
+    LOG_WARN("fail to generate sys tenant schema", KR(ret));
+  } else {
+    version_his_val.is_deleted_ = false;
+    version_his_val.min_version_ = tenant_schema.get_schema_version();
+    version_his_val.versions_[0] = tenant_schema.get_schema_version();
+    version_his_val.valid_cnt_ = 1;
   }
   return ret;
 }
@@ -4490,7 +4511,6 @@ int ObSchemaServiceSQLImpl::fetch_role_grantee_map_info(
   return ret;
 }
 
-//FIXME@xiyu: to add fetch_tenants
 int ObSchemaServiceSQLImpl::fetch_tenants(
     ObISQLClient &sql_client,
     const int64_t schema_version,
@@ -4499,34 +4519,8 @@ int ObSchemaServiceSQLImpl::fetch_tenants(
     const int64_t schema_key_size)
 {
   int ret = OB_SUCCESS;
-  SMART_VAR(ObMySQLProxy::MySQLResult, res) {
-    ObMySQLResult *result = NULL;
-    ObSqlString sql;
-    if (OB_FAIL(sql.append_fmt(FETCH_ALL_TENANT_HISTORY_SQL3, OB_ALL_TENANT_HISTORY_TNAME))) {
-      LOG_WARN("append sql failed", K(ret));
-    } else if (OB_FAIL(sql.append_fmt(" AND SCHEMA_VERSION <= %ld", schema_version))) {
-      LOG_WARN("append sql failed", K(ret));
-    } else if (NULL != schema_keys && schema_key_size > 0) {
-      if (OB_FAIL(sql.append_fmt(" AND (tenant_id) in"))) {
-        LOG_WARN("append failed", K(ret));
-      } else if (OB_FAIL(SQL_APPEND_TENANT_ID(schema_keys, schema_key_size, sql))) {
-        LOG_WARN("sql append tenant id failed", K(ret));
-      }
-    }
-    if (OB_SUCC(ret)) {
-      DEFINE_SQL_CLIENT_RETRY_WEAK(sql_client);
-      if (OB_FAIL(sql.append(" ORDER BY tenant_id desc, schema_version desc"))) {
-        LOG_WARN("sql append failed", K(ret));
-      } else if (OB_FAIL(sql_client_retry_weak.read(res, sql.ptr()))) {
-        LOG_WARN("execute sql failed", K(ret), K(sql));
-      } else if (OB_UNLIKELY(NULL == (result = res.get_result()))) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("fail to get result. ", K(ret));
-      } else if (OB_FAIL(ObSchemaRetrieveUtils::retrieve_tenant_schema(sql_client_retry_weak, *result, schema_array))) {
-        LOG_WARN("failed to retrieve tenant schema", K(ret));
-      }
-    }
-
+  if (OB_FAIL(construct_tenant_schema_(schema_array))) {
+    LOG_WARN("fail to construct tenant schema", KR(ret));
   }
   return ret;
 }
@@ -7068,11 +7062,6 @@ int ObSchemaServiceSQLImpl::fetch_all_ccl_rule_info(
 #define CONSTRUCT_DATABASE_SCHEMA_VERSION_HISTORY_SQL1 CONSTRUCT_SCHEMA_VERSION_HISTORY_SQL1(database_id)
 #define CONSTRUCT_DATABASE_SCHEMA_VERSION_HISTORY_SQL2 CONSTRUCT_SCHEMA_VERSION_HISTORY_SQL2(database_id)
 
-#define CONSTRUCT_TENANT_SCHEMA_VERSION_HISTORY_SQL1 "select schema_version, is_deleted, min(schema_version) over () as min_version from %s "\
-                                                     "where tenant_id = %lu and schema_version <= %ld order by schema_version desc limit %d"
-
-#define CONSTRUCT_TENANT_SCHEMA_VERSION_HISTORY_SQL2 "select * from (select schema_version, is_deleted from %s where tenant_id = %lu and schema_version <= %ld order by schema_version desc limit %d) as a, "\
-                                                     "(select min(schema_version) as min_version from %s where tenant_id = %lu and schema_version <= %ld) as b"
 int ObSchemaServiceSQLImpl::construct_schema_version_history(
     const ObRefreshSchemaStatus &schema_status,
     ObISQLClient &sql_client,
@@ -7171,21 +7160,7 @@ int ObSchemaServiceSQLImpl::construct_schema_version_history(
         break;
       }
       case TENANT_SCHEMA: {
-        if (!g_liboblog_mode_) {
-          if (OB_FAIL(sql.append_fmt(CONSTRUCT_TENANT_SCHEMA_VERSION_HISTORY_SQL1,
-                                     OB_ALL_TENANT_HISTORY_TNAME, schema_id,
-                                     snapshot_version, MAX_CACHED_VERSION_CNT))) {
-            LOG_WARN("append failed", K(ret), K(schema_id), K(snapshot_version));
-          } else { } // do-nothing
-        } else {
-          if (OB_FAIL(sql.append_fmt(CONSTRUCT_TENANT_SCHEMA_VERSION_HISTORY_SQL2,
-                                     OB_ALL_TENANT_HISTORY_TNAME, schema_id,
-                                     snapshot_version, MAX_CACHED_VERSION_CNT,
-                                     OB_ALL_TENANT_HISTORY_TNAME,
-                                     schema_id, snapshot_version))) {
-            LOG_WARN("append failed", K(ret), K(schema_id), K(snapshot_version));
-          } else { } // do-nothing
-        }
+        // do-nothing
         break;
       }
       default: {
@@ -7194,16 +7169,24 @@ int ObSchemaServiceSQLImpl::construct_schema_version_history(
       }
     }
     if (OB_SUCC(ret)) {
-      DEFINE_SQL_CLIENT_RETRY_WEAK_WITH_SNAPSHOT(sql_client, snapshot_timestamp);
-      if (OB_FAIL(sql_client_retry_weak.read(res, exec_tenant_id, sql.ptr()))) {
-        LOG_WARN("execute sql failed", K(sql), K(ret));
-      } else if (OB_UNLIKELY(NULL == (result = res.get_result()))) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("fail to get result. ", K(ret));
-      } else if (OB_FAIL(ObSchemaRetrieveUtils::retrieve_schema_version(*result, version_his_val))) {
-        LOG_WARN("failed to retrieve schema version", K(ret));
+      if (TENANT_SCHEMA == schema_type) {
+        if (OB_FAIL(construct_schema_version_his_val_(version_his_val))) {
+          LOG_WARN("fail to construct schema version history value", KR(ret), K(snapshot_version));
+        } else {
+          version_his_val.snapshot_version_ = snapshot_version;
+        }
       } else {
-        version_his_val.snapshot_version_ = snapshot_version;
+        DEFINE_SQL_CLIENT_RETRY_WEAK_WITH_SNAPSHOT(sql_client, snapshot_timestamp);
+        if (OB_FAIL(sql_client_retry_weak.read(res, exec_tenant_id, sql.ptr()))) {
+          LOG_WARN("execute sql failed", K(sql), K(ret));
+        } else if (OB_UNLIKELY(NULL == (result = res.get_result()))) {
+          ret = OB_ERR_UNEXPECTED;
+          LOG_WARN("fail to get result. ", K(ret));
+        } else if (OB_FAIL(ObSchemaRetrieveUtils::retrieve_schema_version(*result, version_his_val))) {
+          LOG_WARN("failed to retrieve schema version", K(ret));
+        } else {
+          version_his_val.snapshot_version_ = snapshot_version;
+        }
       }
     }
   }
@@ -7273,35 +7256,14 @@ int ObSchemaServiceSQLImpl::get_refresh_schema_info(ObRefreshSchemaInfo &schema_
   return ret;
 }
 
-
-// strong read
 int ObSchemaServiceSQLImpl::get_drop_tenant_infos(
     common::ObISQLClient &sql_client,
     int64_t schema_version,
     common::ObIArray<ObDropTenantInfo> &drop_tenant_infos)
 {
   int ret = OB_SUCCESS;
+  // tenant should not in DROPED (is_deleted = 1 in __all_tenant_history) status in seekdb
   drop_tenant_infos.reset();
-  ObMySQLResult *result = NULL;
-  SMART_VAR(ObMySQLProxy::MySQLResult, res) {
-    ObSqlString sql;
-    if (schema_version <= 0) {
-      ret = OB_INVALID_ARGUMENT;
-      LOG_WARN("invalid schema_version", K(ret), K(schema_version));
-    } else if (OB_FAIL(sql.assign_fmt("SELECT tenant_id, schema_version FROM %s "
-                                      "WHERE is_deleted = 1 AND schema_version <= %ld "
-                                      "ORDER BY tenant_id ASC",
-                                      OB_ALL_TENANT_HISTORY_TNAME, schema_version))) {
-      LOG_WARN("fail to append sql", K(ret), K(schema_version));
-    } else if (OB_FAIL(sql_client.read(res, OB_SYS_TENANT_ID, sql.ptr()))) {
-      LOG_WARN("execute sql failed", K(ret), K(sql));
-    } else if (OB_UNLIKELY(NULL == (result = res.get_result()))) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("fail to get result. ", K(sql), K(ret));
-    } else if (OB_FAIL(ObSchemaRetrieveUtils::retrieve_drop_tenant_infos(*result, drop_tenant_infos))) {
-      LOG_WARN("fail to retrieve drop tenant infos", K(ret), K(schema_version));
-    }
-  }
   return ret;
 }
 
@@ -7462,59 +7424,6 @@ int ObSchemaServiceSQLImpl::sort_subpartition_array(ObPartitionSchema &partition
   return ret;
 }
 
-int ObSchemaServiceSQLImpl::query_tenant_status(
-    ObISQLClient &sql_client,
-    const uint64_t tenant_id,
-    TenantStatus &tenant_status)
-{
-  int ret = OB_SUCCESS;
-  if (OB_INVALID_TENANT_ID == tenant_id) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid tenant_id", K(ret), K(tenant_id));
-  } else {
-    ObSqlString sql;
-    SMART_VAR(ObMySQLProxy::MySQLResult, res) {
-      ObMySQLResult *result = NULL;
-      if (OB_FAIL(sql.assign_fmt("SELECT is_deleted FROM %s WHERE tenant_id = %ld "
-                                 "ORDER BY schema_version DESC LIMIT 1",
-                                 OB_ALL_TENANT_HISTORY_TNAME, tenant_id))) {
-        LOG_WARN("fail to append sql", K(ret));
-      } else if (OB_FAIL(sql_client.read(res, sql.ptr()))) {
-        LOG_WARN("fail to execute sql", K(ret), K(sql));
-      } else if (NULL == (result = res.get_result())) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("fail to get sql result", K(ret));
-      } else if (OB_FAIL(result->next())) {
-        if (ret == OB_ITER_END) { //no record
-          ret = OB_SUCCESS;
-          LOG_INFO("query_tenant_status: TENANT_NOT_CREATE", K(tenant_id));
-          tenant_status = TENANT_NOT_CREATE;
-        } else {
-          LOG_WARN("fail to query. iter quit", K(ret), K(sql));
-        }
-      } else {
-        bool is_deleted = false;
-        EXTRACT_INT_FIELD_MYSQL_SKIP_RET(*result, "is_deleted", is_deleted, bool);
-        if (OB_FAIL(ret)) {
-          LOG_WARN("fail to retrieve is_deleted", K(ret), K(tenant_id));
-        } else if (OB_ITER_END != (ret = result->next())) {
-          // check if this is single row
-          LOG_WARN("query tenant status fail, return multiple rows, unexcepted", K(ret),
-              K(sql), K(tenant_id));
-          ret = OB_ERR_UNEXPECTED;
-        } else {
-          ret = OB_SUCCESS;
-          tenant_status = is_deleted ? TENANT_DELETED : TENANT_EXIST;
-          if (is_deleted) {
-            LOG_INFO("query_tenant_status: TENANT_HAS_BEEN_DELETED", K(tenant_id));
-          }
-        }
-      }
-    }
-  }
-  return ret;
-}
-
 // for liboblog & schema history recycle
 int ObSchemaServiceSQLImpl::get_schema_version_by_timestamp(
     ObISQLClient &sql_client,
@@ -7594,16 +7503,6 @@ int ObSchemaServiceSQLImpl::get_schema_version_by_timestamp(
     }
   }
 
-  if (OB_FAIL(ret) && ObSchemaService::g_liboblog_mode_) {
-    TenantStatus tenant_status = TENANT_STATUS_INVALID;
-    int tmp_ret = query_tenant_status(sql_client, tenant_id, tenant_status);
-    if (OB_SUCCESS != tmp_ret) {
-      LOG_WARN("fail to query tenant status", K(tmp_ret), K(ret), K(tenant_id));
-    } else if (TENANT_DELETED == tenant_status) {
-      LOG_INFO("tenant has been dropped, no need retry", K(tmp_ret), K(tenant_id));
-      ret = OB_TENANT_HAS_BEEN_DROPPED; //overwrite ret
-    }
-  }
   return ret;
 }
 
@@ -7648,16 +7547,6 @@ int ObSchemaServiceSQLImpl::get_first_trans_end_schema_version(
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("invalid schema version", K(ret), K(tenant_id), K(schema_version));
       }
-    }
-  }
-  if (OB_FAIL(ret) && ObSchemaService::g_liboblog_mode_) {
-    TenantStatus tenant_status = TENANT_STATUS_INVALID;
-    int tmp_ret = query_tenant_status(sql_client, tenant_id, tenant_status);
-    if (OB_SUCCESS != tmp_ret) {
-      LOG_WARN("fail to query tenant status", K(tmp_ret), K(ret), K(tenant_id));
-    } else if (TENANT_DELETED == tenant_status) {
-      LOG_INFO("tenant has been dropped, no need retry", K(tmp_ret), K(tenant_id));
-      ret = OB_TENANT_HAS_BEEN_DROPPED; //overwrite ret
     }
   }
   return ret;

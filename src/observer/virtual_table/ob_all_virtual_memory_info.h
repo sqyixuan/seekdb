@@ -44,7 +44,6 @@ private:
     MOD_TYPE,
     MOD_ID,
     MOD_NAME,
-    ZONE,
     HOLD,
     USED,
     COUNT,

@@ -1145,7 +1145,6 @@ int ObVariableSetExecutor::update_resource_mapping_rule_version(ObMySQLProxy &sq
   } else {
     ObSqlString values;
     SQL_COL_APPEND_VALUE(sql, values, ObSchemaUtils::get_extract_tenant_id(tenant_id, tenant_id), "tenant_id", "%lu");
-    SQL_COL_APPEND_CSTR_VALUE(sql, values, "", "zone");
     SQL_COL_APPEND_CSTR_VALUE(sql, values, "ob_current_resource_mapping_version", "name");
     SQL_COL_APPEND_VALUE(sql, values, 5, "data_type", "%d");
     // need use microsecond in case insert multiple rules in one second concurrently.

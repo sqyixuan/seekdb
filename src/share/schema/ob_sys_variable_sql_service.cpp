@@ -147,7 +147,6 @@ int ObSysVariableSqlService::gen_sys_variable_dml(ObDMLSqlSplicer &dml, const Ob
   if (OB_FAIL(dml.add_pk_column("tenant_id", ObSchemaUtils::get_extract_tenant_id(
                                 exec_tenant_id, sysvar_schema.get_tenant_id())))
             || OB_FAIL(dml.add_pk_column("name", ObHexEscapeSqlStr(FORMAT_STR(sysvar_schema.get_name()))))
-            || OB_FAIL(dml.add_pk_column("zone", ObHexEscapeSqlStr(FORMAT_STR(sysvar_schema.get_zone().str()))))
             || OB_FAIL(dml.add_column("data_type", sysvar_schema.get_data_type()))
             || OB_FAIL(dml.add_column("value", ObHexEscapeSqlStr(FORMAT_STR(sysvar_schema.get_value()))))
             || OB_FAIL(dml.add_column("min_val", ObHexEscapeSqlStr(FORMAT_STR(sysvar_schema.get_min_val()))))

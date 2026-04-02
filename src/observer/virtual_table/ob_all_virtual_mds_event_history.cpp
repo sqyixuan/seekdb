@@ -269,11 +269,7 @@ int ObAllVirtualMdsEventHistory::convert_event_info_to_row_(const MdsEventKey &k
         cur_row_.cells_[i].set_string(ObLongTextType, ObString(pos, buffer - pos));
         break;
       }
-      case OB_APP_MIN_COLUMN_ID + 11: {// unit_id
-        cur_row_.cells_[i].set_int(event.unit_id_);
-        break;
-      }
-      case OB_APP_MIN_COLUMN_ID + 12: {// user_key
+      case OB_APP_MIN_COLUMN_ID + 11: {// user_key
         int64_t pos = 0;
         databuff_printf(buffer, buffer_size, pos, event.key_str_);
         buffer += pos;
@@ -281,7 +277,7 @@ int ObAllVirtualMdsEventHistory::convert_event_info_to_row_(const MdsEventKey &k
         cur_row_.cells_[i].set_string(ObLongTextType, ObString(pos, buffer - pos));
         break;
       }
-      case OB_APP_MIN_COLUMN_ID + 13: {// writer_type
+      case OB_APP_MIN_COLUMN_ID + 12: {// writer_type
         int64_t pos = 0;
         databuff_printf(buffer, buffer_size, pos, "%s", mds::obj_to_string(event.writer_type_));
         buffer += pos;
@@ -289,27 +285,27 @@ int ObAllVirtualMdsEventHistory::convert_event_info_to_row_(const MdsEventKey &k
         cur_row_.cells_[i].set_string(ObLongTextType, ObString(pos, buffer - pos));
         break;
       }
-      case OB_APP_MIN_COLUMN_ID + 14: {// writer_id
+      case OB_APP_MIN_COLUMN_ID + 13: {// writer_id
         cur_row_.cells_[i].set_int(event.writer_id_);
         break;
       }
-      case OB_APP_MIN_COLUMN_ID + 15: {// seq_no
+      case OB_APP_MIN_COLUMN_ID + 14: {// seq_no
         cur_row_.cells_[i].set_int(event.seq_no_.get_seq());
         break;
       }
-      case OB_APP_MIN_COLUMN_ID + 16: {// redo_scn
+      case OB_APP_MIN_COLUMN_ID + 15: {// redo_scn
         cur_row_.cells_[i].set_uint64(event.redo_scn_.get_val_for_inner_table_field());
         break;
       }
-      case OB_APP_MIN_COLUMN_ID + 17: {// end_scn
+      case OB_APP_MIN_COLUMN_ID + 16: {// end_scn
         cur_row_.cells_[i].set_uint64(event.end_scn_.get_val_for_inner_table_field());
         break;
       }
-      case OB_APP_MIN_COLUMN_ID + 18: {// trans_version
+      case OB_APP_MIN_COLUMN_ID + 17: {// trans_version
         cur_row_.cells_[i].set_uint64(event.trans_version_.get_val_for_inner_table_field());
         break;
       }
-      case OB_APP_MIN_COLUMN_ID + 19: {// node_type
+      case OB_APP_MIN_COLUMN_ID + 18: {// node_type
         int64_t pos = 0;
         databuff_printf(buffer, buffer_size, pos, "%s", mds::obj_to_string(event.node_type_));
         buffer += pos;
@@ -317,7 +313,7 @@ int ObAllVirtualMdsEventHistory::convert_event_info_to_row_(const MdsEventKey &k
         cur_row_.cells_[i].set_string(ObLongTextType, ObString(pos, buffer - pos));
         break;
       }
-      case OB_APP_MIN_COLUMN_ID + 20: {// state
+      case OB_APP_MIN_COLUMN_ID + 19: {// state
         int64_t pos = 0;
         databuff_printf(buffer, buffer_size, pos, "%s", mds::obj_to_string(event.state_));
         buffer += pos;

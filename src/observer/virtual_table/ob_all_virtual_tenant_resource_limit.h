@@ -45,7 +45,6 @@ public:
     SVR_IP = common::OB_APP_MIN_COLUMN_ID,
     SVR_PORT,
     TENANT_ID,
-    ZONE,
     RESOURCE_NAME,
     CURRENT_UTILIZATION,
     MAX_UTILIZATION,

@@ -335,8 +335,8 @@ int ObTableLoadSchema::get_tenant_optimizer_gather_stats_on_load(const uint64_t 
     sqlclient::ObMySQLResult *result = nullptr;
     // TODO(suzhi.yt) Why is it with zone dimension? If there are multiple zones in the query results, which one should be returned?
     if (OB_FAIL(sql.assign_fmt(
-          "SELECT value FROM %s WHERE tenant_id = %ld and (zone, name, schema_version) in (select "
-          "zone, name, max(schema_version) FROM %s group by zone, name) and name = '%s'",
+          "SELECT value FROM %s WHERE tenant_id = %ld and (name, schema_version) in (select "
+          "name, max(schema_version) FROM %s group by name) and name = '%s'",
           OB_ALL_SYS_VARIABLE_HISTORY_TNAME,
           ObSchemaUtils::get_extract_tenant_id(tenant_id, tenant_id),
           OB_ALL_SYS_VARIABLE_HISTORY_TNAME, OB_SV__OPTIMIZER_GATHER_STATS_ON_LOAD))) {
