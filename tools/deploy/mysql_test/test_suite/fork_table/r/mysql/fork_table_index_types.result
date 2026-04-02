@@ -5,7 +5,7 @@ SET wait_timeout=30000000;
 SET ob_trx_timeout = 100000000;
 SET ob_query_timeout = 100000000;
 # 启用debug sync
-alter system set debug_sync_timeout = '10s';
+alter system set debug_sync_timeout = '60s';
 alter system set _ob_ddl_timeout = '5s';
 set ob_global_debug_sync = 'reset';
 # 设置向量索引内存限制
@@ -238,153 +238,6 @@ drop table t_normal_post_index_fork;
 ============================================
 2. 全局索引（Global Index）
 ============================================
-# 2.0 无分区表+全局索引+fork（验证fork后索引表正常）
-drop table if exists t_global_nopart_global_idx;
-Warnings:
-Note	1051	Unknown table 'db_fork_index_types.t_global_nopart_global_idx'
-drop table if exists t_global_nopart_global_idx_fork;
-Warnings:
-Note	1051	Unknown table 'db_fork_index_types.t_global_nopart_global_idx_fork'
-create table t_global_nopart_global_idx (
-a int,
-b varchar(150),
-c int,
-primary key(a, b)
-);
-insert into t_global_nopart_global_idx values (1, 'Alice', 10);
-insert into t_global_nopart_global_idx values (2, 'Bob', 110);
-insert into t_global_nopart_global_idx values (3, 'Charlie', 50);
-# Fork表
-fork table t_global_nopart_global_idx to t_global_nopart_global_idx_fork;
-# fork后给全局索引加分区（删除后重建带分区的索引）
-create index gidx_c on t_global_nopart_global_idx(c) global partition by range(c) (
-partition p0 values less than (100),
-partition p1 values less than MAXVALUE
-);
-create index gidx_c on t_global_nopart_global_idx_fork(c) global partition by range(c) (
-partition p0 values less than (100),
-partition p1 values less than MAXVALUE
-);
-# 验证全局索引分区是否正确
-show create table t_global_nopart_global_idx;
-Table	Create Table
-t_global_nopart_global_idx	CREATE TABLE `t_global_nopart_global_idx` (
-  `a` int(11) NOT NULL,
-  `b` varchar(150) NOT NULL,
-  `c` int(11) DEFAULT NULL,
-  PRIMARY KEY (`a`, `b`),
-  KEY `gidx_c` (`c`) BLOCK_SIZE 16384 GLOBAL
- partition by range(c)
-(partition `p0` values less than (100),
-partition `p1` values less than (MAXVALUE))
-) ORGANIZATION INDEX DEFAULT CHARSET = utf8mb4 ROW_FORMAT = DYNAMIC COMPRESSION = 'zstd_1.3.8' REPLICA_NUM = replica_num BLOCK_SIZE = 16384 USE_BLOOM_FILTER = FALSE ENABLE_MACRO_BLOCK_BLOOM_FILTER = FALSE TABLET_SIZE = 134217728 PCTFREE = 0
-show create table t_global_nopart_global_idx_fork;
-Table	Create Table
-t_global_nopart_global_idx_fork	CREATE TABLE `t_global_nopart_global_idx_fork` (
-  `a` int(11) NOT NULL,
-  `b` varchar(150) NOT NULL,
-  `c` int(11) DEFAULT NULL,
-  PRIMARY KEY (`a`, `b`),
-  KEY `gidx_c` (`c`) BLOCK_SIZE 16384 GLOBAL
- partition by range(c)
-(partition `p0` values less than (100),
-partition `p1` values less than (MAXVALUE))
-) ORGANIZATION INDEX DEFAULT CHARSET = utf8mb4 ROW_FORMAT = DYNAMIC COMPRESSION = 'zstd_1.3.8' REPLICA_NUM = 1 BLOCK_SIZE = 16384 USE_BLOOM_FILTER = FALSE ENABLE_MACRO_BLOCK_BLOOM_FILTER = FALSE TABLET_SIZE = 134217728 PCTFREE = 0
-# 检查源表全局索引分区信息
-select table_name, partition_name, partition_expression, partition_method 
-from information_schema.partitions 
-where table_schema = database() and table_name like '%gidx_c%' and table_name like '%t_global_nopart_global_idx%'
-order by table_name, partition_ordinal_position;
-table_name	partition_name	partition_expression	partition_method
-# 检查目标表全局索引分区信息
-select table_name, partition_name, partition_expression, partition_method 
-from information_schema.partitions 
-where table_schema = database() and table_name like '%gidx_c%' and table_name like '%t_global_nopart_global_idx_fork%'
-order by table_name, partition_ordinal_position;
-table_name	partition_name	partition_expression	partition_method
-insert into t_global_nopart_global_idx values (108, 'Bob', 110);
-insert into t_global_nopart_global_idx_fork values (108, 'Charlie', 50);
-# 验证fork后源表和目标表的全局索引功能
-show indexes from t_global_nopart_global_idx;
-Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible	Expression
-t_global_nopart_global_idx	0	PRIMARY	1	a	A	NULL	NULL	NULL		BTREE	available		YES	NULL
-t_global_nopart_global_idx	0	PRIMARY	2	b	A	NULL	NULL	NULL		BTREE	available		YES	NULL
-t_global_nopart_global_idx	1	gidx_c	1	c	A	NULL	NULL	NULL	YES	BTREE	available		YES	NULL
-show indexes from t_global_nopart_global_idx_fork;
-Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible	Expression
-t_global_nopart_global_idx_fork	0	PRIMARY	1	a	A	NULL	NULL	NULL		BTREE	available		YES	NULL
-t_global_nopart_global_idx_fork	0	PRIMARY	2	b	A	NULL	NULL	NULL		BTREE	available		YES	NULL
-t_global_nopart_global_idx_fork	1	gidx_c	1	c	A	NULL	NULL	NULL	YES	BTREE	available		YES	NULL
-select * from t_global_nopart_global_idx where c = 10;
-a	b	c
-1	Alice	10
-select * from t_global_nopart_global_idx_fork where c = 10;
-a	b	c
-1	Alice	10
-explain select * from t_global_nopart_global_idx where c = 10;
-Query Plan
-==============================================================================
-|ID|OPERATOR        |NAME                              |EST.ROWS|EST.TIME(us)|
-------------------------------------------------------------------------------
-|0 |TABLE RANGE SCAN|t_global_nopart_global_idx(gidx_c)|1       |3           |
-==============================================================================
-Outputs & filters:
--------------------------------------
-  0 - output([t_global_nopart_global_idx.a], [t_global_nopart_global_idx.b], [t_global_nopart_global_idx.c]), filter(nil), rowset=16
-      access([t_global_nopart_global_idx.a], [t_global_nopart_global_idx.b], [t_global_nopart_global_idx.c]), partitions(p0)
-      is_index_back=false, is_global_index=true, 
-      range_key([t_global_nopart_global_idx.c], [t_global_nopart_global_idx.a], [t_global_nopart_global_idx.b]), range(10,MIN,MIN ; 10,MAX,MAX), 
-      range_cond([t_global_nopart_global_idx.c = 10])
-explain select * from t_global_nopart_global_idx_fork where c = 10;
-Query Plan
-===================================================================================
-|ID|OPERATOR        |NAME                                   |EST.ROWS|EST.TIME(us)|
------------------------------------------------------------------------------------
-|0 |TABLE RANGE SCAN|t_global_nopart_global_idx_fork(gidx_c)|1       |3           |
-===================================================================================
-Outputs & filters:
--------------------------------------
-  0 - output([t_global_nopart_global_idx_fork.a], [t_global_nopart_global_idx_fork.b], [t_global_nopart_global_idx_fork.c]), filter(nil), rowset=16
-      access([t_global_nopart_global_idx_fork.a], [t_global_nopart_global_idx_fork.b], [t_global_nopart_global_idx_fork.c]), partitions(p0)
-      is_index_back=false, is_global_index=true, 
-      range_key([t_global_nopart_global_idx_fork.c], [t_global_nopart_global_idx_fork.a], [t_global_nopart_global_idx_fork.b]), range(10,MIN,MIN ; 10,MAX,
-      MAX), 
-      range_cond([t_global_nopart_global_idx_fork.c = 10])
-select * from t_global_nopart_global_idx where c = 108;
-a	b	c
-select * from t_global_nopart_global_idx_fork where c = 108;
-a	b	c
-explain select * from t_global_nopart_global_idx where c = 108;
-Query Plan
-==============================================================================
-|ID|OPERATOR        |NAME                              |EST.ROWS|EST.TIME(us)|
-------------------------------------------------------------------------------
-|0 |TABLE RANGE SCAN|t_global_nopart_global_idx(gidx_c)|1       |3           |
-==============================================================================
-Outputs & filters:
--------------------------------------
-  0 - output([t_global_nopart_global_idx.a], [t_global_nopart_global_idx.b], [t_global_nopart_global_idx.c]), filter(nil), rowset=16
-      access([t_global_nopart_global_idx.a], [t_global_nopart_global_idx.b], [t_global_nopart_global_idx.c]), partitions(p1)
-      is_index_back=false, is_global_index=true, 
-      range_key([t_global_nopart_global_idx.c], [t_global_nopart_global_idx.a], [t_global_nopart_global_idx.b]), range(108,MIN,MIN ; 108,MAX,MAX), 
-      range_cond([t_global_nopart_global_idx.c = 108])
-explain select * from t_global_nopart_global_idx_fork where c = 108;
-Query Plan
-===================================================================================
-|ID|OPERATOR        |NAME                                   |EST.ROWS|EST.TIME(us)|
------------------------------------------------------------------------------------
-|0 |TABLE RANGE SCAN|t_global_nopart_global_idx_fork(gidx_c)|1       |3           |
-===================================================================================
-Outputs & filters:
--------------------------------------
-  0 - output([t_global_nopart_global_idx_fork.a], [t_global_nopart_global_idx_fork.b], [t_global_nopart_global_idx_fork.c]), filter(nil), rowset=16
-      access([t_global_nopart_global_idx_fork.a], [t_global_nopart_global_idx_fork.b], [t_global_nopart_global_idx_fork.c]), partitions(p1)
-      is_index_back=false, is_global_index=true, 
-      range_key([t_global_nopart_global_idx_fork.c], [t_global_nopart_global_idx_fork.a], [t_global_nopart_global_idx_fork.b]), range(108,MIN,MIN ; 108,
-      MAX,MAX), 
-      range_cond([t_global_nopart_global_idx_fork.c = 108])
-drop table t_global_nopart_global_idx;
-drop table t_global_nopart_global_idx_fork;
 # 2.1 随表创建全局索引
 drop table if exists t_global_with_index;
 Warnings:
@@ -392,7 +245,6 @@ Note	1051	Unknown table 'db_fork_index_types.t_global_with_index'
 drop table if exists t_global_with_index_fork;
 Warnings:
 Note	1051	Unknown table 'db_fork_index_types.t_global_with_index_fork'
-Global Index with partition
 create table t_global_with_index (
 a int,
 b varchar(150),
@@ -409,10 +261,83 @@ partition p1 values less than MAXVALUE
 insert into t_global_with_index values (1, 'Alice', 10);
 insert into t_global_with_index values (101, 'Bob', 110);
 insert into t_global_with_index values (50, 'Charlie', 50);
-# Fork表bug not support
+# Fork表
 fork table t_global_with_index to t_global_with_index_fork;
-ERROR 0A000: fork table on partitioned table with global index is not supported
 # 验证fork后源表和目标表的全局索引功能
+show create table t_global_with_index;
+Table	Create Table
+t_global_with_index	CREATE TABLE `t_global_with_index` (
+  `a` int(11) NOT NULL,
+  `b` varchar(150) NOT NULL,
+  `c` int(11) DEFAULT NULL,
+  PRIMARY KEY (`a`, `b`),
+  KEY `gidx_c` (`c`) BLOCK_SIZE 16384 GLOBAL
+ partition by range(c)
+(partition `p0` values less than (100),
+partition `p1` values less than (MAXVALUE))
+) ORGANIZATION INDEX DEFAULT CHARSET = utf8mb4 ROW_FORMAT = DYNAMIC COMPRESSION = 'zstd_1.3.8' REPLICA_NUM = replica_num BLOCK_SIZE = 16384 USE_BLOOM_FILTER = FALSE ENABLE_MACRO_BLOCK_BLOOM_FILTER = FALSE TABLET_SIZE = 134217728 PCTFREE = 0
+ partition by range(a)
+(partition `p0` values less than (100),
+partition `p1` values less than (200))
+show create table t_global_with_index_fork;
+Table	Create Table
+t_global_with_index_fork	CREATE TABLE `t_global_with_index_fork` (
+  `a` int(11) NOT NULL,
+  `b` varchar(150) NOT NULL,
+  `c` int(11) DEFAULT NULL,
+  PRIMARY KEY (`a`, `b`),
+  KEY `gidx_c` (`c`) BLOCK_SIZE 16384 GLOBAL
+ partition by range(c)
+(partition `p0` values less than (100),
+partition `p1` values less than (MAXVALUE))
+) ORGANIZATION INDEX DEFAULT CHARSET = utf8mb4 ROW_FORMAT = DYNAMIC COMPRESSION = 'zstd_1.3.8' REPLICA_NUM = 1 BLOCK_SIZE = 16384 USE_BLOOM_FILTER = FALSE ENABLE_MACRO_BLOCK_BLOOM_FILTER = FALSE TABLET_SIZE = 134217728 PCTFREE = 0
+ partition by range(a)
+(partition `p0` values less than (100),
+partition `p1` values less than (200))
+show indexes from t_global_with_index;
+Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible	Expression
+t_global_with_index	0	PRIMARY	1	a	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+t_global_with_index	0	PRIMARY	2	b	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+t_global_with_index	1	gidx_c	1	c	A	NULL	NULL	NULL	YES	BTREE	available		YES	NULL
+show indexes from t_global_with_index_fork;
+Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible	Expression
+t_global_with_index_fork	0	PRIMARY	1	a	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+t_global_with_index_fork	0	PRIMARY	2	b	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+t_global_with_index_fork	1	gidx_c	1	c	A	NULL	NULL	NULL	YES	BTREE	available		YES	NULL
+select * from t_global_with_index where c = 10;
+a	b	c
+1	Alice	10
+select * from t_global_with_index_fork where c = 10;
+a	b	c
+1	Alice	10
+explain select * from t_global_with_index where c = 10;
+Query Plan
+=======================================================================
+|ID|OPERATOR        |NAME                       |EST.ROWS|EST.TIME(us)|
+-----------------------------------------------------------------------
+|0 |TABLE RANGE SCAN|t_global_with_index(gidx_c)|1       |3           |
+=======================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([t_global_with_index.a], [t_global_with_index.b], [t_global_with_index.c]), filter(nil), rowset=16
+      access([t_global_with_index.a], [t_global_with_index.b], [t_global_with_index.c]), partitions(p0)
+      is_index_back=false, is_global_index=true, 
+      range_key([t_global_with_index.c], [t_global_with_index.a], [t_global_with_index.b]), range(10,MIN,MIN ; 10,MAX,MAX), 
+      range_cond([t_global_with_index.c = 10])
+explain select * from t_global_with_index_fork where c = 10;
+Query Plan
+============================================================================
+|ID|OPERATOR        |NAME                            |EST.ROWS|EST.TIME(us)|
+----------------------------------------------------------------------------
+|0 |TABLE RANGE SCAN|t_global_with_index_fork(gidx_c)|1       |3           |
+============================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([t_global_with_index_fork.a], [t_global_with_index_fork.b], [t_global_with_index_fork.c]), filter(nil), rowset=16
+      access([t_global_with_index_fork.a], [t_global_with_index_fork.b], [t_global_with_index_fork.c]), partitions(p0)
+      is_index_back=false, is_global_index=true, 
+      range_key([t_global_with_index_fork.c], [t_global_with_index_fork.a], [t_global_with_index_fork.b]), range(10,MIN,MIN ; 10,MAX,MAX), 
+      range_cond([t_global_with_index_fork.c = 10])
 # 2.2 后建全局索引
 drop table if exists t_global_post_index;
 Warnings:
@@ -487,135 +412,8 @@ Outputs & filters:
       is_index_back=false, is_global_index=true, 
       range_key([t_global_post_index_fork.c], [t_global_post_index_fork.a], [t_global_post_index_fork.b]), range(10,MIN,MIN ; 10,MAX,MAX), 
       range_cond([t_global_post_index_fork.c = 10])
-# 2.3 先建全局索引，fork后再加分区表（fork后做DDL/DML确保分区表与全局索引无误）
-drop table if exists t_global_first_then_part;
-Warnings:
-Note	1051	Unknown table 'db_fork_index_types.t_global_first_then_part'
-drop table if exists t_global_first_then_part_fork;
-Warnings:
-Note	1051	Unknown table 'db_fork_index_types.t_global_first_then_part_fork'
-create table t_global_first_then_part (
-a int,
-b varchar(150),
-c int,
-primary key(a, b)
-);
-create index gidx_c on t_global_first_then_part(c) global partition by range(c) (
-partition p0 values less than (100),
-partition p1 values less than MAXVALUE
-);
-insert into t_global_first_then_part values (1, 'Alice', 10);
-insert into t_global_first_then_part values (2, 'Bob', 110);
-insert into t_global_first_then_part values (3, 'Charlie', 50);
-# Fork表
-fork table t_global_first_then_part to t_global_first_then_part_fork;
-# fork后给源表和目标表加分区
-alter table t_global_first_then_part partition by range(a) (
-partition p0 values less than (100),
-partition p1 values less than (200)
-);
-alter table t_global_first_then_part_fork partition by range(a) (
-partition p0 values less than (100),
-partition p1 values less than (200)
-);
-# fork后做DDL：加列
-alter table t_global_first_then_part add column d int default 0;
-alter table t_global_first_then_part_fork add column d int default 0;
-# fork后做DML：源表与目标表各插入/更新/删除
-insert into t_global_first_then_part values (50, 'Dave', 50, 1);
-insert into t_global_first_then_part_fork values (60, 'Eve', 60, 2);
-update t_global_first_then_part set d = 10 where a = 1;
-update t_global_first_then_part_fork set d = 20 where a = 2;
-delete from t_global_first_then_part where a = 3;
-delete from t_global_first_then_part_fork where a = 2 and b = 'Bob';
-# 验证分区表与全局索引：源表
-show create table t_global_first_then_part;
-Table	Create Table
-t_global_first_then_part	CREATE TABLE `t_global_first_then_part` (
-  `a` int(11) NOT NULL,
-  `b` varchar(150) NOT NULL,
-  `c` int(11) DEFAULT NULL,
-  `d` int(11) DEFAULT '0',
-  PRIMARY KEY (`a`, `b`),
-  KEY `gidx_c` (`c`) BLOCK_SIZE 16384 GLOBAL
- partition by range(c)
-(partition `p0` values less than (100),
-partition `p1` values less than (MAXVALUE))
-) ORGANIZATION INDEX DEFAULT CHARSET = utf8mb4 ROW_FORMAT = DYNAMIC COMPRESSION = 'zstd_1.3.8' REPLICA_NUM = 1 BLOCK_SIZE = 16384 USE_BLOOM_FILTER = FALSE ENABLE_MACRO_BLOCK_BLOOM_FILTER = FALSE TABLET_SIZE = 134217728 PCTFREE = 0
- partition by range(a)
-(partition `p0` values less than (100),
-partition `p1` values less than (200))
-show indexes from t_global_first_then_part;
-Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible	Expression
-t_global_first_then_part	0	PRIMARY	1	a	A	NULL	NULL	NULL		BTREE	available		YES	NULL
-t_global_first_then_part	0	PRIMARY	2	b	A	NULL	NULL	NULL		BTREE	available		YES	NULL
-t_global_first_then_part	1	gidx_c	1	c	A	NULL	NULL	NULL	YES	BTREE	available		YES	NULL
-select * from t_global_first_then_part where c = 10;
-a	b	c	d
-1	Alice	10	10
-select * from t_global_first_then_part where c = 50;
-a	b	c	d
-50	Dave	50	1
-explain select * from t_global_first_then_part where c = 10;
-Query Plan
-========================================================================================
-|ID|OPERATOR                    |NAME                            |EST.ROWS|EST.TIME(us)|
-----------------------------------------------------------------------------------------
-|0 |DISTRIBUTED TABLE RANGE SCAN|t_global_first_then_part(gidx_c)|1       |31          |
-========================================================================================
-Outputs & filters:
--------------------------------------
-  0 - output([t_global_first_then_part.a], [t_global_first_then_part.b], [t_global_first_then_part.c], [t_global_first_then_part.d]), filter(nil), rowset=16
-      access([t_global_first_then_part.a], [t_global_first_then_part.b], [t_global_first_then_part.c], [t_global_first_then_part.d]), partitions(p0)
-      is_index_back=true, is_global_index=true, 
-      range_key([t_global_first_then_part.c], [t_global_first_then_part.a], [t_global_first_then_part.b]), range(10,MIN,MIN ; 10,MAX,MAX), 
-      range_cond([t_global_first_then_part.c = 10])
-# 验证分区表与全局索引：目标表
-show create table t_global_first_then_part_fork;
-Table	Create Table
-t_global_first_then_part_fork	CREATE TABLE `t_global_first_then_part_fork` (
-  `a` int(11) NOT NULL,
-  `b` varchar(150) NOT NULL,
-  `c` int(11) DEFAULT NULL,
-  `d` int(11) DEFAULT '0',
-  PRIMARY KEY (`a`, `b`),
-  KEY `gidx_c` (`c`) BLOCK_SIZE 16384 GLOBAL
- partition by range(c)
-(partition `p0` values less than (100),
-partition `p1` values less than (MAXVALUE))
-) ORGANIZATION INDEX DEFAULT CHARSET = utf8mb4 ROW_FORMAT = DYNAMIC COMPRESSION = 'zstd_1.3.8' REPLICA_NUM = 1 BLOCK_SIZE = 16384 USE_BLOOM_FILTER = FALSE ENABLE_MACRO_BLOCK_BLOOM_FILTER = FALSE TABLET_SIZE = 134217728 PCTFREE = 0
- partition by range(a)
-(partition `p0` values less than (100),
-partition `p1` values less than (200))
-show indexes from t_global_first_then_part_fork;
-Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible	Expression
-t_global_first_then_part_fork	0	PRIMARY	1	a	A	NULL	NULL	NULL		BTREE	available		YES	NULL
-t_global_first_then_part_fork	0	PRIMARY	2	b	A	NULL	NULL	NULL		BTREE	available		YES	NULL
-t_global_first_then_part_fork	1	gidx_c	1	c	A	NULL	NULL	NULL	YES	BTREE	available		YES	NULL
-select * from t_global_first_then_part_fork where c = 10;
-a	b	c	d
-1	Alice	10	0
-select * from t_global_first_then_part_fork where c = 60;
-a	b	c	d
-60	Eve	60	2
-explain select * from t_global_first_then_part_fork where c = 10;
-Query Plan
-=============================================================================================
-|ID|OPERATOR                    |NAME                                 |EST.ROWS|EST.TIME(us)|
----------------------------------------------------------------------------------------------
-|0 |DISTRIBUTED TABLE RANGE SCAN|t_global_first_then_part_fork(gidx_c)|1       |31          |
-=============================================================================================
-Outputs & filters:
--------------------------------------
-  0 - output([t_global_first_then_part_fork.a], [t_global_first_then_part_fork.b], [t_global_first_then_part_fork.c], [t_global_first_then_part_fork.d]), filter(nil), rowset=16
-      access([t_global_first_then_part_fork.a], [t_global_first_then_part_fork.b], [t_global_first_then_part_fork.c], [t_global_first_then_part_fork.d]), partitions(p0)
-      is_index_back=true, is_global_index=true, 
-      range_key([t_global_first_then_part_fork.c], [t_global_first_then_part_fork.a], [t_global_first_then_part_fork.b]), range(10,MIN,MIN ; 10,MAX,MAX),
-       
-      range_cond([t_global_first_then_part_fork.c = 10])
-drop table t_global_first_then_part;
-drop table t_global_first_then_part_fork;
 drop table t_global_with_index;
+drop table t_global_with_index_fork;
 drop table t_global_post_index;
 drop table t_global_post_index_fork;
 ============================================
@@ -1115,9 +913,6 @@ partition p1 values less than (200)
 );
 insert into t_json_post_index values (1, 'Item1', '["tag1", "tag2", "tag3"]');
 insert into t_json_post_index values (101, 'Item2', '["tag2", "tag4"]');
-# Fork前
-create index idx_tags_src on t_json_post_index((cast(tags->'$[*]' as char(100) array)));
-ERROR 0A000: build multivalue index afterward not supported
 # Fork表
 fork table t_json_post_index to t_json_post_index_fork;
 # 在源表和目标表上后建JSON多值索引
@@ -1512,9 +1307,9 @@ CREATE VECTOR INDEX idx1 ON t_ivf_qp_with_index(vec) WITH (distance=l2, type=ivf
 ERROR 0A000: this type of vector index type is not supported
 drop table if exists t_ivf_qp_with_index;
 ============================================
-8. hnsw_sq索引
+8. ivf_sq索引
 ============================================
-# 8.1 随表创建hnsw_sq索引
+# 8.1 随表创建ivf_sq索引
 drop table if exists t_hnsw_sq_with_index;
 Warnings:
 Note	1051	Unknown table 'db_fork_index_types.t_hnsw_sq_with_index'
@@ -1696,23 +1491,6 @@ drop table if exists t_hnsw_sq_with_index_fork;
 drop table if exists t_hnsw_sq_post_index;
 drop table if exists t_hnsw_sq_post_index_fork;
 ============================================
-8.5 ivf_sq索引
-============================================
-# 8.5.1 随表创建ivf_sq索引
-drop table if exists t_ivf_sq_with_index;
-Warnings:
-Note	1051	Unknown table 'db_fork_index_types.t_ivf_sq_with_index'
-drop table if exists t_ivf_sq_with_index_fork;
-Warnings:
-Note	1051	Unknown table 'db_fork_index_types.t_ivf_sq_with_index_fork'
-CREATE TABLE t_ivf_sq_with_index (
-id INT PRIMARY KEY, 
-name VARCHAR(50),
-vec VECTOR(3)
-);
-CREATE VECTOR INDEX idx1 ON t_ivf_sq_with_index(vec) WITH (distance=l2, type=ivf_sq, lib=vsag);
-ERROR 0A000: this type of vector index type is not supported
-============================================
 9. IVF_FLAT索引
 ============================================
 # 9.1 随表创建IVF_FLAT索引
@@ -1734,10 +1512,27 @@ partition p1 values less than (200)
 insert into t_ivf_flat_with_index values (1, 'Vec1', '[0.1,0.1,0.1]');
 insert into t_ivf_flat_with_index values (101, 'Vec2', '[0.2,0.2,0.2]');
 insert into t_ivf_flat_with_index values (50, 'Vec3', '[0.3,0.3,0.3]');
-# Fork表 ivf不支持
+# Fork表
 fork table t_ivf_flat_with_index to t_ivf_flat_with_index_fork;
-ERROR 0A000: fork table on table with ivf index is not supported
 # 验证fork后源表和目标表的IVF_FLAT索引功能
+show indexes from t_ivf_flat_with_index;
+Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible	Expression
+t_ivf_flat_with_index	0	PRIMARY	1	id	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+t_ivf_flat_with_index	1	idx_vec	1	vec	A	NULL	NULL	NULL	YES	VECTOR	available		YES	NULL
+show indexes from t_ivf_flat_with_index_fork;
+Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible	Expression
+t_ivf_flat_with_index_fork	0	PRIMARY	1	id	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+t_ivf_flat_with_index_fork	1	idx_vec	1	vec	A	NULL	NULL	NULL	YES	VECTOR	available		YES	NULL
+select * from t_ivf_flat_with_index order by l2_distance(vec, [0.1,0.1,0.1]) APPROXIMATE limit 3;
+id	name	vec
+1	Vec1	[0.1,0.1,0.1]
+101	Vec2	[0.2,0.2,0.2]
+50	Vec3	[0.3,0.3,0.3]
+select * from t_ivf_flat_with_index_fork order by l2_distance(vec, [0.1,0.1,0.1]) APPROXIMATE limit 3;
+id	name	vec
+1	Vec1	[0.1,0.1,0.1]
+101	Vec2	[0.2,0.2,0.2]
+50	Vec3	[0.3,0.3,0.3]
 # 9.2 后建IVF_FLAT索引
 drop table if exists t_ivf_flat_post_index;
 Warnings:
@@ -1779,12 +1574,42 @@ id	name	vec
 1	Vec1	[0.1,0.1,0.1]
 101	Vec2	[0.2,0.2,0.2]
 drop table t_ivf_flat_with_index;
+drop table t_ivf_flat_with_index_fork;
 drop table t_ivf_flat_post_index;
 drop table t_ivf_flat_post_index_fork;
 ============================================
 10. 语义索引（Semantic Index）
 ============================================
-
+# 10.1 随表创建语义索引
+drop table if exists t_semantic_with_index;
+Warnings:
+Note	1051	Unknown table 'db_fork_index_types.t_semantic_with_index'
+drop table if exists t_semantic_with_index_fork;
+Warnings:
+Note	1051	Unknown table 'db_fork_index_types.t_semantic_with_index_fork'
+CREATE TABLE t_semantic_with_index (
+id int primary key,
+name varchar(50),
+text_embedding vector(768),
+VECTOR INDEX idx_semantic(text_embedding)
+WITH (
+distance=cosine,
+lib=vsag,
+type=hnsw,
+model="mymodel",  
+dim=768,
+sync_mode=immediate
+)
+) partition by range(id) (
+partition p0 values less than (100),
+partition p1 values less than (200)
+);
+ERROR 42000: You have an error in your SQL syntax; check the manual that corresponds to your OceanBase version for the right syntax to use near '"mymodel",  
+dim=768,
+sync_mode=immediate
+)
+) partition by range(id) (
+partition' at line 10
 ============================================
 11. 稀疏向量SPIV索引测试
 ============================================
