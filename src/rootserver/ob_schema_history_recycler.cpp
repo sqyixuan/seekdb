@@ -20,7 +20,6 @@
 #include "src/share/ob_freeze_info_proxy.h"
 #include "share/ob_global_merge_table_operator.h"
 #include "share/ob_zone_merge_info.h"
-#include "share/ob_all_server_tracer.h"
 #include "rootserver/ob_objpriv_mysql_schema_history_recycler.h"
 
 namespace oceanbase
@@ -85,7 +84,7 @@ int64_t ObSchemaHistoryRecyclerIdling::get_idle_interval_us()
 
 ObSchemaHistoryRecycler::ObSchemaHistoryRecycler()
   : inited_(false), idling_(stop_), schema_service_(NULL),
-    /*freeze_info_mgr_(NULL),*/ zone_mgr_(NULL), sql_proxy_(NULL), recycle_schema_versions_()
+    /*freeze_info_mgr_(NULL),*/ sql_proxy_(NULL), recycle_schema_versions_()
 {
 }
 
@@ -100,7 +99,6 @@ ObSchemaHistoryRecycler::~ObSchemaHistoryRecycler()
 int ObSchemaHistoryRecycler::init(
     ObMultiVersionSchemaService &schema_service,
     //ObFreezeInfoManager &freeze_info_manager,
-    ObZoneManager &zone_manager,
     ObMySQLProxy &sql_proxy)
 {
   int ret = OB_SUCCESS;
@@ -116,7 +114,6 @@ int ObSchemaHistoryRecycler::init(
   } else {
     schema_service_ = &schema_service;
     //freeze_info_mgr_ = &freeze_info_manager;
-    zone_mgr_ = &zone_manager;
     sql_proxy_ = &sql_proxy;
     inited_ = true;
   }
@@ -359,24 +356,19 @@ int ObSchemaHistoryRecycler::get_recycle_schema_version_by_server(
     common::hash::ObHashMap<uint64_t, int64_t> &recycle_schema_versions)
 {
   int ret = OB_SUCCESS;
-  ObArray<ObAddr> server_list;
   obrpc::ObGetMinSSTableSchemaVersionArg arg;
   ObZone zone;
   if (OB_FAIL(check_inner_stat())) {
     LOG_WARN("fail to check inner stat", KR(ret));
   } else if (OB_FAIL(arg.tenant_id_arg_list_.assign(tenant_ids))) {
     LOG_WARN("fail to assign arg", KR(ret));
-  } else if (OB_FAIL(SVR_TRACER.get_servers_of_zone(zone, server_list))) {
-    LOG_WARN("fail to get server_list", KR(ret));
   } else {
     rootserver::ObGetMinSSTableSchemaVersionProxy proxy_batch(
         *(GCTX.srv_rpc_proxy_), &obrpc::ObSrvRpcProxy::get_min_sstable_schema_version);
     const int64_t timeout_ts = GCONF.rpc_timeout;
-    for (int64_t i = 0; OB_SUCC(ret) && i < server_list.count(); i++) {
-      const ObAddr &addr = server_list.at(i);
-      if (OB_FAIL(proxy_batch.call(addr, timeout_ts, arg))) {
-        LOG_WARN("fail to call async batch rpc", KR(ret), K(addr), K(arg));
-      }
+    const ObAddr &addr = GCTX.self_addr();
+    if (OB_FAIL(proxy_batch.call(addr, timeout_ts, arg))) {
+      LOG_WARN("fail to call async batch rpc", KR(ret), K(addr), K(arg));
     }
     ObArray<int> return_code_array;
     int tmp_ret = OB_SUCCESS; // always wait all
@@ -908,7 +900,7 @@ int ObSchemaHistoryRecycler::try_recycle_schema_history(
     RECYCLE_FIRST_SCHEMA(RECYCLE_AND_COMPRESS, location, OB_ALL_TENANT_LOCATION_HISTORY_TNAME,
                          location_id);
     ret = OB_SUCCESS; // overwrite ret
-
+    
     // -------------------------- object priv --------------------------------------------
     // (RECYCLE_AND_COMPRESS)
     {
@@ -924,7 +916,7 @@ int ObSchemaHistoryRecycler::try_recycle_schema_history(
       }
       ret = OB_SUCCESS;
     }
-
+    
 #undef RECYCLE_FIRST_SCHEMA
     int64_t cost_ts = ObTimeUtility::current_time() - start_ts;
     ROOTSERVICE_EVENT_ADD("schema_recycler", "batch_recycle_by_tenant",
@@ -1651,7 +1643,7 @@ DEFINE_COMPRESS_SCHEMA_HISTORY(ObObjectPrivRecycleSchemaExecutor,
                                ObObjectPrivCompressSchemaInfo);
 DEFINE_COMPRESS_SCHEMA_HISTORY(ObObjectPrivMysqlRecycleSchemaExecutor,
                                ObObjectPrivMysqlSchemaKey,
-                               ObObjectPrivMysqlCompressSchemaInfo);
+                               ObObjectPrivMysqlCompressSchemaInfo); 
 #undef DEFINE_COMPRESS_SCHEMA_HISTORY
 
 #define BATCH_COMPRESS_SCHEMA_HISTORY(EXECUTOR, INFO) \
