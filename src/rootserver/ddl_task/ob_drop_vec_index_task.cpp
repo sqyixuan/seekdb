@@ -619,7 +619,7 @@ int ObDropVecIndexTask::drop_aux_index_table(const share::ObDDLTaskStatus &new_s
     LOG_WARN("fail to create drop index task", K(ret), K(vec_index_snapshot_data_));
   } else if (0 == hybrid_embedded_vec_.task_id_ && hybrid_embedded_vec_.is_valid()
       && OB_FAIL(create_drop_index_task(schema_guard, hybrid_embedded_vec_.table_id_, hybrid_embedded_vec_.index_name_, hybrid_embedded_vec_.task_id_))) {
-    LOG_WARN("fail to create drop index task", K(ret), K(hybrid_embedded_vec_));
+    LOG_WARN("fail to create drop index task", K(ret), K(hybrid_embedded_vec_)); 
   } else if (OB_FAIL(update_task_message())) {
     LOG_WARN("fail to update domain_index_, vec_index_id_, vec_index_snapshot_data_, hybrid_embedded_vec_ to __all_ddl_task_status", K(ret));
   } else if (OB_FAIL(wait_none_share_index_child_task_finish(has_finished))) {

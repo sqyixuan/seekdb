@@ -641,7 +641,7 @@ public:
   bool check_finished_and_set_stop();
   // independent dag process() exit loop when dag is final status
   bool is_final_status() const { return is_dag_failed()
-                                     || is_finish_status(dag_status_)
+                                     || is_finish_status(dag_status_) 
                                      || is_stop_; }
   virtual int report_result()
   {

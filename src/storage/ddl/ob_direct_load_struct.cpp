@@ -3872,12 +3872,6 @@ int ObVectorIndexSliceStore::init(
 {
   int ret = OB_SUCCESS;
   UNUSED(context_id);
-  vector_key_col_idx_ = -1;
-  vector_vid_col_idx_ = -1;
-  vector_col_idx_ = -1;
-  vector_data_col_idx_ = -1;
-  int64_t pk_increment_col_idx = -1;
-
   if (OB_UNLIKELY(is_inited_)) {
     ret = OB_INIT_TWICE;
     LOG_WARN("init twice", K(ret), K(is_inited_));
@@ -3916,10 +3910,14 @@ int ObVectorIndexSliceStore::init(
     for (int64_t i = 0; OB_SUCC(ret) && i < col_array.count(); i++) {
       // version control col is not valid
       if (!col_array.at(i).is_valid_) {
-      } else if (ObSchemaUtils::is_vec_hnsw_vid_column(col_array.at(i).column_flags_)) {
-        vector_vid_col_idx_ = i;
-      } else if (col_desc_array.at(i).col_id_ == OB_HIDDEN_PK_INCREMENT_COLUMN_ID) {
-        pk_increment_col_idx = i;
+      } else if (ObSchemaUtils::is_vec_hnsw_vid_column(col_array.at(i).column_flags_) ||
+                 col_desc_array.at(i).col_id_ == OB_HIDDEN_PK_INCREMENT_COLUMN_ID) {
+        if (vector_vid_col_idx_ == -1) {
+          vector_vid_col_idx_ = i;
+        } else {
+          ret = OB_ERR_UNEXPECTED;
+          LOG_WARN("failed to get valid vector index col idx", K(ret), K(vector_vid_col_idx_), K(i));
+        }
       } else if (ObSchemaUtils::is_vec_hnsw_vector_column(col_array.at(i).column_flags_)) {
         vector_col_idx_ = i;
       } else if (ObSchemaUtils::is_vec_hnsw_key_column(col_array.at(i).column_flags_)) {
@@ -3930,18 +3928,6 @@ int ObVectorIndexSliceStore::init(
         if (OB_FAIL(extra_column_idx_types_.push_back(ObExtraInfoIdxType(i, col_array.at(i).col_type_)))) {
           LOG_WARN("failed to push back extra info col idx", K(ret), K(i));
         }
-      }
-    }
-
-    if (OB_FAIL(ret)) {
-    } else if (vector_vid_col_idx_ == -1 && pk_increment_col_idx == -1) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("failed to get valid vector index col idx", K(ret), K(vector_vid_col_idx_), K(pk_increment_col_idx), K(col_array));
-    } else if (vector_vid_col_idx_ == -1 && pk_increment_col_idx != -1) {
-      vector_vid_col_idx_ = pk_increment_col_idx;
-    } else if (vector_vid_col_idx_ != -1 && pk_increment_col_idx != -1) {
-      if (OB_FAIL(extra_column_idx_types_.push_back(ObExtraInfoIdxType(pk_increment_col_idx, col_array.at(pk_increment_col_idx).col_type_)))) {
-        LOG_WARN("failed to push back extra info col idx", K(ret), K(pk_increment_col_idx));
       }
     }
 
@@ -5049,14 +5035,14 @@ int ObDDLTabletMergeDagParamV2::init(const bool for_major,
                                      ObDDLTabletContext *tablet_ctx,
                                      const ObTransID &trans_id,
                                      const ObTxSEQ &seq_no)
-{
+{ 
   int ret = OB_SUCCESS;
   bool is_cs_replica = false;
   bool is_column_store = false;
   ObTabletHandle tablet_handle;
   ObWriteTabletParam              *tablet_param = nullptr;
   ObDDLTabletContext::MergeCtx    *merge_ctx    = nullptr;
-
+  
   if ((is_full_direct_load(direct_load_type) && !for_replay
                                              && (0 == task_param.ddl_task_id_ || 0 == task_param.execution_id_))
       || (nullptr == tablet_ctx)) {
@@ -5109,7 +5095,7 @@ int ObDDLTabletMergeDagParamV2::init(const bool for_major,
         table_key_.version_range_.snapshot_version_ = task_param.snapshot_version_;
         table_key_.scn_range_.start_scn_ = start_scn;
       } else {
-        if (is_column_store && !GCTX.is_shared_storage_mode()) {
+        if (is_column_store && !GCTX.is_shared_storage_mode()) { 
           table_key_.table_type_ = ObITable::TableType::INC_MAJOR_DDL_MERGE_CO_SSTABLE;
         } else {
           table_key_.table_type_ = ObITable::TableType::INC_MAJOR_DDL_DUMP_SSTABLE;
@@ -5178,8 +5164,8 @@ int ObDDLTabletMergeDagParamV2::get_merge_helper(ObIDDLMergeHelper *&merge_helpe
     merge_helper = tablet_ctx_->lob_merge_ctx_.merge_helper_;
   } else {
     merge_helper = tablet_ctx_->merge_ctx_.merge_helper_;
-  }
-
+  } 
+  
   if (OB_FAIL(ret)) {
   } else if (nullptr == merge_helper) {
     ret = OB_ERR_UNEXPECTED;
@@ -5249,9 +5235,9 @@ int ObDDLTabletMergeDagParamV2::assign(const ObDDLTabletMergeDagParamV2 &merge_d
   return ret;
 }
 
-int ObDDLTabletMergeDagParamV2::get_tablet_param(share::ObLSID &ls_id,
+int ObDDLTabletMergeDagParamV2::get_tablet_param(share::ObLSID &ls_id, 
                                                  ObTabletID    &tablet_id,
-                                                 ObWriteTabletParam *&tablet_param) const
+                                                 ObWriteTabletParam *&tablet_param) const 
 {
   int ret = OB_SUCCESS;
   tablet_param =  nullptr;
@@ -5338,7 +5324,7 @@ int ObDDLTabletMergeDagParamV2::init_cg_sstable_array( hash::ObHashSet<int64_t> 
                                            ObMemAttr(MTL_ID(), "ddl_tblt_prm")))) {
     LOG_WARN("failed to init fifo allocator", K(ret));
   }
-
+  
   for (hash::ObHashSet<int64_t>::const_iterator iter = slice_idxes.begin(); OB_SUCC(ret) && iter != slice_idxes.end(); iter++) {
     char* buf = nullptr;
     ObArray<ObTableHandleV2> *table_array = nullptr;
@@ -5361,7 +5347,7 @@ int ObDDLTabletMergeDagParamV2::init_cg_sstable_array( hash::ObHashSet<int64_t> 
 
   if (OB_FAIL(ret)) {
     /* release mem when failed */
-    for (hash::ObHashMap<int64_t, ObArray<ObTableHandleV2>*>::const_iterator iter = merge_ctx->slice_cg_sstables_.begin();
+    for (hash::ObHashMap<int64_t, ObArray<ObTableHandleV2>*>::const_iterator iter = merge_ctx->slice_cg_sstables_.begin(); 
          iter != merge_ctx->slice_cg_sstables_.end();
          iter++) {
       if (nullptr != iter->second) {
@@ -5375,8 +5361,8 @@ int ObDDLTabletMergeDagParamV2::init_cg_sstable_array( hash::ObHashSet<int64_t> 
 }
 
 /*
- * this function is used for set table type for different cg
- * since in column store, rowkey cg is set as co sstable
+ * this function is used for set table type for different cg 
+ * since in column store, rowkey cg is set as co sstable 
  * and other cg is set as normal cg sstable
 */
 int ObDDLTabletMergeDagParamV2::get_table_type(
@@ -5442,11 +5428,11 @@ int ObDDLMergeBucketLock::init()
   return ret;
 }
 
-int ObDDLMergeBucketLock::mtl_init(ObDDLMergeBucketLock *&ddl_merge_bucket_lock)
+int ObDDLMergeBucketLock::mtl_init(ObDDLMergeBucketLock *&ddl_merge_bucket_lock) 
 {
   int ret = OB_SUCCESS;
   const uint64_t tenant_id = MTL_ID();
-
+  
   if (OB_ISNULL(ddl_merge_bucket_lock)) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invlaid argument, ddl merge bucket lock should not be null", K(ret));

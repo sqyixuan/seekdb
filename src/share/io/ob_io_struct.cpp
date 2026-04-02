@@ -1351,7 +1351,7 @@ int ObSyncIOChannel::submit(ObIORequest &req)
 {
   int ret = OB_SUCCESS;
   const int64_t current_ts = ObTimeUtility::current_time();
-  const int64_t io_depth = get_io_depth(min(max(GMEMCONF.get_server_memory_limit() / 10, static_cast<int64_t>(500 * 1024L * 1024L)), static_cast<int64_t>(4 * 1024L * 1024L * 1024L)));
+  const int64_t io_depth = get_io_depth(min(max(GMEMCONF.get_server_memory_limit() / 10, static_cast<int64_t>(500 * 1024L * 1024L)), static_cast<int64_t>(4 * 1024L * 1024L * 1024L))); 
   if (OB_UNLIKELY(!is_inited_)) {
     ret = OB_NOT_INIT;
     LOG_WARN("not init", K(ret), K(is_inited_));
@@ -1799,7 +1799,7 @@ int ObIOCallbackManager::enqueue_callback(ObIORequest &req)
     LOG_WARN("Not init", K(ret));
   } else if (OB_UNLIKELY(current_ts > req.timeout_ts())) {
     ret = OB_TIMEOUT;
-    LOG_WARN("io timeout because current time is larger than timeout timestamp", K(ret), K(current_ts), K(req));
+    LOG_WARN("io timeout because current time is larger than timeout timestamp", K(ret), K(current_ts), K(req));  
   } else if (OB_NOT_NULL(req.io_result_)) {
     ObThreadCondGuard guard(req.io_result_->get_cond());
     if (OB_FAIL(guard.get_ret())) {
