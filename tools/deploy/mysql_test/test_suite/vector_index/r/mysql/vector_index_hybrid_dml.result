@@ -1,0 +1,679 @@
+alter system set ob_vector_memory_limit_percentage = 34;
+call DBMS_AI_SERVICE.DROP_AI_MODEL_ENDPOINT ('ob_embed_endpoint');
+call DBMS_AI_SERVICE.DROP_AI_MODEL ('ob_embed');
+call DBMS_AI_SERVICE.CREATE_AI_MODEL(
+'ob_embed', '{
+    "type": "dense_embedding",
+    "model_name": "qwen3-embedding"
+  }');
+=== 基础DML ===
+drop table if exists t1;
+drop table if exists t2;
+drop table if exists t3;
+drop table if exists tbl_46;
+drop table if exists tbl_291;
+drop procedure if exists process;
+create table t1 (id int AUTO_INCREMENT PRIMARY KEY, doc varchar(100),VECTOR INDEX idx1(doc) WITH (distance=L2,type=hnsw,dim=1024,model=ob_embed,sync_mode=immediate));
+insert into t1 (doc) values('Document 1');
+insert into t1 (doc) values('Document 2');
+insert into t1 (id, doc) values(10, 'Document with specific id') on duplicate key update doc = 'Updated document';
+insert ignore into t1 (id, doc) values(11, 'Document eleven');
+create table t2 (id int PRIMARY KEY, doc varchar(100));
+insert into t2 values(100, 'Document from table t2');
+insert into t1 select * from t2 on duplicate key update doc = concat(t1.doc, ' - merged from t2');
+update t1 set doc = 'Updated document content' where id = 100;
+update t1 set doc = concat(doc, ' - modified') where id > 5;
+delete from t1 where id <= 5;
+select distinct id from t1;
+id
+10
+11
+100
+drop table t1, t2;
+=== 分区表DML ===
+CREATE TABLE t1(id int not null auto_increment, doc varchar(100),
+primary key(id),
+VECTOR INDEX idx1(doc) WITH (distance=L2,
+type=hnsw, dim=1024,
+model=ob_embed,
+sync_mode=immediate))
+PARTITION BY RANGE COLUMNS(id)
+(
+PARTITION p0 VALUES LESS THAN(100),
+PARTITION p1 VALUES LESS THAN(200),
+PARTITION p2 VALUES LESS THAN(300),
+PARTITION p3 VALUES LESS THAN(10000),
+PARTITION p4 VALUES LESS THAN MAXVALUE
+);
+insert into t1 (doc) values('Partition document 1');
+insert into t1 (id, doc) values(150, 'Document in partition p1');
+insert into t1 (id, doc) values(250, 'Document in partition p2');
+insert into t1 (id, doc) values(5000, 'Document in partition p3');
+insert into t1 (id, doc) values(10, 'Duplicate id test') on duplicate key update doc = 'Updated in partition';
+insert ignore into t1 (id, doc) values(11, 'Ignore test document');
+create table t2 (id int primary key, doc varchar(100));
+insert into t2 values(99, 'Document from t2 in p0');
+insert into t2 values(150, 'Document from t2 in p1');
+insert into t1 select * from t2 on duplicate key update doc = concat(t1.doc, ' - merged from t2');
+update t1 set doc = 'Updated partition document' where id = 150;
+update t1 set doc = concat(doc, ' - partition modified') where id > 100;
+delete from t1 where id <= 10;
+select distinct id from t1;
+id
+11
+99
+150
+250
+5000
+drop table t1, t2;
+CREATE TABLE t1(id int not null, doc varchar(100),primary key(id),VECTOR INDEX idx1(doc) WITH (distance=L2,type=hnsw,dim=1024,model=ob_embed,sync_mode=immediate))PARTITION BY RANGE COLUMNS(id)(
+PARTITION p0 VALUES LESS THAN(100),
+PARTITION p1 VALUES LESS THAN(200),
+PARTITION p2 VALUES LESS THAN(300),
+PARTITION p3 VALUES LESS THAN(10000),
+PARTITION p4 VALUES LESS THAN MAXVALUE
+);
+insert into t1 values(1, 'Document one');
+insert into t1 values(50, 'Document fifty');
+insert into t1 values(99, 'Document ninety-nine');
+insert into t1 values(150, 'Document one-fifty');
+insert into t1 values(200, 'Document two-hundred');
+create table t2 (id int primary key, doc varchar(100));
+insert into t2 values(50, 'Document from t2');
+insert into t2 values(99, 'Another document from t2');
+alter system set direct_load_allow_fallback=TRUE;
+insert /*+ direct(true, 0) enable_parallel_dml parallel(2) */ into t1 select * from t2 on duplicate key update doc = concat(t1.doc, ' - direct merged');
+insert into t2 values(500, 'Document five hundred');
+insert /*+ direct(true, 100, 'inc_replace') enable_parallel_dml parallel(2) */ into t1 select * from t2;
+ERROR 23000: Duplicate entry '50' for key 'PRIMARY'
+create table t3 (id int primary key, doc varchar(100));
+insert into t3 values(500, 'Document from t3');
+insert into t3 values(501, 'Another document from t3');
+insert into t1(id, doc)
+select t2.id, t3.doc
+from t2
+join t3 on t2.id = t3.id
+where t2.id = 500
+on duplicate key update doc = concat(t1.doc, ' - complex joined');
+update t1
+join t2 on t1.id = t2.id
+set t1.doc = concat(t2.doc, ' - joined')
+where t2.id < 5;
+update t1
+set doc = case
+when id = 201 then concat(doc, ' - case 201')
+when id = 401 then concat(doc, ' - case 401')
+else doc
+end
+where id < 500;
+delete t1
+from t1
+join t2 on t1.id = t2.id
+where t2.id <= 3;
+=== 事务 ===
+START TRANSACTION;
+delete from t1
+where t1.id in (
+select id from t2
+);
+insert into t1 values(30, 'Transaction document');
+COMMIT;
+=== 存储过程 ===
+create procedure process(IN inc1 INT, IN inc2 INT)
+begin
+DECLARE t2id INT;
+select id into t2id
+from t2
+where id = inc1;
+if t2id = inc2 then
+update t1
+set doc = concat(doc, ' - procedure')
+where id > 10000;
+else
+insert into t1 select * from t2 where t2.id >= 505 on duplicate key update doc = concat(t1.doc, ' - procedure merged');
+end if;
+end;
+//
+CALL process(500, 500);
+CALL process(500, 501);
+drop procedure process;
+drop table t1, t2, t3;
+=== 并发DML ===
+bugfix 2025011500107001921 parallel dml
+drop table if exists t1;
+create table t1(id int, category int, doc varchar(100), primary key(id), 
+vector index idx3(doc) with (distance=l2,type=hnsw,dim=1024,model=ob_embed,sync_mode=immediate));
+insert into t1 values(1, 1, 'Document with parallel test 1') on duplicate key update doc = concat(t1.doc, ' - parallel test 1');
+insert into t1 values(2, 2, 'Document with parallel test 2');
+insert into t1 values(3, 3, 'Document with parallel test 3');
+insert into t1 values(100, 100, 'Document with parallel test 100') on duplicate key update doc = concat(t1.doc, ' - parallel test 100');
+update /*+enable_parallel_dml parallel(2)*/t1 set category=(select id from t1 limit 1) where category is null;
+update /*+enable_parallel_dml parallel(2)*/t1 set doc=(select doc from t1 limit 1) where category is not null;
+update t1 set category=(select /*+enable_parallel_dml parallel(2)*/id from t1 limit 1);
+=== 辅助表数据验证 ===
+drop table if exists t1;
+create table t1(id int, category int, doc varchar(100), primary key(id), 
+vector index idx3(doc) with (distance=l2, type=hnsw, dim=1024, model=ob_embed, sync_mode=immediate));
+INSERT INTO t1 (id, doc) VALUES (1, 'aa');
+INSERT INTO t1 (id, doc) VALUES (2, 'bb');
+INSERT INTO t1 (id, doc) VALUES (3, 'cc');
+UPDATE t1 set doc = concat(doc, ' - modified') where id >= 2;
+delete from t1 where id = 1;
+drop table t1;
+=== 多表 JOIN UPDATE ===
+DROP TABLE IF EXISTS vector_join_t1;
+DROP TABLE IF EXISTS vector_join_t2;
+DROP TABLE IF EXISTS vector_join_t3;
+CREATE TABLE vector_join_t1 (
+id INT PRIMARY KEY,
+doc VARCHAR(100),
+category VARCHAR(50),
+VECTOR INDEX idx1(doc) WITH (distance=L2, type=hnsw, dim=1024, model=ob_embed, sync_mode=immediate)
+);
+CREATE TABLE vector_join_t2 (
+id INT PRIMARY KEY,
+name VARCHAR(100),
+ref_id INT
+);
+CREATE TABLE vector_join_t3 (
+id INT PRIMARY KEY,
+description TEXT,
+ref_id INT
+);
+INSERT INTO vector_join_t1 VALUES 
+(1, 'Document one', 'tech'),
+(2, 'Document two', 'science'),
+(3, 'Document three', 'tech');
+INSERT INTO vector_join_t2 VALUES 
+(1, 'Reference one', 1),
+(2, 'Reference two', 2),
+(3, 'Reference three', 3);
+INSERT INTO vector_join_t3 VALUES 
+(1, 'Description for doc one', 1),
+(2, 'Description for doc two', 2),
+(3, 'Description for doc three', 3);
+UPDATE vector_join_t1 t1
+JOIN vector_join_t2 t2 ON t1.id = t2.ref_id
+JOIN vector_join_t3 t3 ON t1.id = t3.ref_id
+SET t1.doc = CONCAT(t1.doc, ' - ', t2.name, ' - ', t3.description)
+WHERE t1.category = 'tech';
+SELECT * FROM vector_join_t1 ORDER BY id;
+id	doc	category
+1	Document one - Reference one - Description for doc one	tech
+2	Document two	science
+3	Document three - Reference three - Description for doc three	tech
+=== 多表 JOIN DELETE ===
+DELETE t1 FROM vector_join_t1 t1
+JOIN vector_join_t2 t2 ON t1.id = t2.ref_id
+WHERE t2.name LIKE '%two%';
+SELECT * FROM vector_join_t1 ORDER BY id;
+id	doc	category
+1	Document one - Reference one - Description for doc one	tech
+3	Document three - Reference three - Description for doc three	tech
+=== 子查询 UPDATE ===
+UPDATE vector_join_t1 
+SET doc = CONCAT(doc, ' - updated')
+WHERE id IN (SELECT ref_id FROM vector_join_t2 WHERE name LIKE '%one%');
+SELECT * FROM vector_join_t1 ORDER BY id;
+id	doc	category
+1	Document one - Reference one - Description for doc one - updated	tech
+3	Document three - Reference three - Description for doc three	tech
+DROP TABLE vector_join_t1, vector_join_t2, vector_join_t3;
+========== 视图上的 DML 操作 ==========
+DROP TABLE IF EXISTS vector_view_base;
+DROP VIEW IF EXISTS vector_view;
+CREATE TABLE vector_view_base (
+id INT PRIMARY KEY,
+doc VARCHAR(100),
+category VARCHAR(50),
+VECTOR INDEX idx1(doc) WITH (distance=L2, type=hnsw, dim=1024, model=ob_embed, sync_mode=immediate)
+);
+CREATE VIEW vector_view AS 
+SELECT id, doc, category FROM vector_view_base WHERE category = 'tech';
+INSERT INTO vector_view_base VALUES 
+(1, 'Tech document one', 'tech'),
+(2, 'Science document', 'science'),
+(3, 'Tech document two', 'tech');
+INSERT INTO vector_view (id, doc, category) VALUES (4, 'New tech doc', 'tech');
+UPDATE vector_view SET doc = CONCAT(doc, ' - updated') WHERE id = 1;
+DELETE FROM vector_view WHERE id = 3;
+SELECT * FROM vector_view_base ORDER BY id;
+id	doc	category
+1	Tech document one - updated	tech
+2	Science document	science
+4	New tech doc	tech
+SELECT * FROM vector_view ORDER BY id;
+id	doc	category
+1	Tech document one - updated	tech
+4	New tech doc	tech
+DROP VIEW vector_view;
+DROP TABLE vector_view_base;
+========== JSON 字段的 DML 操作 ==========
+DROP TABLE IF EXISTS vector_json_table;
+CREATE TABLE vector_json_table (
+id INT PRIMARY KEY,
+doc VARCHAR(100),
+metadata JSON,
+VECTOR INDEX idx1(doc) WITH (distance=L2, type=hnsw, dim=1024, model=ob_embed, sync_mode=immediate),
+INDEX metadata_idx ((CAST(json_extract(metadata, '$.tags') AS CHAR(100) ARRAY)))
+);
+INSERT INTO vector_json_table VALUES 
+(1, 'Document with tags', '{"tags": ["tech", "ai"], "priority": "high"}'),
+(2, 'Another document', '{"tags": ["science", "research"], "priority": "medium"}');
+UPDATE vector_json_table 
+SET metadata = JSON_SET(metadata, '$.tags', JSON_ARRAY('tech', 'ai', 'machine_learning'))
+WHERE id = 1;
+UPDATE vector_json_table 
+SET doc = CONCAT(doc, ' - high priority')
+WHERE JSON_EXTRACT(metadata, '$.priority') = 'high';
+SELECT * FROM vector_json_table ORDER BY id;
+id	doc	metadata
+1	Document with tags - high priority	{"tags": ["tech", "ai", "machine_learning"], "priority": "high"}
+2	Another document	{"tags": ["science", "research"], "priority": "medium"}
+DROP TABLE vector_json_table;
+========== 字符集相关的 DML ==========
+DROP TABLE IF EXISTS vector_charset_table;
+=== utf8 字符集 ===
+CREATE TABLE vector_charset_table (
+id INT PRIMARY KEY,
+doc VARCHAR(100),
+VECTOR INDEX idx1(doc) WITH (distance=L2, type=hnsw, dim=1024, model=ob_embed, sync_mode=immediate)
+) DEFAULT CHARSET = utf8;
+INSERT INTO vector_charset_table VALUES 
+(1, 'abc英文空格 中文分号；英文分号;全角空格　全角逗号，等');
+SELECT * FROM vector_charset_table WHERE id = 1;
+id	doc
+1	abc英文空格 中文分号；英文分号;全角空格　全角逗号，等
+=== utf16 字符集 ===
+DROP TABLE vector_charset_table;
+CREATE TABLE vector_charset_table (
+id INT PRIMARY KEY,
+doc VARCHAR(100),
+VECTOR INDEX idx1(doc) WITH (distance=L2, type=hnsw, dim=1024, model=ob_embed, sync_mode=immediate)
+) DEFAULT CHARSET = utf16;
+INSERT INTO vector_charset_table VALUES (1, 'abc');
+UPDATE vector_charset_table 
+SET doc = CONCAT(doc, 'abc-after change')
+WHERE id = 1;
+SELECT * FROM vector_charset_table WHERE id = 1;
+id	doc
+1	abcabc-after change
+DROP TABLE vector_charset_table;
+========== 空值和边界值处理 ==========
+DROP TABLE IF EXISTS vector_null_table;
+CREATE TABLE vector_null_table (
+id INT PRIMARY KEY,
+doc VARCHAR(100),
+content TEXT,
+VECTOR INDEX idx1(doc) WITH (distance=L2, type=hnsw, dim=1024, model=ob_embed, sync_mode=immediate)
+);
+INSERT INTO vector_null_table VALUES 
+(1, '', 'Empty string'),
+(2, NULL, 'NULL value'),
+(3, '   ', 'Whitespace only'),
+(4, 'Normal content', 'Normal document');
+UPDATE vector_null_table 
+SET doc = NULL 
+WHERE id = 4;
+UPDATE vector_null_table 
+SET doc = '' 
+WHERE id = 3;
+DELETE FROM vector_null_table 
+WHERE doc IS NULL OR doc = '';
+SELECT * FROM vector_null_table ORDER BY id;
+id	doc	content
+DROP TABLE vector_null_table;
+=== 基础DML ===
+drop table if exists t1;
+drop table if exists t2;
+drop table if exists t3;
+drop procedure if exists process;
+create table t1 (id int AUTO_INCREMENT PRIMARY KEY, doc varchar(100),VECTOR INDEX idx1(doc) WITH (distance=L2,type=hnsw, dim=1024,model=ob_embed,sync_mode=manual));
+insert into t1 (doc) values('Document 1');
+insert into t1 (doc) values('Document 2');
+insert into t1 (id, doc) values(10, 'Document with specific id') on duplicate key update doc = 'Updated document';
+insert ignore into t1 (id, doc) values(11, 'Document eleven');
+create table t2 (id int PRIMARY KEY, doc varchar(100));
+insert into t2 values(100, 'Document from table t2');
+insert into t1 select * from t2 on duplicate key update doc = concat(t1.doc, ' - merged from t2');
+update t1 set doc = 'Updated document content' where id = 100;
+update t1 set doc = concat(doc, ' - modified') where id > 5;
+delete from t1 where id <= 5;
+select distinct id from t1;
+id
+10
+11
+100
+drop table t1, t2;
+=== 分区表DML ===
+CREATE TABLE t1(id int not null auto_increment, doc varchar(100),
+primary key(id),
+VECTOR INDEX idx1(doc) WITH (distance=L2,
+type=hnsw, dim=1024,
+model=ob_embed,
+sync_mode=manual))
+PARTITION BY RANGE COLUMNS(id)
+(
+PARTITION p0 VALUES LESS THAN(100),
+PARTITION p1 VALUES LESS THAN(200),
+PARTITION p2 VALUES LESS THAN(300),
+PARTITION p3 VALUES LESS THAN(10000),
+PARTITION p4 VALUES LESS THAN MAXVALUE
+);
+insert into t1 (doc) values('Partition document 1');
+insert into t1 (id, doc) values(150, 'Document in partition p1');
+insert into t1 (id, doc) values(250, 'Document in partition p2');
+insert into t1 (id, doc) values(5000, 'Document in partition p3');
+insert into t1 (id, doc) values(10, 'Duplicate id test') on duplicate key update doc = 'Updated in partition';
+insert ignore into t1 (id, doc) values(11, 'Ignore test document');
+create table t2 (id int primary key, doc varchar(100));
+insert into t2 values(99, 'Document from t2 in p0');
+insert into t2 values(150, 'Document from t2 in p1');
+insert into t1 select * from t2 on duplicate key update doc = concat(t1.doc, ' - merged from t2');
+update t1 set doc = 'Updated partition document' where id = 150;
+update t1 set doc = concat(doc, ' - partition modified') where id > 100;
+delete from t1 where id <= 10;
+select distinct id from t1;
+id
+11
+99
+150
+250
+5000
+drop table t1, t2;
+CREATE TABLE t1(id int not null, doc varchar(100),primary key(id),VECTOR INDEX idx1(doc) WITH (distance=L2,type=hnsw, dim=1024,model=ob_embed,sync_mode=manual))PARTITION BY RANGE COLUMNS(id)(
+PARTITION p0 VALUES LESS THAN(100),
+PARTITION p1 VALUES LESS THAN(200),
+PARTITION p2 VALUES LESS THAN(300),
+PARTITION p3 VALUES LESS THAN(10000),
+PARTITION p4 VALUES LESS THAN MAXVALUE
+);
+insert into t1 values(1, 'Document one');
+insert into t1 values(50, 'Document fifty');
+insert into t1 values(99, 'Document ninety-nine');
+insert into t1 values(150, 'Document one-fifty');
+insert into t1 values(200, 'Document two-hundred');
+create table t2 (id int primary key, doc varchar(100));
+insert into t2 values(50, 'Document from t2');
+insert into t2 values(99, 'Another document from t2');
+alter system set direct_load_allow_fallback=TRUE;
+insert /*+ direct(true, 0) enable_parallel_dml parallel(2) */ into t1 select * from t2 on duplicate key update doc = concat(t1.doc, ' - direct merged');
+insert into t2 values(500, 'Document five hundred');
+insert /*+ direct(true, 100, 'inc_replace') enable_parallel_dml parallel(2) */ into t1 select * from t2;
+ERROR 23000: Duplicate entry '50' for key 'PRIMARY'
+create table t3 (id int primary key, doc varchar(100));
+insert into t3 values(500, 'Document from t3');
+insert into t3 values(501, 'Another document from t3');
+insert into t1(id, doc)
+select t2.id, t3.doc
+from t2
+join t3 on t2.id = t3.id
+where t2.id = 500
+on duplicate key update doc = concat(t1.doc, ' - complex joined');
+update t1
+join t2 on t1.id = t2.id
+set t1.doc = concat(t2.doc, ' - joined')
+where t2.id < 5;
+update t1
+set doc = case
+when id = 201 then concat(doc, ' - case 201')
+when id = 401 then concat(doc, ' - case 401')
+else doc
+end
+where id < 500;
+delete t1
+from t1
+join t2 on t1.id = t2.id
+where t2.id <= 3;
+=== 事务 ===
+START TRANSACTION;
+delete from t1
+where t1.id in (
+select id from t2
+);
+insert into t1 values(30, 'Transaction document');
+COMMIT;
+=== 存储过程 ===
+create procedure process(IN inc1 INT, IN inc2 INT)
+begin
+DECLARE t2id INT;
+select id into t2id
+from t2
+where id = inc1;
+if t2id = inc2 then
+update t1
+set doc = concat(doc, ' - procedure')
+where id > 10000;
+else
+insert into t1 select * from t2 where t2.id >= 505 on duplicate key update doc = concat(t1.doc, ' - procedure merged');
+end if;
+end;
+//
+CALL process(500, 500);
+CALL process(500, 501);
+drop procedure process;
+drop table t1, t2, t3;
+=== 并发DML ===
+bugfix 2025011500107001921 parallel dml
+drop table if exists t1;
+create table t1(id int, category int, doc varchar(100), primary key(id), 
+vector index idx3(doc) with (distance=l2, type=hnsw, dim=1024, model=ob_embed, sync_mode=manual));
+insert into t1 values(1, 1, 'Document with parallel test 1') on duplicate key update doc = concat(t1.doc, ' - parallel test 1');
+insert into t1 values(2, 2, 'Document with parallel test 2');
+insert into t1 values(3, 3, 'Document with parallel test 3');
+insert into t1 values(100, 100, null) on duplicate key update doc = concat(t1.doc, ' - parallel test 100');
+update /*+enable_parallel_dml parallel(2)*/t1 set category=(select id from t1 limit 1) where category is null;
+update /*+enable_parallel_dml parallel(2)*/t1 set doc=(select doc from t1 limit 1) where category is not null;
+update t1 set category=(select /*+enable_parallel_dml parallel(2)*/id from t1 limit 1);
+=== 辅助表数据验证 ===
+drop table if exists t1;
+create table t1(id int, category int, doc varchar(100), primary key(id), 
+vector index idx3(doc) with (distance=l2, type=hnsw, dim=1024, model=ob_embed, sync_mode=manual));
+INSERT INTO t1 (id, doc) VALUES (1, 'aa');
+INSERT INTO t1 (id, doc) VALUES (2, 'bb');
+INSERT INTO t1 (id, doc) VALUES (3, 'cc');
+UPDATE t1 set doc = concat(doc, ' - modified') where id >= 2;
+delete from t1 where id = 1;
+drop table t1;
+=== 多表 JOIN UPDATE ===
+DROP TABLE IF EXISTS vector_join_t1;
+DROP TABLE IF EXISTS vector_join_t2;
+DROP TABLE IF EXISTS vector_join_t3;
+CREATE TABLE vector_join_t1 (
+id INT PRIMARY KEY,
+doc VARCHAR(100),
+category VARCHAR(50),
+VECTOR INDEX idx1(doc) WITH (distance=L2, type=hnsw, dim=1024, model=ob_embed, sync_mode=manual)
+);
+CREATE TABLE vector_join_t2 (
+id INT PRIMARY KEY,
+name VARCHAR(100),
+ref_id INT
+);
+CREATE TABLE vector_join_t3 (
+id INT PRIMARY KEY,
+description TEXT,
+ref_id INT
+);
+INSERT INTO vector_join_t1 VALUES 
+(1, 'Document one', 'tech'),
+(2, 'Document two', 'science'),
+(3, 'Document three', 'tech');
+INSERT INTO vector_join_t2 VALUES 
+(1, 'Reference one', 1),
+(2, 'Reference two', 2),
+(3, 'Reference three', 3);
+INSERT INTO vector_join_t3 VALUES 
+(1, 'Description for doc one', 1),
+(2, 'Description for doc two', 2),
+(3, 'Description for doc three', 3);
+UPDATE vector_join_t1 t1
+JOIN vector_join_t2 t2 ON t1.id = t2.ref_id
+JOIN vector_join_t3 t3 ON t1.id = t3.ref_id
+SET t1.doc = CONCAT(t1.doc, ' - ', t2.name, ' - ', t3.description)
+WHERE t1.category = 'tech';
+SELECT * FROM vector_join_t1 ORDER BY id;
+id	doc	category
+1	Document one - Reference one - Description for doc one	tech
+2	Document two	science
+3	Document three - Reference three - Description for doc three	tech
+=== 多表 JOIN DELETE ===
+DELETE t1 FROM vector_join_t1 t1
+JOIN vector_join_t2 t2 ON t1.id = t2.ref_id
+WHERE t2.name LIKE '%two%';
+SELECT * FROM vector_join_t1 ORDER BY id;
+id	doc	category
+1	Document one - Reference one - Description for doc one	tech
+3	Document three - Reference three - Description for doc three	tech
+=== 子查询 UPDATE ===
+UPDATE vector_join_t1 
+SET doc = CONCAT(doc, ' - updated')
+WHERE id IN (SELECT ref_id FROM vector_join_t2 WHERE name LIKE '%one%');
+SELECT * FROM vector_join_t1 ORDER BY id;
+id	doc	category
+1	Document one - Reference one - Description for doc one - updated	tech
+3	Document three - Reference three - Description for doc three	tech
+DROP TABLE vector_join_t1, vector_join_t2, vector_join_t3;
+========== 视图上的 DML 操作 ==========
+DROP TABLE IF EXISTS vector_view_base;
+DROP VIEW IF EXISTS vector_view;
+CREATE TABLE vector_view_base (
+id INT PRIMARY KEY,
+doc VARCHAR(100),
+category VARCHAR(50),
+VECTOR INDEX idx1(doc) WITH (distance=L2, type=hnsw, dim=1024, model=ob_embed, sync_mode=manual)
+);
+CREATE VIEW vector_view AS 
+SELECT id, doc, category FROM vector_view_base WHERE category = 'tech';
+INSERT INTO vector_view_base VALUES 
+(1, 'Tech document one', 'tech'),
+(2, 'Science document', 'science'),
+(3, 'Tech document two', 'tech');
+INSERT INTO vector_view (id, doc, category) VALUES (4, 'New tech doc', 'tech');
+UPDATE vector_view SET doc = CONCAT(doc, ' - updated') WHERE id = 1;
+DELETE FROM vector_view WHERE id = 3;
+SELECT * FROM vector_view_base ORDER BY id;
+id	doc	category
+1	Tech document one - updated	tech
+2	Science document	science
+4	New tech doc	tech
+SELECT * FROM vector_view ORDER BY id;
+id	doc	category
+1	Tech document one - updated	tech
+4	New tech doc	tech
+DROP VIEW vector_view;
+DROP TABLE vector_view_base;
+========== JSON 字段的 DML 操作 ==========
+DROP TABLE IF EXISTS vector_json_table;
+CREATE TABLE vector_json_table (
+id INT PRIMARY KEY,
+doc VARCHAR(100),
+metadata JSON,
+VECTOR INDEX idx1(doc) WITH (distance=L2, type=hnsw, dim=1024, model=ob_embed, sync_mode=manual),
+INDEX metadata_idx ((CAST(json_extract(metadata, '$.tags') AS CHAR(100) ARRAY)))
+);
+INSERT INTO vector_json_table VALUES 
+(1, 'Document with tags', '{"tags": ["tech", "ai"], "priority": "high"}'),
+(2, 'Another document', '{"tags": ["science", "research"], "priority": "medium"}');
+UPDATE vector_json_table 
+SET metadata = JSON_SET(metadata, '$.tags', JSON_ARRAY('tech', 'ai', 'machine_learning'))
+WHERE id = 1;
+UPDATE vector_json_table 
+SET doc = CONCAT(doc, ' - high priority')
+WHERE JSON_EXTRACT(metadata, '$.priority') = 'high';
+SELECT * FROM vector_json_table ORDER BY id;
+id	doc	metadata
+1	Document with tags - high priority	{"tags": ["tech", "ai", "machine_learning"], "priority": "high"}
+2	Another document	{"tags": ["science", "research"], "priority": "medium"}
+DROP TABLE vector_json_table;
+========== 字符集相关的 DML ==========
+DROP TABLE IF EXISTS vector_charset_table;
+=== utf8 字符集 ===
+CREATE TABLE vector_charset_table (
+id INT PRIMARY KEY,
+doc VARCHAR(100),
+VECTOR INDEX idx1(doc) WITH (distance=L2, type=hnsw, dim=1024, model=ob_embed, sync_mode=manual)
+) DEFAULT CHARSET = utf8;
+INSERT INTO vector_charset_table VALUES 
+(1, 'abc英文空格 中文分号；英文分号;全角空格　全角逗号，等');
+SELECT * FROM vector_charset_table WHERE id = 1;
+id	doc
+1	abc英文空格 中文分号；英文分号;全角空格　全角逗号，等
+=== utf16 字符集 ===
+DROP TABLE vector_charset_table;
+CREATE TABLE vector_charset_table (
+id INT PRIMARY KEY,
+doc VARCHAR(100),
+VECTOR INDEX idx1(doc) WITH (distance=L2, type=hnsw, dim=1024, model=ob_embed, sync_mode=manual)
+) DEFAULT CHARSET = utf16;
+INSERT INTO vector_charset_table VALUES (1, 'abc');
+UPDATE vector_charset_table 
+SET doc = CONCAT(doc, 'abc-after change')
+WHERE id = 1;
+SELECT * FROM vector_charset_table WHERE id = 1;
+id	doc
+1	abcabc-after change
+DROP TABLE vector_charset_table;
+========== 空值和边界值处理 ==========
+DROP TABLE IF EXISTS vector_null_table;
+CREATE TABLE vector_null_table (
+id INT PRIMARY KEY,
+doc VARCHAR(100),
+content TEXT,
+VECTOR INDEX idx1(doc) WITH (distance=L2, type=hnsw, dim=1024, model=ob_embed, sync_mode=manual)
+);
+INSERT INTO vector_null_table VALUES 
+(1, '', 'Empty string'),
+(2, NULL, 'NULL value'),
+(3, '   ', 'Whitespace only'),
+(4, 'Normal content', 'Normal document');
+UPDATE vector_null_table 
+SET doc = NULL 
+WHERE id = 4;
+UPDATE vector_null_table 
+SET doc = '' 
+WHERE id = 3;
+DELETE FROM vector_null_table 
+WHERE doc IS NULL OR doc = '';
+SELECT * FROM vector_null_table ORDER BY id;
+id	doc	content
+DROP TABLE vector_null_table;
+create TABLE tbl_46 ( col_646 varchar ( 462 )    default 'kCp!' ,col_647 enum ( 'Alice','Bob','Charlie','David' ) ,col_648 bit ( 4 )   not null ,col_649 blob ( 500 ) ,col_650 binary ( 249 )   not null ,col_651 longblob ,col_652 text ( 437 )   not null ,col_653 year   not null default '2023' ,col_654 double   not null ,col_655 int  unsigned not null ,col_656 bit ( 60 )   not null ,col_657 time   not null default '17:13:39.00' ,col_658 bigint ,col_659 smallint   not null ,col_660 longtext   not null ,col_661 set ( 'Alice','Bob','Charlie','David' ) ,col_662 bigint   not null default 8644628108849129865 ,col_663 enum ( 'Alice','Bob','Charlie','David' ) ,col_664 text ( 295 ) ,col_665 boolean    default 1 ,col_666 varchar ( 227 )    default 'T(8onPj0SYnni' ,col_667 char ( 4 )   not null default 'M骰F' ,col_668 varchar ( 272 )   not null ,col_669 tinyint   not null ,col_670 tinytext   not null , vector index vector_idx_108 ( col_666 ) WITH ( distance=l2, type=hnsw_bq, model=ob_embed, dim=1024, sync_mode=manual ) ,vector index vector_idx_109 ( col_668 ( 4 ) ) WITH ( distance=l2, type=hnsw_bq, model=ob_embed, dim=1024, sync_mode=manual ) ,vector index vector_idx_110 ( col_646 ) WITH ( distance=l2, type=hnsw, model=ob_embed, dim=1024, sync_mode=async, sync_interval=2h ) ) DEFAULT CHARSET= gbk ROW_FORMAT = COMPRESSED COMPRESSION = 'zstd_1.0' partition by range ( col_669 ) ( partition p0 values less than (-95), partition p1 values less than (-1), partition p2 values less than (maxvalue) );
+alter table tbl_46 rename index vector_idx_108 to idx_108_1;
+truncate table tbl_46;
+drop index vector_idx_110 on tbl_46;
+alter table tbl_46 set ROW_FORMAT = CONDENSED COMPRESSION = 'lz4_1.9.1';
+alter table tbl_46 drop column col_660;
+insert  into tbl_46  values ( 'fZRy','Alice',2,'#)yBXRSfWJ_v','JxVR2','n5eAA^','B!uqWHzd5exB5+sdtMb','2024',6672.807434091138,980726813,266082156818237428,'02:15:45.00',-8093275117344223487,-16121,'Alice',6644531357963517697,'Bob','k@DiaP4M#X',0,null,'摂40','蠘!',4,'' ) ,( '!b*y@d~%','Alice',7,'6pX!$ANS_l=7Uu','9%Im^D*$b','~lJAjW!','-OMP7','2036',3096.3010366290077,3356524365,492138548247993161,'12:31:44.00',-5017908614882002635,-26417,'David',5368424492428074319,'Charlie','+)PW#=_n',1,'5(r!keD','D5L','纺逥匈p',-78,'+' ) ,( 'G1dflP3','David',3,'RVi&nUnPKAVQ+&R','Lo-Z5*=g','qbB','yhF!0!#QZz','2006',1395.384855924456,3283423794,690014623954080390,'23:00:59.00',-6489689200642591539,3580,'Bob',-4430271066222756645,null,'pQ',1,'T~^4T#Y%2D#=084RjB_','杔I','d1s嵏@V蕸B諲fx杸',26,'Od4H757x2RRe' ) ,( 'B)','David',14,'z&7bs!9k=YL%','692%F8qSlX(qp','','','1971',5557.241713559218,3119523311,1089391141525224200,'04:39:37.00',3743710813273974127,25156,'Charlie',9062918716947740025,'Charlie','tUNk0mVK0q-^^8',0,'dTvFYp6','衴','dyESQ7$睻DtON桨SVY-X',-32,'Joy3#+)(q' ) ,( 'A)2ZK_kZ@$&r','Charlie',11,'*4OG1h*TnV~PRN(0nT','XBl7EQ+_','*ax5CpVoX%2i+rP5y','UtPQW5tG','2013',8467.15926968857,2559957284,56202426643912812,'18:52:47.00',-7014851381943226122,-15150,'Bob',264314407062262414,'Bob','u4F4',0,'U','FR','苩0絼诃Z昣r雹肎氵FX',27,'U5(' ) ,( '2GQ90sXcRVfASf~','Bob',3,'WCcs9YZmJYY8D6MK','BjK','+CK@','bBO+iC5','2011',78.14276898137665,2506173281,51364718423708042,'18:25:28.00',-5534830941212105395,2884,'Bob',5588099744237423496,'Alice','_ZkKY%~T',1,'yNWA','','丙42唁蕈F^D+I1',74,'ixK@vowqyM' ) ,( 'Dxbd$wd%YXtloq','Alice',0,'X','2KSzvGv','cz2Sxo','Nqc@@!9t-nIP=$3*+','1988',4540.670196322264,956368222,216058180724963594,'11:10:46.00',-5599117684903493263,-7825,'David',-5707447266532251032,'David','nCAwPg%an5+A+PQR',0,'%o2K&FC1ud','KE父','矿4^鄸l@乢PkU惜',-123,'wlKHw' ) ,( 'Eouz','Charlie',2,'ik6*7@oOXy#0','yfHsE-1','i!tO','wX#Bp6-6+%#Gjv5De','2008',1159.0640280510668,3696952218,114358184698814703,'10:16:19.00',4568152892366874724,31026,'David',4563708391077524856,'Charlie','e59ghl3&Aq9CSi2',0,null,'岔','楻繐dpm)',83,'JJ2ww&cs((OK' ) ,( 'hgag1AyVw','Bob',13,'MlF7u4Zuk8pYsEynl','M2@Ge(','ma','Ct3Ga','1993',118.18565323057231,3387382540,839882996869052777,'00:40:57.00',-6945871779951378593,-6180,'David',-95090142205086639,'Charlie','3',0,'=g1Jdl#on','5幅宪','膫lU粥',39,'gPt31cWr8Evft+*U' ) ,( '','Charlie',8,'7@%8Qg$aV)D0j-kGb','%+Vm#XwAcpIfpf^vP','Ka&N','ic4*ti','1975',5277.152384857315,957936300,402850682083964020,'00:21:04.00',-3321119239225536050,29978,'Alice',2703955770834333435,'Charlie','RVC@f7voDH',0,'hsbsIJxjHY7va+f4p','8Z','躛w=j=*7惥澱o',-119,'e9k!FrX#8+ZC' ) ,( 'u3sM3oz8fO5iOccbOpT','Bob',5,'-nyr#QWFPsPN18','jqgg(7(gQRwE','LC','#jyFqf1hL-0A','2013',5582.478697470839,3801282628,320572407544648336,'10:58:35.00',8140900655371018436,-17281,'Charlie',7867151342706165763,'David','zAG6UHOEDU4)MQ*SJM',0,'Qktd6*2$HdT','t禷J','d澣t苞拶否謎L怽~zU硳-9溘',95,'CEvnzm2nEX+iGx5' ) ,( 'XbsluTAeEP','Bob',7,'SiEz+~Jx1cMPk1#39','9#cT8QX%J4&$Q(7','4VZZ$H-EBvzHB*8!!=T','k=arQjSBgKu^tD51*es','1973',4304.382688243738,414761765,684565016044053674,'20:19:18.00',-840259487994344013,17214,'Charlie',1940881590674197665,'Alice','Gmwd#yDhUGX',null,'K5@rh54b','2綅','睟&惏w泦泎柠K豍役栾g+ori',64,'ZXnTu' ) ,( '~1fl+','Bob',15,'g(Fesw_R#c-y%@ipK','2MIq_*V3-','qE2-eX!9v_0)M+','+','2035',2517.1250843564085,1667434564,682473723014898509,'05:35:34.00',298573661304085018,6046,'Bob',2180022651077252420,'Bob','nI8Ee!49VHAEJP2=ES',0,'Sl9rFnIpz','','b炻鼮3腹忨齠J+O崵z@$6赈',110,'MbzM' ) ,( 'Fd1Sl20&QP@((Vk','Alice',0,'N!z=x','gW1hr&)OJIpNM#','Jg','rXQ','1982',86.37427492969734,1730703760,533521429622041309,'13:35:51.00',3744138957240581814,28572,'David',7754163179497643754,'Bob','',0,'h^8iR0ypXd','鏏嚼謞','yC侮vcH',60,'+zSl2v_2hruRhKL~KL*' ) ,( 'uad',null,13,null,'_AXtRbpj!Fnryu','oMiOB_t00GJ','dy~CB','2032',949.8424699943179,1828195758,364287744207168545,'23:31:45.00',-3020852781168988935,8457,'David',5708745542035091149,'Bob','MP',1,'RAYMx2!j)NS','X=','皑!!vZ诙誝H襢3*奻vxs0z喒臖',-21,'E0(' ) ,( 'p','Alice',11,')z476EucVWn','lK6dH+','FIpq4_Ui6~MAK~','','2023',3451.76632031042,2655533674,528868582381171415,'08:45:58.00',-4728969488883521900,-24312,'Charlie',2526034231885204601,'Bob','XuaE9',1,'sms)JUCb','磒','I皋^Z笜gn@吡褊I',18,'Ja^wMy7_-on3jWV=bX' ) ,( null,'David',0,'g(qY','TZ+kx0M15Dpu7Mm','EVjq6(FA','zS','1981',1760.341058712137,2107054036,416914485021809978,'23:46:25.00',4812711122916375548,-9012,'David',3306542868267147042,'Alice','Yz',null,'Ppd','Q','y-禥迪ZNp',51,'rKlf0_vMLzB' ) ,( ')w6M-Tc','David',3,'ylNoU_MM','5FL&Jt1KSGw@71dB','7k=8B#D$!rvqvS)t','owHD','1987',4652.940734795152,3913210164,972435137976537367,'06:04:29.00',367861644763781611,27613,'Alice',7174475964837662623,'David','',1,'^AOpe9vgSm6_','J','煩虩LY蚗iTgDG(荰桉S5',106,'!RV%5W3(' ) ,( 'yMyS0gm','David',9,'FMB','1~s8p%W8J$s','x+@%U90','tvsjVfX38Gih#v_D','2013',9732.545376204263,991520794,487932272034526394,'08:16:08.00',-3952868353342776562,27150,'Charlie',74741384450510125,'Bob','R8xsmvvIp%T',1,null,'a%','売l賄990C菋p曳pL',80,'78ZY2XULCj7$-AOtE9~' ) ,( 'CIxP+f','Bob',14,'BUuWSpuKZO2nTA','','ZzH#lh1(n88Nr(s','!MUtH#$sZpCcRH$','2007',3363.129640249069,3426808039,221984768404580844,'17:21:12.00',6531566292947321525,-23597,'Alice',323218662886301861,'Charlie','C2',1,'6','F沿','%D蜼俀eT0睃j',-31,'Dhfd77!S#7_cd+zZMU' ) ,( '-Yc','Alice',15,'g6DpcC^E)Q','','(G1@XxTRNag4dUY$','u$Otlhq4mU&','1995',3105.3825315802087,3539296163,659889376179232792,'22:04:12.00',-1618918945156346848,22182,'Bob',9059413861756202319,'Alice','YPUX',0,null,'n','',-61,'OXySxkVMBHuNmXgAPH' ) ,( 'I(slxV','Alice',15,'e$w)LYP','WD%%FVc_R2','gavRnbr-VqY0l','sgV#jIb$~w0idN6+NKA','1989',3655.693977930668,4169090247,440032975420116430,'05:39:58.00',-3218337023361848463,3599,'David',-3786807248524236719,'Bob','%$L8y!)S',1,'mo(dyR','^','',-44,'18RjBWjFW^P9' ) ,( '_i&D','Charlie',2,'P5#$y4lLcKZ9SzX','ACFJY24eb#9u7Ywd','1_0=Fo#RlK@Wo0@7','Lzvdq~--ecZS','2035',6375.921888868117,769270089,829449532952685108,'04:37:56.00',8069571006349075583,-17908,'Bob',-3744433582199192007,'David','cl9MZq@Jyc87%-',0,'Su$SFXPW5*Nv6V9r3@','攉M','y綒o礘$詚Ol簇',79,'!q_' ) ,( 'Ku+@x!','Bob',1,'7etpLk@kXrtl&W7','7zwN','','tywP!hU4L$Wz1H&','2030',5182.056796927293,3920490628,580853657534052095,'15:09:52.00',3462351556800242674,7572,'Charlie',-1053721255595973604,'Bob','-q3v$rd8',0,'','I','胸刵G赵潙3rV鐊cK遲oP忄z蟆练',-108,'4E@Tz#@GS0s_r)m&' ) ,( 'IHkZ$JI4~e@','Bob',13,'ar','WBZ*y%p2+W7RPE1^dQ','k9#0(5A)$o4YC99','BhTjm8@Ei~OY8','2029',2214.0403931611077,1730064764,620435139047740936,'01:58:17.00',-7613915693824265521,-19474,'Bob',-613045404709165091,'Charlie','e',1,'MpwX#masDD_UiKtwz','H','bG~~&B嫖q侵4',70,'opJ8zd*Qc!46^Z' ) ,( 'GYKKIez','Bob',10,'jhppq~w&#$e-taur42R','6iS^gm9pk@NZ5L5oD','b#VJKRPTY*l7=I','Rb6iFDEB+205W','1995',2461.6433171673657,301108429,651852163257382360,'20:40:52.00',7091280140675883690,-30209,'David',2436156244733329691,'David','~T9^W+T5t1o9sC',0,'Q6kLXZadT','哐a','B墽lw$a墂祯fj7忪咒',92,'-m+r-5HO' ) ,( '2kqW-8yn','Alice',8,null,'I!0E','','oTZa','2027',7367.145247243801,1686241858,910962266446974647,'04:11:12.00',4972115024374434017,24995,'Alice',-4787301012787011512,'Bob','wW*m0~E2QcZcbCqO&s',1,'5@FVERdp*DHg-u','','=謃砾EY呡銞^iKg蕟',71,'7' ) ,( 'o','Alice',13,'Hu','S0Fp&naC','=c^=RE5','IWn)DR)','1973',6432.071581940534,3732043502,942836372876804743,'17:16:37.00',-4973726377686407027,-21734,'Bob',-5831217963558481686,'Bob','6-',1,'X','Z9','K朄_=#蚧',-61,'!OlCV98~b' ) ,( '+)b-ukC%n','David',3,'KQ*$','iK+$A34vp!W7%V','Do','(-pNL4#We-zl^=n!qho','2030',7973.5887724663635,711607478,404272594976485013,'18:35:11.00',-8017032712920681603,27732,'Alice',8240697450446633129,'David','2Jec2ee-iYi#',0,'-QDo7t8mi','K','HGR',99,'cUd1zj%Y~L2)gRJ5Fv2' ) ,( null,'Charlie',15,'+1q_35O&M*xzBb6EP#0','P)7','1H1GAuFbVY@39J_','^I4xEX-^u!RQo!mgSb','2006',7276.76229177749,3094803741,946325255061150251,'06:16:57.00',1401030160479108205,26687,'David',6043316143818850512,'Alice','mD6lDpT3GMLE~',1,'8x_qpHi5@@EVt-&','I敜a','婞絊B*W淚瘪DW杗條omj=',101,'$%HDR%5KCUpbk#za)' ) ,( 'f7trSqlN_P',null,1,'1BW~&g8d!G*tbf-0^@x','=zxof2d5XYa99iPfr','Fj','p','2010',6574.103025253405,2537367590,659654240946418720,'00:29:55.00',-170645979345912608,26803,'Bob',-6337308043944769131,'Charlie','^tMsS1(gAJ$^vOol(U',1,'Y2Kv@CSyBCAwRZgHJ(=','','烤MaN寂=昲i0Ut籤X郛友',-70,'Ux@SSv#' ) ,( 'wJ2C5g!a@@e=Y','David',1,'Ah)cKv^xtp&','E6wBFZGAJE_','0fUTR)tWgWsc1t)1K_','XTrqzyb','1987',8321.750075099799,4172824324,298545829620514648,'16:48:28.00',-1367331967979694870,-22491,'David',-4079882375127321411,'David','5#iw6nmkR',1,'s#0aVfuGh','2洠','=8+PqaZS郸',-69,'fs~r0IgNL+0Qt_TC7' ) ,( 'ZGr~Lh&a^G8B9aZk','Bob',8,'H$kjO+15pZe','8hsG','Q%BJ&s7Fprmr&n','%FvAFzG)ZNRu)','2022',9941.048550449706,903346923,413103524452677173,'19:33:07.00',-4286509004575532085,27723,'Charlie',-8666447574722230940,'Charlie','yL2o&CtYv)Ba&j',1,'a9okaTt$~','瀶彧','qu+z蟅m垠BT2榝O嬀',122,'k$Tup%huY' ) ;
+update tbl_46 set tbl_46.col_651 = 's-3V^%og7#bf' ,tbl_46.col_661 = 'David' where not( IsNull( tbl_46.col_646 ) ) ;
+create TABLE tbl_291 ( col_4706 enum ( 'Alice','Bob','Charlie','David' )    default 'Alice' ,col_4707 tinyint  unsigned  default 29 ,col_4708 bit ( 2 )   not null ,col_4709 mediumblob   not null ,col_4710 set ( 'Alice','Bob','Charlie','David' )   not null ,col_4711 boolean    default 1 ,col_4712 year ,col_4713 binary ( 171 )   not null ,col_4714 numeric ( 45 , 20 ) ,col_4715 tinytext   not null ,col_4716 set ( 'Alice','Bob','Charlie','David' ) ,col_4717 text ( 330 ) ,col_4718 boolean    default 0 ,col_4719 datetime    default '2003-01-13' ,col_4720 double    default 9958.34573026972 ,col_4721 mediumint  unsigned  default 14598539 ,col_4722 enum ( 'Alice','Bob','Charlie','David' )    default 'Alice' ,col_4723 timestamp   not null ,col_4724 tinytext   not null ,col_4725 bigint   not null ,col_4726 longtext ,col_4727 mediumint  unsigned not null default 3799373 ,col_4728 varchar ( 334 ) , vector index vector_idx_916 ( col_4728 ( 5 ) ) WITH ( distance=l2, type=hnsw_bq, model=ob_embed, dim=1024, sync_mode=immediate ) ) DEFAULT CHARSET= gb18030 ROW_FORMAT = COMPRESSED COMPRESSION = 'lz4_1.9.1';
+update tbl_46 set tbl_46.col_646 = '~M' where not exists ( select col_4716 from tbl_291 where tbl_46.col_668 between 'i毸O4afJN艂5oN' and 'YkDFP1a' );
+drop table if exists t1;
+CREATE TABLE t1 (`pk_id` varchar(20) NOT NULL, `doc_data` varchar(100) DEFAULT NULL,
+PRIMARY KEY (`pk_id`),
+VECTOR KEY `hybrid_idx` (`pk_id`) WITH (DISTANCE = L2, LIB = VSAG, TYPE = HNSW, MODEL = OB_EMBED, DIM = 1024, SYNC_MODE = ASYNC, 
+SYNC_INTERVAL = 10S, M=16, EF_CONSTRUCTION=200, EF_SEARCH=64) BLOCK_SIZE 16384
+) ORGANIZATION=HEAP;
+INSERT INTO t1 (pk_id, doc_data) VALUES ('ID001', 'Data for item 1'),('ID002', 'Data for item 2'), ('ID003', 'Data for item 3');
+UPDATE t1 SET pk_id = 'ID001_new' WHERE pk_id = 'ID001';
+ERROR 23000: Duplicate entry '1-I' for key 'hybrid_idx'
+UPDATE /*+ ENABLE_PARALLEL_DML parallel(2) */ t1 SET pk_id = 'ID001_new_2' WHERE pk_id = 'ID001_new';
+drop table t1;
+CREATE TABLE t1 (`pk_id` varchar(20) NOT NULL, `pk_id2` varchar(20) NOT NULL, `doc_data` varchar(100) DEFAULT NULL,
+PRIMARY KEY (`pk_id`),
+VECTOR KEY `hybrid_idx` (`pk_id2`) WITH (DISTANCE = L2, LIB = VSAG, TYPE = HNSW, MODEL = OB_EMBED, DIM = 1024, SYNC_MODE = ASYNC,
+SYNC_INTERVAL = 10S, M=16, EF_CONSTRUCTION=200, EF_SEARCH=64)
+) ORGANIZATION=HEAP;
+INSERT INTO t1 (pk_id, pk_id2, doc_data) VALUES ('ID001', 'ID001', 'Data for item 1'), ('ID002', 'ID002', 'Data for item 2'), ('ID003', 'ID003', 'Data for item 3');
+UPDATE t1 SET pk_id2 = 'ID001_new' WHERE pk_id2 = 'ID001';
+ERROR 23000: Duplicate entry '1-I' for key 'hybrid_idx'
+UPDATE /*+ ENABLE_PARALLEL_DML parallel(2) */ t1 SET pk_id2 = 'ID001_new_2' WHERE pk_id2 = 'ID001_new';
+drop table t1;
+create table demo1(col1 int primary key, col2 int, col3 varchar(1024));
+insert into demo1 values(1, 1, "hello");
+create vector index vector_idx on demo1(col3) with (distance= l2, lib=vsag, type= hnsw_bq, model=ob_embed, dim=1024, sync_mode=async, sync_interval=5s) ;
+insert into demo1 values(1, 2, 'world') on duplicate key update col2 = 3;
+insert into demo1 values(1, 2, 'world') on duplicate key update col2 = 3;
+drop table demo1;
+call DBMS_AI_SERVICE.DROP_AI_MODEL_ENDPOINT ('ob_embed_endpoint');
+call DBMS_AI_SERVICE.DROP_AI_MODEL ('ob_embed');
