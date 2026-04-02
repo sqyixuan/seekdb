@@ -2192,7 +2192,7 @@ int ObOptStatSqlService::get_gather_stat_task_value(const ObOptStatTaskInfo &tas
   int ret = OB_SUCCESS;
   share::ObDMLSqlSplicer dml_splicer;
   uint64_t tenant_id = task_info.tenant_id_;
-  if (OB_FAIL(dml_splicer.add_pk_column("tenant_id", tenant_id)) ||
+  if (OB_FAIL(dml_splicer.add_pk_column("tenant_id", 0/*tenant_id*/)) ||
       OB_FAIL(dml_splicer.add_pk_column("task_id", task_info.task_id_)) ||
       OB_FAIL(dml_splicer.add_column("type", task_info.type_)) ||
       OB_FAIL(dml_splicer.add_column("ret_code", task_info.ret_code_)) ||
@@ -2215,7 +2215,7 @@ int ObOptStatSqlService::get_gather_stat_value(const ObOptStatGatherStat &gather
   uint64_t tenant_id = gather_stat.get_tenant_id();
   uint64_t table_id = gather_stat.get_table_id();
   uint64_t pure_table_id = ObSchemaUtils::get_extract_schema_id(tenant_id, table_id);
-  if (OB_FAIL(dml_splicer.add_pk_column("tenant_id", tenant_id)) ||
+  if (OB_FAIL(dml_splicer.add_pk_column("tenant_id", 0/*tenant_id*/)) ||
       OB_FAIL(dml_splicer.add_pk_column("task_id", gather_stat.get_task_id())) ||
       OB_FAIL(dml_splicer.add_pk_column("table_id", pure_table_id)) ||
       OB_FAIL(dml_splicer.add_column("ret_code", gather_stat.get_ret_code())) ||

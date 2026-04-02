@@ -404,8 +404,8 @@ int WorkloadRepositoryTask::get_begin_interval_time(int64_t &begin_interval_time
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("GCTX.sql_proxy_ is null", K(ret));
     } else if (OB_FAIL(sql.assign_fmt("SELECT /*+ WORKLOAD_REPOSITORY */ time_to_usec(END_INTERVAL_TIME) FROM %s where "
-                                      "tenant_id=%ld and cluster_id = %ld and snap_id != %ld order by snap_id desc limit 1",
-                   OB_WR_SNAPSHOT_TNAME, OB_SYS_TENANT_ID, cluster_id, LAST_SNAPSHOT_RECORD_SNAP_ID))) {
+                                      "cluster_id = %ld and snap_id != %ld order by snap_id desc limit 1",
+                   OB_WR_SNAPSHOT_TNAME, cluster_id, LAST_SNAPSHOT_RECORD_SNAP_ID))) {
       LOG_WARN("failed to format sql", KR(ret));
     } else if (OB_FAIL(
                    ObWrCollector::exec_read_sql_with_retry(res, gen_meta_tenant_id(OB_SYS_TENANT_ID), sql.ptr()))) {
@@ -423,7 +423,7 @@ int WorkloadRepositoryTask::get_begin_interval_time(int64_t &begin_interval_time
       } else {
         LOG_WARN("get next result failed", KR(ret), K(sql));
       }
-    } else if (OB_FAIL(result->get_int(static_cast<int64_t>(0), begin_interval_time))) {
+    } else if (OB_FAIL(result->get_int(0L, begin_interval_time))) {
       LOG_WARN("get column fail", KR(ret), K(sql));
     }
   }
@@ -445,7 +445,7 @@ int WorkloadRepositoryTask::setup_tenant_snapshot_info(int64_t snap_id, uint64_t
   } else if (OB_ISNULL(GCTX.sql_proxy_)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("GCTX.sql_proxy_ is null", K(ret));
-  } else if (OB_FAIL(dml_splicer.add_pk_column(K(tenant_id)))) {
+  } else if (OB_FAIL(dml_splicer.add_pk_column("tenant_id", 0))) {
     LOG_WARN("failed to add tenant_id", KR(ret), K(tenant_id));
   } else if (OB_FAIL(dml_splicer.add_pk_column(K(cluster_id)))) {
     LOG_WARN("failed to add column cluster_id", KR(ret), K(cluster_id));
@@ -501,9 +501,9 @@ int WorkloadRepositoryTask::modify_tenant_snapshot_status_and_startup_time(int64
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("GCTX.sql_proxy_ is null", K(ret));
   } else if (OB_FAIL(sql.assign_fmt("update /*+ WORKLOAD_REPOSITORY */ %s set status=%ld, startup_time=usec_to_time(%ld) "
-                                    "where tenant_id=%ld and cluster_id=%ld and "
+                                    "where cluster_id=%ld and "
                                     "snap_id=%ld and svr_ip='%s' and svr_port=%d",
-                 OB_WR_SNAPSHOT_TNAME, status, startup_time, tenant_id, cluster_id, snap_id, svr_ip,
+                 OB_WR_SNAPSHOT_TNAME, status, startup_time, cluster_id, snap_id, svr_ip,
                  addr.get_port()))) {
     LOG_WARN("failed to format update snapshot info sql", KR(ret));
   } else if (OB_FAIL(
@@ -536,10 +536,10 @@ int WorkloadRepositoryTask::fetch_to_delete_snap_id_list_by_time(const int64_t e
     {
       ObMySQLResult *result = nullptr;
       if (OB_FAIL(
-              sql.assign_fmt("SELECT /*+ WORKLOAD_REPOSITORY */ snap_id from %s where tenant_id=%ld and cluster_id=%ld and "
+              sql.assign_fmt("SELECT /*+ WORKLOAD_REPOSITORY */ snap_id from %s where cluster_id=%ld and "
                              "end_interval_time <= usec_to_time(%ld)"
                              "LIMIT %ld",
-                  OB_WR_SNAPSHOT_TNAME, tenant_id, cluster_id,
+                  OB_WR_SNAPSHOT_TNAME, cluster_id,
                   end_ts_of_retention, WR_FETCH_TO_DELETE_SNAP_MAX_NUM))) {
         LOG_WARN("failed to assign fetch snap_id query string", KR(ret));
       } else if (OB_FAIL(ObWrCollector::exec_read_sql_with_retry(res, meta_tenant_id, sql.ptr()))) {
@@ -592,9 +592,9 @@ int WorkloadRepositoryTask::fetch_to_delete_snap_id_list_by_range(const int64_t 
     {
       ObMySQLResult *result = nullptr;
       if (OB_FAIL(
-              sql.assign_fmt("SELECT /*+ WORKLOAD_REPOSITORY */ snap_id from %s where tenant_id=%ld and cluster_id=%ld and "
+              sql.assign_fmt("SELECT /*+ WORKLOAD_REPOSITORY */ snap_id from %s where cluster_id=%ld and "
                              "snap_id between %ld and %ld ",   // User manually delete without limit
-                  OB_WR_SNAPSHOT_TNAME, tenant_id, cluster_id,
+                  OB_WR_SNAPSHOT_TNAME, cluster_id,
                   low_snap_id, high_snap_id))) {
         LOG_WARN("failed to assign fetch snap_id query string", KR(ret));
       } else if (OB_FAIL(ObWrCollector::exec_read_sql_with_retry(res, meta_tenant_id, sql.ptr()))) {
@@ -682,7 +682,7 @@ int WorkloadRepositoryTask::get_last_snapshot_task_begin_ts(int64_t snap_id, int
           LOG_INFO(
               "target snap_id didn't have any records", KR(ret), K(snap_id), K(cluster_id), K(sql));
         }
-      } else if (OB_FAIL(result->get_int(static_cast<int64_t>(0), task_begin_ts))) {
+      } else if (OB_FAIL(result->get_int(0L, task_begin_ts))) {
         LOG_WARN("get column fail", KR(ret), K(sql));
       } else {
         OB_ASSERT(result->next() == OB_ITER_END);
@@ -910,10 +910,8 @@ int WorkloadRepositoryTask::update_wr_control(const char *time_num_col_name, con
     LOG_WARN("GCTX.sql_proxy_ is null", K(ret));
   } else if (OB_FAIL(WorkloadRepositoryTask::mins_to_duration(mins, duration_chars))) {
     LOG_WARN("failed to conver mins to duration", K(ret));
-  } else if (OB_FAIL(sql.assign_fmt("update /*+ WORKLOAD_REPOSITORY */ %s set %s=%ld, %s='%s' "
-                                    "where tenant_id=%ld",
-                 OB_WR_CONTROL_TNAME, time_num_col_name, secs, time_col_name, duration_chars,
-                 tenant_id))) {
+  } else if (OB_FAIL(sql.assign_fmt("update /*+ WORKLOAD_REPOSITORY */ %s set %s=%ld, %s='%s'",
+                 OB_WR_CONTROL_TNAME, time_num_col_name, secs, time_col_name, duration_chars))) {
     LOG_WARN("failed to format update snapshot info sql", KR(ret));
   } else if (OB_FAIL(
                  ObWrCollector::exec_write_sql_with_retry(gen_meta_tenant_id(tenant_id), sql.ptr(), affected_rows))) {
@@ -936,8 +934,8 @@ int WorkloadRepositoryTask::fetch_retention_usec_from_wr_control(int64_t &retent
     if (OB_ISNULL(GCTX.sql_proxy_)) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("GCTX.sql_proxy_ is null", K(ret));
-    } else if (OB_FAIL(sql.assign_fmt("SELECT /*+ WORKLOAD_REPOSITORY */ retention_num FROM %s where tenant_id = %ld",
-                   OB_WR_CONTROL_TNAME, tenant_id))) {
+    } else if (OB_FAIL(sql.assign_fmt("SELECT /*+ WORKLOAD_REPOSITORY */ retention_num FROM %s",
+                   OB_WR_CONTROL_TNAME))) {
       LOG_WARN("failed to assign create sequence sql string", KR(ret));
     } else if (OB_FAIL(ObWrCollector::exec_read_sql_with_retry(res, gen_meta_tenant_id(tenant_id), sql.ptr()))) {
       LOG_WARN("failed to fetch next snap_id sequence", KR(ret), K(sql));
@@ -987,8 +985,8 @@ int WorkloadRepositoryTask::fetch_interval_num_from_wr_control(int64_t &interval
     if (OB_ISNULL(GCTX.sql_proxy_)) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("GCTX.sql_proxy_ is null", K(ret));
-    } else if (OB_FAIL(sql.assign_fmt("SELECT /*+ WORKLOAD_REPOSITORY */ snapint_num FROM %s where tenant_id = %ld",
-                   OB_WR_CONTROL_TNAME, tenant_id))) {
+    } else if (OB_FAIL(sql.assign_fmt("SELECT /*+ WORKLOAD_REPOSITORY */ snapint_num FROM %s",
+                   OB_WR_CONTROL_TNAME))) {
       LOG_WARN("failed to assign create sequence sql string", KR(ret));
     } else if (OB_FAIL(ObWrCollector::exec_read_sql_with_retry(res, gen_meta_tenant_id(tenant_id), sql.ptr()))) {
       LOG_WARN("failed to fetch next snap_id sequence", KR(ret), K(sql));
@@ -1032,8 +1030,8 @@ int WorkloadRepositoryTask::update_snap_info_in_wr_control(
   if (OB_FAIL(fetch_interval_num_from_wr_control(tmp_interval))) {
     LOG_WARN("failed to fetch interval num from wr control", K(ret));
   } else if (OB_FAIL(sql.assign_fmt("UPDATE /*+ WORKLOAD_REPOSITORY */ %s set most_recent_snap_id = %ld, "
-                             "most_recent_snap_time = usec_to_time(%ld) where tenant_id = %ld",
-          OB_WR_CONTROL_TNAME, snap_id, end_interval_time, tenant_id))) {
+                             "most_recent_snap_time = usec_to_time(%ld)",
+          OB_WR_CONTROL_TNAME, snap_id, end_interval_time))) {
     LOG_WARN("sql assign failed", K(ret));
   } else if (OB_FAIL(
                  ObWrCollector::exec_write_sql_with_retry(gen_meta_tenant_id(tenant_id), sql.ptr(), affected_rows))) {
@@ -1064,7 +1062,7 @@ int WorkloadRepositoryTask::get_init_wr_control_sql_string(
       "snap_interval, snapint_num, retention, retention_num, topnsql) VALUES",
         OB_WR_CONTROL_TNAME))) {
     LOG_WARN("sql append failed", K(ret));
-  } else if (OB_FAIL(sql.append_fmt("(%ld, '%s', %ld, '%s', %ld, %ld)", tenant_id, 
+  } else if (OB_FAIL(sql.append_fmt("(%ld, '%s', %ld, '%s', %ld, %ld)", 0/*tenant_id*/, 
                                       default_interval_char, default_snap_interval_mins*60L, 
                                       default_retention_char, default_snap_retention_mins*60L,
                                       default_topnsql))) {

@@ -564,7 +564,6 @@ all_tenant_def = dict(
       ('drop_tenant_time', 'int', 'false', 'OB_INVALID_TIMESTAMP'),
       ('status', 'varchar:MAX_TENANT_STATUS_LENGTH', 'false', 'NORMAL'),
       ('in_recyclebin', 'int', 'false', '0'),
-      ('arbitration_service_status', 'varchar:OB_DEFAULT_STATUS_LENTH', 'false', 'DISABLED'),
   ],
 )
 
@@ -859,39 +858,8 @@ def_table_schema(
     ],
 )
 
-def_table_schema(
-    owner = 'jim.wjh',
-    table_name = '__all_charset',
-    table_id = '128',
-    table_type = 'SYSTEM_TABLE',
-    gm_columns = [],
-    rowkey_columns = [
-        ('charset', 'varchar:MAX_CHARSET_LENGTH', 'false', ''),
-    ],
-    normal_columns = [
-        ('description', 'varchar:MAX_CHARSET_DESCRIPTION_LENGTH', 'false', ''),
-        ('default_collation', 'varchar:MAX_COLLATION_LENGTH', 'false', ''),
-        ('max_length', 'int', 'false', '0'),
-    ]
-)
-
-def_table_schema(
-    owner = 'jim.wjh',
-    table_name = '__all_collation',
-    table_id = '129',
-    table_type = 'SYSTEM_TABLE',
-    gm_columns = [],
-    rowkey_columns = [
-        ('collation', 'varchar:MAX_COLLATION_LENGTH', 'false', ''),
-    ],
-    normal_columns = [
-        ('charset', 'varchar:MAX_CHARSET_LENGTH', 'false', ''),
-        ('id', 'int', 'false', '0'),
-        ('is_default', 'varchar:MAX_BOOL_STR_LENGTH', 'false', ''),
-        ('is_compiled', 'varchar:MAX_BOOL_STR_LENGTH', 'false', ''),
-        ('sortlen', 'int', 'false', '0'),
-    ]
-)
+# 128: __all_charset (abandoned)
+# 129: __all_collation (abandoned)
 
 def_table_schema(
   owner = 'bin.lb',
@@ -1014,20 +982,7 @@ def_table_schema(
     ],
 )
 
-def_table_schema(
-  owner = 'sean.yyj',
-  table_name = '__all_privilege',
-  table_id = '141',
-  table_type = 'SYSTEM_TABLE',
-  gm_columns = [],
-  rowkey_columns = [
-    ('Privilege', 'varchar:MAX_COLUMN_PRIVILEGE_LENGTH'),
-  ],
-  normal_columns = [
-    ('Context', 'varchar:MAX_PRIVILEGE_CONTEXT_LENGTH'),
-    ('Comment', 'varchar:MAX_COLUMN_COMMENT_LENGTH'),
-  ]
-)
+# 141: __all_privilege (abandoned)
 
 all_outline_def = dict(
     owner = 'xiaoyi.xy',
@@ -1351,78 +1306,11 @@ all_sys_variable_history_def= dict(
 )
 def_table_schema(**all_sys_variable_history_def)
 
-def_table_schema(
-    owner = 'yanmu.ztl',
-    table_name = '__all_restore_job',
-    table_id = '158',
-    table_type = 'SYSTEM_TABLE',
-    gm_columns = ['gmt_create', 'gmt_modified'],
-    rowkey_columns = [
-      ('tenant_id', 'int'),
-      ('job_id', 'int'),
-      ('name', 'varchar:OB_INNER_TABLE_DEFAULT_KEY_LENTH'),
-      ],
-
-    in_tenant_space = True,
-    is_cluster_private = True,
-    meta_record_in_sys = False,
-
-    normal_columns = [
-      ('value', 'longtext', 'true', ''),
-      ],
-)
-
+# 158: __all_restore_job (abandoned)
 # 159: __all_restore_task # abandoned in 4.0
 
 # __all_restore_job_history
-all_restore_job_history_def = dict(
-  owner = 'wangxiaohui.wxh',
-  table_name    = '__all_restore_job_history',
-  table_id      = '160',
-  table_type = 'SYSTEM_TABLE',
-  gm_columns = ['gmt_create', 'gmt_modified'],
-  rowkey_columns = [
-    ('tenant_id', 'int'),
-    ('job_id', 'int'),
-  ],
-
-  in_tenant_space = True,
-  is_cluster_private = True,
-  meta_record_in_sys = False,
-
-  normal_columns = [
-    ('initiator_job_id', 'int'),
-    ('initiator_tenant_id', 'int'),
-    ('restore_type', 'varchar:OB_INNER_TABLE_DEFAULT_VALUE_LENTH', 'false', ''),
-    ('restore_tenant_name', 'varchar:OB_MAX_TENANT_NAME_LENGTH_STORE', 'false', ''),
-    ('restore_tenant_id', 'int', 'false', '-1'),
-    ('backup_tenant_name', 'varchar:OB_MAX_TENANT_NAME_LENGTH_STORE', 'false', ''),
-    ('backup_tenant_id', 'int', 'false', '-1'),
-    ('backup_cluster_name', 'varchar:OB_MAX_CLUSTER_NAME_LENGTH', 'false', ''),
-    ('backup_dest', 'longtext'),
-    ('restore_scn', 'uint'),
-    ('restore_option', 'varchar:OB_INNER_TABLE_DEFAULT_VALUE_LENTH'),
-    ('table_list', 'longtext', 'true'),
-    ('remap_table_list', 'longtext', 'true'),
-    ('database_list', 'longtext', 'true'),
-    ('remap_database_list', 'longtext', 'true'),
-    ('start_time', 'timestamp', 'true'),
-    ('finish_time', 'timestamp', 'true'),
-    ('status', 'varchar:OB_DEFAULT_STATUS_LENTH', 'false', 'INVALID'),
-    ('backup_piece_list', 'longtext'),
-    ('backup_set_list', 'longtext'),
-    ('backup_cluster_version', 'int'),
-    ('ls_count', 'int'),
-    ('finish_ls_count', 'int'),
-    ('tablet_count', 'int'),
-    ('finish_tablet_count', 'int'),
-    ('total_bytes', 'int'),
-    ('finish_bytes', 'int'),
-    ('description', 'varchar:OB_INNER_TABLE_DEFAULT_KEY_LENTH', 'true'),
-    ('comment', 'varchar:OB_INNER_TABLE_DEFAULT_KEY_LENTH', 'true'),
-  ],
-)
-def_table_schema(**all_restore_job_history_def)
+# 160: __all_restore_job_history (abandoned)
 
 def_table_schema(
   owner = 'yanmu.ztl',
@@ -1840,46 +1728,8 @@ def_table_schema(
 
 # 218: __all_ddl_helper # abandoned in 4.0
 
-# TODO: abandoned
-def_table_schema(
-	  owner = 'quanwei.wqw',
-    table_name     = '__all_freeze_schema_version',
-    table_id       = '219',
-    table_type = 'SYSTEM_TABLE',
-    gm_columns = ['gmt_create', 'gmt_modified'],
-    rowkey_columns = [
-        ('frozen_version', 'int', 'false'),
-        ('tenant_id', 'int', 'false'),
-    ],
-
-    normal_columns = [
-      ('schema_version', 'int', 'false'),
-  ],
-)
-
-def_table_schema(
-    owner = 'wanhong.wwh',
-    table_name    = '__all_weak_read_service',
-    table_id      = '226',
-    table_type = 'SYSTEM_TABLE',
-    gm_columns = ['gmt_create', 'gmt_modified'],
-    rowkey_columns = [
-        ('tenant_id', 'int'),
-        ('level_id', 'int'),
-        ('level_value', 'varchar:OB_WRS_LEVEL_VALUE_LENGTH'),
-    ],
-
-    in_tenant_space = True,
-    is_cluster_private = True,
-    meta_record_in_sys = False,
-
-  normal_columns = [
-      ('level_name', 'varchar:OB_WRS_LEVEL_NAME_LENGTH', 'false'),
-      ('min_version', 'uint', 'true'),
-      ('max_version', 'uint', 'true'),
-  ],
-)
-
+# 219: __all_freeze_schema_version (abandoned)
+# 226: __all_weak_read_service (abandoned)
 # 228: __all_cluster # abandoned in 4.0
 
 # 229: __all_gts # abandoned in 4.0
@@ -1965,7 +1815,7 @@ def_table_schema(
     ('user_id', 'int'),
   ],
   in_tenant_space = True,
-  is_cluster_private = True,
+  is_cluster_private = False,
   meta_record_in_sys = False,
 
   normal_columns = [
@@ -2103,27 +1953,7 @@ def_table_schema(**gen_history_table_def(263, all_objauth_def))
 
 
 # 264: __all_tenant_backup_info # abandoned in 4.0
-
-# __all_restore_info
-all_restore_info_def = dict(
-  owner = 'wangxiaohui.wxh',
-  table_name    = '__all_restore_info',
-  table_id      = '265',
-  table_type = 'SYSTEM_TABLE',
-  gm_columns = ['gmt_create', 'gmt_modified'],
-  rowkey_columns = [
-    ('name', 'varchar:OB_INNER_TABLE_DEFAULT_KEY_LENTH'),
-  ],
-
-  in_tenant_space = True,
-  is_cluster_private = True,
-  meta_record_in_sys = False,
-
-  normal_columns = [
-    ('value', 'longtext'),
-  ],
-)
-def_table_schema(**all_restore_info_def)
+# 265: __all_restore_info (abandoned)
 
 # 266: __all_tenant_backup_log_archive_status # abandoned in 4.0
 # 267: __all_backup_log_archive_status_history # abandoned in 4.0
@@ -2165,33 +1995,7 @@ def_table_schema(**all_tenant_error_def)
 # 277: __all_backup_clean_info_history # abandoned in 4.0
 # 278: __all_backup_task_clean_history # abandoned in 4.0
 
-# __all_restore_progress
-all_restore_progress_def = dict(
-  owner = 'wangxiaohui.wxh',
-  table_name    = '__all_restore_progress',
-  table_id      = '279',
-  table_type = 'SYSTEM_TABLE',
-  gm_columns = ['gmt_create', 'gmt_modified'],
-  rowkey_columns = [
-    ('tenant_id', 'int'),
-    ('job_id', 'int'),
-  ],
-
-  in_tenant_space = True,
-  is_cluster_private = True,
-  meta_record_in_sys = False,
-
-  normal_columns = [
-    ('restore_scn', 'uint'),
-    ('ls_count', 'int'),
-    ('finish_ls_count', 'int'),
-    ('tablet_count', 'int'),
-    ('finish_tablet_count', 'int'),
-    ('total_bytes', 'int'),
-    ('finish_bytes', 'int'),
-  ],
-)
-def_table_schema(**all_restore_progress_def)
+# 279: __all_restore_progress (abandoned)
 
 # 280: __all_restore_history # abandoned in 4.0
 # 281: __all_tenant_restore_pg_info # abandoned in 4.0
@@ -2302,31 +2106,7 @@ all_tenant_constraint_column_def = dict(
 def_table_schema(**all_tenant_constraint_column_def)
 def_table_schema(**gen_history_table_def(295,  all_tenant_constraint_column_def))
 
-def_table_schema(
-  owner = 'gjw228474',
-  table_name    = '__all_tenant_global_transaction',
-  table_id      = '296',
-  table_type = 'SYSTEM_TABLE',
-  gm_columns = ['gmt_create', 'gmt_modified'],
-  rowkey_columns = [
-    ('tenant_id', 'int'),
-    ('gtrid', 'varbinary:128'),
-    ('bqual', 'varbinary:128'),
-    ('format_id', 'int', 'false', '1'),
-  ],
-  in_tenant_space = True,
-  is_cluster_private = True,
-  meta_record_in_sys = False,
-  normal_columns = [
-    ('trans_id', 'int'),
-    ('coordinator', 'int', 'true'),
-    ('scheduler_ip', 'varchar:OB_MAX_SERVER_ADDR_SIZE'),
-    ('scheduler_port', 'int'),
-    ('is_readonly', 'bool', 'false', '0'),
-    ('state', 'int'),
-    ('flag', 'int'),
-  ],
-)
+# 296: __all_tenant_global_transaction (abandoned)
 
 all_tenant_dependency_def = dict(
   owner = 'lj229669',
@@ -2456,85 +2236,14 @@ def_table_schema(
     ],
 )
 
-def_table_schema(
-    owner = 'jiahua.cjh',
-    table_name    = '__all_space_usage',
-    table_id       = '309',
-    table_type = 'SYSTEM_TABLE',
-    gm_columns = ['gmt_create', 'gmt_modified'],
-    rowkey_columns = [
-        ('tenant_id', 'int'),
-        ('svr_ip', 'varchar:MAX_IP_ADDR_LENGTH'),
-        ('svr_port', 'int'),
-        ('start_seq', 'int'),
-        ('file_type', 'varchar:32'),
-    ],
-
-    normal_columns = [
-        ('data_size', 'bigint'),
-        ('used_size', 'bigint'),
-    ],
-    is_cluster_private = True,
-)
-
+# 309: __all_space_usage (abandoned)
 # 310: __all_backup_backuppiece_job # abandoned in 4.0
 # 311: __all_backup_backuppiece_job_history # abandoned in 4.0
 # 312: __all_backup_backuppiece_task # abandoned in 4.0
 # 313: __all_backup_backuppiece_task_history # abandoned in 4.0
 # 314: __all_backup_piece_files # abandoned in 4.0
+# 315: __all_backup_set_files # abandoned
 
-all_backup_set_files_def = dict(
-  owner = 'chongrong.th',
-  table_name = '__all_backup_set_files',
-  table_id   = '315',
-  table_type = 'SYSTEM_TABLE',
-  gm_columns = ['gmt_create', 'gmt_modified'],
-  rowkey_columns = [
-    ('tenant_id', 'int'),
-    ('backup_set_id', 'int'),
-    ('dest_id', 'int'),
-  ],
-  in_tenant_space = True,
-  is_cluster_private = True,
-  meta_record_in_sys = False,
-
-  normal_columns = [
-    ('incarnation', 'int'),
-    ('backup_type', 'varchar:OB_INNER_TABLE_BACKUP_TYPE_LENTH'),
-    ('prev_full_backup_set_id', 'int'),
-    ('prev_inc_backup_set_id', 'int'),
-    ('start_ts', 'int'),
-    ('end_ts', 'int'),
-    ('status', 'varchar:OB_DEFAULT_STATUS_LENTH'),
-    ('file_status', 'varchar:OB_DEFAULT_STATUS_LENTH'),
-    ('plus_archivelog', 'varchar:OB_INNER_TABLE_DEFAULT_VALUE_LENTH', 'false', 'OFF'),
-    ('start_replay_scn', 'uint'),
-    ('min_restore_scn', 'uint'),
-    ('input_bytes', 'int', 'true', '0'),
-    ('output_bytes', 'int', 'true', '0'),
-    ('extra_bytes', 'int', 'true', '0'),
-    ('tablet_count', 'int', 'true', '0'),
-    ('finish_tablet_count', 'int', 'true', '0'),
-    ('macro_block_count', 'int', 'true', '0'),
-    ('finish_macro_block_count', 'int', 'true', '0'),
-    ('file_count', 'int', 'true', '0'),
-    ('meta_turn_id', 'int', 'true', '0'),
-    ('data_turn_id', 'int', 'true', '0'),
-    ('result', 'int'),
-    ('comment', 'varchar:MAX_TABLE_COMMENT_LENGTH', 'true', ''),
-    ('encryption_mode', 'varchar:OB_MAX_ENCRYPTION_MODE_LENGTH', 'true', 'None'),
-    ('passwd', 'varchar:OB_MAX_PASSWORD_LENGTH', 'true', ''),
-    ('tenant_compatible', 'varchar:OB_INNER_TABLE_DEFAULT_VALUE_LENTH'),
-    ('backup_compatible', 'int'),
-    ('path', 'varchar:OB_INNER_TABLE_DEFAULT_VALUE_LENTH', 'true', ''),
-    ('cluster_version', 'varchar:OB_INNER_TABLE_DEFAULT_VALUE_LENTH', 'false', ''),
-    ('consistent_scn', 'uint', 'false', '0'),
-    ('minor_turn_id', 'int', 'false', '0'),
-    ('major_turn_id', 'int', 'false', '0'),
-    ('min_restore_scn_display', 'varchar:OB_INNER_TABLE_DEFAULT_VALUE_LENTH', 'false', ''), 
-  ],
-)
-def_table_schema(**all_backup_set_files_def)
 
 def_table_schema(
   owner = 'xiaochu.yh',
@@ -2553,26 +2262,7 @@ def_table_schema(
   ],
 )
 
-# __all_backup_info
-all_backup_info_def = dict(
-  owner = 'chongrong.th',
-  table_name    = '__all_backup_info',
-  table_id      = '317',
-  table_type = 'SYSTEM_TABLE',
-  gm_columns = ['gmt_create', 'gmt_modified'],
-  rowkey_columns = [
-    ('tenant_id', 'int'),
-    ('name', 'varchar:OB_INNER_TABLE_DEFAULT_KEY_LENTH'),
-  ],
-  in_tenant_space = True,
-  is_cluster_private = True,
-  meta_record_in_sys = False,
-
-  normal_columns = [
-    ('value', 'longtext'),
-  ],
-)
-def_table_schema(**all_backup_info_def)
+# 317: __all_backup_info # abandoned 
 
 # 318: __all_backup_log_archive_status_v2 # abandoned in 4.0
 
@@ -2608,22 +2298,7 @@ def_table_schema(
   ],
 )
 
-def_table_schema(
-  owner = 'lichangqing',
-  table_name    = '__all_region_network_bandwidth_limit',
-  table_id       = '320',
-  table_type = 'SYSTEM_TABLE',
-  gm_columns = ['gmt_create', 'gmt_modified'],
-  rowkey_columns = [
-    ('src_region', 'varchar:TABLE_MAX_KEY_LENGTH'),
-    ('dst_region', 'varchar:TABLE_MAX_KEY_LENGTH'),
-  ],
-
-  normal_columns = [
-    ('max_bw', 'bigint'),
-  ],
-)
-
+# 320: __all_region_network_bandwidth_limit (abandoned)
 # 321: __all_backup_backup_log_archive_status_v2 # abandoned in 4.0
 
 def_table_schema(
@@ -3057,42 +2732,7 @@ def_table_schema(
   ],
 )
 
-# __all_ls_meta_table
-def_table_schema(
-    owner = 'wangzhennan.wzn',
-    table_name = '__all_ls_meta_table',
-    table_id = '342',
-    table_type = 'SYSTEM_TABLE',
-    gm_columns = ['gmt_create', 'gmt_modified'],
-    rowkey_columns = [
-        ('tenant_id', 'int'),
-        ('ls_id', 'int'),
-        ('svr_ip', 'varchar:MAX_IP_ADDR_LENGTH'),
-        ('svr_port', 'int'),
-    ],
-    in_tenant_space = True,
-    is_cluster_private = True,
-    meta_record_in_sys = True,
-    normal_columns = [
-        # location related
-        ('sql_port', 'int'),
-        ('role', 'int'),
-        ('member_list', 'varchar:MAX_MEMBER_LIST_LENGTH'),
-        ('proposal_id', 'int', 'false', '0'),
-        ('replica_type', 'int', 'false', '0'),
-        ('replica_status', 'varchar:MAX_REPLICA_STATUS_LENGTH', 'false', 'NORMAL'),
-        ('restore_status', 'int', 'false', '0'),
-        ('memstore_percent', 'int', 'false', '100'),
-        # meta related
-        ('unit_id', 'int'),
-        ('zone', 'varchar:MAX_ZONE_LENGTH'),
-        ('paxos_replica_number', 'int', 'false', '-1'),
-        ('data_size', 'int'),
-        ('required_size', 'int', 'false', '0'),
-        ('learner_list', 'longtext', 'true'),
-        ('rebuild', 'int', 'false', '0'),
-    ],
-)
+# 342: __all_ls_meta_table (abandoned)
 
 def_table_schema(
     owner = 'yanmu.ztl',
@@ -3139,566 +2779,27 @@ def_table_schema(
     ],
 )
 
-def_table_schema(
-  owner = 'msy164651',
-  table_name    = '__all_ls_status',
-  table_id      = '345',
-  table_type = 'SYSTEM_TABLE',
-  gm_columns = ['gmt_create', 'gmt_modified'],
-  rowkey_columns = [
-    ('tenant_id', 'int'),
-    ('ls_id', 'int'),
-    ],
-
-  in_tenant_space = True,
-  is_cluster_private = True,
-  meta_record_in_sys = True,
-
-  normal_columns = [
-    ('init_member_list', 'longtext', 'true'),
-    ('b_init_member_list', 'longtext', 'true'),
-    ('status', 'varchar:100'),
-    ('ls_group_id', 'int'),
-    ('unit_group_id', 'int'),
-    ('primary_zone', 'varchar:MAX_ZONE_LENGTH', 'true'),
-    ('init_learner_list', 'longtext', 'true'),
-    ('b_init_learner_list', 'longtext', 'true'),
-    ('flag', 'varchar:OB_MAX_LS_FLAG_LENGTH', 'false', ''),
-    ],
-)
-
+# 345: __all_ls_status (abandoned)
 # 346: __all_zone_v2 # abandoned in 4.0
 
-# __all_log_archive_progress
-all_log_archive_progress_def = dict(
-  owner = 'wangxiaohui.wxh',
-  table_name    = '__all_log_archive_progress',
-  table_id      = '348',
-  table_type = 'SYSTEM_TABLE',
-  gm_columns = ['gmt_create', 'gmt_modified'],
-  rowkey_columns = [
-    ('tenant_id', 'int'),
-    ('dest_no', 'int'),
-  ],
-  in_tenant_space = True,
-  is_cluster_private = True,
-  meta_record_in_sys = False,
-  normal_columns = [
-    ('incarnation', 'int', 'false', '1'),
-    ('dest_id', 'int', 'false', '0'),
-    ('round_id', 'int', 'false', '0'),
-    ('status', 'varchar:OB_DEFAULT_STATUS_LENTH', 'false', 'INVALID'),
-    ('start_scn', 'uint', 'false', '0'),
-    ('checkpoint_scn', 'uint', 'false', '0'),
-    ('max_scn', 'uint', 'false', '0'),
-    ('compatible', 'int', 'false', '0'),
-    ('base_piece_id', 'int', 'false', '0'),
-    ('used_piece_id', 'int', 'false', '0'),
-    ('piece_switch_interval', 'int', 'false', '0'),
-    ('unit_size', 'int', 'false', '1'),
-    ('compression', 'varchar:OB_MAX_COMPRESSOR_NAME_LENGTH', 'false', 'none'),
-    ('frozen_input_bytes', 'int', 'false', '0'),
-    ('frozen_output_bytes', 'int', 'false', '0'),
-    ('active_input_bytes', 'int', 'false', '0'),
-    ('active_output_bytes', 'int', 'false', '0'),
-    ('deleted_input_bytes', 'int', 'false', '0'),
-    ('deleted_output_bytes', 'int', 'false', '0'),
-    ('path', 'varchar:OB_MAX_BACKUP_DEST_LENGTH', 'false', ''),
-    ('comment', 'varchar:OB_MAX_DEFAULT_VALUE_LENGTH', 'false', ''),
-  ],
-)
-def_table_schema(**all_log_archive_progress_def)
+# 348: __all_log_archive_progress # abandoned 
+# 349: __all_log_archive_history # abandoned 
+# 350: __all_log_archive_piece_files # abandoned 
+# 351: __all_ls_log_archive_progress # abandoned 
 
-# __all_log_archive_history
-all_log_archive_progress_history_def = dict(
-  owner = 'wangxiaohui.wxh',
-  table_name    = '__all_log_archive_history',
-  table_id      = '349',
-  table_type = 'SYSTEM_TABLE',
-  gm_columns = ['gmt_create', 'gmt_modified'],
-  rowkey_columns = [
-    ('tenant_id', 'int'),
-    ('dest_no', 'int'),
-    ('round_id', 'int'),
-  ],
-  in_tenant_space = True,
-  is_cluster_private = True,
-  meta_record_in_sys = False,
-  normal_columns = [
-    ('incarnation', 'int', 'false', '1'),
-    ('dest_id', 'int', 'false', '0'),
-    ('start_scn', 'uint', 'false', '0'),
-    ('checkpoint_scn', 'uint', 'false', '0'),
-    ('max_scn', 'uint', 'false', '0'),
-    ('compatible', 'int', 'false', '0'),
-    ('base_piece_id', 'int', 'false', '0'),
-    ('used_piece_id', 'int', 'false', '0'),
-    ('piece_switch_interval', 'int', 'false', '0'),
-    ('unit_size', 'int', 'false', '1'),
-    ('compression', 'varchar:OB_MAX_COMPRESSOR_NAME_LENGTH', 'false', 'none'),
-    ('input_bytes', 'int', 'false', '0'),
-    ('output_bytes', 'int', 'false', '0'),
-    ('deleted_input_bytes', 'int', 'false', '0'),
-    ('deleted_output_bytes', 'int', 'false', '0'),
-    ('path', 'varchar:OB_MAX_BACKUP_DEST_LENGTH', 'false', ''),
-    ('comment', 'varchar:OB_MAX_DEFAULT_VALUE_LENGTH', 'false', ''),
-  ],
-)
-def_table_schema(**all_log_archive_progress_history_def)
 
-# __all_log_archive_piece_files
-all_log_archive_piece_files_def = dict(
-  owner = 'wangxiaohui.wxh',
-  table_name    = '__all_log_archive_piece_files',
-  table_id      = '350',
-  table_type = 'SYSTEM_TABLE',
-  gm_columns = ['gmt_create', 'gmt_modified'],
-  rowkey_columns = [
-    ('tenant_id', 'int'),
-    ('dest_id', 'int'),
-    ('round_id', 'int'),
-    ('piece_id', 'int'),
-  ],
-  in_tenant_space = True,
-  is_cluster_private = True,
-  meta_record_in_sys = False,
-  normal_columns = [
-    ('incarnation', 'int', 'false', '1'),
-    ('dest_no', 'int', 'false', '0'),
-    ('file_count', 'int', 'false', '0'),
-    ('start_scn', 'uint', 'false', '0'),
-    ('checkpoint_scn', 'uint', 'false', '0'),
-    ('max_scn', 'uint', 'false', '0'),
-    ('end_scn', 'uint', 'false', '0'),
-    ('compatible', 'int', 'false', '0'),
-    ('unit_size', 'int', 'false', '1'),
-    ('compression', 'varchar:OB_MAX_COMPRESSOR_NAME_LENGTH', 'false', 'none'),
-    ('input_bytes', 'int', 'false', '0'),
-    ('output_bytes', 'int', 'false', '0'),
-    ('status', 'varchar:OB_DEFAULT_STATUS_LENTH', 'false', 'INVALID'),
-    ('file_status', 'varchar:OB_DEFAULT_STATUS_LENTH', 'false', 'INVALID'),
-    ('cp_file_id', 'int', 'false', '0'),
-    ('cp_file_offset', 'int', 'false', '0'),
-    ('path', 'varchar:OB_MAX_BACKUP_DEST_LENGTH', 'false', ''),
-  ],
-)
-def_table_schema(**all_log_archive_piece_files_def)
-
-# __all_ls_log_archive_progress
-def_table_schema(
-    owner = 'wangxiaohui.wxh',
-    table_name    = '__all_ls_log_archive_progress',
-    table_id      = '351',
-    table_type = 'SYSTEM_TABLE',
-    gm_columns = ['gmt_create', 'gmt_modified'],
-    rowkey_columns = [
-        ('tenant_id', 'int'),
-        ('dest_id', 'int'),
-        ('round_id', 'int'),
-        ('piece_id', 'int'),
-        ('ls_id', 'int'),
-    ],
-
-  in_tenant_space = True,
-  is_cluster_private = True,
-  meta_record_in_sys = False,
-
-  normal_columns = [
-      ('incarnation', 'int', 'false', '1'),
-      ('start_scn', 'uint', 'false', '0'),
-      ('min_lsn', 'uint', 'false', '0'),
-      ('max_lsn', 'uint', 'false', '0'),
-      ('checkpoint_scn', 'uint', 'false', '0'),
-      ('status', 'varchar:OB_DEFAULT_STATUS_LENTH', 'false', 'INVALID'),
-      ('file_id', 'int', 'false', '0'),
-      ('file_offset', 'int', 'false', '0'),
-      ('input_bytes', 'int', 'false', '0'),
-      ('output_bytes', 'int', 'false', '0'),
-  ],
-)
-
-def_table_schema(
-  owner = 'msy164651',
-  table_name    = '__all_ls',
-  table_id = '352',
-  table_type = 'SYSTEM_TABLE',
-  gm_columns = ['gmt_create', 'gmt_modified'],
-  rowkey_columns = [
-    ('ls_id', 'int'),
-  ],
-
-  in_tenant_space = True,
-  is_cluster_private = False,
-
-  normal_columns = [
-    ('ls_group_id', 'int'),
-    ('status', 'varchar:100'),
-    ('flag', 'varchar:OB_MAX_LS_FLAG_LENGTH'),
-    ('create_scn', 'uint'),
-  ],
-)
-
+# 352: __all_ls (abandoned)
 # 353: abandoned
-
-def_table_schema(
-  owner = 'wenjinyu.wjy',
-  table_name = '__all_backup_storage_info',
-  table_id = '354',
-  table_type = 'SYSTEM_TABLE',
-  gm_columns = ['gmt_create', 'gmt_modified'],
-  rowkey_columns = [
-    ('tenant_id', 'int'),
-    ('path', 'varchar:OB_MAX_BACKUP_PATH_LENGTH'),
-    ('endpoint', 'varchar:OB_MAX_BACKUP_ENDPOINT_LENGTH'),
-  ],
-  in_tenant_space = True,
-  is_cluster_private = True,
-  meta_record_in_sys = False,
-  normal_columns = [
-    ('dest_id', 'int', 'true', '0'),
-    ('dest_type', 'varchar:OB_DEFAULT_OUTPUT_DEVICE_TYPE_LENTH', 'true', ''),
-    ('authorization', 'varchar:OB_MAX_BACKUP_AUTHORIZATION_LENGTH'),
-    ('extension', 'varchar:OB_MAX_BACKUP_EXTENSION_LENGTH'),
-    ('check_file_name', 'varchar:OB_MAX_BACKUP_CHECK_FILE_NAME_LENGTH', 'true', ''),
-    ('last_check_time', 'int', 'true', '0'),
-    ('max_iops', 'int', 'false', '0'),
-    ('max_bandwidth', 'int', 'false', '0'),
-  ],
-)
-
-def_table_schema(
-  owner = 'chongrong.th',
-  table_name    = '__all_backup_job',
-  table_id      = '357',
-  table_type = 'SYSTEM_TABLE',
-  gm_columns = ['gmt_create', 'gmt_modified'],
-  rowkey_columns = [
-    ('tenant_id', 'int'),
-    ('job_id', 'int'),
-    ],
-  in_tenant_space = True,
-  is_cluster_private = True,
-  meta_record_in_sys = False,
-
-  normal_columns = [
-    ('incarnation', 'int'),
-    ('backup_set_id', 'int', 'true', '0'),
-    ('initiator_tenant_id', 'int'),
-    ('initiator_job_id', 'int'),
-    ('executor_tenant_id', 'varchar:OB_MAX_EXECUTOR_TENANT_LENGTH','false', ''),
-    ('plus_archivelog', 'varchar:OB_INNER_TABLE_DEFAULT_VALUE_LENTH', 'false', 'OFF'),
-    ('backup_type', 'varchar:OB_INNER_TABLE_DEFAULT_VALUE_LENTH'),
-    ('job_level', 'varchar:OB_INNER_TABLE_DEFAULT_VALUE_LENTH'),
-    ('encryption_mode', 'varchar:OB_INNER_TABLE_DEFAULT_VALUE_LENTH', 'true', ''),
-    ('passwd', 'varchar:OB_INNER_TABLE_DEFAULT_VALUE_LENTH', 'true', ''),
-    ('start_ts', 'int'),
-    ('end_ts', 'int'),
-    ('status', 'varchar:OB_INNER_TABLE_DEFAULT_VALUE_LENTH'),
-    ('result', 'int'),
-    ('retry_count', 'int', 'true', '0'),
-    ('comment', 'varchar:OB_INNER_TABLE_DEFAULT_VALUE_LENTH', 'true', ''),
-    ('description', 'varchar:OB_INNER_TABLE_DEFAULT_VALUE_LENTH', 'true', ''),
-    ('path', 'varchar:OB_INNER_TABLE_DEFAULT_VALUE_LENTH', 'true', ''),
-    ],
-)
-def_table_schema(
-  owner = 'chongrong.th',
-  table_name    = '__all_backup_job_history',
-  table_id      = '358',
-  table_type = 'SYSTEM_TABLE',
-  gm_columns = ['gmt_create', 'gmt_modified'],
-  rowkey_columns = [
-    ('tenant_id', 'int'),
-    ('job_id', 'int'),
-    ],
-  in_tenant_space = True,
-  is_cluster_private = True,
-  meta_record_in_sys = False,
-
-  normal_columns = [
-    ('incarnation', 'int'),
-    ('backup_set_id', 'int', 'true', '0'),
-    ('initiator_tenant_id', 'int'),
-    ('initiator_job_id', 'int'),
-    ('executor_tenant_id', 'varchar:OB_MAX_EXECUTOR_TENANT_LENGTH','false', ''),
-    ('plus_archivelog', 'varchar:OB_INNER_TABLE_DEFAULT_VALUE_LENTH', 'false', 'OFF'),
-    ('backup_type', 'varchar:OB_INNER_TABLE_DEFAULT_VALUE_LENTH'),
-    ('job_level', 'varchar:OB_INNER_TABLE_DEFAULT_VALUE_LENTH'),
-    ('encryption_mode', 'varchar:OB_INNER_TABLE_DEFAULT_VALUE_LENTH', 'true', ''),
-    ('passwd', 'varchar:OB_INNER_TABLE_DEFAULT_VALUE_LENTH', 'true', ''),
-    ('start_ts', 'int'),
-    ('end_ts', 'int'),
-    ('status', 'varchar:OB_INNER_TABLE_DEFAULT_VALUE_LENTH'),
-    ('result', 'int'),
-    ('retry_count', 'int', 'true', '0'),
-    ('comment', 'varchar:OB_INNER_TABLE_DEFAULT_VALUE_LENTH', 'true', ''),
-    ('description', 'varchar:OB_INNER_TABLE_DEFAULT_VALUE_LENTH', 'true', ''),
-    ('path', 'varchar:OB_INNER_TABLE_DEFAULT_VALUE_LENTH', 'true', ''),
-    ],
-)
-
-def_table_schema(
-  owner = 'chongrong.th',
-  table_name    = '__all_backup_task',
-  table_id      = '359',
-  table_type = 'SYSTEM_TABLE',
-  gm_columns = ['gmt_create', 'gmt_modified'],
-  rowkey_columns = [
-    ('tenant_id', 'int'),
-    ('task_id', 'int'),
-    ],
-  in_tenant_space = True,
-  is_cluster_private = True,
-  meta_record_in_sys = False,
-
-  normal_columns = [
-    ('job_id', 'int'),
-    ('incarnation', 'int'),
-    ('backup_set_id', 'int'),
-    ('start_ts', 'int'),
-    ('end_ts', 'int'),
-    ('status', 'varchar:OB_INNER_TABLE_DEFAULT_VALUE_LENTH'),
-    ('start_scn', 'uint'),
-    ('end_scn', 'uint'),
-    ('user_ls_start_scn', 'uint'),
-    ('encryption_mode', 'varchar:OB_INNER_TABLE_DEFAULT_VALUE_LENTH', 'true', ''),
-    ('passwd', 'varchar:OB_INNER_TABLE_DEFAULT_VALUE_LENTH', 'true', ''),
-    ('input_bytes', 'int', 'true', '0'),
-    ('output_bytes', 'int', 'true', '0'),
-    ('extra_bytes', 'int', 'true', '0'),
-    ('tablet_count', 'int', 'true', '0'),
-    ('finish_tablet_count', 'int', 'true', '0'),
-    ('macro_block_count', 'int', 'true', '0'),
-    ('finish_macro_block_count', 'int', 'true', '0'),
-    ('file_count', 'int', 'true', '0'),
-    ('meta_turn_id', 'int', 'true', '0'),
-    ('data_turn_id', 'int', 'true', '0'),
-    ('result', 'int', 'true', '0'),
-    ('comment', 'varchar:OB_INNER_TABLE_DEFAULT_VALUE_LENTH', 'true', ''),
-    ('path', 'varchar:OB_INNER_TABLE_DEFAULT_VALUE_LENTH', 'true', ''),
-    ('minor_turn_id', 'int', 'false', '0'),
-    ('major_turn_id', 'int', 'false', '0'),
-    ('log_file_count', 'int', 'false', '0'),
-    ('finish_log_file_count', 'int', 'false', '0'),
-    ],
-)
-def_table_schema(
-  owner = 'chongrong.th',
-  table_name    = '__all_backup_task_history',
-  table_id      = '360',
-  table_type = 'SYSTEM_TABLE',
-  gm_columns = ['gmt_create', 'gmt_modified'],
-  rowkey_columns = [
-    ('tenant_id', 'int'),
-    ('task_id', 'int'),
-    ],
-  in_tenant_space = True,
-  is_cluster_private = True,
-  meta_record_in_sys = False,
-
-  normal_columns = [
-    ('job_id', 'int'),
-    ('incarnation', 'int'),
-    ('backup_set_id', 'int'),
-    ('start_ts', 'int'),
-    ('end_ts', 'int'),
-    ('status', 'varchar:OB_INNER_TABLE_DEFAULT_VALUE_LENTH'),
-    ('start_scn', 'uint'),
-    ('end_scn', 'uint'),
-    ('user_ls_start_scn', 'uint'),
-    ('encryption_mode', 'varchar:OB_INNER_TABLE_DEFAULT_VALUE_LENTH', 'true', ''),
-    ('passwd', 'varchar:OB_INNER_TABLE_DEFAULT_VALUE_LENTH', 'true', ''),
-    ('input_bytes', 'int', 'true', '0'),
-    ('output_bytes', 'int', 'true', '0'),
-    ('extra_bytes', 'int', 'true', '0'),
-    ('tablet_count', 'int', 'true', '0'),
-    ('finish_tablet_count', 'int', 'true', '0'),
-    ('macro_block_count', 'int', 'true', '0'),
-    ('finish_macro_block_count', 'int', 'true', '0'),
-    ('file_count', 'int', 'true', '0'),
-    ('meta_turn_id', 'int', 'true', '0'),
-    ('data_turn_id', 'int', 'true', '0'),
-    ('result', 'int', 'true', '0'),
-    ('comment', 'varchar:OB_INNER_TABLE_DEFAULT_VALUE_LENTH', 'true', ''),
-    ('path', 'varchar:OB_INNER_TABLE_DEFAULT_VALUE_LENTH', 'true', ''),
-    ('minor_turn_id', 'int', 'false', '0'),
-    ('major_turn_id', 'int', 'false', '0'),
-    ('log_file_count', 'int', 'false', '0'),
-    ('finish_log_file_count', 'int', 'false', '0'),
-    ],
-)
-def_table_schema(
-  owner = 'chongrong.th',
-  table_name    = '__all_backup_ls_task',
-  table_id      = '361',
-  table_type = 'SYSTEM_TABLE',
-  gm_columns = ['gmt_create', 'gmt_modified'],
-  rowkey_columns = [
-    ('tenant_id', 'int'),
-    ('task_id', 'int'),
-    ('ls_id', 'int'),
-    ],
-  in_tenant_space = True,
-  is_cluster_private = True,
-  meta_record_in_sys = False,
-
-  normal_columns = [
-    ('job_id', 'int'),
-    ('backup_set_id', 'int'),
-    ('backup_type', 'varchar:OB_INNER_TABLE_DEFAULT_VALUE_LENTH'),
-    ('task_type','varchar:OB_INNER_TABLE_DEFAULT_VALUE_LENTH'),
-    ('status', 'varchar:OB_INNER_TABLE_DEFAULT_VALUE_LENTH'),
-    ('start_ts', 'int'),
-    ('end_ts', 'int'),
-    ('date', 'int'),
-    ('black_list', 'varchar:OB_INNER_TABLE_DEFAULT_VALUE_LENTH', 'true', ''),
-    ('svr_ip', 'varchar:OB_INNER_TABLE_DEFAULT_VALUE_LENTH', 'true', ''),
-    ('svr_port', 'int', 'true', '0'),
-    ('task_trace_id', 'varchar:OB_INNER_TABLE_DEFAULT_VALUE_LENTH', 'true', ''),
-    ('input_bytes', 'int', 'true', '0'),
-    ('output_bytes', 'int', 'true', '0'),
-    ('tablet_count', 'int', 'true', '0'),
-    ('finish_tablet_count', 'int', 'true', '0'),
-    ('macro_block_count', 'int', 'true', '0'),
-    ('finish_macro_block_count', 'int', 'true', '0'),
-    ('extra_bytes', 'int', 'true', '0'),
-    ('file_count', 'int', 'true', '0'),
-    ('start_turn_id', 'int'),
-    ('turn_id', 'int'),
-    ('retry_id', 'int', 'true', '0'),
-    ('result', 'int', 'true', '0'),
-    ('comment', 'varchar:OB_INNER_TABLE_DEFAULT_VALUE_LENTH', 'true', ''),
-    ('max_tablet_checkpoint_scn', 'uint'),
-    ('log_file_count', 'int', 'false', '0'),
-    ('finish_log_file_count', 'int', 'false', '0'),
-    ],
-)
-def_table_schema(
-  owner = 'chongrong.th',
-  table_name    = '__all_backup_ls_task_history',
-  table_id      = '362',
-  table_type = 'SYSTEM_TABLE',
-  gm_columns = ['gmt_create', 'gmt_modified'],
-  rowkey_columns = [
-    ('tenant_id', 'int'),
-    ('task_id', 'int'),
-    ('ls_id', 'int'),
-    ],
-  in_tenant_space = True,
-  is_cluster_private = True,
-  meta_record_in_sys = False,
-
-  normal_columns = [
-    ('job_id', 'int'),
-    ('backup_set_id', 'int'),
-    ('backup_type', 'varchar:OB_INNER_TABLE_DEFAULT_VALUE_LENTH'),
-    ('task_type','varchar:OB_INNER_TABLE_DEFAULT_VALUE_LENTH'),
-    ('status', 'varchar:OB_INNER_TABLE_DEFAULT_VALUE_LENTH'),
-    ('start_ts', 'int'),
-    ('end_ts', 'int'),
-    ('date', 'int'),
-    ('black_list', 'varchar:OB_INNER_TABLE_DEFAULT_VALUE_LENTH', 'true', ''),
-    ('svr_ip', 'varchar:OB_INNER_TABLE_DEFAULT_VALUE_LENTH', 'true', ''),
-    ('svr_port', 'int', 'true', '0'),
-    ('task_trace_id', 'varchar:OB_INNER_TABLE_DEFAULT_VALUE_LENTH', 'true', ''),
-    ('input_bytes', 'int', 'true', '0'),
-    ('output_bytes', 'int', 'true', '0'),
-    ('tablet_count', 'int', 'true', '0'),
-    ('finish_tablet_count', 'int', 'true', '0'),
-    ('macro_block_count', 'int', 'true', '0'),
-    ('finish_macro_block_count', 'int', 'true', '0'),
-    ('extra_bytes', 'int', 'true', '0'),
-    ('file_count', 'int', 'true', '0'),
-    ('start_turn_id', 'int'),
-    ('turn_id', 'int'),
-    ('retry_id', 'int', 'true', '0'),
-    ('result', 'int', 'true', '0'),
-    ('comment', 'varchar:OB_INNER_TABLE_DEFAULT_VALUE_LENTH', 'true', ''),
-    ('max_tablet_checkpoint_scn', 'uint'),
-    ('log_file_count', 'int', 'false', '0'),
-    ('finish_log_file_count', 'int', 'false', '0'),
-    ],
-)
-def_table_schema(
-  owner = 'chongrong.th',
-  table_name    = '__all_backup_ls_task_info',
-  table_id      = '363',
-  table_type = 'SYSTEM_TABLE',
-  gm_columns = ['gmt_create', 'gmt_modified'],
-  rowkey_columns = [
-    ('tenant_id', 'int'),
-    ('task_id', 'int'),
-    ('ls_id', 'int'),
-    ('turn_id', 'int'),
-    ('retry_id', 'int'),
-    ('data_type', 'int'),
-    ],
-  in_tenant_space = True,
-  is_cluster_private = True,
-  meta_record_in_sys = False,
-
-  normal_columns = [
-    ('backup_set_id', 'int'),
-    ('input_bytes', 'int'),
-    ('output_bytes', 'int'),
-    ('tablet_count', 'int'),
-    ('finish_tablet_count', 'int'),
-    ('macro_block_count', 'int'),
-    ('finish_macro_block_count', 'int'),
-    ('extra_bytes', 'int', 'true', '0'),
-    ('file_count', 'int', 'true', '0'),
-    ('max_file_id', 'int'),
-    ('final', 'varchar:OB_INNER_TABLE_DEFAULT_VALUE_LENTH', 'true', 'False'),
-    ],
-)
-def_table_schema(
-  owner = 'chongrong.th',
-  table_name    = '__all_backup_skipped_tablet',
-  table_id      = '364',
-  table_type = 'SYSTEM_TABLE',
-  gm_columns = ['gmt_create', 'gmt_modified'],
-  rowkey_columns = [
-    ('tenant_id', 'int'),
-    ('task_id', 'int'),
-    ('turn_id', 'int'),
-    ('retry_id', 'int'),
-    ('tablet_id', 'int'),
-    ],
-  in_tenant_space = True,
-  is_cluster_private = True,
-  meta_record_in_sys = False,
-
-  normal_columns = [
-    ('ls_id', 'int'),
-    ('backup_set_id', 'int'),
-    ('skipped_type', 'varchar:OB_INNER_TABLE_DEFAULT_VALUE_LENTH'),
-    ('comment', 'varchar:OB_INNER_TABLE_DEFAULT_VALUE_LENTH', 'true', ''),
-    ],
-)
-def_table_schema(
-  owner = 'chongrong.th',
-  table_name    = '__all_backup_skipped_tablet_history',
-  table_id      = '365',
-  table_type = 'SYSTEM_TABLE',
-  gm_columns = ['gmt_create', 'gmt_modified'],
-  rowkey_columns = [
-    ('tenant_id', 'int'),
-    ('task_id', 'int'),
-    ('turn_id', 'int'),
-    ('retry_id', 'int'),
-    ('tablet_id', 'int'),
-    ],
-  in_tenant_space = True,
-  is_cluster_private = True,
-  meta_record_in_sys = False,
-
-  normal_columns = [
-    ('ls_id', 'int'),
-    ('backup_set_id', 'int'),
-    ('skipped_type', 'varchar:OB_INNER_TABLE_DEFAULT_VALUE_LENTH'),
-    ('comment', 'varchar:OB_INNER_TABLE_DEFAULT_VALUE_LENTH', 'true', ''),
-    ],
-)
+# 354: __all_backup_storage_info # abandoned 
+# 357: __all_backup_job # abandoned 
+# 358: __all_backup_job_history # abandoned 
+# 359: __all_backup_task # abandoned 
+# 360: __all_backup_task_history # abandoned 
+# 361: __all_backup_ls_task (abandoned)
+# 362: __all_backup_ls_task_history # abandoned 
+# 363: __all_backup_ls_task_info# abandoned 
+# 364: __all_backup_skipped_tablet# abandoned 
+# 365: __all_backup_skipped_tablet_history
 
 def_table_schema(
   owner = 'msy164651',
@@ -3749,64 +2850,8 @@ def_table_schema(
   ],
 )
 
-def_table_schema(
-  owner = 'msy164651',
-  table_name    = '__all_ls_recovery_stat',
-  table_id = '370',
-  table_type = 'SYSTEM_TABLE',
-  gm_columns = ['gmt_create', 'gmt_modified'],
-  rowkey_columns = [
-    ('tenant_id', 'int'),
-    ('ls_id', 'int'),
-    ],
-  in_tenant_space = True,
-  is_cluster_private = True,
-  meta_record_in_sys = True,
-
-  normal_columns = [
-    ('create_scn', 'uint', 'false', '0'),
-    ('readable_scn', 'uint', 'false', '0'),
-    ('sync_scn', 'uint', 'false', '0'),
-    ('drop_scn', 'uint', 'false', '0'),
-    ('config_version', 'varchar:128', "false", ""),
-    ('bconfig_version', 'varchar:1024', "false", ""),
-  ],
-)
-
-
-
-def_table_schema(
-  owner = 'chongrong.th',
-  table_name    = '__all_backup_ls_task_info_history',
-  table_id      = '371',
-  table_type = 'SYSTEM_TABLE',
-  gm_columns = ['gmt_create', 'gmt_modified'],
-  rowkey_columns = [
-    ('tenant_id', 'int'),
-    ('task_id', 'int'),
-    ('ls_id', 'int'),
-    ('turn_id', 'int'),
-    ('retry_id', 'int'),
-    ('data_type', 'int'),
-    ],
-  in_tenant_space = True,
-  is_cluster_private = True,
-  meta_record_in_sys = False,
-
-  normal_columns = [
-    ('backup_set_id', 'int'),
-    ('input_bytes', 'int'),
-    ('output_bytes', 'int'),
-    ('tablet_count', 'int'),
-    ('finish_tablet_count', 'int'),
-    ('macro_block_count', 'int'),
-    ('finish_macro_block_count', 'int'),
-    ('extra_bytes', 'int', 'true', '0'),
-    ('file_count', 'int', 'true', '0'),
-    ('max_file_id', 'int'),
-    ('final', 'varchar:OB_INNER_TABLE_DEFAULT_VALUE_LENTH', 'true', 'False'),
-    ],
-)
+# 370: __all_ls_recovery_stat (abandoned)
+# 371: __all_backup_ls_task_info_history # abandoned
 
 def_table_schema(
   owner = 'quanwei.wqw',
@@ -3859,44 +2904,7 @@ def_table_schema(
     ],
 )
 
-def_table_schema(
-  owner = 'jingyu.cr',
-  table_name    = '__all_ls_replica_task',
-  table_id = '374',
-  table_type = 'SYSTEM_TABLE',
-  gm_columns = ['gmt_create', 'gmt_modified'],
-  rowkey_columns = [
-    ('tenant_id', 'int'),
-    ('ls_id', 'int'),
-    ('task_type', 'varchar:MAX_DISASTER_RECOVERY_TASK_TYPE_LENGTH'),
-    ('task_id', 'varchar:OB_TRACE_STAT_BUFFER_SIZE'),
-  ],
-
-  in_tenant_space = True,
-  is_cluster_private = True,
-  meta_record_in_sys = False,
-
-  normal_columns = [
-    ('task_status', 'varchar:MAX_COLUMN_COMMENT_LENGTH', 'true'),
-    ('priority', 'int', 'false', 1),
-    ('target_replica_svr_ip', 'varchar:MAX_IP_ADDR_LENGTH', 'true'),
-    ('target_replica_svr_port', 'int', 'true'),
-    ('target_paxos_replica_number', 'int', 'true'),
-    ('target_replica_type', 'varchar:MAX_REPLICA_TYPE_LENGTH', 'true'),
-    ('source_replica_svr_ip', 'varchar:MAX_IP_ADDR_LENGTH', 'true'),
-    ('source_replica_svr_port', 'int', 'true'),
-    ('source_paxos_replica_number', 'int', 'true'),
-    ('source_replica_type', 'varchar:MAX_REPLICA_TYPE_LENGTH', 'true'),
-    ('task_exec_svr_ip', 'varchar:MAX_IP_ADDR_LENGTH', 'true'),
-    ('task_exec_svr_port', 'int', 'true'),
-    ('generate_time', 'timestamp:6', 'false', 0),
-    ('schedule_time', 'timestamp:6', 'false', 0),
-    ('comment', 'varchar:MAX_COLUMN_COMMENT_LENGTH', 'true'),
-    ('data_source_svr_ip', 'varchar:MAX_IP_ADDR_LENGTH', 'true'),
-    ('data_source_svr_port', 'int', 'true'),
-    ('is_manual', 'bool', 'true', '0'),
-  ],
-)
+# 374: __all_ls_replica_task (abandoned)
 
 def_table_schema(
   owner = 'lixinze.lxz',
@@ -3925,28 +2933,7 @@ def_table_schema(
   ],
 )
 
-def_table_schema(
-  owner = 'wanhong.wwh',
-  table_name    = '__all_balance_group_ls_stat',
-  table_id = '376',
-  table_type = 'SYSTEM_TABLE',
-  gm_columns = ['gmt_create', 'gmt_modified'],
-  rowkey_columns = [
-    ('tenant_id', 'int'),
-    ('balance_group_id_high', 'int'),
-    ('balance_group_id_low', 'int'),
-    ('ls_id', 'int'),
-  ],
-
-  in_tenant_space = True,
-  is_cluster_private = True,
-  meta_record_in_sys = False,
-
-  normal_columns = [
-    ('tablet_group_count', 'int', 'false', '0'),
-    ('balance_group_name', 'varchar:OB_MAX_BALANCE_GROUP_NAME_LENGTH', 'false', ''),
-  ],
-)
+# 376: __all_balance_group_ls_stat (abandoned)
 
 def_table_schema(
   owner = 'fyy280124',
@@ -4111,268 +3098,18 @@ all_context_def = dict(
 def_table_schema(**all_context_def)
 def_table_schema(**gen_history_table_def(382, all_context_def))
 
-all_global_context_value_def = dict(
-  owner = 'peihan.dph',
-  table_name    = '__all_global_context_value',
-  table_id      = '383',
-  table_type = 'SYSTEM_TABLE',
-  gm_columns = ['gmt_create', 'gmt_modified'],
-  rowkey_columns = [
-  ('tenant_id', 'int'),
-  ('context_id', 'int'),
-  ('attribute', 'varchar:OB_MAX_CONTEXT_STRING_LENGTH'),
-  ('client_identifier', 'varchar:OB_MAX_CONTEXT_CLIENT_IDENTIFIER_LENGTH'),
-  ],
-  in_tenant_space = True,
-  is_cluster_private = True,
-  meta_record_in_sys = False,
-
-  normal_columns = [
-  ('namespace', 'varchar:OB_MAX_CONTEXT_STRING_LENGTH', 'false', ''),
-  ('value', 'varchar:OB_MAX_CONTEXT_VALUE_LENGTH', 'false', ''),
-  ('username', 'varchar:OB_MAX_CONTEXT_STRING_LENGTH', 'false', ''),
-  ('con_id', 'int', 'false', '-1'),
-  ],
-)
-
-def_table_schema(**all_global_context_value_def)
-
+# 383: __all_global_context_value (abandoned)
 #384: __all_tablet_transfer_info
 
-def_table_schema(
-  owner = 'liuhanyi.lhy',
-  table_name    = '__all_ls_election_reference_info',
-  table_id = '385',
-  table_type = 'SYSTEM_TABLE',
-  gm_columns = ['gmt_create', 'gmt_modified'],
-  rowkey_columns = [
-    ('tenant_id', 'int'),
-    ('ls_id', 'int'),
-  ],
-  in_tenant_space = True,
-  is_cluster_private = True,
-  meta_record_in_sys = True,
-  normal_columns = [
-    ('zone_priority', 'longtext', 'true'),
-    ('manual_leader_server', 'longtext', 'true'),
-    ('blacklist', 'longtext', 'true'),
-  ],
-)
+# 385: __all_ls_election_reference_info (abandoned)
 
 # backup clean inner table
-def_table_schema(
-  owner = 'wenjinyu.wjy',
-  table_name    = '__all_backup_delete_job',
-  table_id      = '386',
-  table_type = 'SYSTEM_TABLE',
-  gm_columns = ['gmt_create', 'gmt_modified'],
-  rowkey_columns = [
-    ('tenant_id', 'int'),
-    ('job_id', 'int'),
-    ],
-  in_tenant_space = True,
-  is_cluster_private = True,
-  meta_record_in_sys = False,
-  normal_columns = [
-    ('incarnation', 'int'),
-    ('initiator_tenant_id', 'int'),
-    ('initiator_job_id', 'int'),
-    ('executor_tenant_id', 'varchar:OB_MAX_EXECUTOR_TENANT_LENGTH'),
-    ('type', 'varchar:OB_INNER_TABLE_BACKUP_CLEAN_TYPE_LENGTH'),
-    ('parameter', 'varchar:OB_MAX_BACKUP_PATH_LENGTH'),
-    ('job_level', 'varchar:OB_INNER_TABLE_BACKUP_LEVEL_LENGTH'),
-    ('start_ts', 'int'),
-    ('end_ts', 'int'),
-    ('status', 'varchar:OB_DEFAULT_STATUS_LENTH'),
-    ('task_count', 'int', 'true', '0'),
-    ('success_task_count', 'int', 'true', '0'),
-    ('result', 'int'),
-    ('retry_count', 'int', 'true', '0'),
-    ('comment', 'varchar:OB_INNER_TABLE_DEFAULT_VALUE_LENTH', 'true', ''),
-    ('data_backup_dest_id_list', 'varchar:OB_INNER_TABLE_BACKUP_DEFAULT_FIELD_LENGTH', 'true', ''),
-    ('log_archive_dest_id_list', 'varchar:OB_INNER_TABLE_BACKUP_DEFAULT_FIELD_LENGTH', 'true', ''),
-    ('data_backup_path_list', 'varchar:OB_MAX_BACKUP_PTAH_LIST_LENGTH', 'true', ''),
-    ('log_archive_path_list', 'varchar:OB_MAX_BACKUP_PTAH_LIST_LENGTH', 'true', ''),
-    ('description', 'varchar:OB_INNER_TABLE_DEFAULT_VALUE_LENTH', 'true', ''),
-    ],
-)
-
-def_table_schema(
-  owner = 'wenjinyu.wjy',
-  table_name    = '__all_backup_delete_job_history',
-  table_id      = '387',
-  table_type = 'SYSTEM_TABLE',
-  gm_columns = ['gmt_create', 'gmt_modified'],
-  rowkey_columns = [
-    ('tenant_id', 'int'),
-    ('job_id', 'int'),
-    ],
-  in_tenant_space = True,
-  is_cluster_private = True,
-  meta_record_in_sys = False,
-  normal_columns = [
-    ('incarnation', 'int'),
-    ('initiator_tenant_id', 'int'),
-    ('initiator_job_id', 'int'),
-    ('executor_tenant_id', 'varchar:OB_MAX_EXECUTOR_TENANT_LENGTH'),
-    ('type', 'varchar:OB_INNER_TABLE_BACKUP_CLEAN_TYPE_LENGTH'),
-    ('parameter', 'varchar:OB_MAX_BACKUP_PATH_LENGTH'),
-    ('job_level', 'varchar:OB_INNER_TABLE_BACKUP_LEVEL_LENGTH'),
-    ('start_ts', 'int'),
-    ('end_ts', 'int'),
-    ('status', 'varchar:OB_DEFAULT_STATUS_LENTH'),
-    ('task_count', 'int', 'true', '0'),
-    ('success_task_count', 'int', 'true', '0'),
-    ('result', 'int'),
-    ('retry_count', 'int', 'true', '0'),
-    ('comment', 'varchar:OB_INNER_TABLE_DEFAULT_VALUE_LENTH', 'true', ''),
-    ('data_backup_dest_id_list', 'varchar:OB_INNER_TABLE_BACKUP_DEFAULT_FIELD_LENGTH', 'true', ''),
-    ('log_archive_dest_id_list', 'varchar:OB_INNER_TABLE_BACKUP_DEFAULT_FIELD_LENGTH', 'true', ''),
-    ('data_backup_path_list', 'varchar:OB_MAX_BACKUP_PTAH_LIST_LENGTH', 'true', ''),
-    ('log_archive_path_list', 'varchar:OB_MAX_BACKUP_PTAH_LIST_LENGTH', 'true', ''),
-    ('description', 'varchar:OB_INNER_TABLE_DEFAULT_VALUE_LENTH', 'true', ''),
-    ],
-)
-
-def_table_schema(
-  owner = 'wenjinyu.wjy',
-  table_name    = '__all_backup_delete_task',
-  table_id      = '388',
-  table_type = 'SYSTEM_TABLE',
-  gm_columns = ['gmt_create', 'gmt_modified'],
-  rowkey_columns = [
-    ('tenant_id', 'int'),
-    ('task_id', 'int'),
-    ],
-  in_tenant_space = True,
-  is_cluster_private = True,
-  meta_record_in_sys = False,
-  normal_columns = [
-    ('incarnation', 'int'),
-    ('job_id', 'int'),
-    ('task_type', 'varchar:OB_INNER_TABLE_BACKUP_CLEAN_TYPE_LENGTH'),
-    ('id', 'int'),
-    ('round_id', 'int'),
-    ('dest_id', 'int'),
-    ('start_ts', 'int'),
-    ('end_ts', 'int'),
-    ('status', 'varchar:OB_DEFAULT_STATUS_LENTH'),
-    ('total_ls_count', 'int', 'true', '0'),
-    ('finish_ls_count', 'int', 'true', '0'),
-    ('total_bytes', 'int', 'true', '0'),
-    ('delete_bytes', 'int', 'true', '0'),
-    ('total_files_count', 'int', 'true', '0'),
-    ('delete_files_count', 'int', 'true', '0'),
-    ('result', 'int', 'true', '0'),
-    ('comment', 'varchar:OB_INNER_TABLE_DEFAULT_VALUE_LENTH', 'true', ''),
-    ('path', 'varchar:OB_MAX_BACKUP_PATH_LENGTH'),
-    ],
-)
-
-def_table_schema(
-  owner = 'wenjinyu.wjy',
-  table_name    = '__all_backup_delete_task_history',
-  table_id      = '389',
-  table_type = 'SYSTEM_TABLE',
-  gm_columns = ['gmt_create', 'gmt_modified'],
-  rowkey_columns = [
-    ('tenant_id', 'int'),
-    ('task_id', 'int'),
-    ],
-  in_tenant_space = True,
-  is_cluster_private = True,
-  meta_record_in_sys = False,
-  normal_columns = [
-    ('incarnation', 'int'),
-    ('job_id', 'int'),
-    ('task_type', 'varchar:OB_INNER_TABLE_BACKUP_CLEAN_TYPE_LENGTH'),
-    ('id', 'int'),
-    ('round_id', 'int'),
-    ('dest_id', 'int'),
-    ('start_ts', 'int'),
-    ('end_ts', 'int'),
-    ('status', 'varchar:OB_DEFAULT_STATUS_LENTH'),
-    ('total_ls_count', 'int', 'true', '0'),
-    ('finish_ls_count', 'int', 'true', '0'),
-    ('total_bytes', 'int', 'true', '0'),
-    ('delete_bytes', 'int', 'true', '0'),
-    ('total_files_count', 'int', 'true', '0'),
-    ('delete_files_count', 'int', 'true', '0'),
-    ('result', 'int', 'true', '0'),
-    ('comment', 'varchar:OB_INNER_TABLE_DEFAULT_VALUE_LENTH', 'true', ''),
-    ('path', 'varchar:OB_MAX_BACKUP_PATH_LENGTH'),
-    ],
-)
-
-def_table_schema(
-  owner = 'wenjinyu.wjy',
-  table_name    = '__all_backup_delete_ls_task',
-  table_id      = '390',
-  table_type = 'SYSTEM_TABLE',
-  gm_columns = ['gmt_create', 'gmt_modified'],
-  rowkey_columns = [
-    ('tenant_id', 'int'),
-    ('task_id', 'int'),
-    ('ls_id', 'int'),
-    ],
-  in_tenant_space = True,
-  is_cluster_private = True,
-  meta_record_in_sys = False,
-  normal_columns = [
-    ('job_id', 'int'),
-    ('task_type', 'varchar:OB_INNER_TABLE_BACKUP_CLEAN_TYPE_LENGTH'),
-    ('id', 'int'),
-    ('round_id', 'int'),
-    ('status', 'varchar:OB_DEFAULT_STATUS_LENTH'),
-    ('start_ts', 'int'),
-    ('end_ts', 'int'),
-    ('svr_ip', 'varchar:MAX_IP_ADDR_LENGTH', 'true', ''),
-    ('svr_port', 'int', 'true', '0'),
-    ('task_trace_id', 'varchar:OB_MAX_TRACE_ID_BUFFER_SIZE', 'true', ''),
-    ('total_bytes', 'int', 'true', '0'),
-    ('delete_bytes', 'int', 'true', '0'),
-    ('total_files_count', 'int', 'true', '0'),
-    ('delete_files_count', 'int', 'true', '0'),
-    ('retry_id', 'int', 'true', '0'),
-    ('result', 'int', 'true', '0'),
-    ('comment', 'varchar:OB_INNER_TABLE_DEFAULT_VALUE_LENTH', 'true', ''),
-    ],
-)
-
-def_table_schema(
-  owner = 'wenjinyu.wjy',
-  table_name    = '__all_backup_delete_ls_task_history',
-  table_id      = '391',
-  table_type = 'SYSTEM_TABLE',
-  gm_columns = ['gmt_create', 'gmt_modified'],
-  rowkey_columns = [
-    ('tenant_id', 'int'),
-    ('task_id', 'int'),
-    ('ls_id', 'int'),
-    ],
-  in_tenant_space = True,
-  is_cluster_private = True,
-  meta_record_in_sys = False,
-  normal_columns = [
-    ('job_id', 'int'),
-    ('task_type', 'varchar:OB_INNER_TABLE_BACKUP_CLEAN_TYPE_LENGTH'),
-    ('id', 'int'),
-    ('round_id', 'int'),
-    ('status', 'varchar:OB_DEFAULT_STATUS_LENTH'),
-    ('start_ts', 'int'),
-    ('end_ts', 'int'),
-    ('svr_ip', 'varchar:MAX_IP_ADDR_LENGTH', 'true', ''),
-    ('svr_port', 'int', 'true', '0'),
-    ('task_trace_id', 'varchar:OB_MAX_TRACE_ID_BUFFER_SIZE', 'true', ''),
-    ('total_bytes', 'int', 'true', '0'),
-    ('delete_bytes', 'int', 'true', '0'),
-    ('total_files_count', 'int', 'true', '0'),
-    ('delete_files_count', 'int', 'true', '0'),
-    ('retry_id', 'int', 'true', '0'),
-    ('result', 'int', 'true', '0'),
-    ('comment', 'varchar:OB_INNER_TABLE_DEFAULT_VALUE_LENTH', 'true', ''),
-    ],
-)
+# 386: __all_backup_delete_job # abandoned
+# 387: __all_backup_delete_job_history # abandoned
+# 388: __all_backup_delete_task # abandoned
+# 389: __all_backup_delete_task_history # abandoned
+# 390: __all_backup_delete_ls_task # abandoned
+# 391: __all_backup_delete_ls_task_history # abandoned
 
 def_table_schema(
   owner = 'quanwei.wqw',
@@ -4446,183 +3183,16 @@ def_table_schema(
   ],
 )
 
-def_table_schema(
-  owner = 'jianyun.sjy',
-  table_name    = '__all_disk_io_calibration',
-  table_id      = '395',
-  table_type = 'SYSTEM_TABLE',
-  gm_columns = ['gmt_create', 'gmt_modified'],
-  rowkey_columns = [
-    ('svr_ip', 'varchar:MAX_IP_ADDR_LENGTH'),
-    ('svr_port', 'int'),
-    ('storage_name', 'varchar:1024'),
-    ('mode', 'varchar:256'),
-    ('size', 'int'),
-  ],
-  in_tenant_space = False,
-  is_cluster_private = True,
-  normal_columns = [
-    ('latency', 'int', 'false'),
-    ('iops', 'int', 'false'),
-    ('addition_info', 'varchar:65536', 'false', ''),
-  ],
-)
-
+# 395: __all_disk_io_calibration (abandoned)
 # 396:__all_plan_baseline abandoned
 # 397:__all_plan_baseline_item abandoned
 # 398:__all_spm_config abandoned
-
-def_table_schema(
-  owner = 'wangxiaohui.wxh',
-  table_name = '__all_log_archive_dest_parameter',
-  table_id = '399',
-  table_type = 'SYSTEM_TABLE',
-  gm_columns = ['gmt_create', 'gmt_modified'],
-  rowkey_columns = [
-    ('tenant_id', 'int'),
-    ('dest_no', 'int'),
-    ('name', 'varchar:OB_INNER_TABLE_DEFAULT_KEY_LENTH'),
-  ],
-  is_cluster_private = True,
-  in_tenant_space = True,
-  meta_record_in_sys = False,
-
-  normal_columns = [
-    ('value', 'varchar:OB_INNER_TABLE_DEFAULT_VALUE_LENTH'),
-  ],
-)
-
-all_backup_parameter_def = dict(
-  owner = 'wangxiaohui.wxh',
-  table_name    = '__all_backup_parameter',
-  table_id      = '400',
-  table_type = 'SYSTEM_TABLE',
-  gm_columns = ['gmt_create', 'gmt_modified'],
-  rowkey_columns = [
-    ('tenant_id', 'int'),
-    ('name', 'varchar:OB_INNER_TABLE_DEFAULT_KEY_LENTH'),
-  ],
-  in_tenant_space = True,
-  is_cluster_private = True,
-  meta_record_in_sys = False,
-  normal_columns = [
-    ('value', 'longtext'),
-  ],
-)
-def_table_schema(**all_backup_parameter_def)
-
-all_ls_restore_progress_def = dict(
-  owner = 'wangxiaohui.wxh',
-  table_name    = '__all_ls_restore_progress',
-  table_id      = '401',
-  table_type = 'SYSTEM_TABLE',
-  gm_columns = ['gmt_create', 'gmt_modified'],
-  rowkey_columns = [
-    ('tenant_id', 'int'),
-    ('job_id', 'int'),
-    ('ls_id', 'int'),
-    ('svr_ip', 'varchar:MAX_IP_ADDR_LENGTH'),
-    ('svr_port', 'int'),
-  ],
-  in_tenant_space = True,
-  is_cluster_private = True,
-  meta_record_in_sys = False,
-  normal_columns = [
-    ('status', 'int'),
-    ('restore_scn', 'uint'),
-    ('start_replay_scn', 'uint'),
-    ('last_replay_scn', 'uint'),
-    ('tablet_count', 'int'),
-    ('finish_tablet_count', 'int'),
-    ('total_bytes', 'int'),
-    ('finish_bytes', 'int'),
-    ('trace_id', 'varchar:OB_MAX_TRACE_ID_BUFFER_SIZE', 'true', ''),
-    ('result', 'int', 'true', '0'),
-    ('comment', 'varchar:MAX_TABLE_COMMENT_LENGTH', 'true', ''),
-  ],
-)
-def_table_schema(**all_ls_restore_progress_def)
-
-all_ls_restore_history_def = dict(
-  owner = 'wangxiaohui.wxh',
-  table_name    = '__all_ls_restore_history',
-  table_id      = '402',
-  table_type = 'SYSTEM_TABLE',
-  gm_columns = ['gmt_create', 'gmt_modified'],
-  rowkey_columns = [
-    ('tenant_id', 'int'),
-    ('job_id', 'int'),
-    ('ls_id', 'int'),
-    ('svr_ip', 'varchar:MAX_IP_ADDR_LENGTH'),
-    ('svr_port', 'int'),
-  ],
-  in_tenant_space = True,
-  is_cluster_private = True,
-  meta_record_in_sys = False,
-  normal_columns = [
-    ('restore_scn', 'uint'),
-    ('start_replay_scn', 'uint'),
-    ('last_replay_scn', 'uint'),
-    ('tablet_count', 'int'),
-    ('finish_tablet_count', 'int'),
-    ('total_bytes', 'int'),
-    ('finish_bytes', 'int'),
-    ('trace_id', 'varchar:OB_MAX_TRACE_ID_BUFFER_SIZE', 'true', ''),
-    ('result', 'int', 'true', '0'),
-    ('comment', 'varchar:MAX_TABLE_COMMENT_LENGTH'),
-  ],
-)
-def_table_schema(**all_ls_restore_history_def)
-
-def_table_schema(
-  owner = 'wenjinyu.wjy',
-  table_name = '__all_backup_storage_info_history',
-  table_id = '403',
-  table_type = 'SYSTEM_TABLE',
-  gm_columns = ['gmt_create', 'gmt_modified'],
-  rowkey_columns = [
-    ('tenant_id', 'int'),
-    ('path', 'varchar:OB_MAX_BACKUP_PATH_LENGTH'),
-    ('endpoint', 'varchar:OB_MAX_BACKUP_ENDPOINT_LENGTH'),
-  ],
-  in_tenant_space = True,
-  is_cluster_private = True,
-  meta_record_in_sys = False,
-  normal_columns = [
-    ('dest_id', 'int', 'true', '0'),
-    ('dest_type', 'varchar:OB_DEFAULT_OUTPUT_DEVICE_TYPE_LENTH', 'true', ''),
-    ('authorization', 'varchar:OB_MAX_BACKUP_AUTHORIZATION_LENGTH'),
-    ('extension', 'varchar:OB_MAX_BACKUP_EXTENSION_LENGTH'),
-    ('check_file_name', 'varchar:OB_MAX_BACKUP_CHECK_FILE_NAME_LENGTH', 'true', ''),
-    ('last_check_time', 'int', 'true', '0'),
-    ('max_iops', 'int', 'false', '0'),
-    ('max_bandwidth', 'int', 'false', '0'),
-  ],
-)
-
-def_table_schema(
-  owner = 'wenjinyu.wjy',
-  table_name    = '__all_backup_delete_policy',
-  table_id      = '404',
-  table_type = 'SYSTEM_TABLE',
-  gm_columns = ['gmt_create', 'gmt_modified'],
-  rowkey_columns = [
-    ('tenant_id', 'int'),
-    ('policy_name', 'varchar:OB_INNER_TABLE_BACKUP_DEFAULT_FIELD_LENGTH'),
-  ],
-  in_tenant_space = True,
-  is_cluster_private = True,
-  meta_record_in_sys = False,
-  normal_columns = [
-    ('recovery_window', 'varchar:OB_INNER_TABLE_BACKUP_CLEAN_TYPE_LENGTH'),
-    ('redundancy', 'int'),
-    ('backup_copies', 'int'),
-    ('data_backup_dest_id_list', 'varchar:OB_INNER_TABLE_BACKUP_DEFAULT_FIELD_LENGTH', 'true', ''),
-    ('log_archive_dest_id_list', 'varchar:OB_INNER_TABLE_BACKUP_DEFAULT_FIELD_LENGTH', 'true', ''),
-    ('data_backup_path_list', 'varchar:OB_MAX_BACKUP_PTAH_LIST_LENGTH', 'true', ''),
-    ('log_archive_path_list', 'varchar:OB_MAX_BACKUP_PTAH_LIST_LENGTH', 'true', ''),
-  ],
-)
+# 399:__all_log_archive_dest_parameter abandoned
+# 400:__all_backup_parameter abandoned
+# 401: __all_ls_restore_progress (abandoned)
+# 402: __all_ls_restore_history (abandoned)
+# 403: __all_backup_storage_info_history (abandoned)
+# 404: __all_backup_delete_policy (abandoned)
 
 all_mock_fk_parent_table_def = dict(
   owner = 'bin.lb',
@@ -4667,106 +3237,12 @@ all_mock_fk_parent_table_column_def = dict(
 def_table_schema(**all_mock_fk_parent_table_column_def)
 
 def_table_schema(**gen_history_table_def(408, all_mock_fk_parent_table_column_def))
+# 409: __all_log_restore_source abandoned
 
-def_table_schema(
-    owner = 'shuning.tsn',
-    table_name    = '__all_log_restore_source',
-    table_id      = '409',
-    table_type = 'SYSTEM_TABLE',
-    gm_columns = ['gmt_create', 'gmt_modified'],
-    rowkey_columns = [
-        ('tenant_id', 'int'),
-        ('id', 'int'),
-    ],
+# 410: __all_kv_ttl_task (abandoned)
+# 411: __all_kv_ttl_task_history (abandoned)
 
-  in_tenant_space = True,
-  is_cluster_private = True,
-  meta_record_in_sys = False,
-
-  normal_columns = [
-        ('type', 'varchar:32'),
-        ('value', 'longtext'),
-        ('recovery_until_scn', 'uint'),
-  ],
-)
-
-all_kv_ttl_task_def = dict(
-  owner = 'shenyunlong.syl',
-  table_name = '__all_kv_ttl_task',
-  table_id = '410',
-  table_type = 'SYSTEM_TABLE',
-  gm_columns = ['gmt_create', 'gmt_modified'],
-  rowkey_columns = [
-      ('tenant_id', 'int'),
-      ('task_id', 'int'),
-      ('table_id', 'int'),
-      ('tablet_id', 'int')
-  ],
-  in_tenant_space = True, 
-  is_cluster_private = True,
-  meta_record_in_sys = False,
-  normal_columns = [
-    ('task_start_time', 'int'),
-    ('task_update_time', 'int'),
-    ('trigger_type', 'int'),
-    ('status', 'int'),
-    ('ttl_del_cnt', 'int'),
-    ('max_version_del_cnt', 'int'),
-    ('scan_cnt', 'int'),
-    ('row_key', 'varbinary:2048'),
-    ('ret_code', 'varchar:OB_MAX_ERROR_MSG_LEN'),
-    ('task_type', 'int', 'false', 0)
-  ],
-)
-
-all_kv_ttl_task_history_def = dict(
-  owner = 'shenyunlong.syl',
-  table_name = '__all_kv_ttl_task_history',
-  table_id = '411',
-  table_type = 'SYSTEM_TABLE',
-  gm_columns = ['gmt_create', 'gmt_modified'],
-  rowkey_columns = [
-      ('tenant_id', 'int'),
-      ('task_id', 'int'),
-      ('table_id', 'int'),
-      ('tablet_id', 'int')
-  ],
-  in_tenant_space = True, 
-  is_cluster_private = True,
-  meta_record_in_sys = False,
-  normal_columns = [
-    ('task_start_time', 'int'),
-    ('task_update_time', 'int'),
-    ('trigger_type', 'int'),
-    ('status', 'int'),
-    ('ttl_del_cnt', 'int'),
-    ('max_version_del_cnt', 'int'),
-    ('scan_cnt', 'int'),
-    ('row_key', 'varbinary:2048'),
-    ('ret_code', 'varchar:OB_MAX_ERROR_MSG_LEN'),
-    ('task_type', 'int', 'false', 0)
-  ],
-)
-def_table_schema(**all_kv_ttl_task_def)
-def_table_schema(**all_kv_ttl_task_history_def)
-
-def_table_schema(
-  owner = 'donglou.zl',
-  table_name    = '__all_service_epoch',
-  table_id      = '412',
-  table_type = 'SYSTEM_TABLE',
-  gm_columns = ['gmt_create', 'gmt_modified'],
-  rowkey_columns = [
-    ('tenant_id', 'int'),
-    ('name',  'varchar:OB_MAX_COLUMN_NAME_LENGTH'),
-  ],
-  in_tenant_space = True,
-  is_cluster_private = True,
-  meta_record_in_sys = False,
-  normal_columns = [
-    ('value', 'int'),
-  ],
-)
+# 412: __all_service_epoch (abandoned)
 
 def_table_schema(
   owner = 'tonghui.ht',
@@ -4874,243 +3350,14 @@ def_table_schema(**all_column_group_mapping)
 
 def_table_schema(**gen_history_table_def(422, all_column_group_mapping))
 
-def_table_schema(
-    owner = 'wangzhennan.wzn',
-    table_name    = '__all_transfer_task',
-    table_id = '423',
-    table_type = 'SYSTEM_TABLE',
-    gm_columns = ['gmt_create', 'gmt_modified'],
-    rowkey_columns = [
-        ('task_id', 'int'),
-    ],
-
-    in_tenant_space = True,
-    is_cluster_private = False,
-    meta_record_in_sys = False,
-
-    normal_columns = [
-        ('src_ls', 'int', 'false'),
-        ('dest_ls', 'int', 'false'),
-        ('part_list', 'longtext', 'true'),
-        ('part_count', 'int', 'true'),
-        ('not_exist_part_list', 'longtext', 'true'),
-        ('lock_conflict_part_list', 'longtext', 'true'),
-        ('table_lock_tablet_list', 'longtext', 'true'),
-        ('tablet_list', 'longtext', 'true'), 
-        ('tablet_count', 'int', 'true'),
-        ('start_scn', 'uint', 'true'),
-        ('finish_scn', 'uint', 'true'),
-        ('status', 'varchar:OB_DEFAULT_STATUS_LENTH', 'false'),
-        ('trace_id', 'varchar:OB_MAX_TRACE_ID_BUFFER_SIZE', 'false'),
-        ('result', 'int', 'true'),
-        ('comment', 'longtext', 'true'),
-        ('balance_task_id', 'int', 'false'),
-        ('table_lock_owner_id', 'int', 'true'),
-        ('data_version', 'varchar:OB_CLUSTER_VERSION_LENGTH', 'false', ''),
-    ],
-)
-
-def_table_schema(
-    owner = 'wangzhennan.wzn',
-    table_name    = '__all_transfer_task_history',
-    table_id = '424',
-    table_type = 'SYSTEM_TABLE',
-    gm_columns = ['gmt_create', 'gmt_modified'],
-    rowkey_columns = [
-        ('task_id', 'int'),
-    ],
-
-    in_tenant_space = True,
-    is_cluster_private = False,
-    meta_record_in_sys = False,
-
-    normal_columns = [
-        ('src_ls', 'int', 'false'),
-        ('dest_ls', 'int', 'false'),
-        ('part_list', 'longtext', 'true'),
-        ('part_count', 'int', 'true'),
-        ('not_exist_part_list', 'longtext', 'true'),
-        ('lock_conflict_part_list', 'longtext', 'true'),
-        ('table_lock_tablet_list', 'longtext', 'true'),
-        ('tablet_list', 'longtext', 'true'), 
-        ('tablet_count', 'int', 'true'),
-        ('start_scn', 'uint', 'true'),
-        ('finish_scn', 'uint', 'true'),
-        ('status', 'varchar:OB_DEFAULT_STATUS_LENTH', 'false'),
-        ('trace_id', 'varchar:OB_MAX_TRACE_ID_BUFFER_SIZE', 'false'),
-        ('result', 'int', 'true'),
-        ('comment', 'longtext', 'true'),
-        ('balance_task_id', 'int', 'false'),
-        ('table_lock_owner_id', 'int', 'true'),
-        ('create_time', 'timestamp', 'false'),
-        ('finish_time', 'timestamp', 'false'),
-        ('data_version', 'varchar:OB_CLUSTER_VERSION_LENGTH', 'false', ''),
-    ],
-)
-
-def_table_schema(
-  owner = 'msy164651',
-  table_name    = '__all_balance_job',
-  table_id = '425',
-  table_type = 'SYSTEM_TABLE',
-  gm_columns = ['gmt_create', 'gmt_modified'],
-  rowkey_columns = [
-    ('job_id', 'int'),
-  ],
-
-  in_tenant_space = True,
-  is_cluster_private = False,
-  meta_record_in_sys = False,
-
-  normal_columns = [
-    ('balance_strategy_name', 'varchar:OB_DEFAULT_STATUS_LENTH', 'false'),
-    ('job_type', 'varchar:OB_DEFAULT_STATUS_LENTH', 'false'),
-    ('target_unit_num', 'int', 'false'),
-    ('target_primary_zone_num', 'int', 'false'),
-    ('status', 'varchar:OB_DEFAULT_STATUS_LENTH', 'false'),
-    ('comment', 'longtext', 'true'),
-    ('max_end_time', 'timestamp', 'true'),
-  ],
-)
-
-def_table_schema(
-  owner = 'msy164651',
-  table_name    = '__all_balance_job_history',
-  table_id = '426',
-  table_type = 'SYSTEM_TABLE',
-  gm_columns = ['gmt_create', 'gmt_modified'],
-  rowkey_columns = [
-    ('job_id', 'int'),
-  ],
-
-  in_tenant_space = True,
-  is_cluster_private = False,
-  meta_record_in_sys = False,
-
-  normal_columns = [
-    ('balance_strategy_name', 'varchar:OB_DEFAULT_STATUS_LENTH', 'false'),
-    ('job_type', 'varchar:OB_DEFAULT_STATUS_LENTH', 'false'),
-    ('target_unit_num', 'int', 'false'),
-    ('target_primary_zone_num', 'int', 'false'),
-    ('status', 'varchar:OB_DEFAULT_STATUS_LENTH', 'false'),
-    ('comment', 'longtext', 'true'),
-    ('create_time', 'timestamp', 'false'),
-    ('finish_time', 'timestamp', 'false'),
-    ('max_end_time', 'timestamp', 'true'),
-  ],
-)
-
-def_table_schema(
-    owner = 'msy164651',
-    table_name    = '__all_balance_task',
-    table_id = '427',
-    table_type = 'SYSTEM_TABLE',
-    gm_columns = ['gmt_create', 'gmt_modified'],
-    rowkey_columns = [
-        ('task_id', 'int'),
-    ],
-
-    in_tenant_space = True,
-    is_cluster_private = False,
-    meta_record_in_sys = False,
-
-    normal_columns = [
-        ('task_type', 'varchar:OB_DEFAULT_STATUS_LENTH', 'false'),
-        ('src_ls', 'int', 'false'),
-        ('dest_ls', 'int', 'false'),
-        ('part_list', 'longtext', 'true'),
-        ('finished_part_list', 'longtext', 'true'),
-        ('part_count', 'int', 'true'),
-        ('finished_part_count', 'int', 'true'),
-        ('ls_group_id','int', 'false'),
-        ('status', 'varchar:OB_DEFAULT_STATUS_LENTH', 'false'),
-        ('parent_list', 'varchar:OB_MAX_SYS_PARAM_VALUE_LENGTH', 'true'),
-        ('child_list', 'varchar:OB_MAX_SYS_PARAM_VALUE_LENGTH', 'true'),
-        ('current_transfer_task_id', 'int', 'false'),
-        ('job_id', 'int', 'false'),
-        ('comment', 'longtext', 'true'),
-        ('balance_strategy', 'varchar:OB_DEFAULT_STATUS_LENTH', 'true'),
-    ],
-)
-
-def_table_schema(
-    owner = 'msy164651',
-    table_name    = '__all_balance_task_history',
-    table_id = '428',
-    table_type = 'SYSTEM_TABLE',
-    gm_columns = ['gmt_create', 'gmt_modified'],
-    rowkey_columns = [
-        ('task_id', 'int'),
-    ],
-
-    in_tenant_space = True,
-    is_cluster_private = False,
-    meta_record_in_sys = False,
-
-    normal_columns = [
-        ('task_type', 'varchar:OB_DEFAULT_STATUS_LENTH', 'false'),
-        ('src_ls', 'int', 'false'),
-        ('dest_ls', 'int', 'false'),
-        ('part_list', 'longtext', 'true'),
-        ('finished_part_list', 'longtext', 'true'),
-        ('part_count', 'int', 'true'),
-        ('finished_part_count', 'int', 'true'),
-        ('ls_group_id','int', 'false'),
-        ('status', 'varchar:OB_DEFAULT_STATUS_LENTH', 'false'),
-        ('parent_list', 'varchar:OB_MAX_SYS_PARAM_VALUE_LENGTH', 'true'),
-        ('child_list', 'varchar:OB_MAX_SYS_PARAM_VALUE_LENGTH', 'true'),
-        ('current_transfer_task_id', 'int', 'false'),
-        ('job_id', 'int', 'false'),
-        ('comment', 'longtext', 'true'),
-        ('create_time', 'timestamp', 'false'),
-        ('finish_time', 'timestamp', 'false'),
-        ('balance_strategy', 'varchar:OB_DEFAULT_STATUS_LENTH', 'true'),
-    ],
-)
-
-
-def_table_schema(
-    owner = 'jingyu.cr',
-    table_name = '__all_arbitration_service',
-    table_id = '429',
-    table_type = 'SYSTEM_TABLE',
-    gm_columns = ['gmt_create', 'gmt_modified'],
-    rowkey_columns = [
-        ('arbitration_service_key', 'varchar:OB_MAX_ARBITRATION_SERVICE_NAME_LENGTH'),
-    ],
-
-    in_tenant_space = False,
-    is_cluster_private = False,
-
-    normal_columns = [
-        ('arbitration_service', 'varchar:OB_MAX_ARBITRATION_SERVICE_LENGTH', 'false', '0.0.0.0:0'),
-        ('previous_arbitration_service', 'varchar:OB_MAX_ARBITRATION_SERVICE_LENGTH', 'true'),
-        ('type', 'varchar:64'),
-    ],
-)
-
-def_table_schema(
-  owner = 'jingyu.cr',
-  table_name    = '__all_ls_arb_replica_task',
-  table_id = '430',
-  table_type = 'SYSTEM_TABLE',
-  gm_columns = ['gmt_create', 'gmt_modified'],
-  rowkey_columns = [
-    ('tenant_id', 'int'),
-    ('ls_id', 'int'),
-  ],
-  in_tenant_space = True,
-  is_cluster_private = True,
-  meta_record_in_sys = False,
-  normal_columns = [
-    ('task_id', 'int'),
-    ('trace_id', 'varchar:OB_TRACE_STAT_BUFFER_SIZE'),
-    ('task_type', 'varchar:MAX_ARB_REPLICA_TASK_TYPE_LENGTH'),
-    ('arbitration_service', 'varchar:OB_MAX_ARBITRATION_SERVICE_LENGTH', 'false', '0.0.0.0:0'),
-    ('arbitration_service_type', 'varchar:64'),
-    ('comment', 'varchar:MAX_COLUMN_COMMENT_LENGTH', 'true'),
-  ],
-)
+# 423: __all_transfer_task (abandoned)
+# 424: __all_transfer_task_history (abandoned)
+# 425: __all_balance_job (abandoned)
+# 426: __all_balance_job_history (abandoned)
+# 427: __all_balance_task (abandoned)
+# 428: __all_balance_task_history (abandoned)
+# 429: __all_arbitration_service (abandoned)
+# 430: __all_ls_arb_replica_task (abandoned)
 
 def_table_schema(
     owner = 'bohou.ws',
@@ -5129,32 +3376,7 @@ def_table_schema(
     is_cluster_private = False,
 )
 
-def_table_schema(
-  owner = 'jingyu.cr',
-  table_name    = '__all_ls_arb_replica_task_history',
-  table_id = '432',
-  table_type = 'SYSTEM_TABLE',
-  gm_columns = ['gmt_create', 'gmt_modified'],
-  rowkey_columns = [
-    ('tenant_id', 'int'),
-    ('ls_id', 'int'),
-    ('task_id', 'int'),
-  ],
-  in_tenant_space = True,
-  is_cluster_private = True,
-  meta_record_in_sys = False,
-  normal_columns = [
-    ('execute_result', 'varchar:MAX_COLUMN_COMMENT_LENGTH'),
-    ('create_time', 'timestamp', 'false'),
-    ('finish_time', 'timestamp', 'false'),
-    ('trace_id', 'varchar:OB_TRACE_STAT_BUFFER_SIZE'),
-    ('task_type', 'varchar:MAX_ARB_REPLICA_TASK_TYPE_LENGTH'),
-    ('arbitration_service', 'varchar:OB_MAX_ARBITRATION_SERVICE_LENGTH', 'false', '0.0.0.0:0'),
-    ('arbitration_service_type', 'varchar:64'),
-    ('comment', 'varchar:MAX_COLUMN_COMMENT_LENGTH', 'true'),
-  ],
-)
-
+# 432: __all_ls_arb_replica_task_history (abandoned)
 
 def_table_schema(
   owner = 'luofan.zp',
@@ -5237,27 +3459,7 @@ def_table_schema(
     ],
 )
 
-def_table_schema(
-  owner = 'yangyi.yyy',
-  table_name    = '__all_ls_transfer_member_list_lock_info',
-  table_id      = '446',
-  table_type = 'SYSTEM_TABLE',
-  gm_columns = ['gmt_create', 'gmt_modified'],
-  rowkey_columns = [
-      ('tenant_id', 'int'),
-      ('ls_id', 'int'),
-    ],
-  in_tenant_space = True,
-  is_cluster_private = True,
-  meta_record_in_sys = False,
-
-  normal_columns = [
-      ('task_id', 'int'),
-      ('status', 'varchar:OB_INNER_TABLE_DEFAULT_VALUE_LENTH'),
-      ('lock_owner', 'int'),
-      ('comment', 'longtext', 'true'),
-    ],
-)
+# 446: __all_ls_transfer_member_list_lock_info (abandoned)
 # 447 : __all_ls_log_restore_stat
 # 448 : __all_backup_transferring_tablets
 # 449 : __all_wait_for_partition_split_tablet
@@ -5293,7 +3495,7 @@ def_table_schema(
       ('task_id', 'varchar:36')
     ],
     in_tenant_space = True,
-    is_cluster_private = True,
+    is_cluster_private = False,
     meta_record_in_sys = False,
     normal_columns = [
       ('type', 'int', 'true'),
@@ -5321,7 +3523,7 @@ def_table_schema(
       ('table_id', 'int'),
     ],
     in_tenant_space = True,
-    is_cluster_private = True,
+    is_cluster_private = False,
     meta_record_in_sys = False,
     normal_columns = [
       ('ret_code', 'int', 'true'),
@@ -5337,52 +3539,9 @@ def_table_schema(
     ],
 )
 
-def_table_schema(
-  owner = 'shifangdan.sfd',
-  table_name    = '__all_zone_storage',
-  table_id      = '453',
-  table_type = 'SYSTEM_TABLE',
-  gm_columns = ['gmt_create', 'gmt_modified'],
-  rowkey_columns = [
-    ('zone', 'varchar:MAX_ZONE_LENGTH'),
-    ('path', 'varchar:MAX_PATH_SIZE'),
-    ('endpoint', 'varchar:OB_INNER_TABLE_DEFAULT_KEY_LENTH'),
-    ('used_for', 'varchar:OB_MAX_CHAR_LENGTH'),
-  ],
-  in_tenant_space = False,
-  is_cluster_private = True,
-  normal_columns = [
-    ('storage_id', 'int'),
-    ('authorization', 'varchar:OB_INNER_TABLE_DEFAULT_KEY_LENTH'),
-    ('encrypt_info', 'varchar:OB_INNER_TABLE_DEFAULT_KEY_LENTH', 'true', ''),
-    ('max_iops', 'int', 'true', -1),
-    ('max_bandwidth', 'int', 'true', -1),
-    ('state', 'varchar:OB_MAX_CHAR_LENGTH'),
-    ('op_id', 'int'),
-    ('extension', 'varchar:OB_INNER_TABLE_DEFAULT_VALUE_LENTH', 'true', '')
-  ],
-)
+# 453: __all_zone_storage (abandoned)
+# 454: __all_zone_storage_operation (abandoned)
 
-
-def_table_schema(
-  owner = 'shifangdan.sfd',
-  table_name    = '__all_zone_storage_operation',
-  table_id      = '454',
-  table_type = 'SYSTEM_TABLE',
-  gm_columns = ['gmt_create', 'gmt_modified'],
-  rowkey_columns = [
-    ('storage_id', 'bigint:20'),
-    ('op_id', 'bigint:20'),
-    ('sub_op_id', 'bigint:20'),
-  ],
-  in_tenant_space = False,
-  is_cluster_private = True,
-  normal_columns = [
-    ('zone', 'varchar:MAX_ZONE_LENGTH'),
-    ('op_type', 'varchar:OB_MAX_CHAR_LENGTH'),
-    ('op_info', 'varchar:OB_MAX_STORAGE_OPERATION_INFO_LENGTH', 'true', '')
-  ],
-)
 # 455 : __wr_active_session_history
 def_table_schema(
   owner = 'roland.qk',
@@ -5400,7 +3559,7 @@ def_table_schema(
     ('session_id', 'int'),
   ],
   in_tenant_space=True,
-  is_cluster_private=True,
+  is_cluster_private=False,
   meta_record_in_sys = False,
   normal_columns = [
     ('sample_time', 'timestamp'),
@@ -5463,7 +3622,7 @@ def_table_schema(
     ],
 
     in_tenant_space=True,
-    is_cluster_private=True,
+    is_cluster_private=False,
     meta_record_in_sys = False,
 
     normal_columns = [
@@ -5489,7 +3648,7 @@ def_table_schema(
     ],
 
     in_tenant_space=True,
-    is_cluster_private=True,
+    is_cluster_private=False,
     meta_record_in_sys = False,
 
     normal_columns = [
@@ -5514,7 +3673,7 @@ def_table_schema(
     ],
 
     in_tenant_space=True,
-    is_cluster_private=True,
+    is_cluster_private=False,
     meta_record_in_sys = False,
 
     normal_columns = [
@@ -5522,100 +3681,10 @@ def_table_schema(
     ],
 )
 
-def_table_schema(
-  owner = 'msy164651',
-  table_name    = '__all_balance_task_helper',
-  table_id      = '459',
-  table_type = 'SYSTEM_TABLE',
-  gm_columns = ['gmt_create', 'gmt_modified'],
-  rowkey_columns = [
-    ('tenant_id', 'int', 'false'),
-    ('operation_scn', 'uint', 'false'),
-  ],
-  in_tenant_space = True,
-  is_cluster_private = True,
-  meta_record_in_sys = False,
-
-  normal_columns = [
-    ('operation_type', 'varchar:OB_DEFAULT_STATUS_LENTH', 'false', ''),
-    ('src_ls', 'int', 'false'),
-    ('dest_ls', 'int', 'false'),
-    ('ls_group_id', 'int', 'false'),
-  ],
-)
-
-def_table_schema(
-  owner = 'chensen.cs',
-  table_name    = '__all_tenant_snapshot',
-  table_id      = '460',
-  table_type = 'SYSTEM_TABLE',
-  gm_columns = ['gmt_create', 'gmt_modified'],
-  rowkey_columns = [
-    ('tenant_id', 'int'),
-    ('snapshot_id', 'int', 'false'),
-  ],
-  in_tenant_space = True,
-  is_cluster_private = True,
-  meta_record_in_sys = False,
-  normal_columns = [
-    ('snapshot_name', 'varchar:OB_MAX_TENANT_SNAPSHOT_NAME_LENGTH_STORE', 'false'),
-    ('status', 'varchar:32', 'false'),
-    ('snapshot_scn', 'uint', 'false'),
-    ('clog_start_scn', 'uint', 'false'),
-    ('type', 'varchar:16', 'false'),
-    ('create_time', 'timestamp', 'false'),
-    ('data_version', 'uint', 'false'),
-    ('owner_job_id', 'int', 'false')
-  ],
-)
-
-def_table_schema(
-  owner = 'chensen.cs',
-  table_name    = '__all_tenant_snapshot_ls',
-  table_id      = '461',
-  table_type = 'SYSTEM_TABLE',
-  gm_columns = ['gmt_create', 'gmt_modified'],
-  rowkey_columns = [
-    ('tenant_id', 'int'),
-    ('snapshot_id', 'int', 'false'),
-    ('ls_id', 'int', 'false'),
-  ],
-  in_tenant_space = True,
-  is_cluster_private = True,
-  meta_record_in_sys = False,
-  normal_columns = [
-    ('ls_group_id', 'int', 'false'),
-    ('status', 'varchar:100', 'false'),
-    ('flag', 'varchar:OB_MAX_LS_FLAG_LENGTH', 'false'),
-    ('create_scn', 'uint', 'false'),
-  ],
-)
-
-def_table_schema(
-  owner = 'chensen.cs',
-  table_name    = '__all_tenant_snapshot_ls_replica',
-  table_id      = '462',
-  table_type = 'SYSTEM_TABLE',
-  gm_columns = ['gmt_create', 'gmt_modified'],
-  rowkey_columns = [
-    ('tenant_id', 'int'),
-    ('snapshot_id', 'int', 'false'),
-    ('ls_id', 'int', 'false'),
-    ('svr_ip', 'varchar:MAX_IP_ADDR_LENGTH', 'false'),
-    ('svr_port', 'int', 'false'),
-  ],
-  in_tenant_space = True,
-  is_cluster_private = True,
-  meta_record_in_sys = False,
-  normal_columns = [
-    ('status', 'varchar:OB_DEFAULT_STATUS_LENTH', 'false'),
-    ('zone', 'varchar:MAX_ZONE_LENGTH', 'false'),
-    ('unit_id', 'int', 'false'),
-    ('begin_interval_scn', 'uint', 'false'),
-    ('end_interval_scn', 'uint', 'false'),
-    ('ls_meta_package', 'longtext', 'true')
-  ],
-)
+# 459: __all_balance_task_helper (abandoned)
+# 460: __all_tenant_snapshot (abandoned)
+# 461: __all_tenant_snapshot_ls (abandoned)
+# 462: __all_tenant_snapshot_ls_replica (abandoned)
 
 def_table_schema(
   owner = 'suzhi.yt',
@@ -5814,9 +3883,6 @@ def_table_schema(
   ]
 )
 
-# 471 : __all_dbms_lock_allocated
-# 472 : __wr_control
-
 def_table_schema(
     owner = 'yangyifei.yyf',
     table_name = '__all_dbms_lock_allocated',
@@ -5847,7 +3913,7 @@ def_table_schema(
     ],
 
     in_tenant_space=True,
-    is_cluster_private=True,
+    is_cluster_private=False,
     meta_record_in_sys = False,
 
     normal_columns = [
@@ -5922,318 +3988,12 @@ def_table_schema(
     ('comments', 'varchar:240', 'true'),
   ],
 )
-
-def_table_schema(
-  owner = 'chongrong.th',
-  table_name    = '__all_recover_table_job',
-  table_id      = '475',
-  table_type = 'SYSTEM_TABLE',
-  gm_columns = ['gmt_create', 'gmt_modified'],
-  rowkey_columns = [
-      ('tenant_id', 'int'),
-      ('job_id', 'int'),
-  ],
-  in_tenant_space = True,
-  is_cluster_private = True,
-  meta_record_in_sys = False,
-
-  normal_columns = [
-      ('initiator_tenant_id', 'int'),
-      ('initiator_job_id', 'int'),
-      ('start_ts', 'int'),
-      ('end_ts', 'int'),
-      ('status', 'varchar:OB_DEFAULT_STATUS_LENTH'),
-      ('aux_tenant_name', 'varchar:OB_MAX_TENANT_NAME_LENGTH'),
-      ('target_tenant_name', 'varchar:OB_MAX_TENANT_NAME_LENGTH'),
-      ('target_tenant_id', 'int'),
-      ('import_all', 'bool'),
-      ('db_list', 'longtext', 'true', ''),
-      ('hex_db_list', 'longtext', 'true', ''),
-      ('table_list', 'longtext', 'true', ''),
-      ('hex_table_list', 'longtext', 'true', ''),
-      ('partition_list', 'longtext', 'true', ''),
-      ('hex_partition_list', 'longtext', 'true', ''),
-      ('restore_scn', 'uint'),
-      ('restore_option', 'varchar:OB_INNER_TABLE_DEFAULT_VALUE_LENTH'),
-      ('backup_dest', 'varchar:OB_INNER_TABLE_DEFAULT_VALUE_LENTH'),
-      ('backup_set_list', 'longtext'),
-      ('backup_piece_list', 'longtext'),
-      ('backup_passwd', 'varchar:OB_INNER_TABLE_DEFAULT_VALUE_LENTH', 'true', ''),
-      ('external_kms_info', 'varchar:OB_INNER_TABLE_DEFAULT_VALUE_LENTH', 'true', ''),
-      ('remap_db_list', 'longtext', 'true', ''),
-      ('hex_remap_db_list', 'longtext', 'true', ''),
-      ('remap_table_list', 'longtext', 'true', ''),
-      ('hex_remap_table_list', 'longtext', 'true', ''),
-      ('remap_partition_list', 'longtext', 'true', ''),
-      ('hex_remap_partition_list', 'longtext', 'true', ''),
-      ('remap_tablegroup_list', 'longtext', 'true', ''),
-      ('hex_remap_tablegroup_list', 'longtext', 'true', ''),
-      ('remap_tablespace_list', 'longtext', 'true', ''),
-      ('hex_remap_tablespace_list', 'longtext', 'true', ''),
-      ('result', 'varchar:OB_DEFAULT_STATUS_LENTH', 'true', ''),
-      ('comment', 'longtext', 'true', ''),
-      ('description', 'longtext', 'true', ''),
-  ],
-)
-
-def_table_schema(
-  owner = 'chongrong.th',
-  table_name    = '__all_recover_table_job_history',
-  table_id      = '476',
-  table_type = 'SYSTEM_TABLE',
-  gm_columns = ['gmt_create', 'gmt_modified'],
-  rowkey_columns = [
-      ('tenant_id', 'int'),
-      ('job_id', 'int'),
-  ],
-  in_tenant_space = True,
-  is_cluster_private = True,
-  meta_record_in_sys = False,
-  normal_columns = [
-      ('initiator_tenant_id', 'int'),
-      ('initiator_job_id', 'int'),
-      ('start_ts', 'int'),
-      ('end_ts', 'int'),
-      ('status', 'varchar:OB_DEFAULT_STATUS_LENTH'),
-      ('aux_tenant_name', 'varchar:OB_MAX_TENANT_NAME_LENGTH'),
-      ('target_tenant_name', 'varchar:OB_MAX_TENANT_NAME_LENGTH'),
-      ('target_tenant_id', 'int'),
-      ('import_all', 'bool'),
-      ('db_list', 'longtext', 'true', ''),
-      ('hex_db_list', 'longtext', 'true', ''),
-      ('table_list', 'longtext', 'true', ''),
-      ('hex_table_list', 'longtext', 'true', ''),
-      ('partition_list', 'longtext', 'true', ''),
-      ('hex_partition_list', 'longtext', 'true', ''),
-      ('restore_scn', 'uint'),
-      ('restore_option', 'varchar:OB_INNER_TABLE_DEFAULT_VALUE_LENTH'),
-      ('backup_dest', 'varchar:OB_INNER_TABLE_DEFAULT_VALUE_LENTH'),
-      ('backup_set_list', 'longtext'),
-      ('backup_piece_list', 'longtext'),
-      ('backup_passwd', 'varchar:OB_INNER_TABLE_DEFAULT_VALUE_LENTH', 'true', ''),
-      ('external_kms_info', 'varchar:OB_INNER_TABLE_DEFAULT_VALUE_LENTH', 'true', ''),
-      ('remap_db_list', 'longtext', 'true', ''),
-      ('hex_remap_db_list', 'longtext', 'true', ''),
-      ('remap_table_list', 'longtext', 'true', ''),
-      ('hex_remap_table_list', 'longtext', 'true', ''),
-      ('remap_partition_list', 'longtext', 'true', ''),
-      ('hex_remap_partition_list', 'longtext', 'true', ''),
-      ('remap_tablegroup_list', 'longtext', 'true', ''),
-      ('hex_remap_tablegroup_list', 'longtext', 'true', ''),
-      ('remap_tablespace_list', 'longtext', 'true', ''),
-      ('hex_remap_tablespace_list', 'longtext', 'true', ''),
-      ('result', 'varchar:OB_DEFAULT_STATUS_LENTH', 'true', ''),
-      ('comment', 'longtext', 'true', ''),
-      ('description', 'longtext', 'true', ''),
-  ],
-)
-
-def_table_schema(
-  owner = 'chongrong.th',
-  table_name    = '__all_import_table_job',
-  table_id      = '477',
-  table_type = 'SYSTEM_TABLE',
-  gm_columns = ['gmt_create', 'gmt_modified'],
-  rowkey_columns = [
-      ('tenant_id', 'int'),
-      ('job_id', 'int'),
-  ],
-  in_tenant_space = True,
-  is_cluster_private = True,
-  meta_record_in_sys = False,
-  normal_columns = [
-      ('initiator_tenant_id', 'int'),
-      ('initiator_job_id', 'int'),
-      ('start_ts', 'int'),
-      ('end_ts', 'int'),
-      ('src_tenant_name', 'varchar:OB_MAX_TENANT_NAME_LENGTH'),
-      ('src_tenant_id', 'int'),
-      ('status', 'varchar:OB_DEFAULT_STATUS_LENTH'),
-      ('import_all', 'bool'),
-      ('db_list', 'longtext', 'true', ''),
-      ('hex_db_list', 'longtext', 'true', ''),
-      ('table_list', 'longtext', 'true', ''),
-      ('hex_table_list', 'longtext', 'true', ''),
-      ('partition_list', 'longtext', 'true', ''),
-      ('hex_partition_list', 'longtext', 'true', ''),
-      ('remap_db_list', 'longtext', 'true', ''),
-      ('hex_remap_db_list', 'longtext', 'true', ''),
-      ('remap_table_list', 'longtext', 'true', ''),
-      ('hex_remap_table_list', 'longtext', 'true', ''),
-      ('remap_partition_list', 'longtext', 'true', ''),
-      ('hex_remap_partition_list', 'longtext', 'true', ''),
-      ('remap_tablegroup_list', 'longtext', 'true', ''),
-      ('hex_remap_tablegroup_list', 'longtext', 'true', ''),
-      ('remap_tablespace_list', 'longtext', 'true', ''),
-      ('hex_remap_tablespace_list', 'longtext', 'true', ''),
-      ('total_table_count', 'int'),
-      ('finished_table_count', 'int'),
-      ('failed_table_count', 'int'),
-      ('total_bytes', 'int'),
-      ('finished_bytes', 'int'),
-      ('failed_bytes', 'int'),
-      ('result', 'varchar:OB_DEFAULT_STATUS_LENTH', 'true', ''),
-      ('comment', 'longtext', 'true', ''),
-      ('description', 'longtext', 'true', ''),
-  ],
-)
-
-def_table_schema(
-  owner = 'chongrong.th',
-  table_name    = '__all_import_table_job_history',
-  table_id      = '478',
-  table_type = 'SYSTEM_TABLE',
-  gm_columns = ['gmt_create', 'gmt_modified'],
-  rowkey_columns = [
-      ('tenant_id', 'int'),
-      ('job_id', 'int'),
-  ],
-  in_tenant_space = True,
-  is_cluster_private = True,
-  meta_record_in_sys = False,
-
-  normal_columns = [
-      ('initiator_tenant_id', 'int'),
-      ('initiator_job_id', 'int'),
-      ('start_ts', 'int'),
-      ('end_ts', 'int'),
-      ('src_tenant_name', 'varchar:OB_MAX_TENANT_NAME_LENGTH'),
-      ('src_tenant_id', 'int'),
-      ('status', 'varchar:OB_DEFAULT_STATUS_LENTH'),
-      ('import_all', 'bool'),
-      ('db_list', 'longtext', 'true', ''),
-      ('hex_db_list', 'longtext', 'true', ''),
-      ('table_list', 'longtext', 'true', ''),
-      ('hex_table_list', 'longtext', 'true', ''),
-      ('partition_list', 'longtext', 'true', ''),
-      ('hex_partition_list', 'longtext', 'true', ''),
-      ('remap_db_list', 'longtext', 'true', ''),
-      ('hex_remap_db_list', 'longtext', 'true', ''),
-      ('remap_table_list', 'longtext', 'true', ''),
-      ('hex_remap_table_list', 'longtext', 'true', ''),
-      ('remap_partition_list', 'longtext', 'true', ''),
-      ('hex_remap_partition_list', 'longtext', 'true', ''),
-      ('remap_tablegroup_list', 'longtext', 'true', ''),
-      ('hex_remap_tablegroup_list', 'longtext', 'true', ''),
-      ('remap_tablespace_list', 'longtext', 'true', ''),
-      ('hex_remap_tablespace_list', 'longtext', 'true', ''),
-      ('total_table_count', 'int'),
-      ('finished_table_count', 'int'),
-      ('failed_table_count', 'int'),
-      ('total_bytes', 'int'),
-      ('finished_bytes', 'int'),
-      ('failed_bytes', 'int'),
-      ('result', 'varchar:OB_DEFAULT_STATUS_LENTH', 'true', ''),
-      ('comment', 'longtext', 'true', ''),
-      ('description', 'longtext', 'true', ''),
-  ],
-)
-
-def_table_schema(
-  owner = 'chongrong.th',
-  table_name    = '__all_import_table_task',
-  table_id      = '479',
-  table_type = 'SYSTEM_TABLE',
-  gm_columns = ['gmt_create', 'gmt_modified'],
-  rowkey_columns = [
-      ('tenant_id', 'int'),
-      ('task_id', 'int'),
-  ],
-  in_tenant_space = True,
-  is_cluster_private = True,
-  meta_record_in_sys = False,
-
-  normal_columns = [
-      ('job_id', 'int'),
-      ('src_tenant_id', 'int'),
-      ('src_tablespace', 'varchar:OB_MAX_TABLESPACE_NAME_LENGTH', 'true', ''),
-      ('src_tablegroup', 'varchar:OB_MAX_TABLEGROUP_NAME_LENGTH', 'true', ''),
-      ('src_database', 'varchar:OB_MAX_DATABASE_NAME_LENGTH', 'true', ''),
-      ('src_table', 'varchar:OB_MAX_USER_TABLE_NAME_LENGTH_ORACLE', 'true', ''),
-      ('src_partition', 'varchar:OB_MAX_PARTITION_NAME_LENGTH', 'true', ''),
-      ('target_tablespace', 'varchar:OB_MAX_TABLESPACE_NAME_LENGTH', 'true', ''),
-      ('target_tablegroup', 'varchar:OB_MAX_TABLEGROUP_NAME_LENGTH', 'true', ''),
-      ('target_database', 'varchar:OB_MAX_DATABASE_NAME_LENGTH', 'true', ''),
-      ('target_table', 'varchar:OB_MAX_USER_TABLE_NAME_LENGTH_ORACLE', 'true', ''),
-      ('table_column', 'int'),
-      ('status', 'varchar:OB_DEFAULT_STATUS_LENTH'),
-      ('start_ts', 'int'),
-      ('completion_ts', 'int'),
-      ('cumulative_ts', 'int'),
-      ('total_bytes', 'int'),
-      ('total_rows', 'int'),
-      ('imported_bytes', 'int'),
-      ('imported_rows', 'int'),
-      ('total_index_count', 'int'),
-      ('imported_index_count', 'int'),
-      ('failed_index_count', 'int'),
-      ('total_constraint_count', 'int'),
-      ('imported_constraint_count', 'int'),
-      ('failed_constraint_count', 'int'),
-      ('total_ref_constraint_count', 'int'),
-      ('imported_ref_constraint_count', 'int'),
-      ('failed_ref_constraint_count', 'int'),
-      ('total_trigger_count', 'int'),
-      ('imported_trigger_count', 'int'),
-      ('failed_trigger_count', 'int'),
-      ('result', 'varchar:OB_DEFAULT_STATUS_LENTH', 'true', ''),
-      ('comment', 'longtext', 'true', ''),
-  ],
-)
-
-def_table_schema(
-  owner = 'chongrong.th',
-  table_name    = '__all_import_table_task_history',
-  table_id      = '480',
-  table_type = 'SYSTEM_TABLE',
-  gm_columns = ['gmt_create', 'gmt_modified'],
-  rowkey_columns = [
-      ('tenant_id', 'int'),
-      ('task_id', 'varchar:OB_INNER_TABLE_DEFAULT_VALUE_LENTH'),
-  ],
-  in_tenant_space = True,
-  is_cluster_private = True,
-  meta_record_in_sys = False,
-
-  normal_columns = [
-      ('job_id', 'int'),
-      ('src_tenant_id', 'int'),
-      ('src_tablespace', 'varchar:OB_MAX_TABLESPACE_NAME_LENGTH', 'true', ''),
-      ('src_tablegroup', 'varchar:OB_MAX_TABLEGROUP_NAME_LENGTH', 'true', ''),
-      ('src_database', 'varchar:OB_MAX_DATABASE_NAME_LENGTH', 'true', ''),
-      ('src_table', 'varchar:OB_MAX_USER_TABLE_NAME_LENGTH_ORACLE', 'true', ''),
-      ('src_partition', 'varchar:OB_MAX_PARTITION_NAME_LENGTH', 'true', ''),
-      ('target_tablespace', 'varchar:OB_MAX_TABLESPACE_NAME_LENGTH', 'true', ''),
-      ('target_tablegroup', 'varchar:OB_MAX_TABLEGROUP_NAME_LENGTH', 'true', ''),
-      ('target_database', 'varchar:OB_MAX_DATABASE_NAME_LENGTH', 'true', ''),
-      ('target_table', 'varchar:OB_MAX_USER_TABLE_NAME_LENGTH_ORACLE', 'true', ''),
-      ('table_column', 'int'),
-      ('status', 'varchar:OB_DEFAULT_STATUS_LENTH'),
-      ('start_ts', 'int'),
-      ('completion_ts', 'int'),
-      ('cumulative_ts', 'int'),
-      ('total_bytes', 'int'),
-      ('total_rows', 'int'),
-      ('imported_bytes', 'int'),
-      ('imported_rows', 'int'),
-      ('total_index_count', 'int'),
-      ('imported_index_count', 'int'),
-      ('failed_index_count', 'int'),
-      ('total_constraint_count', 'int'),
-      ('imported_constraint_count', 'int'),
-      ('failed_constraint_count', 'int'),
-      ('total_ref_constraint_count', 'int'),
-      ('imported_ref_constraint_count', 'int'),
-      ('failed_ref_constraint_count', 'int'),
-      ('total_trigger_count', 'int'),
-      ('imported_trigger_count', 'int'),
-      ('failed_trigger_count', 'int'),
-      ('result', 'varchar:OB_DEFAULT_STATUS_LENTH', 'true', ''),
-      ('comment', 'longtext', 'true', ''),
-  ],
-)
-
-
+# 475: __all_recover_table_job # abandoned
+# 476: __all_recover_table_job_history # abandoned
+# 477: __all_import_table_job # abandoned
+# 478: __all_import_table_job_history # abandoned
+# 479: __all_import_table_task # abandoned
+# 480: __all_import_table_task_history # abandoned
 # 481 : __all_import_stmt_exec_history
 
 def_table_schema(
@@ -6258,78 +4018,8 @@ def_table_schema(
     ],
 )
 
-def_table_schema(
-  owner = 'chensen.cs',
-  table_name    = '__all_clone_job',
-  table_id      = '485',
-  table_type = 'SYSTEM_TABLE',
-  gm_columns = ['gmt_create', 'gmt_modified'],
-  rowkey_columns = [
-    ('tenant_id', 'int'),
-    ('job_id', 'int'),
-  ],
-  in_tenant_space = True,
-  is_cluster_private = True,
-  meta_record_in_sys = False,
-  normal_columns = [
-    ('trace_id', 'varchar:OB_MAX_TRACE_ID_BUFFER_SIZE', 'false'),
-    ('source_tenant_id', 'int', 'false'),
-    ('source_tenant_name', 'varchar:OB_MAX_TENANT_NAME_LENGTH_STORE', 'false'),
-    ('clone_tenant_id', 'int', 'false', 'OB_INVALID_TENANT_ID'),
-    ('clone_tenant_name', 'varchar:OB_MAX_TENANT_NAME_LENGTH_STORE', 'false'),
-    ('tenant_snapshot_id', 'int', 'false'),
-    ('tenant_snapshot_name', 'varchar:OB_MAX_TENANT_SNAPSHOT_NAME_LENGTH_STORE', 'false'),
-    ('resource_pool_id', 'int', 'false'),
-    ('resource_pool_name', 'varchar:MAX_RESOURCE_POOL_LENGTH', 'false'),
-    ('unit_config_name', 'varchar:MAX_UNIT_CONFIG_LENGTH', 'false'),
-    ('restore_scn', 'uint', 'false', '0'),
-    ('status', 'varchar:64', 'false'),
-    ('job_type', 'varchar:16', 'false'),
-    ('clone_start_time', 'timestamp', 'false'),
-    ('clone_finished_time', 'timestamp', 'true'),
-    ('ret_code', 'int', 'true'),
-    ('error_msg', 'varchar:OB_MAX_ERROR_MSG_LEN', 'true'),
-    ('data_version', 'uint', 'false', '0'),
-    ('min_cluster_version', 'uint', 'false', '0'),
-  ],
-)
-
-all_clone_job_history_def = dict(
-  owner = 'chensen.cs',
-  table_name    = '__all_clone_job_history',
-  table_id      = '486',
-  table_type = 'SYSTEM_TABLE',
-  gm_columns = ['gmt_create', 'gmt_modified'],
-  rowkey_columns = [
-    ('tenant_id', 'int'),
-    ('job_id', 'int'),
-  ],
-  in_tenant_space = True,
-  is_cluster_private = True,
-  meta_record_in_sys = False,
-  normal_columns = [
-    ('trace_id', 'varchar:OB_MAX_TRACE_ID_BUFFER_SIZE', 'false'),
-    ('source_tenant_id', 'int', 'false'),
-    ('source_tenant_name', 'varchar:OB_MAX_TENANT_NAME_LENGTH_STORE', 'false'),
-    ('clone_tenant_id', 'int', 'false', 'OB_INVALID_TENANT_ID'),
-    ('clone_tenant_name', 'varchar:OB_MAX_TENANT_NAME_LENGTH_STORE', 'false'),
-    ('tenant_snapshot_id', 'int', 'false'),
-    ('tenant_snapshot_name', 'varchar:OB_MAX_TENANT_SNAPSHOT_NAME_LENGTH_STORE', 'false'),
-    ('resource_pool_id', 'int', 'false'),
-    ('resource_pool_name', 'varchar:MAX_RESOURCE_POOL_LENGTH', 'false'),
-    ('unit_config_name', 'varchar:MAX_UNIT_CONFIG_LENGTH', 'false'),
-    ('restore_scn', 'uint', 'false', '0'),
-    ('status', 'varchar:64', 'false'),
-    ('job_type', 'varchar:16', 'false'),
-    ('clone_start_time', 'timestamp', 'false'),
-    ('clone_finished_time', 'timestamp', 'false'),
-    ('ret_code', 'int', 'true'),
-    ('error_msg', 'varchar:OB_MAX_ERROR_MSG_LEN', 'true'),
-    ('data_version', 'uint', 'false', '0'),
-    ('min_cluster_version', 'uint', 'false', '0'),
-  ],
-)
-def_table_schema(**all_clone_job_history_def)
+# 485: __all_clone_job (abandoned)
+# 486: __all_clone_job_history (abandoned)
 
 def_table_schema(
     owner = 'roland.qk',
@@ -6347,7 +4037,7 @@ def_table_schema(
     ],
 
     in_tenant_space=True,
-    is_cluster_private=True,
+    is_cluster_private=False,
     meta_record_in_sys = False,
 
     normal_columns = [
@@ -6370,7 +4060,7 @@ def_table_schema(
     ],
 
     in_tenant_space=True,
-    is_cluster_private=True,
+    is_cluster_private=False,
     meta_record_in_sys = False,
 
     normal_columns = [
@@ -6427,7 +4117,7 @@ def_table_schema(
       ('source_port', 'int'),
     ],
     in_tenant_space=True,
-    is_cluster_private=True,
+    is_cluster_private=False,
     meta_record_in_sys = False,
     normal_columns = [
         ('plan_type', 'int'),
@@ -6600,51 +4290,9 @@ def_table_schema(
   ],
 )
 
-all_transfer_partition_task_def= dict(
-    owner = 'msy164651',
-    table_name    = '__all_transfer_partition_task',
-    table_id = '498',
-    table_type = 'SYSTEM_TABLE',
-    gm_columns = ['gmt_create', 'gmt_modified'],
-    in_tenant_space = True,
-    is_cluster_private = False,
-    meta_record_in_sys = False,
-    rowkey_columns = [
-        ('task_id', 'int', 'false'),
-    ],
-    normal_columns = [ 
-        ('table_id', 'int', 'false'),
-        ('object_id', 'int', 'false'),
-        ('dest_ls', 'int', 'false'),
-        ('status', 'varchar:OB_DEFAULT_STATUS_LENTH', 'false'),
-        ('balance_job_id', 'int', 'false'),
-        ('transfer_task_id', 'int', 'false'),
-        ('comment', 'longtext', 'true'),
-    ],
-)
-def_table_schema(**all_transfer_partition_task_def)
-def_table_schema(**gen_history_table_def_of_task(499, all_transfer_partition_task_def))
-
-def_table_schema(
-  owner = 'chensen.cs',
-  table_name    = '__all_tenant_snapshot_job',
-  table_id      = '500',
-  table_type = 'SYSTEM_TABLE',
-  gm_columns = ['gmt_create', 'gmt_modified'],
-  rowkey_columns = [
-    ('tenant_id', 'int'),
-    ('snapshot_id', 'int', 'false'),
-    ('operation', 'varchar:32', 'false'),
-  ],
-  in_tenant_space = True,
-  is_cluster_private = True,
-  meta_record_in_sys = False,
-  normal_columns = [
-    ('job_start_time', 'timestamp', 'false'),
-    ('trace_id', 'varchar:OB_MAX_TRACE_ID_BUFFER_SIZE', 'false'),
-    ('majority_succ_time', 'timestamp', 'false'),
-  ],
-)
+# 498: __all_transfer_partition_task (abandoned)
+# 499: __all_transfer_partition_task_history (abandoned)
+# 500: __all_tenant_snapshot_job (abandoned)
 
 def_table_schema(
     owner = 'yuchen.wyc',
@@ -6659,7 +4307,7 @@ def_table_schema(
         ('sql_id', 'varchar:OB_MAX_SQL_ID_LENGTH'),
     ],
     in_tenant_space=True,
-    is_cluster_private=True,
+    is_cluster_private=False,
     meta_record_in_sys = False,
     normal_columns = [
         ('query_sql', 'longtext'),
@@ -6667,20 +4315,7 @@ def_table_schema(
     ],
 )
 
-def_table_schema(
-  owner = 'tony.wzh',
-  table_name = '__all_trusted_root_certificate',
-  table_id = '502',
-  table_type = 'SYSTEM_TABLE',
-  gm_columns = ['gmt_create', 'gmt_modified'],
-  rowkey_columns = [
-    ('common_name', 'varchar:256'),
-  ],
-  normal_columns = [
-    ('description', 'varchar:256'),
-    ('content', 'longtext', 'false'),
-  ],
-)
+# 502: __all_trusted_root_certificate (abandoned)
 
 all_column_privilege_def = dict(
     owner = 'mingye.swj',
@@ -6706,139 +4341,13 @@ def_table_schema(**all_column_privilege_def)
 
 def_table_schema(**gen_history_table_def(506, all_column_privilege_def))
 
-all_tenant_snapshot_ls_replica_history_def = dict(
-  owner = 'chensen.cs',
-  table_name    = '__all_tenant_snapshot_ls_replica_history',
-  table_id      = '507',
-  table_type = 'SYSTEM_TABLE',
-  gm_columns = ['gmt_create', 'gmt_modified'],
-  rowkey_columns = [
-    ('tenant_id', 'int'),
-    ('snapshot_id', 'int', 'false'),
-    ('ls_id', 'int', 'false'),
-    ('svr_ip', 'varchar:MAX_IP_ADDR_LENGTH', 'false'),
-    ('svr_port', 'int', 'false'),
-  ],
-  in_tenant_space = True,
-  is_cluster_private = True,
-  meta_record_in_sys = False,
-  normal_columns = [
-    ('status', 'varchar:OB_DEFAULT_STATUS_LENTH', 'false'),
-    ('zone', 'varchar:MAX_ZONE_LENGTH', 'false'),
-    ('unit_id', 'int', 'false'),
-    ('begin_interval_scn', 'uint', 'false'),
-    ('end_interval_scn', 'uint', 'false'),
-    ('ls_meta_package', 'longtext', 'true')
-  ],
-)
-def_table_schema(**all_tenant_snapshot_ls_replica_history_def)
-
-def_table_schema(
-  owner = 'jinqian.zzy',
-  table_name    = '__all_ls_replica_task_history',
-  table_id = '508',
-  table_type = 'SYSTEM_TABLE',
-  gm_columns = ['gmt_create', 'gmt_modified'],
-  rowkey_columns = [
-    ('tenant_id', 'int'),
-    ('ls_id', 'int'),
-    ('task_type', 'varchar:MAX_DISASTER_RECOVERY_TASK_TYPE_LENGTH'),
-    ('task_id', 'varchar:OB_TRACE_STAT_BUFFER_SIZE'),
-  ],
-  in_tenant_space = True,
-  is_cluster_private = True,
-  meta_record_in_sys = False,
-  normal_columns = [
-    ('task_status', 'varchar:MAX_COLUMN_COMMENT_LENGTH', 'true'),
-    ('priority', 'int', 'false', 1),
-    ('target_replica_svr_ip', 'varchar:MAX_IP_ADDR_LENGTH', 'true'),
-    ('target_replica_svr_port', 'int', 'true'),
-    ('target_paxos_replica_number', 'int', 'true'),
-    ('target_replica_type', 'varchar:MAX_REPLICA_TYPE_LENGTH', 'true'),
-    ('source_replica_svr_ip', 'varchar:MAX_IP_ADDR_LENGTH', 'true'),
-    ('source_replica_svr_port', 'int', 'true'),
-    ('source_paxos_replica_number', 'int', 'true'),
-    ('source_replica_type', 'varchar:MAX_REPLICA_TYPE_LENGTH', 'true'),
-    ('data_source_svr_ip', 'varchar:MAX_IP_ADDR_LENGTH', 'true'),
-    ('data_source_svr_port', 'int', 'true'),
-    ('is_manual', 'bool', 'true', '0'),
-    ('task_exec_svr_ip', 'varchar:MAX_IP_ADDR_LENGTH', 'true'),
-    ('task_exec_svr_port', 'int', 'true'),
-    ('generate_time', 'timestamp:6', 'false', 0),
-    ('schedule_time', 'timestamp:6', 'false', 0),
-    ('finish_time', 'timestamp:6', 'false', 0),
-    ('execute_result', 'varchar:MAX_COLUMN_COMMENT_LENGTH', 'true'),
-    ('comment', 'varchar:MAX_COLUMN_COMMENT_LENGTH', 'true'),
-  ],
-)
-
+# 507: __all_tenant_snapshot_ls_replica_history (abandoned)
+# 508: __all_ls_replica_task_history (abandoned)
 # 509 : __all_ls_compaction_status
 # 510 : __all_tablet_compaction_status
-
-def_table_schema(
-  owner = 'lixia.yq',
-  table_name = '__all_tablet_checksum_error_info',
-  table_id = '511',
-  table_type = 'SYSTEM_TABLE',
-  gm_columns = ['gmt_create', 'gmt_modified'],
-  rowkey_columns = [
-    ('tenant_id', 'int'),
-    ('ls_id', 'int'),
-    ('shared_storage_path', 'varchar:OB_STORAGE_PATH_STR_LENGTH'),
-    ('tablet_id', 'int'),
-  ],
-  in_tenant_space = True,
-  is_cluster_private = True,
-  meta_record_in_sys = False,
-  normal_columns = [
-    ('compaction_scn', 'uint'),
-    ('check_error_info', 'varchar:OB_CKM_ERROR_INFO_STR_LENGTH')
-  ],
-)
-# 516 : __all_service
-# 517 : __all_storage_io_usage
-
-def_table_schema(
-  owner = 'shouju.zyp',
-  table_name    = '__all_service',
-  table_id = '516',
-  table_type = 'SYSTEM_TABLE',
-  gm_columns = ['gmt_create', 'gmt_modified'],
-  rowkey_columns = [
-    ('tenant_id', 'int'),
-    ('service_name_id', 'int'),
-  ],
-  in_tenant_space = True,
-  is_cluster_private = True,
-  meta_record_in_sys = False,
-
-  normal_columns = [
-    ('service_name', 'varchar:OB_SERVICE_NAME_LENGTH'),
-    ('service_status', 'varchar:64', 'false'),
-  ],
-)
-
-def_table_schema(
-  owner = 'wyh329796',
-  table_name = '__all_storage_io_usage',
-  table_id = '517',
-
-  table_type = 'SYSTEM_TABLE',
-  gm_columns = ['gmt_create', 'gmt_modified'],
-  rowkey_columns = [
-    ('tenant_id', 'int'),
-    ('storage_id', 'int'),
-    ('dest_id', 'int'),
-    ('storage_mod', 'varchar:32'),
-    ('type', 'varchar:128'),
-  ],
-  in_tenant_space = True,
-  is_cluster_private = True,
-  meta_record_in_sys = False,
-  normal_columns = [
-    ('total', 'int')
-  ],
-)
+# 511 : __all_tablet_checksum_error_info (abandoned) 
+# 516 : __all_service (abandoned)
+# 517: __all_storage_io_usage (abandoned)
 
 def_table_schema(
   owner = 'yuya.yu',
@@ -7054,7 +4563,7 @@ def_table_schema(
       ('id', 'uint', 'false', '0'),
   ],
   in_tenant_space=True,
-  is_cluster_private=True,
+  is_cluster_private=False,
   meta_record_in_sys = False,
   normal_columns = [
       ('db_id', 'int'),
@@ -7110,7 +4619,7 @@ def_table_schema(
     ('stat_id', 'int'),
   ],
   in_tenant_space=True,
-  is_cluster_private=True,
+  is_cluster_private=False,
   meta_record_in_sys = False,
   normal_columns = [
     ('value', 'int', 'true'),
@@ -7178,7 +4687,7 @@ def_table_schema(
       ('cluster_id', 'int'),
   ],
   in_tenant_space=True,
-  is_cluster_private=True,
+  is_cluster_private=False,
   meta_record_in_sys = False,
   normal_columns = [
   ],
@@ -7273,30 +4782,7 @@ def_table_schema(**gen_history_table_def(540, all_catalog_privilege_def))
 
 # 541: __all_tenant_flashback_log_scn
 # 542: __sslog_table
-def_table_schema(
-  owner = 'gengli.wzy',
-  table_id = '543',
-  table_name = '__all_license',
-  table_type = 'SYSTEM_TABLE',
-  gm_columns = [],
-  rowkey_columns = [
-    ('LICENSE_ID',	'varchar:128'),
-  ],
-  normal_columns = [
-    ('END_USER',	'varchar:512'),
-    ('LICENSE_CODE',	'varchar:128'),
-    ('LICENSE_TYPE',	'varchar:128'),
-    ('PRODUCT_TYPE',	'varchar:128'),
-    ('ISSUANCE_DATE',	'timestamp:6'),
-    ('ACTIVATION_TIME',	'timestamp:6'),
-    ('EXPIRED_TIME',	'timestamp:6'),
-    ('OPTIONS',	'varchar:1024'),
-    ('CORE_NUM',	'bigint unsigned'),
-    ('NODE_NUM',	'bigint unsigned'),
-    ('LTS_TIME', 'timestamp:6'),
-    ('CLUSTER_ULID', 'varchar:30'),
-  ],
-)
+# 543: __all_license (abandoned)
 
 def_table_schema(
   owner = 'jiabokai.jbk',
@@ -7403,7 +4889,7 @@ all_ai_model_def = dict(
       ('tenant_id', 'int'),
       ('model_id', 'int'),
     ],
-
+    
     in_tenant_space = True,
     is_cluster_private = False,
     meta_record_in_sys = False,
@@ -7428,9 +4914,9 @@ all_ai_model_endpoint_def = dict(
       ('endpoint_id', 'int'),
       ('scope', 'varchar:128')
     ],
-
+    
     in_tenant_space = True,
-    is_cluster_private = True,
+    is_cluster_private = False,
     meta_record_in_sys = False,
     normal_columns = [
         ('version', 'int', 'false'),
@@ -7925,42 +5411,7 @@ def_table_schema(
   ],
 )
 
-def_table_schema(
-    owner = 'yanmu.ztl',
-    table_name    = '__all_virtual_core_meta_table',
-    table_id      = '11001',
-    table_type = 'VIRTUAL_TABLE',
-    gm_columns = [],
-    rowkey_columns = [
-    ],
-    vtable_route_policy = 'only_rs',
-    in_tenant_space = True,
-
-    normal_columns = [
-      ('tenant_id', 'int'),
-      ('ls_id', 'int'),
-      ('svr_ip', 'varchar:MAX_IP_ADDR_LENGTH'),
-      ('svr_port', 'int'),
-      # location related
-      ('sql_port', 'int'),
-      ('role', 'int'),
-      ('member_list', 'varchar:MAX_MEMBER_LIST_LENGTH'),
-      ('proposal_id', 'int', 'false', '0'),
-      ('replica_type', 'int', 'false', '0'),
-      ('replica_status', 'varchar:MAX_REPLICA_STATUS_LENGTH', 'false', 'NORMAL'),
-      ('restore_status', 'int', 'false', '0'),
-      ('memstore_percent', 'int', 'false', '100'),
-      # meta related
-      ('unit_id', 'int'),
-      ('zone', 'varchar:MAX_ZONE_LENGTH'),
-      ('paxos_replica_number', 'int', 'false', '-1'),
-      ('data_size', 'int'),
-      ('required_size', 'int', 'false', '0'),
-      ('learner_list', 'longtext', 'true'),
-      ('rebuild', 'int', 'false', '0'),
-    ],
-)
-
+# 11001: __all_virtual_core_meta_table (abandoned)
 # 11002: __all_virtual_zone_stat # abandoned in 4.0.
 
 def_table_schema(
@@ -8556,21 +6007,7 @@ def_table_schema(
   vtable_route_policy = 'distributed',
 )
 
-def_table_schema(
-  owner = 'yanmu.ztl',
-  table_name     = '__all_virtual_upgrade_inspection',
-  table_id       = '11026',
-  table_type = 'VIRTUAL_TABLE',
-  gm_columns     = [],
-  rowkey_columns = [
-  ],
-  vtable_route_policy = 'only_rs',
-
-  normal_columns = [
-  ('name', 'varchar:TABLE_MAX_KEY_LENGTH'),
-  ('info', 'varchar:MAX_ZONE_INFO_LENGTH'),
-  ],
-)
+# 11026: __all_virtual_upgrade_inspection (abandoned)
 
 def_table_schema(
   owner = 'shanyan.g',
@@ -8886,7 +6323,8 @@ def_table_schema(
       ('source', 'varchar:OB_MAX_CONFIG_SOURCE_LEN'),
       ('edit_level', 'varchar:OB_MAX_CONFIG_EDIT_LEVEL_LEN'),
       ('default_value', 'varchar:OB_MAX_CONFIG_VALUE_LEN'),
-      ('isdefault', 'int')
+      ('isdefault', 'int'),
+      ('tenant_id', 'int', 'true')
   ],
   partition_columns = ['svr_ip', 'svr_port'],
   vtable_route_policy = 'distributed',
@@ -9552,14 +6990,17 @@ def_table_schema(
       ('name', 'varchar:OB_MAX_CONFIG_NAME_LEN'),
       ('data_type', 'varchar:OB_MAX_CONFIG_TYPE_LENGTH', 'true'),
       ('value', 'varchar:OB_MAX_CONFIG_VALUE_LEN'),
+      ('value_strict', 'varchar:OB_MAX_EXTRA_CONFIG_LENGTH', 'true'),
       ('info', 'varchar:OB_MAX_CONFIG_INFO_LEN'),
+      ('need_reboot', 'int'),
       ('section', 'varchar:OB_MAX_CONFIG_SECTION_LEN'),
+      ('visible_level', 'varchar:OB_MAX_CONFIG_VISIBLE_LEVEL_LEN'),
       ('scope', 'varchar:OB_MAX_CONFIG_SCOPE_LEN'),
       ('source', 'varchar:OB_MAX_CONFIG_SOURCE_LEN'),
       ('edit_level', 'varchar:OB_MAX_CONFIG_EDIT_LEVEL_LEN'),
-      ('tenant_id', 'int', 'true'),
       ('default_value', 'varchar:OB_MAX_CONFIG_VALUE_LEN'),
-      ('isdefault', 'int')
+      ('isdefault', 'int'),
+      ('tenant_id', 'int', 'true')
   ],
   partition_columns = ['svr_ip', 'svr_port'],
   vtable_route_policy = 'distributed',
@@ -10999,7 +8440,7 @@ def_table_schema(
   ],
 )
 
-def_table_schema(**gen_iterate_private_virtual_table_def(
+def_table_schema(**gen_iterate_virtual_table_def(
   table_id = '12146',
   table_name = '__all_virtual_tenant_user_failed_login_stat',
   keywords = all_def_keywords['__all_tenant_user_failed_login_stat'],
@@ -11208,11 +8649,8 @@ def_table_schema(**gen_iterate_virtual_table_def(
   table_id = '12166',
   table_name = '__all_virtual_objauth_history',
   keywords = all_def_keywords['__all_tenant_objauth_history']))
-def_table_schema(**gen_iterate_private_virtual_table_def(
-  table_id = '12167',
-  table_name = '__all_virtual_backup_info',
-  keywords = all_def_keywords['__all_backup_info'],
-  in_tenant_space = True))
+
+# 12167: __all_virtual_backup_info # abandoned
 
 # 12168: __all_virtual_backup_log_archive_status # abandoned in 4.0
 # 12170: __all_virtual_backup_task # abandoned in 4.0
@@ -11496,13 +8934,7 @@ def_table_schema(
 # 12203: __all_virtual_pg_backup_backupset_task # abandoned in 4.0
 
 # 12205: __all_virtual_cluster_failover_info # abandoned in 4.0
-
-def_table_schema(**gen_iterate_private_virtual_table_def(
-  table_id = '12206',
-  table_name = '__all_virtual_global_transaction',
-  keywords = all_def_keywords['__all_tenant_global_transaction'],
-  in_tenant_space = True))
-
+# 12206: __all_virtual_global_transaction (abandoned)
 # 12207: __all_virtual_all_clusters # abandoned in 4.0
 
 def_table_schema(**gen_iterate_virtual_table_def(
@@ -11716,55 +9148,18 @@ def_table_schema(
   partition_columns = ['svr_ip', 'svr_port'],
   vtable_route_policy = 'distributed',
 )
-
-def_table_schema(**gen_iterate_private_virtual_table_def(
-  table_id = '12231',
-  table_name = '__all_virtual_log_archive_progress',
-  keywords = all_def_keywords['__all_log_archive_progress'],
-  in_tenant_space = True))
-
-def_table_schema(**gen_iterate_private_virtual_table_def(
-  table_id = '12232',
-  table_name = '__all_virtual_log_archive_history',
-  keywords = all_def_keywords['__all_log_archive_history'],
-  in_tenant_space = True))
-
-def_table_schema(**gen_iterate_private_virtual_table_def(
-  table_id = '12233',
-  table_name = '__all_virtual_log_archive_piece_files',
-  keywords = all_def_keywords['__all_log_archive_piece_files'],
-  in_tenant_space = True))
-
-def_table_schema(**gen_iterate_private_virtual_table_def(
-  table_id = '12234',
-  table_name = '__all_virtual_ls_log_archive_progress',
-  keywords = all_def_keywords['__all_ls_log_archive_progress'],
-  in_tenant_space = True))
+# 12231: __all_virtual_log_archive_progress # abandoned
+# 12232: __all_virtual_log_archive_history # abandoned
+# 12233: __all_virtual_log_archive_piece_files # abandoned
+# 12234: __all_virtual_ls_log_archive_progress # abandoned
 
 # 12235: CHECK_CONSTRAINTS # abandoned in 4.0
+# 12236: __all_virtual_backup_storage_info # abandoned
 
-def_table_schema(**gen_iterate_private_virtual_table_def(
-  table_id = '12236',
-  table_name = '__all_virtual_backup_storage_info',
-  in_tenant_space = True,
-  keywords = all_def_keywords['__all_backup_storage_info']))
+# 12237: __all_virtual_ls_status (abandoned)
+# 12238: __all_virtual_ls (abandoned)
 
-def_table_schema(**gen_iterate_private_virtual_table_def(
-  table_id = '12237',
-  table_name = '__all_virtual_ls_status',
-  in_tenant_space = True,
-  keywords = all_def_keywords['__all_ls_status']))
-
-def_table_schema(**gen_iterate_virtual_table_def(
-  table_id = '12238',
-  table_name = '__all_virtual_ls',
-  keywords = all_def_keywords['__all_ls']))
-
-def_table_schema(**gen_iterate_private_virtual_table_def(
-  table_id = '12239',
-  table_name = '__all_virtual_ls_meta_table',
-  keywords = all_def_keywords['__all_ls_meta_table'],
-  in_tenant_space = True))
+# 12239: __all_virtual_ls_meta_table (abandoned)
 
 def_table_schema(**gen_iterate_private_virtual_table_def(
   table_id = '12240',
@@ -11824,43 +9219,13 @@ def_table_schema(
   partition_columns = ['svr_ip', 'svr_port'],
   vtable_route_policy = 'distributed',
 )
-
-def_table_schema(**gen_iterate_private_virtual_table_def(
-  table_id = '12245',
-  table_name = '__all_virtual_backup_task',
-  keywords = all_def_keywords['__all_backup_task'],
-  in_tenant_space = True))
-
-def_table_schema(**gen_iterate_private_virtual_table_def(
-  table_id = '12246',
-  table_name = '__all_virtual_backup_task_history',
-  keywords = all_def_keywords['__all_backup_task_history'],
-  in_tenant_space = True))
-
-def_table_schema(**gen_iterate_private_virtual_table_def(
-  table_id = '12247',
-  table_name = '__all_virtual_backup_ls_task',
-  keywords = all_def_keywords['__all_backup_ls_task']))
-
-def_table_schema(**gen_iterate_private_virtual_table_def(
-  table_id = '12248',
-  table_name = '__all_virtual_backup_ls_task_history',
-  keywords = all_def_keywords['__all_backup_ls_task_history']))
-
-def_table_schema(**gen_iterate_private_virtual_table_def(
-  table_id = '12249',
-  table_name = '__all_virtual_backup_ls_task_info',
-  keywords = all_def_keywords['__all_backup_ls_task_info']))
-
-def_table_schema(**gen_iterate_private_virtual_table_def(
-  table_id = '12250',
-  table_name = '__all_virtual_backup_skipped_tablet',
-  keywords = all_def_keywords['__all_backup_skipped_tablet']))
-
-def_table_schema(**gen_iterate_private_virtual_table_def(
-  table_id = '12251',
-  table_name = '__all_virtual_backup_skipped_tablet_history',
-  keywords = all_def_keywords['__all_backup_skipped_tablet_history']))
+# 12245: __all_virtual_backup_task # abandoned
+# 12246: __all_virtual_backup_task_history # abandoned
+# 12247: __all_virtual_backup_ls_task # abandoned
+# 12248: __all_virtual_backup_ls_task_history # abandoned
+# 12249: __all_virtual_backup_ls_task_info # abandoned
+# 12250: __all_virtual_backup_skipped_tablet # abandoned
+# 12251: __all_virtual_backup_skipped_tablet_history # abandoned
 
 def_table_schema(**gen_iterate_virtual_table_def(
   table_id = '12253',
@@ -11911,16 +9276,8 @@ def_table_schema(**gen_iterate_private_virtual_table_def(
   in_tenant_space = True,
   keywords = all_def_keywords['__all_tenant_info']))
 
-def_table_schema(**gen_iterate_private_virtual_table_def(
-  table_id = '12256',
-  table_name = '__all_virtual_ls_recovery_stat',
-  in_tenant_space = True,
-  keywords = all_def_keywords['__all_ls_recovery_stat']))
-
-def_table_schema(**gen_iterate_private_virtual_table_def(
-  table_id = '12257',
-  table_name = '__all_virtual_backup_ls_task_info_history',
-  keywords = all_def_keywords['__all_backup_ls_task_info_history']))
+# 12256: __all_virtual_ls_recovery_stat (abandoned)
+# 12257: __all_virtual_backup_ls_task_info_history # abandoned
 
 def_table_schema(**gen_iterate_private_virtual_table_def(
   table_id = '12258',
@@ -11937,11 +9294,7 @@ def_table_schema(**gen_iterate_virtual_table_def(
   table_name = '__all_virtual_ddl_error_message',
   keywords = all_def_keywords['__all_ddl_error_message']))
 
-def_table_schema(**gen_iterate_private_virtual_table_def(
-  table_id = '12261',
-  table_name = '__all_virtual_ls_replica_task',
-  in_tenant_space = True,
-  keywords = all_def_keywords['__all_ls_replica_task']))
+# 12261: __all_virtual_ls_replica_task (abandoned)
 
 def_table_schema(**gen_iterate_virtual_table_def(
   table_id = '12262',
@@ -11980,11 +9333,7 @@ def_table_schema(**gen_iterate_virtual_table_def(
   table_name = '__all_virtual_tenant_context_history',
   keywords = all_def_keywords['__all_context_history']))
 
-def_table_schema(**gen_iterate_private_virtual_table_def(
-  table_id = '12271',
-  table_name = '__all_virtual_global_context_value',
-  keywords = all_def_keywords['__all_global_context_value']))
-
+# 12271: __all_virtual_global_context_value (abandoned)
 # 12272: __all_virtual_external_storage_session
 # 12273: __all_virtual_external_storage_info
 
@@ -12064,11 +9413,7 @@ def_table_schema(
   vtable_route_policy = 'distributed',
 )
 
-def_table_schema(**gen_iterate_private_virtual_table_def(
-  table_id = '12277',
-  table_name = '__all_virtual_ls_election_reference_info',
-  in_tenant_space=True,
-  keywords = all_def_keywords['__all_ls_election_reference_info']))
+# 12277: __all_virtual_ls_election_reference_info (abandoned)
 
 def_table_schema(
   owner = 'dachuan.sdc',
@@ -12223,29 +9568,10 @@ def_table_schema(
 )
 
 # backup clean virtual table
-def_table_schema(**gen_iterate_private_virtual_table_def(
-  table_id = '12283',
-  table_name = '__all_virtual_backup_delete_task',
-  in_tenant_space = True,
-  keywords = all_def_keywords['__all_backup_delete_task']))
-
-def_table_schema(**gen_iterate_private_virtual_table_def(
-  table_id = '12284',
-  table_name = '__all_virtual_backup_delete_task_history',
-  in_tenant_space = True,
-  keywords = all_def_keywords['__all_backup_delete_task_history']))
-
-def_table_schema(**gen_iterate_private_virtual_table_def(
-  table_id = '12285',
-  table_name = '__all_virtual_backup_delete_ls_task',
-  in_tenant_space = True,
-  keywords = all_def_keywords['__all_backup_delete_ls_task']))
-
-def_table_schema(**gen_iterate_private_virtual_table_def(
-  table_id = '12286',
-  table_name = '__all_virtual_backup_delete_ls_task_history',
-  in_tenant_space = True,
-  keywords = all_def_keywords['__all_backup_delete_ls_task_history']))
+# 12283: __all_virtual_backup_delete_task # abandoned
+# 12284: __all_virtual_backup_delete_task_history # abandoned
+# 12285: __all_virtual_backup_delete_ls_task # abandoned
+# 12286: __all_virtual_backup_delete_ls_task_history # abandoned
 
 def_table_schema(
   owner = 'yanyuan.cxf',
@@ -12457,22 +9783,10 @@ def_table_schema(
   partition_columns = ['svr_ip', 'svr_port'],
   vtable_route_policy = 'distributed',
 )
+# 12296: __all_virtual_backup_set_files (abandoned)
+# 12297: __all_virtual_backup_job (abandoned)
+# 12298: __all_virtual_backup_job_history (abandoned)
 
-def_table_schema(**gen_iterate_private_virtual_table_def(
-  table_id = '12296',
-  table_name = '__all_virtual_backup_set_files',
-  keywords = all_def_keywords['__all_backup_set_files'],
-  in_tenant_space = True))
-def_table_schema(**gen_iterate_private_virtual_table_def(
-  table_id = '12297',
-  table_name = '__all_virtual_backup_job',
-  keywords = all_def_keywords['__all_backup_job'],
-  in_tenant_space = True))
-def_table_schema(**gen_iterate_private_virtual_table_def(
-  table_id = '12298',
-  table_name = '__all_virtual_backup_job_history',
-  keywords = all_def_keywords['__all_backup_job_history'],
-  in_tenant_space = True))
 
 # 12299: __all_virtual_plan_baseline abandoned
 # 12300: __all_virtual_plan_baseline_item abandoned
@@ -12578,72 +9892,17 @@ def_table_schema(
   partition_columns = ['svr_ip', 'svr_port'],
   vtable_route_policy = 'distributed',
 )
-
-def_table_schema(**gen_iterate_private_virtual_table_def(
-  table_id = '12304',
-  table_name = '__all_virtual_log_archive_dest_parameter',
-  keywords = all_def_keywords['__all_log_archive_dest_parameter'],
-  in_tenant_space = True))
-
-def_table_schema(**gen_iterate_private_virtual_table_def(
-  table_id = '12305',
-  table_name = '__all_virtual_backup_parameter',
-  keywords = all_def_keywords['__all_backup_parameter'],
-  in_tenant_space = True))
-
-def_table_schema(**gen_iterate_private_virtual_table_def(
-  table_id = '12306',
-  table_name = '__all_virtual_restore_job',
-  keywords = all_def_keywords['__all_restore_job'],
-  in_tenant_space = True))
-
-def_table_schema(**gen_iterate_private_virtual_table_def(
-  table_id = '12307',
-  table_name = '__all_virtual_restore_job_history',
-  keywords = all_def_keywords['__all_restore_job_history'],
-  in_tenant_space = True))
-
-def_table_schema(**gen_iterate_private_virtual_table_def(
-  table_id = '12308',
-  table_name = '__all_virtual_restore_progress',
-  keywords = all_def_keywords['__all_restore_progress'],
-  in_tenant_space = True))
-
-def_table_schema(**gen_iterate_private_virtual_table_def(
-  table_id = '12309',
-  table_name = '__all_virtual_ls_restore_progress',
-  keywords = all_def_keywords['__all_ls_restore_progress'],
-  in_tenant_space = True))
-
-def_table_schema(**gen_iterate_private_virtual_table_def(
-  table_id = '12310',
-  table_name = '__all_virtual_ls_restore_history',
-  keywords = all_def_keywords['__all_ls_restore_history'],
-  in_tenant_space = True))
-
-def_table_schema(**gen_iterate_private_virtual_table_def(
-  table_id = '12311',
-  table_name = '__all_virtual_backup_storage_info_history',
-  in_tenant_space = True,
-  keywords = all_def_keywords['__all_backup_storage_info_history']))
-
-def_table_schema(**gen_iterate_private_virtual_table_def(
-  table_id = '12312',
-  table_name = '__all_virtual_backup_delete_job',
-  in_tenant_space = True,
-  keywords = all_def_keywords['__all_backup_delete_job']))
-
-def_table_schema(**gen_iterate_private_virtual_table_def(
-  table_id = '12313',
-  table_name = '__all_virtual_backup_delete_job_history',
-  in_tenant_space = True,
-  keywords = all_def_keywords['__all_backup_delete_job_history']))
-
-def_table_schema(**gen_iterate_private_virtual_table_def(
-  table_id = '12314',
-  table_name = '__all_virtual_backup_delete_policy',
-  in_tenant_space = True,
-  keywords = all_def_keywords['__all_backup_delete_policy']))
+# 12304: __all_virtual_log_archive_dest_parameter (abandoned) 
+# 12305: __all_virtual_backup_parameter (abandoned)
+# 12306: __all_virtual_restore_job  (abandoned)
+# 12307: __all_virtual_restore_job_history (abandoned)
+# 12308: __all_virtual_restore_progress (abandoned)
+# 12309: __all_virtual_ls_restore_progress (abandoned)
+# 12310: __all_virtual_ls_restore_history (abandoned)
+# 12311: __all_virtual_backup_storage_info_history (abandoned)
+# 12312: __all_virtual_backup_delete_job (abandoned)
+# 12313: __all_virtual_backup_delete_job_history (abandoned)
+# 12314: __all_virtual_backup_delete_policy (abandoned)
 
 def_table_schema(
   owner = 'lihongqin.lhq',
@@ -12787,12 +10046,7 @@ def_table_schema(**gen_iterate_virtual_table_def(
   table_id = '12323',
   table_name = '__all_virtual_mock_fk_parent_table_column_history',
   keywords = all_def_keywords['__all_mock_fk_parent_table_column_history']))
-
-def_table_schema(**gen_iterate_private_virtual_table_def(
-  table_id = '12324',
-  table_name = '__all_virtual_log_restore_source',
-  keywords = all_def_keywords['__all_log_restore_source'],
-  in_tenant_space = True))
+# 12324: __all_virtual_log_restore_source abandoned
 
 def_table_schema(
   owner = 'wangzelin.wzl',
@@ -12817,18 +10071,8 @@ def_table_schema(
   vtable_route_policy = 'distributed',
 )
 
-def_table_schema(**gen_iterate_private_virtual_table_def(
-  table_id = '12326',
-  table_name = '__all_virtual_kv_ttl_task',
-  keywords = all_def_keywords['__all_kv_ttl_task'],
-  in_tenant_space=True))
-
-def_table_schema(**gen_iterate_private_virtual_table_def(
-  table_id = '12327',
-  table_name = '__all_virtual_kv_ttl_task_history',
-  keywords = all_def_keywords['__all_kv_ttl_task_history'],
-  in_tenant_space=True))
-
+# 12326: __all_virtual_kv_ttl_task (abandoned)
+# 12327: __all_virtual_kv_ttl_task_history (abandoned)
 # 12328: __all_virtual_tenant_datafile
 # 12329: __all_virtual_tenant_datafile_history
 
@@ -12866,34 +10110,7 @@ def_table_schema(
     vtable_route_policy = 'distributed',
 )
 
-def_table_schema(
-  owner = 'jingyu.cr',
-  table_name    = '__all_virtual_ls_replica_task_plan',
-  table_id      = '12335',
-  table_type = 'VIRTUAL_TABLE',
-  gm_columns = [],
-  rowkey_columns = [
-  ],
-  in_tenant_space = True,
-  normal_columns = [
-    ('tenant_id', 'int'),
-    ('ls_id', 'int'),
-    ('task_type', 'varchar:MAX_DISASTER_RECOVERY_TASK_TYPE_LENGTH'),
-    ('priority', 'int', 'false', 1),
-    ('target_replica_svr_ip', 'varchar:MAX_IP_ADDR_LENGTH', 'true'),
-    ('target_replica_svr_port', 'int', 'true'),
-    ('target_paxos_replica_number', 'int', 'true'),
-    ('target_replica_type', 'varchar:MAX_REPLICA_TYPE_LENGTH', 'true'),
-    ('source_replica_svr_ip', 'varchar:MAX_IP_ADDR_LENGTH', 'true'),
-    ('source_replica_svr_port', 'int', 'true'),
-    ('source_paxos_replica_number', 'int', 'true'),
-    ('source_replica_type', 'varchar:MAX_REPLICA_TYPE_LENGTH', 'true'),
-    ('task_exec_svr_ip', 'varchar:MAX_IP_ADDR_LENGTH', 'true'),
-    ('task_exec_svr_port', 'int', 'true'),
-    ('comment', 'varchar:MAX_COLUMN_COMMENT_LENGTH', 'true'),
-  ],
-  vtable_route_policy = 'local',
-)
+# 12335: __all_virtual_ls_replica_task_plan (abandoned)
 
 def_table_schema(
   owner = 'xingrui.cwh',
@@ -13057,35 +10274,12 @@ def_table_schema(**gen_iterate_virtual_table_def(
   table_name = '__all_virtual_data_dictionary_in_log',
   keywords = all_def_keywords['__all_data_dictionary_in_log']))
 
-def_table_schema(**gen_iterate_virtual_table_def(
-  table_id = '12342',
-  table_name = '__all_virtual_transfer_task',
-  keywords = all_def_keywords['__all_transfer_task']))
-
-def_table_schema(**gen_iterate_virtual_table_def(
-  table_id = '12343',
-  table_name = '__all_virtual_transfer_task_history',
-  keywords = all_def_keywords['__all_transfer_task_history']))
-
-def_table_schema(**gen_iterate_virtual_table_def(
-  table_id = '12344',
-  table_name = '__all_virtual_balance_job',
-  keywords = all_def_keywords['__all_balance_job']))
-
-def_table_schema(**gen_iterate_virtual_table_def(
-  table_id = '12345',
-  table_name = '__all_virtual_balance_job_history',
-  keywords = all_def_keywords['__all_balance_job_history']))
-
-def_table_schema(**gen_iterate_virtual_table_def(
-  table_id = '12346',
-  table_name = '__all_virtual_balance_task',
-  keywords = all_def_keywords['__all_balance_task']))
-
-def_table_schema(**gen_iterate_virtual_table_def(
-  table_id = '12347',
-  table_name = '__all_virtual_balance_task_history',
-  keywords = all_def_keywords['__all_balance_task_history']))
+# 12342: __all_virtual_transfer_task
+# 12343: __all_virtual_transfer_task_history
+# 12344: __all_virtual_balance_job
+# 12345: __all_virtual_balance_job_history
+# 12346: __all_virtual_balance_task
+# 12347: __all_virtual_balance_task_history
 
 def_table_schema(**gen_mysql_sys_agent_virtual_table_def('12358', all_def_keywords['__all_tenant']))
 
@@ -13186,17 +10380,8 @@ def_table_schema(
   partition_columns = ['svr_ip', 'svr_port'],
 )
 
-def_table_schema(**gen_iterate_private_virtual_table_def(
-  table_id = '12364',
-  table_name = '__all_virtual_ls_arb_replica_task',
-  in_tenant_space = True,
-  keywords = all_def_keywords['__all_ls_arb_replica_task']))
-
-def_table_schema(**gen_iterate_private_virtual_table_def(
-  table_id = '12365',
-  table_name = '__all_virtual_ls_arb_replica_task_history',
-  in_tenant_space = True,
-  keywords = all_def_keywords['__all_ls_arb_replica_task_history']))
+# 12364: __all_ls_arb_replica_task (abandoned)
+# 12365: __all_ls_arb_replica_task_history (abandoned)
 
 def_table_schema(
   owner = 'zhaoyongheng.zyh',
@@ -13325,13 +10510,13 @@ def_table_schema(
   vtable_route_policy = 'distributed',
 )
 
-def_table_schema(**gen_iterate_private_virtual_table_def(
+def_table_schema(**gen_iterate_virtual_table_def(
   table_id = '12381',
   table_name = '__all_virtual_task_opt_stat_gather_history',
   in_tenant_space = True,
   keywords = all_def_keywords['__all_task_opt_stat_gather_history']))
 
-def_table_schema(**gen_iterate_private_virtual_table_def(
+def_table_schema(**gen_iterate_virtual_table_def(
   table_id = '12382',
   table_name = '__all_virtual_table_opt_stat_gather_history',
   in_tenant_space = True,
@@ -13394,33 +10579,7 @@ def_table_schema(
   vtable_route_policy = 'distributed',
 )
 
-def_table_schema(
-  owner = 'debin.jdb',
-  table_name = '__all_virtual_arbitration_member_info',
-  table_id = '12385',
-  table_type = 'VIRTUAL_TABLE',
-  gm_columns = [],
-  in_tenant_space = True,
-  rowkey_columns = [
-  ],
-
-  normal_columns = [
-  ('tenant_id', 'int'),
-  ('ls_id', 'int'),
-  ('svr_ip', 'varchar:MAX_IP_ADDR_LENGTH'),
-  ('svr_port', 'int'),
-  ('proposal_id', 'int'),
-  ('config_version', 'varchar:128'),
-  ('access_mode', 'varchar:32'),
-  ('paxos_member_list', 'varchar:1024'),
-  ('paxos_replica_num', 'int'),
-  ('arbitration_member', 'varchar:128'),
-  ('degraded_list', 'varchar:1024'),
-  ],
-
-  partition_columns = ['svr_ip', 'svr_port'],
-  vtable_route_policy = 'distributed',
-)
+# 12385: __all_virtual_arbitration_member_info (abandoned)
 
 def_table_schema(
   owner = 'shifangdan.sfd',
@@ -13454,48 +10613,28 @@ def_table_schema(
   vtable_route_policy = 'distributed',
 )
 
-def_table_schema(
-  owner = 'debin.jdb',
-  table_name = '__all_virtual_arbitration_service_status',
-  table_id = '12387',
-  table_type = 'VIRTUAL_TABLE',
-  gm_columns = [],
-  in_tenant_space = True,
-  rowkey_columns = [
-  ],
-
-  normal_columns = [
-  ('svr_ip', 'varchar:MAX_IP_ADDR_LENGTH'),
-  ('svr_port', 'int'),
-  ('arbitration_service_address', 'varchar:512'),
-  ('status', 'varchar:64'),
-  ],
-
-  partition_columns = ['svr_ip', 'svr_port'],
-  vtable_route_policy = 'distributed',
-)
-
+# 12387: __all_virtual_arbitration_service_status (abandoned)
 
 # 12388: __all_virtual_wr_active_session_history
-def_table_schema(**gen_iterate_private_virtual_table_def(
+def_table_schema(**gen_iterate_virtual_table_def(
   table_id = '12388',
   table_name = '__all_virtual_wr_active_session_history',
   in_tenant_space = True,
   keywords = all_def_keywords['__wr_active_session_history']))
 # 12389: __all_virtual_wr_snapshot
-def_table_schema(**gen_iterate_private_virtual_table_def(
+def_table_schema(**gen_iterate_virtual_table_def(
   table_id = '12389',
   table_name = '__all_virtual_wr_snapshot',
   in_tenant_space = True,
   keywords = all_def_keywords['__wr_snapshot']))
 # 12390: __all_virtual_wr_statname
-def_table_schema(**gen_iterate_private_virtual_table_def(
+def_table_schema(**gen_iterate_virtual_table_def(
   table_id = '12390',
   table_name = '__all_virtual_wr_statname',
   in_tenant_space = True,
   keywords = all_def_keywords['__wr_statname']))
 # 12391: __all_virtual_wr_sysstat
-def_table_schema(**gen_iterate_private_virtual_table_def(
+def_table_schema(**gen_iterate_virtual_table_def(
   table_id = '12391',
   table_name = '__all_virtual_wr_sysstat',
   in_tenant_space = True,
@@ -13526,11 +10665,7 @@ def_table_schema(
 )
 def_table_schema(**gen_mysql_sys_agent_virtual_table_def('12393', all_def_keywords['__all_virtual_long_ops_status']))
 
-def_table_schema(**gen_iterate_private_virtual_table_def(
-  table_id = '12394',
-  table_name = '__all_virtual_ls_transfer_member_list_lock_info',
-  in_tenant_space = True,
-  keywords = all_def_keywords['__all_ls_transfer_member_list_lock_info']))
+# 12394: __all_virtual_ls_transfer_member_list_lock_info (abandoned)
 
 def_table_schema(
   owner             = 'lixinze.lxz',
@@ -13634,21 +10769,9 @@ def_table_schema(**gen_iterate_private_virtual_table_def(
   table_name = '__all_virtual_tenant_parameter',
   in_tenant_space = True,
   keywords = all_def_keywords['__tenant_parameter']))
-def_table_schema(**gen_iterate_private_virtual_table_def(
-  table_id = '12402',
-  table_name = '__all_virtual_tenant_snapshot',
-  in_tenant_space = True,
-  keywords = all_def_keywords['__all_tenant_snapshot']))
-def_table_schema(**gen_iterate_private_virtual_table_def(
-  table_id = '12403',
-  table_name = '__all_virtual_tenant_snapshot_ls',
-  in_tenant_space = True,
-  keywords = all_def_keywords['__all_tenant_snapshot_ls']))
-def_table_schema(**gen_iterate_private_virtual_table_def(
-  table_id = '12404',
-  table_name = '__all_virtual_tenant_snapshot_ls_replica',
-  in_tenant_space = True,
-  keywords = all_def_keywords['__all_tenant_snapshot_ls_replica']))
+# 12402: __all_virtual_tenant_snapshot (abandoned)
+# 12403: __all_virtual_tenant_snapshot_ls (abandoned)
+# 12404: __all_virtual_tenant_snapshot_ls_replica (abandoned)
 
 def_table_schema(
   owner = 'yunshan.tys',
@@ -13721,7 +10844,7 @@ def_table_schema(**gen_iterate_virtual_table_def(
   keywords = all_def_keywords['__all_mview_refresh_stmt_stats'],
   in_tenant_space = True))
 
-def_table_schema(**gen_iterate_private_virtual_table_def(
+def_table_schema(**gen_iterate_virtual_table_def(
   table_id = '12414',
   table_name = '__all_virtual_wr_control',
   in_tenant_space = True,
@@ -13732,15 +10855,8 @@ def_table_schema(**gen_iterate_private_virtual_table_def(
   in_tenant_space = True,
   keywords = all_def_keywords['__all_tenant_event_history']))
 
-def_table_schema(**gen_iterate_private_virtual_table_def(
-  table_id = '12416',
-  table_name = '__all_virtual_balance_task_helper',
-  keywords = all_def_keywords['__all_balance_task_helper']))
-
-def_table_schema(**gen_iterate_private_virtual_table_def(
-  table_id = '12417',
-  table_name = '__all_virtual_balance_group_ls_stat',
-  keywords = all_def_keywords['__all_balance_group_ls_stat']))
+# 12416: __all_virtual_balance_task_helper (abandoned)
+# 12417: __all_virtual_balance_group_ls_stat (abandoned)
 
 # 12418: __all_virtual_cgroup_info
 def_table_schema(
@@ -13789,41 +10905,12 @@ def_table_schema(**gen_iterate_virtual_table_def(
   table_name = '__all_virtual_tenant_scheduler_job_class',
   keywords = all_def_keywords['__all_tenant_scheduler_job_class']))
 
-def_table_schema(**gen_iterate_private_virtual_table_def(
-  table_id = '12422',
-  table_name = '__all_virtual_recover_table_job',
-  keywords = all_def_keywords['__all_recover_table_job'],
-  in_tenant_space = True))
-
-def_table_schema(**gen_iterate_private_virtual_table_def(
-  table_id = '12423',
-  table_name = '__all_virtual_recover_table_job_history',
-  keywords = all_def_keywords['__all_recover_table_job_history'],
-  in_tenant_space = True))
-def_table_schema(**gen_iterate_private_virtual_table_def(
-  table_id = '12424',
-  table_name = '__all_virtual_import_table_job',
-  keywords = all_def_keywords['__all_import_table_job'],
-  in_tenant_space = True))
-
-def_table_schema(**gen_iterate_private_virtual_table_def(
-  table_id = '12425',
-  table_name = '__all_virtual_import_table_job_history',
-  keywords = all_def_keywords['__all_import_table_job_history'],
-  in_tenant_space = True))
-
-def_table_schema(**gen_iterate_private_virtual_table_def(
-  table_id = '12426',
-  table_name = '__all_virtual_import_table_task',
-  keywords = all_def_keywords['__all_import_table_task'],
-  in_tenant_space = True))
-
-def_table_schema(**gen_iterate_private_virtual_table_def(
-  table_id = '12427',
-  table_name = '__all_virtual_import_table_task_history',
-  keywords = all_def_keywords['__all_import_table_task_history'],
-  in_tenant_space = True))
-
+# 12422: __all_virtual_recover_table_job # abandoned
+# 12423: __all_virtual_recover_table_job_history # abandoned
+# 12424: __all_virtual_import_table_job # abandoned
+# 12425: __all_virtual_import_table_job_history # abandoned
+# 12426: __all_virtual_import_table_task # abandoned
+# 12427: __all_virtual_import_table_task_history # abandoned
 # 12428: __all_virtual_import_stmt_exec_history
 
 def_table_schema(
@@ -13867,17 +10954,8 @@ def_table_schema(**gen_iterate_virtual_table_def(
     keywords = all_def_keywords['__all_column_group_mapping_history'],
     in_tenant_space = True))
 
-def_table_schema(**gen_iterate_private_virtual_table_def(
-  table_id = '12435',
-  table_name = '__all_virtual_clone_job',
-  in_tenant_space = True,
-  keywords = all_def_keywords['__all_clone_job']))
-
-def_table_schema(**gen_iterate_private_virtual_table_def(
-  table_id = '12436',
-  table_name = '__all_virtual_clone_job_history',
-  in_tenant_space = True,
-  keywords = all_def_keywords['__all_clone_job_history']))
+# 12435: __all_virtual_clone_job (abandoned)
+# 12436: __all_virtual_clone_job_history (abandoned)
 
 def_table_schema(
   owner = 'zk250686',
@@ -13968,13 +11046,13 @@ def_table_schema(
   vtable_route_policy = 'distributed',
 )
 
-def_table_schema(**gen_iterate_private_virtual_table_def(
+def_table_schema(**gen_iterate_virtual_table_def(
   table_id = '12440',
   table_name = '__all_virtual_wr_system_event',
   in_tenant_space = True,
   keywords = all_def_keywords['__wr_system_event']))
 
-def_table_schema(**gen_iterate_private_virtual_table_def(
+def_table_schema(**gen_iterate_virtual_table_def(
   table_id = '12441',
   table_name = '__all_virtual_wr_event_name',
   in_tenant_space = True,
@@ -14096,7 +11174,7 @@ def_table_schema(
   partition_columns = ['SVR_IP', 'SVR_PORT'],
   vtable_route_policy = 'distributed',
 )
-def_table_schema(**gen_iterate_private_virtual_table_def(
+def_table_schema(**gen_iterate_virtual_table_def(
   table_id = '12446',
   table_name = '__all_virtual_wr_sqlstat',
   in_tenant_space = True,
@@ -14132,23 +11210,11 @@ def_table_schema(
   ],
 )
 
-def_table_schema(**gen_iterate_virtual_table_def(
-  table_id = '12451',
-  table_name = '__all_virtual_transfer_partition_task',
-  keywords = all_def_keywords['__all_transfer_partition_task']))
+# 12451: __all_virtual_transfer_partition_task (abandoned)
+# 12452: __all_virtual_transfer_partition_task_history (abandoned)
+# 12453: __all_virtual_tenant_snapshot_job (abandoned)
 
 def_table_schema(**gen_iterate_virtual_table_def(
-  table_id = '12452',
-  table_name = '__all_virtual_transfer_partition_task_history',
-  keywords = all_def_keywords['__all_transfer_partition_task_history']))
-
-def_table_schema(**gen_iterate_private_virtual_table_def(
-  table_id = '12453',
-  table_name = '__all_virtual_tenant_snapshot_job',
-  keywords = all_def_keywords['__all_tenant_snapshot_job'],
-  in_tenant_space = True))
-
-def_table_schema(**gen_iterate_private_virtual_table_def(
   table_id = '12454',
   table_name = '__all_virtual_wr_sqltext',
   in_tenant_space = True,
@@ -14183,35 +11249,7 @@ def_table_schema(
     vtable_route_policy = 'distributed',
 )
 
-def_table_schema(
-  owner = 'wendongbodongbo.wd',
-  table_name     = '__all_virtual_ls_snapshot',
-  table_id       = '12458',
-  table_type = 'VIRTUAL_TABLE',
-  gm_columns     = [],
-  rowkey_columns = [],
-  in_tenant_space = True,
-  normal_columns = [
-    ('tenant_id', 'int'),
-    ('snapshot_id', 'int'),
-    ('ls_id', 'int'),
-    ('svr_ip', 'varchar:MAX_IP_ADDR_LENGTH'),
-    ('svr_port', 'int'),
-    ('meta_existed', 'bool'),
-    ('build_status', 'varchar:32', 'true'),
-    ('rebuild_seq_start', 'int', 'true'),
-    ('rebuild_seq_end', 'int', 'true'),
-    ('end_interval_scn', 'int', 'true'),
-    ('ls_meta_package', 'longtext', 'true'),
-    ('tsnap_is_running', 'bool', 'true'),
-    ('tsnap_has_unfinished_create_dag', 'bool', 'true'),
-    ('tsnap_has_unfinished_gc_dag', 'bool', 'true'),
-    ('tsnap_clone_ref', 'int', 'true'),
-    ('tsnap_meta_existed', 'bool', 'true'),
-  ],
-  partition_columns = ['svr_ip', 'svr_port'],
-  vtable_route_policy = 'distributed'
-)
+# 12458:__all_virtual_ls_snapshot(abandoned)
 
 def_table_schema(**gen_iterate_virtual_table_def(
   table_id = '12459',
@@ -14228,13 +11266,7 @@ def_table_schema(**gen_iterate_virtual_table_def(
   table_name = '__all_virtual_column_privilege_history',
   keywords = all_def_keywords['__all_column_privilege_history']))
 
-def_table_schema(**gen_iterate_private_virtual_table_def(
-  table_id = '12464',
-  table_name = '__all_virtual_tenant_snapshot_ls_replica_history',
-  in_tenant_space = True,
-  keywords = all_def_keywords['__all_tenant_snapshot_ls_replica_history']))
-
-# 12466: enabled_roles
+# 12464: __all_virtual_tenant_snapshot_ls_replica_history (abandoned)
 
 def_table_schema(
   owner             = 'zz412656',
@@ -14277,11 +11309,7 @@ def_table_schema(
   ],
 )
 
-def_table_schema(**gen_iterate_private_virtual_table_def(
-  table_id = '12467',
-  table_name = '__all_virtual_ls_replica_task_history',
-  in_tenant_space = True,
-  keywords = all_def_keywords['__all_ls_replica_task_history']))
+# 12467: __all_virtual_ls_replica_task_history (abandoned)
 
 def_table_schema(
   owner = 'gongyusen.gys',
@@ -14337,13 +11365,7 @@ def_table_schema(
 
 # 12470: __all_virtual_ls_compaction_status
 # 12471: __all_virtual_tablet_compaction_status
-
-def_table_schema(**gen_iterate_private_virtual_table_def(
-  table_id = '12472',
-  table_name = '__all_virtual_tablet_checksum_error_info',
-  keywords = all_def_keywords['__all_tablet_checksum_error_info'],
-  in_tenant_space = True))
-
+# 12472: __all_virtual_tablet_checksum_error_info (abandoned)
 
 def_table_schema(
   owner = 'sean.yyj',
@@ -14373,11 +11395,7 @@ def_table_schema(**gen_iterate_virtual_table_def(
   keywords = all_def_keywords['__all_res_mgr_directive'],
   in_tenant_space = True))
 
-def_table_schema(**gen_iterate_private_virtual_table_def(
-  table_id = '12480',
-  table_name = '__all_virtual_service',
-  in_tenant_space = True,
-  keywords = all_def_keywords['__all_service']))
+# 12480: __all_virtual_service (abandoned)
 
 def_table_schema(
   owner = 'yanyuan.cxf',
@@ -14457,12 +11475,8 @@ def_table_schema(
 )
 
 # 12484: __all_virtual_res_mgr_consumer_group
-def_table_schema(**gen_iterate_private_virtual_table_def(
-  table_id = '12485',
-  table_name = '__all_virtual_storage_io_usage',
-  keywords = all_def_keywords['__all_storage_io_usage'],
-  in_tenant_space = True))
-def_table_schema(**gen_mysql_sys_agent_virtual_table_def('12486', all_def_keywords['__all_zone_storage']))
+# 21485: __all_virtual_storage_io_usage (abandoned)
+# 12486: __all_virtual_zone_storage (abandoned) 
 
 def_table_schema(
   owner             = 'gengfu.zpc',
@@ -14659,13 +11673,13 @@ def_table_schema(
   partition_columns = ['svr_ip', 'svr_port'],
   vtable_route_policy = 'distributed',
 )
-def_table_schema(**gen_iterate_private_virtual_table_def(
+def_table_schema(**gen_iterate_virtual_table_def(
   table_id = '12501',
   table_name = '__all_virtual_wr_sql_plan',
   in_tenant_space = True,
   keywords = all_def_keywords['__wr_sql_plan']))
 
-def_table_schema(**gen_iterate_private_virtual_table_def(
+def_table_schema(**gen_iterate_virtual_table_def(
   table_id = '12502',
   table_name = '__all_virtual_wr_res_mgr_sysstat',
   in_tenant_space = True,
@@ -14769,7 +11783,7 @@ def_table_schema(**gen_iterate_virtual_table_def(
 # 12509: __all_virtual_object_balance_weight
 # 12510: __all_virtual_standby_log_transport_stat
 
-def_table_schema(**gen_iterate_private_virtual_table_def(
+def_table_schema(**gen_iterate_virtual_table_def(
   table_id = '12511',
   table_name = '__all_virtual_wr_sql_plan_aux_key2snapshot',
   in_tenant_space = True,
@@ -15098,7 +12112,7 @@ def_table_schema(**gen_iterate_virtual_table_def(
   table_name = '__all_virtual_ai_model_history',
   keywords = all_def_keywords['__all_ai_model_history']))
 
-def_table_schema(**gen_iterate_private_virtual_table_def(
+def_table_schema(**gen_iterate_virtual_table_def(
   table_id = '12553',
   table_name = '__all_virtual_ai_model_endpoint',
   keywords = all_def_keywords['__all_ai_model_endpoint'],
@@ -18573,226 +15587,8 @@ WHERE SVR_IP=HOST_IP() AND SVR_PORT=RPC_PORT()
 # 21107: CDB_OB_BACKUP_ARCHIVELOG_PROGRESS # abandoned in 4.0
 # 21108: CDB_OB_BACKUP_CLEAN_HISTORY # abandoned in 4.0
 # 21109: CDB_OB_BACKUP_TASK_CLEAN_HISTORY # abandoned in 4.0
-
-def_table_schema(
-  owner = 'wangxiaohui.wxh',
-  table_name      = 'CDB_OB_RESTORE_PROGRESS',
-  table_id        = '21110',
-  table_type      = 'SYSTEM_VIEW',
-  rowkey_columns  = [],
-  normal_columns  = [],
-  gm_columns      = [],
-  view_definition = """
-    SELECT
-    P.TENANT_ID AS TENANT_ID,
-    P.JOB_ID AS JOB_ID,
-    RESTORE_TENANT_NAME,
-    RESTORE_TENANT_ID,
-    BACKUP_TENANT_NAME,
-    BACKUP_TENANT_ID,
-    BACKUP_CLUSTER_NAME,
-    BACKUP_DEST,
-    RESTORE_OPTION,
-    RESTORE_TYPE,
-    RESTORE_SCN,
-    CASE
-      WHEN RESTORE_SCN IS NULL
-        THEN NULL
-      WHEN RESTORE_SCN=0
-        THEN NULL
-      ELSE
-        SCN_TO_TIMESTAMP(RESTORE_SCN)
-      END AS RESTORE_SCN_DISPLAY,
-    CASE
-      WHEN STATUS = 'RESTORE_PRE'
-        THEN 'RESTORING'
-      WHEN STATUS = 'RESTORE_CREATE_INIT_LS'
-        THEN 'RESTORING'
-      WHEN STATUS = 'PHYSICAL_RESTORE_WAIT_RESTORE_TO_CONSISTENT_SCN'
-        THEN 'RESTORING'
-      WHEN STATUS = 'RESTORE_WAIT_LS'
-        THEN 'RESTORING'
-      WHEN STATUS = 'POST_CHECK'
-        THEN 'RESTORING'
-      ELSE STATUS
-      END AS STATUS,
-    CASE
-      WHEN START_TIMESTAMP IS NULL
-        THEN NULL
-      WHEN START_TIMESTAMP=''
-        THEN NULL
-      WHEN START_TIMESTAMP='0'
-        THEN NULL
-      ELSE
-        USEC_TO_TIME(START_TIMESTAMP)
-      END AS START_TIMESTAMP,
-    BACKUP_SET_LIST,
-    BACKUP_PIECE_LIST,
-    RECOVER_SCN,
-    CASE
-      WHEN RECOVER_SCN IS NULL
-        THEN NULL
-      WHEN RECOVER_SCN <= 1
-        THEN NULL
-      ELSE
-        SCN_TO_TIMESTAMP(RECOVER_SCN)
-      END AS RECOVER_SCN_DISPLAY,
-    CASE 
-      WHEN RECOVER_SCN IS NULL
-        THEN NULL
-      WHEN STATUS IN ('RESTORE_PRE', 'RESTORE_CREATE_INIT_LS', 'PHYSICAL_RESTORE_WAIT_RESTORE_TO_CONSISTENT_SCN')
-        THEN CAST(0 AS DECIMAL(6, 2))
-      WHEN RESTORE_SCN = RECOVER_START_SCN
-        THEN CAST(100 AS DECIMAL(6, 2))
-      ELSE CAST(TRUNCATE((RECOVER_SCN - RECOVER_START_SCN) / (RESTORE_SCN - RECOVER_START_SCN) * 100, 2) AS DECIMAL(6, 2))
-      END AS RECOVER_PROGRESS,
-    TABLET_COUNT,
-    FINISH_TABLET_COUNT,
-    CASE PROGRESS_DISPLAY_MODE
-      WHEN 'BYTES' THEN
-        CASE 
-          WHEN FINISH_BYTES IS NULL THEN NULL
-          ELSE CAST(TRUNCATE((FINISH_BYTES / TOTAL_BYTES) * 100, 2) AS DECIMAL(6, 2))
-          END
-      WHEN 'TABLET_CNT' THEN
-        CASE
-          WHEN FINISH_TABLET_COUNT IS NULL THEN NULL
-          ELSE CAST(TRUNCATE((FINISH_TABLET_COUNT / TABLET_COUNT) * 100, 2) AS DECIMAL(6, 2))
-          END
-      END AS RESTORE_PROGRESS,
-    TOTAL_BYTES,
-    CASE
-      WHEN TOTAL_BYTES >= 1024*1024*1024*1024*1024
-        THEN CONCAT(ROUND(TOTAL_BYTES/1024/1024/1024/1024/1024,2), 'PB')
-      WHEN TOTAL_BYTES >= 1024*1024*1024*1024
-        THEN CONCAT(ROUND(TOTAL_BYTES/1024/1024/1024/1024,2), 'TB')
-      WHEN TOTAL_BYTES >= 1024*1024*1024
-        THEN CONCAT(ROUND(TOTAL_BYTES/1024/1024/1024,2), 'GB')
-      ELSE
-        CONCAT(ROUND(TOTAL_BYTES/1024/1024,2), 'MB')
-      END AS TOTAL_BYTES_DISPLAY,
-    FINISH_BYTES,
-    CASE
-      WHEN FINISH_BYTES >= 1024*1024*1024*1024*1024
-        THEN CONCAT(ROUND(FINISH_BYTES/1024/1024/1024/1024/1024,2), 'PB')
-      WHEN FINISH_BYTES >= 1024*1024*1024*1024
-        THEN CONCAT(ROUND(FINISH_BYTES/1024/1024/1024/1024,2), 'TB')
-      WHEN FINISH_BYTES >= 1024*1024*1024
-        THEN CONCAT(ROUND(FINISH_BYTES/1024/1024/1024,2), 'GB')
-      ELSE
-        CONCAT(ROUND(FINISH_BYTES/1024/1024,2), 'MB')
-      END AS FINISH_BYTES_DISPLAY,
-    DESCRIPTION
-    FROM
-  (
-      SELECT
-      TENANT_ID,
-      JOB_ID,
-      MAX(CASE NAME WHEN 'tenant_name' THEN VALUE ELSE '' END) AS RESTORE_TENANT_NAME,
-      MAX(CASE NAME WHEN 'tenant_id' THEN VALUE ELSE '' END) AS RESTORE_TENANT_ID,
-      MAX(CASE NAME WHEN 'backup_tenant_name' THEN VALUE ELSE '' END) AS BACKUP_TENANT_NAME,
-      MAX(CASE NAME WHEN 'backup_tenant_id' THEN VALUE ELSE '' END) AS BACKUP_TENANT_ID,
-      MAX(CASE NAME WHEN 'backup_cluster_name' THEN VALUE ELSE '' END) AS BACKUP_CLUSTER_NAME,
-      MAX(CASE NAME WHEN 'target_tenant_role' THEN VALUE ELSE '' END) AS TENANT_ROLE,
-      MAX(CASE NAME WHEN 'backup_dest' THEN VALUE ELSE '' END) AS BACKUP_DEST,
-      MAX(CASE NAME WHEN 'restore_option' THEN VALUE ELSE '' END) AS RESTORE_OPTION,
-      MAX(CASE NAME WHEN 'status' THEN VALUE ELSE '' END) AS STATUS,
-      MAX(CASE NAME WHEN 'consistent_scn' THEN VALUE ELSE '' END) AS RECOVER_START_SCN,
-      MAX(CASE NAME WHEN 'restore_scn' THEN VALUE ELSE '' END) AS RESTORE_SCN,
-      MAX(CASE NAME WHEN 'restore_start_ts' THEN VALUE ELSE '' END) AS START_TIMESTAMP,
-      MAX(CASE NAME WHEN 'backup_set_list' THEN VALUE ELSE '' END) AS BACKUP_SET_LIST,
-      MAX(CASE NAME WHEN 'backup_piece_list' THEN VALUE ELSE '' END) AS BACKUP_PIECE_LIST,
-      MAX(CASE NAME WHEN 'description' THEN VALUE ELSE '' END) AS DESCRIPTION,
-      MAX(CASE NAME WHEN 'restore_type' THEN VALUE ELSE '' END) AS RESTORE_TYPE,
-      MAX(CASE NAME WHEN 'progress_display_mode' THEN VALUE ELSE '' END) AS PROGRESS_DISPLAY_MODE
-      FROM OCEANBASE.__ALL_VIRTUAL_RESTORE_JOB GROUP BY TENANT_ID, JOB_ID
-  ) P LEFT JOIN
-  (
-      SELECT
-      TENANT_ID,
-      JOB_ID,
-      TABLET_COUNT,
-      FINISH_TABLET_COUNT,
-      TOTAL_BYTES,
-      FINISH_BYTES
-      FROM OCEANBASE.__ALL_VIRTUAL_RESTORE_PROGRESS
-  ) J
-    ON P.TENANT_ID=J.TENANT_ID AND P.JOB_ID=J.JOB_ID
-    LEFT JOIN
-  (
-      SELECT
-      TENANT_ID,
-      READABLE_SCN AS RECOVER_SCN
-      FROM OCEANBASE.__ALL_VIRTUAL_TENANT_INFO
-  ) Q
-    ON P.TENANT_ID=Q.TENANT_ID
-""".replace("\n", " ")
-)
-
-def_table_schema(
-  owner = 'wangxiaohui.wxh',
-  table_name      = 'CDB_OB_RESTORE_HISTORY',
-  table_id        = '21111',
-  table_type      = 'SYSTEM_VIEW',
-  rowkey_columns  = [],
-  normal_columns  = [],
-  gm_columns      = [],
-  view_definition = """
-    SELECT
-    TENANT_ID,
-    JOB_ID,
-    RESTORE_TENANT_NAME,
-    RESTORE_TENANT_ID,
-    BACKUP_TENANT_NAME,
-    BACKUP_TENANT_ID,
-    BACKUP_CLUSTER_NAME,
-    BACKUP_DEST,
-    RESTORE_SCN,
-    CASE
-      WHEN RESTORE_SCN = 0
-        THEN NULL
-      ELSE
-        SCN_TO_TIMESTAMP(RESTORE_SCN)
-      END AS RESTORE_SCN_DISPLAY,
-    RESTORE_OPTION,
-    RESTORE_TYPE,
-    START_TIME AS START_TIMESTAMP,
-    FINISH_TIME AS FINISH_TIMESTAMP,
-    STATUS,
-    BACKUP_PIECE_LIST,
-    BACKUP_SET_LIST,
-    BACKUP_CLUSTER_VERSION,
-    LS_COUNT,
-    FINISH_LS_COUNT,
-    TABLET_COUNT,
-    FINISH_TABLET_COUNT,
-    TOTAL_BYTES,
-    CASE
-      WHEN TOTAL_BYTES >= 1024*1024*1024*1024*1024
-        THEN CONCAT(ROUND(TOTAL_BYTES/1024/1024/1024/1024/1024,2), 'PB')
-      WHEN TOTAL_BYTES >= 1024*1024*1024*1024
-        THEN CONCAT(ROUND(TOTAL_BYTES/1024/1024/1024/1024,2), 'TB')
-      WHEN TOTAL_BYTES >= 1024*1024*1024
-        THEN CONCAT(ROUND(TOTAL_BYTES/1024/1024/1024,2), 'GB')
-      ELSE
-        CONCAT(ROUND(TOTAL_BYTES/1024/1024,2), 'MB')
-      END AS TOTAL_BYTES_DISPLAY,
-    FINISH_BYTES,
-    CASE
-      WHEN FINISH_BYTES >= 1024*1024*1024*1024*1024
-        THEN CONCAT(ROUND(FINISH_BYTES/1024/1024/1024/1024/1024,2), 'PB')
-      WHEN FINISH_BYTES >= 1024*1024*1024*1024
-        THEN CONCAT(ROUND(FINISH_BYTES/1024/1024/1024/1024,2), 'TB')
-      WHEN FINISH_BYTES >= 1024*1024*1024
-        THEN CONCAT(ROUND(FINISH_BYTES/1024/1024/1024,2), 'GB')
-      ELSE
-        CONCAT(ROUND(FINISH_BYTES/1024/1024,2), 'MB')
-      END AS FINISH_BYTES_DISPLAY,
-    DESCRIPTION,
-    COMMENT
-    FROM OCEANBASE.__ALL_VIRTUAL_RESTORE_JOB_HISTORY
-""".replace("\n", " ")
-)
+# 21110: CDB_OB_RESTORE_PROGRESS # abandoned
+# 21111: CDB_OB_RESTORE_JOB_HISTORY # abandoned
 
 def_table_schema(
  owner = 'yanmu.ztl',
@@ -18939,162 +15735,8 @@ def_table_schema(
 # 21131: CDB_OB_BACKUP_BACKUPSET_TASK_HISTORY # abandoned in 4.0
 # 21132: CDB_OB_BACKUP_BACKUP_ARCHIVELOG_SUMMARY # abandoned in 4.0
 # 21133: v$ob_cluster_failover_info # abandoned in 4.0
-
-def_table_schema(
-  owner = 'wangxiaohui.wxh',
-  table_name      = 'CDB_OB_ARCHIVELOG_PIECE_FILES',
-  table_id        = '21136 ',
-  table_type      = 'SYSTEM_VIEW',
-  rowkey_columns  = [],
-  normal_columns  = [],
-  gm_columns      = [],
-  view_definition = """
-    SELECT
-    TENANT_ID,
-    DEST_ID,
-    ROUND_ID,
-    PIECE_ID,
-    INCARNATION,
-    DEST_NO,
-    STATUS,
-    START_SCN,
-    CASE
-      WHEN START_SCN = 0
-        THEN NULL
-      ELSE
-        SCN_TO_TIMESTAMP(START_SCN)
-      END AS START_SCN_DISPLAY,
-    CHECKPOINT_SCN,
-    CASE
-      WHEN CHECKPOINT_SCN = 0
-        THEN NULL
-      ELSE
-        SCN_TO_TIMESTAMP(CHECKPOINT_SCN)
-      END AS CHECKPOINT_SCN_DISPLAY,
-    MAX_SCN,
-    END_SCN,
-    CASE
-      WHEN END_SCN = 0
-        THEN NULL
-      ELSE
-        SCN_TO_TIMESTAMP(END_SCN)
-      END AS END_SCN_DISPLAY,
-    COMPATIBLE,
-    UNIT_SIZE,
-    COMPRESSION,
-    INPUT_BYTES,
-    CASE
-      WHEN INPUT_BYTES >= 1024*1024*1024*1024*1024
-        THEN CONCAT(ROUND(INPUT_BYTES/1024/1024/1024/1024/1024,2), 'PB')
-      WHEN INPUT_BYTES >= 1024*1024*1024*1024
-        THEN CONCAT(ROUND(INPUT_BYTES/1024/1024/1024/1024,2), 'TB')
-      WHEN INPUT_BYTES >= 1024*1024*1024
-        THEN CONCAT(ROUND(INPUT_BYTES/1024/1024/1024,2), 'GB')
-      ELSE
-        CONCAT(ROUND(INPUT_BYTES/1024/1024,2), 'MB')
-      END AS INPUT_BYTES_DISPLAY,
-    OUTPUT_BYTES,
-    CASE
-      WHEN OUTPUT_BYTES >= 1024*1024*1024*1024*1024
-        THEN CONCAT(ROUND(OUTPUT_BYTES/1024/1024/1024/1024/1024,2), 'PB')
-      WHEN OUTPUT_BYTES >= 1024*1024*1024*1024
-        THEN CONCAT(ROUND(OUTPUT_BYTES/1024/1024/1024/1024,2), 'TB')
-      WHEN OUTPUT_BYTES >= 1024*1024*1024
-        THEN CONCAT(ROUND(OUTPUT_BYTES/1024/1024/1024,2), 'GB')
-      ELSE
-        CONCAT(ROUND(OUTPUT_BYTES/1024/1024,2), 'MB')
-      END AS OUTPUT_BYTES_DISPLAY,
-    CASE
-      WHEN INPUT_BYTES = 0
-        THEN 0
-      ELSE
-        ROUND(OUTPUT_BYTES / INPUT_BYTES, 2)
-      END AS COMPRESSION_RATIO,
-    FILE_STATUS,
-    PATH
-    FROM OCEANBASE.__ALL_VIRTUAL_LOG_ARCHIVE_PIECE_FILES
-""".replace("\n", " ")
-)
-
-def_table_schema(
-  owner = 'chongrong.th',
-  table_name      = 'CDB_OB_BACKUP_SET_FILES',
-  table_id        = '21137',
-  table_type      = 'SYSTEM_VIEW',
-  rowkey_columns  = [],
-  normal_columns  = [],
-  gm_columns      = [],
-  view_definition = """
-    SELECT
-    TENANT_ID,
-    BACKUP_SET_ID,
-    DEST_ID,
-    INCARNATION,
-    BACKUP_TYPE,
-    PREV_FULL_BACKUP_SET_ID,
-    PREV_INC_BACKUP_SET_ID,
-    USEC_TO_TIME(START_TS) AS START_TIMESTAMP,
-    CASE
-      WHEN END_TS = 0
-          THEN NULL
-      ELSE
-          USEC_TO_TIME(END_TS)
-      END AS END_TIMESTAMP,
-    STATUS,
-    FILE_STATUS,
-    CASE
-      WHEN END_TS = 0
-        THEN 0
-      ELSE
-        ROUND((END_TS - START_TS)/1000/1000,0)
-      END AS ELAPSED_SECONDES,
-    PLUS_ARCHIVELOG,
-    START_REPLAY_SCN,
-    CASE
-      WHEN START_REPLAY_SCN = 0
-        THEN NULL
-      ELSE
-        SCN_TO_TIMESTAMP(START_REPLAY_SCN)
-      END AS START_REPLAY_SCN_DISPLAY,
-    MIN_RESTORE_SCN,
-    CASE
-      WHEN MIN_RESTORE_SCN_DISPLAY != ''
-        THEN MIN_RESTORE_SCN_DISPLAY
-      WHEN MIN_RESTORE_SCN = 0 
-        THEN NULL
-      ELSE
-        SCN_TO_TIMESTAMP(MIN_RESTORE_SCN)
-      END AS MIN_RESTORE_SCN_DISPLAY,
-    INPUT_BYTES,
-    OUTPUT_BYTES,
-    CASE
-      WHEN END_TS = 0
-        THEN 0
-      ELSE
-        OUTPUT_BYTES / ((END_TS - START_TS)/1000/1000)
-      END AS OUTPUT_RATE_BYTES,
-    EXTRA_BYTES AS EXTRA_META_BYTES,
-    TABLET_COUNT,
-    FINISH_TABLET_COUNT,
-    MACRO_BLOCK_COUNT,
-    FINISH_MACRO_BLOCK_COUNT,
-    FILE_COUNT,
-    META_TURN_ID,
-    DATA_TURN_ID,
-    RESULT,
-    COMMENT,
-    ENCRYPTION_MODE,
-    PASSWD,
-    TENANT_COMPATIBLE,
-    BACKUP_COMPATIBLE,
-    PATH,
-    CLUSTER_VERSION,
-    CONSISTENT_SCN,
-    MINOR_TURN_ID,
-    MAJOR_TURN_ID
-    FROM OCEANBASE.__ALL_VIRTUAL_BACKUP_SET_FILES
-""".replace("\n", " ")
-)
+# 21136: CDB_OB_ARCHIVELOG_PIECE_FILES # abandoned 
+# 21137: CDB_OB_BACKUP_SET_FILES (abandoned)
 
 # 21138: CDB_OB_BACKUP_BACKUPPIECE_JOB # abandoned in 4.0
 # 21139: CDB_OB_BACKUP_BACKUPPIECE_JOB_HISTORY # abandoned in 4.0
@@ -19121,8 +15763,7 @@ def_table_schema(
     s.failed_login_attempts as FAILED_ATTEMPTS
   from oceanbase.__all_virtual_tenant_user_failed_login_stat s
   join oceanbase.__all_virtual_user u
-  on s.tenant_id = u.tenant_id and s.user_id = u.user_id
-  where s.tenant_id = effective_tenant_id()
+  on s.user_id = u.user_id
 """.replace("\n", " ")
 )
 
@@ -19360,201 +16001,11 @@ def_table_schema(
   normal_columns = [
   ],
 )
-
-def_table_schema(
-  owner = 'chongrong.th',
-  table_name      = 'CDB_OB_BACKUP_JOBS',
-  table_id        = '21152',
-  table_type      = 'SYSTEM_VIEW',
-  rowkey_columns  = [],
-  normal_columns  = [],
-  gm_columns      = [],
-  view_definition = """
-    SELECT
-    TENANT_ID,
-    JOB_ID,
-    INCARNATION,
-    BACKUP_SET_ID,
-    INITIATOR_TENANT_ID,
-    INITIATOR_JOB_ID,
-    EXECUTOR_TENANT_ID,
-    PLUS_ARCHIVELOG,
-    BACKUP_TYPE,
-    JOB_LEVEL,
-    ENCRYPTION_MODE,
-    PASSWD,
-    USEC_TO_TIME(START_TS) AS START_TIMESTAMP,
-    CASE
-      WHEN END_TS = 0
-        THEN NULL
-      ELSE
-        USEC_TO_TIME(END_TS)
-      END AS END_TIMESTAMP,
-    STATUS,
-    RESULT,
-    COMMENT,
-    DESCRIPTION,
-    PATH
-    FROM OCEANBASE.__all_virtual_backup_job
-""".replace("\n", " ")
-)
-
-def_table_schema(
-  owner = 'chongrong.th',
-  table_name      = 'CDB_OB_BACKUP_JOB_HISTORY',
-  table_id        = '21153',
-  table_type      = 'SYSTEM_VIEW',
-  rowkey_columns  = [],
-  normal_columns  = [],
-  gm_columns      = [],
-  view_definition = """
-    SELECT
-    TENANT_ID,
-    JOB_ID,
-    INCARNATION,
-    BACKUP_SET_ID,
-    INITIATOR_TENANT_ID,
-    INITIATOR_JOB_ID,
-    EXECUTOR_TENANT_ID,
-    PLUS_ARCHIVELOG,
-    BACKUP_TYPE,
-    JOB_LEVEL,
-    ENCRYPTION_MODE,
-    PASSWD,
-    USEC_TO_TIME(START_TS) AS START_TIMESTAMP,
-    CASE
-      WHEN END_TS = 0
-        THEN NULL
-      ELSE
-        USEC_TO_TIME(END_TS)
-      END AS END_TIMESTAMP,
-    STATUS,
-    RESULT,
-    COMMENT,
-    DESCRIPTION,
-    PATH
-    FROM OCEANBASE.__ALL_VIRTUAL_BACKUP_JOB_HISTORY
-""".replace("\n", " ")
-)
-
-def_table_schema(
-  owner = 'chongrong.th',
-  table_name      = 'CDB_OB_BACKUP_TASKS',
-  table_id        = '21154',
-  table_type      = 'SYSTEM_VIEW',
-  rowkey_columns  = [],
-  normal_columns  = [],
-  gm_columns      = [],
-  view_definition = """
-    SELECT
-    TENANT_ID,
-    TASK_ID,
-    JOB_ID,
-    INCARNATION,
-    BACKUP_SET_ID,
-    USEC_TO_TIME(START_TS) AS START_TIMESTAMP,
-    CASE
-      WHEN END_TS = 0
-        THEN NULL
-      ELSE
-        USEC_TO_TIME(END_TS)
-      END AS END_TIMESTAMP,
-    STATUS,
-    START_SCN,
-    END_SCN,
-    USER_LS_START_SCN,
-    ENCRYPTION_MODE,
-    PASSWD,
-    INPUT_BYTES,
-    OUTPUT_BYTES,
-    CASE
-      WHEN END_TS = 0
-        THEN 0
-      ELSE
-        OUTPUT_BYTES / ((END_TS - START_TS)/1000/1000)
-      END AS OUTPUT_RATE_BYTES,
-    EXTRA_BYTES AS EXTRA_META_BYTES,
-    TABLET_COUNT,
-    FINISH_TABLET_COUNT,
-    MACRO_BLOCK_COUNT,
-    FINISH_MACRO_BLOCK_COUNT,
-    FILE_COUNT,
-    META_TURN_ID,
-    DATA_TURN_ID,
-    RESULT,
-    COMMENT,
-    PATH,
-    MINOR_TURN_ID,
-    MAJOR_TURN_ID,
-    CASE 
-        WHEN MACRO_BLOCK_COUNT = 0 THEN 0.00
-        WHEN FINISH_MACRO_BLOCK_COUNT > MACRO_BLOCK_COUNT THEN 99.99
-        ELSE ROUND((FINISH_MACRO_BLOCK_COUNT / MACRO_BLOCK_COUNT) * 100, 2)
-    END AS DATA_PROGRESS,
-    LOG_FILE_COUNT,
-    FINISH_LOG_FILE_COUNT,
-    CASE 
-        WHEN LOG_FILE_COUNT = 0 THEN 0.00
-        WHEN FINISH_LOG_FILE_COUNT > LOG_FILE_COUNT THEN 99.99
-        ELSE ROUND((FINISH_LOG_FILE_COUNT / LOG_FILE_COUNT) * 100, 2)
-    END AS LOG_PROGRESS
-    FROM OCEANBASE.__all_virtual_backup_task
-""".replace("\n", " ")
-)
-
-def_table_schema(
-  owner = 'chongrong.th',
-  table_name      = 'CDB_OB_BACKUP_TASK_HISTORY',
-  table_id        = '21155',
-  table_type      = 'SYSTEM_VIEW',
-  rowkey_columns  = [],
-  normal_columns  = [],
-  gm_columns      = [],
-  view_definition = """
-    SELECT
-    TENANT_ID,
-    TASK_ID,
-    JOB_ID,
-    INCARNATION,
-    BACKUP_SET_ID,
-    USEC_TO_TIME(START_TS) AS START_TIMESTAMP,
-    CASE
-      WHEN END_TS = 0
-        THEN NULL
-      ELSE
-        USEC_TO_TIME(END_TS)
-      END AS END_TIMESTAMP,
-    STATUS,
-    START_SCN,
-    END_SCN,
-    USER_LS_START_SCN,
-    ENCRYPTION_MODE,
-    PASSWD,
-    INPUT_BYTES,
-    OUTPUT_BYTES,
-    CASE
-      WHEN END_TS = 0
-        THEN 0
-      ELSE
-        OUTPUT_BYTES / ((END_TS - START_TS)/1000/1000)
-      END AS OUTPUT_RATE_BYTES,
-    EXTRA_BYTES AS EXTRA_META_BYTES,
-    TABLET_COUNT,
-    FINISH_TABLET_COUNT,
-    MACRO_BLOCK_COUNT,
-    FINISH_MACRO_BLOCK_COUNT,
-    FILE_COUNT,
-    META_TURN_ID,
-    DATA_TURN_ID,
-    RESULT,
-    COMMENT,
-    PATH,
-    MINOR_TURN_ID,
-    MAJOR_TURN_ID
-    FROM OCEANBASE.__ALL_VIRTUAL_BACKUP_TASK_HISTORY
-""".replace("\n", " ")
-)
-
+# 
+# 21152: CDB_OB_BACKUP_JOBS # abandoned
+# 21153: CDB_OB_BACKUP_JOB_HISTORY # abandoned
+# 21154: CDB_OB_BACKUP_TASKS # abandoned
+# 21155: CDB_OB_BACKUP_TASK_HISTORY # abandoned
 # 21156: CDB_OB_LOG_ARCHIVE_LS_SUMMARY
 
 def_table_schema(
@@ -19698,7 +16149,6 @@ SELECT A.TENANT_ID,
             WHEN (A.TENANT_ID & 0x1) = 1 THEN 'NOARCHIVELOG'
             ELSE LOG_MODE
         END) AS LOG_MODE,
-       ARBITRATION_SERVICE_STATUS,
        UNIT_NUM,
        COMPATIBLE,
        (CASE
@@ -20082,138 +16532,8 @@ WHERE
 """.replace("\n", " ")
 )
 
-# FIXME:(yanmu.ztl) sys、mysql tenant should have different definition, sys won't should its own data now.
-def_table_schema(
-  owner           = 'yanmu.ztl',
-  table_name      = 'DBA_OB_LS_LOCATIONS',
-  table_id        = '21168',
-  table_type      = 'SYSTEM_VIEW',
-  gm_columns      = [],
-  rowkey_columns  = [],
-  normal_columns  = [],
-  in_tenant_space = True,
-  view_definition =
-  """
-  (
-  SELECT NOW(6) AS CREATE_TIME,
-         NOW(6) AS MODIFY_TIME,
-         LS_ID,
-         SVR_IP,
-         SVR_PORT,
-         SQL_PORT,
-         ZONE,
-         (CASE ROLE WHEN 1 THEN "LEADER" ELSE "FOLLOWER" END) AS ROLE,
-         (CASE ROLE WHEN 1 THEN MEMBER_LIST ELSE NULL END) AS MEMBER_LIST,
-         (CASE ROLE WHEN 1 THEN PAXOS_REPLICA_NUMBER ELSE NULL END) AS PAXOS_REPLICA_NUMBER,
-         (CASE REPLICA_TYPE
-          WHEN 0   THEN "FULL"
-          WHEN 5   THEN "LOGONLY"
-          WHEN 16  THEN "READONLY"
-          WHEN 261 THEN "ENCRYPTION LOGONLY"
-          WHEN 1040 THEN "COLUMNSTORE"
-          ELSE NULL END) AS REPLICA_TYPE,
-         (CASE ROLE WHEN 1 THEN LEARNER_LIST ELSE "" END) AS LEARNER_LIST,
-         (CASE REBUILD
-           WHEN 0  THEN "FALSE"
-           ELSE "TRUE" END) AS REBUILD
-  FROM OCEANBASE.__ALL_VIRTUAL_CORE_META_TABLE
-  WHERE
-    EFFECTIVE_TENANT_ID() = 1
-  )
-  UNION ALL
-  (
-  SELECT GMT_CREATE AS CREATE_TIME,
-         GMT_MODIFIED AS MODIFY_TIME,
-         LS_ID,
-         SVR_IP,
-         SVR_PORT,
-         SQL_PORT,
-         ZONE,
-         (CASE ROLE WHEN 1 THEN "LEADER" ELSE "FOLLOWER" END) AS ROLE,
-         (CASE ROLE WHEN 1 THEN MEMBER_LIST ELSE NULL END) AS MEMBER_LIST,
-         (CASE ROLE WHEN 1 THEN PAXOS_REPLICA_NUMBER ELSE NULL END) AS PAXOS_REPLICA_NUMBER,
-         (CASE REPLICA_TYPE
-          WHEN 0   THEN "FULL"
-          WHEN 5   THEN "LOGONLY"
-          WHEN 16  THEN "READONLY"
-          WHEN 261 THEN "ENCRYPTION LOGONLY"
-          WHEN 1040  THEN "COLUMNSTORE"
-          ELSE NULL END) AS REPLICA_TYPE,
-         (CASE ROLE WHEN 1 THEN LEARNER_LIST ELSE "" END) AS LEARNER_LIST,
-         (CASE REBUILD
-           WHEN 0  THEN "FALSE"
-           ELSE "TRUE" END) AS REBUILD
-  FROM OCEANBASE.__ALL_VIRTUAL_LS_META_TABLE
-  WHERE
-    TENANT_ID = EFFECTIVE_TENANT_ID() AND TENANT_ID != 1
-  )
-  """.replace("\n", " "),
-)
-
-def_table_schema(
-  owner           = 'yanmu.ztl',
-  table_name      = 'CDB_OB_LS_LOCATIONS',
-  table_id        = '21169',
-  table_type      = 'SYSTEM_VIEW',
-  gm_columns      = [],
-  rowkey_columns  = [],
-  normal_columns  = [],
-  view_definition =
-  """
-  (
-  SELECT NOW(6) AS CREATE_TIME,
-         NOW(6) AS MODIFY_TIME,
-         TENANT_ID,
-         LS_ID,
-         SVR_IP,
-         SVR_PORT,
-         SQL_PORT,
-         ZONE,
-         (CASE ROLE WHEN 1 THEN "LEADER" ELSE "FOLLOWER" END) AS ROLE,
-         (CASE ROLE WHEN 1 THEN MEMBER_LIST ELSE NULL END) AS MEMBER_LIST,
-         (CASE ROLE WHEN 1 THEN PAXOS_REPLICA_NUMBER ELSE NULL END) AS PAXOS_REPLICA_NUMBER,
-         (CASE REPLICA_TYPE
-          WHEN 0   THEN "FULL"
-          WHEN 5   THEN "LOGONLY"
-          WHEN 16  THEN "READONLY"
-          WHEN 261 THEN "ENCRYPTION LOGONLY"
-          WHEN 1040  THEN "COLUMNSTORE"
-          ELSE NULL END) AS REPLICA_TYPE,
-         (CASE ROLE WHEN 1 THEN LEARNER_LIST ELSE "" END) AS LEARNER_LIST,
-         (CASE REBUILD
-           WHEN 0  THEN "FALSE"
-           ELSE "TRUE" END) AS REBUILD
-  FROM OCEANBASE.__ALL_VIRTUAL_CORE_META_TABLE
-  )
-  UNION ALL
-  (
-  SELECT GMT_CREATE AS CREATE_TIME,
-         GMT_MODIFIED AS MODIFY_TIME,
-         TENANT_ID,
-         LS_ID,
-         SVR_IP,
-         SVR_PORT,
-         SQL_PORT,
-         ZONE,
-         (CASE ROLE WHEN 1 THEN "LEADER" ELSE "FOLLOWER" END) AS ROLE,
-         (CASE ROLE WHEN 1 THEN MEMBER_LIST ELSE NULL END) AS MEMBER_LIST,
-         (CASE ROLE WHEN 1 THEN PAXOS_REPLICA_NUMBER ELSE NULL END) AS PAXOS_REPLICA_NUMBER,
-         (CASE REPLICA_TYPE
-          WHEN 0   THEN "FULL"
-          WHEN 5   THEN "LOGONLY"
-          WHEN 16  THEN "READONLY"
-          WHEN 261 THEN "ENCRYPTION LOGONLY"
-          WHEN 1040  THEN "COLUMNSTORE"
-          ELSE NULL END) AS REPLICA_TYPE,
-         (CASE ROLE WHEN 1 THEN LEARNER_LIST ELSE "" END) AS LEARNER_LIST,
-         (CASE REBUILD
-           WHEN 0  THEN "FALSE"
-           ELSE "TRUE" END) AS REBUILD
-  FROM OCEANBASE.__ALL_VIRTUAL_LS_META_TABLE
-  WHERE TENANT_ID != 1
-  )
-  """.replace("\n", " "),
-)
+# 21168: DBA_OB_LS_LOCATIONS (abandoned)
+# 21169: CDB_OB_LS_LOCATIONS (abandoned)
 
 def_table_schema(
   owner           = 'yanmu.ztl',
@@ -25253,203 +21573,13 @@ def_table_schema(
 
 
 # 4.0 backup clean view
-def_table_schema(
-  owner = 'wenjinyu.wjy',
-  table_name      = 'CDB_OB_BACKUP_DELETE_JOBS',
-  table_id        = '21245',
-  table_type      = 'SYSTEM_VIEW',
-  rowkey_columns  = [],
-  normal_columns  = [],
-  gm_columns      = [],
-  view_definition = """
-    SELECT
-      TENANT_ID,
-      JOB_ID,
-      INCARNATION,
-      INITIATOR_TENANT_ID,
-      INITIATOR_JOB_ID,
-      EXECUTOR_TENANT_ID,
-      TYPE,
-      USEC_TO_TIME(PARAMETER) AS PARAMETER,
-      JOB_LEVEL,
-      USEC_TO_TIME(START_TS) AS START_TIMESTAMP,
-      CASE
-        WHEN END_TS = 0
-          THEN NULL
-        ELSE
-          USEC_TO_TIME(END_TS)
-        END AS END_TIMESTAMP,
-      STATUS,
-      TASK_COUNT,
-      SUCCESS_TASK_COUNT,
-      RESULT,
-      COMMENT
-    FROM oceanbase.__all_virtual_backup_delete_job
-""".replace("\n", " ")
-)
+# 21245: CDB_OB_BACKUP_DELETE_JOBS # abandoned
+# 21246: CDB_OB_BACKUP_DELETE_JOB_HISTORY # abandoned
+# 21247: CDB_OB_BACKUP_DELETE_TASKS # abandoned
+# 21248: CDB_OB_BACKUP_DELETE_TASK_HISTORY # abandoned
+# 21249: CDB_OB_BACKUP_DELETE_POLICY # abandoned
+# 21250: CDB_OB_BACKUP_STORAGE_INFO # abandoned
 
-def_table_schema(
-  owner = 'wenjinyu.wjy',
-  table_name      = 'CDB_OB_BACKUP_DELETE_JOB_HISTORY',
-  table_id        = '21246',
-  table_type      = 'SYSTEM_VIEW',
-  rowkey_columns  = [],
-  normal_columns  = [],
-  gm_columns      = [],
-  view_definition = """
-    SELECT
-      TENANT_ID,
-      JOB_ID,
-      INCARNATION,
-      INITIATOR_TENANT_ID,
-      INITIATOR_JOB_ID,
-      EXECUTOR_TENANT_ID,
-      TYPE,
-      USEC_TO_TIME(PARAMETER) AS PARAMETER,
-      JOB_LEVEL,
-      USEC_TO_TIME(START_TS) AS START_TIMESTAMP,
-      CASE
-        WHEN END_TS = 0
-          THEN NULL
-        ELSE
-          USEC_TO_TIME(END_TS)
-        END AS END_TIMESTAMP,
-      STATUS,
-      TASK_COUNT,
-      SUCCESS_TASK_COUNT,
-      RESULT,
-      COMMENT
-    FROM oceanbase.__all_virtual_backup_delete_job_history
-""".replace("\n", " ")
-)
-
-def_table_schema(
-  owner = 'wenjinyu.wjy',
-  table_name      = 'CDB_OB_BACKUP_DELETE_TASKS',
-  table_id        = '21247',
-  table_type      = 'SYSTEM_VIEW',
-  rowkey_columns  = [],
-  normal_columns  = [],
-  gm_columns      = [],
-  view_definition = """
-    SELECT
-      TENANT_ID,
-      TASK_ID,
-      INCARNATION,
-      JOB_ID,
-      TASK_TYPE,
-      ID,
-      ROUND_ID,
-      DEST_ID,
-      USEC_TO_TIME(START_TS) AS START_TIMESTAMP,
-      CASE
-        WHEN END_TS = 0
-          THEN NULL
-        ELSE
-          USEC_TO_TIME(END_TS)
-        END AS END_TIMESTAMP,
-      STATUS,
-      TOTAL_LS_COUNT,
-      FINISH_LS_COUNT,
-      RESULT,
-      COMMENT,
-      PATH
-    FROM oceanbase.__all_virtual_backup_delete_task
-""".replace("\n", " ")
-)
-
-def_table_schema(
-  owner = 'wenjinyu.wjy',
-  table_name      = 'CDB_OB_BACKUP_DELETE_TASK_HISTORY',
-  table_id        = '21248',
-  table_type      = 'SYSTEM_VIEW',
-  rowkey_columns  = [],
-  normal_columns  = [],
-  gm_columns      = [],
-  view_definition = """
-    SELECT
-      TENANT_ID,
-      TASK_ID,
-      INCARNATION,
-      JOB_ID,
-      TASK_TYPE,
-      ID,
-      ROUND_ID,
-      DEST_ID,
-      USEC_TO_TIME(START_TS) AS START_TIMESTAMP,
-      CASE
-        WHEN END_TS = 0
-          THEN NULL
-        ELSE
-          USEC_TO_TIME(END_TS)
-        END AS END_TIMESTAMP,
-      STATUS,
-      TOTAL_LS_COUNT,
-      FINISH_LS_COUNT,
-      RESULT,
-      COMMENT,
-      PATH
-    FROM oceanbase.__all_virtual_backup_delete_task_history
-""".replace("\n", " ")
-)
-
-def_table_schema(
-  owner = 'wenjinyu.wjy',
-  table_name      = 'CDB_OB_BACKUP_DELETE_POLICY',
-  table_id        = '21249',
-  table_type      = 'SYSTEM_VIEW',
-  rowkey_columns  = [],
-  normal_columns  = [],
-  gm_columns      = [],
-  view_definition = """
-    SELECT
-      TENANT_ID,
-      POLICY_NAME,
-      RECOVERY_WINDOW
-    FROM oceanbase.__all_virtual_backup_delete_policy
-""".replace("\n", " ")
-)
-
-def_table_schema(
-  owner = 'wenjinyu.wjy',
-  table_name      = 'CDB_OB_BACKUP_STORAGE_INFO',
-  table_id        = '21250',
-  table_type      = 'SYSTEM_VIEW',
-  rowkey_columns  = [],
-  normal_columns  = [],
-  gm_columns      = [],
-  view_definition = """
-    SELECT
-    TENANT_ID,
-    PATH,
-    ENDPOINT,
-    DEST_ID,
-    DEST_TYPE,
-    AUTHORIZATION,
-    EXTENSION,
-    CHECK_FILE_NAME,
-    USEC_TO_TIME(LAST_CHECK_TIME) AS LAST_CHECK_TIMESTAMP,
-    MAX_IOPS,
-    MAX_BANDWIDTH,
-    CASE
-      WHEN MAX_BANDWIDTH = 0
-        THEN "UNLIMITED"
-      WHEN MAX_BANDWIDTH >= 1024*1024*1024*1024*1024
-        THEN CONCAT(ROUND(MAX_BANDWIDTH/1024/1024/1024/1024/1024,2), 'PB/s')
-      WHEN MAX_BANDWIDTH >= 1024*1024*1024*1024
-        THEN CONCAT(ROUND(MAX_BANDWIDTH/1024/1024/1024/1024,2), 'TB/s')
-      WHEN MAX_BANDWIDTH >= 1024*1024*1024
-        THEN CONCAT(ROUND(MAX_BANDWIDTH/1024/1024/1024,2), 'GB/s')
-      WHEN MAX_BANDWIDTH >= 1024*1024
-        THEN CONCAT(ROUND(MAX_BANDWIDTH/1024/1024,2), 'MB/s')
-      WHEN MAX_BANDWIDTH >= 1024
-        THEN CONCAT(ROUND(MAX_BANDWIDTH/1024,2), 'KB/s')
-      ELSE
-        CONCAT(ROUND(MAX_BANDWIDTH,2), 'B/s')
-    END AS MAX_BANDWIDTH_DISPLAY
-    FROM oceanbase.__all_virtual_backup_storage_info
-""".replace("\n", " ")
-)
 
 def_table_schema(
     owner = 'jiangxiu.wt',
@@ -26171,285 +22301,11 @@ def_table_schema(
         AND STAT.INDEX_TYPE = 1
 """.replace("\n", " ")
 )
-
-def_table_schema(
-  owner = 'chongrong.th',
-  table_name      = 'DBA_OB_BACKUP_JOBS',
-  table_id        = '21260',
-  table_type      = 'SYSTEM_VIEW',
-  rowkey_columns  = [],
-  normal_columns  = [],
-  gm_columns      = [],
-  in_tenant_space = True,
-  view_definition = """
-    SELECT
-    JOB_ID,
-    INCARNATION,
-    BACKUP_SET_ID,
-    INITIATOR_TENANT_ID,
-    INITIATOR_JOB_ID,
-    EXECUTOR_TENANT_ID,
-    PLUS_ARCHIVELOG,
-    BACKUP_TYPE,
-    JOB_LEVEL,
-    ENCRYPTION_MODE,
-    PASSWD,
-    USEC_TO_TIME(START_TS) AS START_TIMESTAMP,
-    CASE
-      WHEN END_TS = 0
-        THEN NULL
-      ELSE
-        USEC_TO_TIME(END_TS)
-      END AS END_TIMESTAMP,
-    STATUS,
-    RESULT,
-    COMMENT,
-    DESCRIPTION,
-    PATH
-    FROM OCEANBASE.__all_virtual_backup_job
-    WHERE TENANT_ID = EFFECTIVE_TENANT_ID()
-""".replace("\n", " ")
-)
-
-def_table_schema(
-  owner = 'chongrong.th',
-  table_name      = 'DBA_OB_BACKUP_JOB_HISTORY',
-  table_id        = '21261',
-  table_type      = 'SYSTEM_VIEW',
-  rowkey_columns  = [],
-  normal_columns  = [],
-  gm_columns      = [],
-  in_tenant_space = True,
-  view_definition = """
-    SELECT
-    JOB_ID,
-    INCARNATION,
-    BACKUP_SET_ID,
-    INITIATOR_TENANT_ID,
-    INITIATOR_JOB_ID,
-    EXECUTOR_TENANT_ID,
-    PLUS_ARCHIVELOG,
-    BACKUP_TYPE,
-    JOB_LEVEL,
-    ENCRYPTION_MODE,
-    PASSWD,
-    USEC_TO_TIME(START_TS) AS START_TIMESTAMP,
-    CASE
-      WHEN END_TS = 0
-        THEN NULL
-      ELSE
-        USEC_TO_TIME(END_TS)
-      END AS END_TIMESTAMP,
-    STATUS,
-    RESULT,
-    COMMENT,
-    DESCRIPTION,
-    PATH
-    FROM OCEANBASE.__ALL_VIRTUAL_BACKUP_JOB_HISTORY
-    WHERE TENANT_ID = EFFECTIVE_TENANT_ID()
-""".replace("\n", " ")
-)
-
-def_table_schema(
-  owner = 'chongrong.th',
-  table_name      = 'DBA_OB_BACKUP_TASKS',
-  table_id        = '21262',
-  table_type      = 'SYSTEM_VIEW',
-  rowkey_columns  = [],
-  normal_columns  = [],
-  gm_columns      = [],
-  in_tenant_space = True,
-  view_definition = """
-    SELECT
-    TASK_ID,
-    JOB_ID,
-    INCARNATION,
-    BACKUP_SET_ID,
-    USEC_TO_TIME(START_TS) AS START_TIMESTAMP,
-    CASE
-      WHEN END_TS = 0
-        THEN NULL
-      ELSE
-        USEC_TO_TIME(END_TS)
-      END AS END_TIMESTAMP,
-    STATUS,
-    START_SCN,
-    END_SCN,
-    USER_LS_START_SCN,
-    ENCRYPTION_MODE,
-    PASSWD,
-    INPUT_BYTES,
-    OUTPUT_BYTES,
-    CASE
-      WHEN END_TS = 0
-        THEN 0
-      ELSE
-        OUTPUT_BYTES / ((END_TS - START_TS)/1000/1000)
-      END AS OUTPUT_RATE_BYTES,
-    EXTRA_BYTES AS EXTRA_META_BYTES,
-    TABLET_COUNT,
-    FINISH_TABLET_COUNT,
-    MACRO_BLOCK_COUNT,
-    FINISH_MACRO_BLOCK_COUNT,
-    FILE_COUNT,
-    META_TURN_ID,
-    DATA_TURN_ID,
-    RESULT,
-    COMMENT,
-    PATH,
-    MINOR_TURN_ID,
-    MAJOR_TURN_ID,
-    CASE 
-        WHEN MACRO_BLOCK_COUNT = 0 THEN 0.00
-        WHEN FINISH_MACRO_BLOCK_COUNT > MACRO_BLOCK_COUNT THEN 99.99
-        ELSE ROUND((FINISH_MACRO_BLOCK_COUNT / MACRO_BLOCK_COUNT) * 100, 2)
-    END AS DATA_PROGRESS,
-    LOG_FILE_COUNT,
-    FINISH_LOG_FILE_COUNT,
-    CASE 
-        WHEN LOG_FILE_COUNT = 0 THEN 0.00
-        WHEN FINISH_LOG_FILE_COUNT > LOG_FILE_COUNT THEN 99.99
-        ELSE ROUND((FINISH_LOG_FILE_COUNT / LOG_FILE_COUNT) * 100, 2)
-    END AS LOG_PROGRESS
-    FROM OCEANBASE.__all_virtual_backup_task
-    WHERE TENANT_ID = EFFECTIVE_TENANT_ID()
-""".replace("\n", " ")
-)
-
-def_table_schema(
-  owner = 'chongrong.th',
-  table_name      = 'DBA_OB_BACKUP_TASK_HISTORY',
-  table_id        = '21263',
-  table_type      = 'SYSTEM_VIEW',
-  rowkey_columns  = [],
-  normal_columns  = [],
-  gm_columns      = [],
-  in_tenant_space = True,
-  view_definition = """
-    SELECT
-    TASK_ID,
-    JOB_ID,
-    INCARNATION,
-    BACKUP_SET_ID,
-    USEC_TO_TIME(START_TS) AS START_TIMESTAMP,
-    CASE
-      WHEN END_TS = 0
-        THEN NULL
-      ELSE
-        USEC_TO_TIME(END_TS)
-      END AS END_TIMESTAMP,
-    STATUS,
-    START_SCN,
-    END_SCN,
-    USER_LS_START_SCN,
-    ENCRYPTION_MODE,
-    PASSWD,
-    INPUT_BYTES,
-    OUTPUT_BYTES,
-    CASE
-      WHEN END_TS = 0
-        THEN 0
-      ELSE
-        OUTPUT_BYTES / ((END_TS - START_TS)/1000/1000)
-      END AS OUTPUT_RATE_BYTES,
-    EXTRA_BYTES AS EXTRA_META_BYTES,
-    TABLET_COUNT,
-    FINISH_TABLET_COUNT,
-    MACRO_BLOCK_COUNT,
-    FINISH_MACRO_BLOCK_COUNT,
-    FILE_COUNT,
-    META_TURN_ID,
-    DATA_TURN_ID,
-    RESULT,
-    COMMENT,
-    PATH,
-    MINOR_TURN_ID,
-    MAJOR_TURN_ID
-    FROM OCEANBASE.__ALL_VIRTUAL_BACKUP_TASK_HISTORY
-    WHERE TENANT_ID = EFFECTIVE_TENANT_ID()
-""".replace("\n", " ")
-)
-
-def_table_schema(
-  owner = 'chongrong.th',
-  table_name      = 'DBA_OB_BACKUP_SET_FILES',
-  table_id        = '21264',
-  table_type      = 'SYSTEM_VIEW',
-  rowkey_columns  = [],
-  normal_columns  = [],
-  gm_columns      = [],
-  in_tenant_space = True,
-  view_definition = """
-    SELECT
-    BACKUP_SET_ID,
-    DEST_ID,
-    INCARNATION,
-    BACKUP_TYPE,
-    PREV_FULL_BACKUP_SET_ID,
-    PREV_INC_BACKUP_SET_ID,
-    USEC_TO_TIME(START_TS) AS START_TIMESTAMP,
-    CASE
-      WHEN END_TS = 0
-          THEN NULL
-      ELSE
-          USEC_TO_TIME(END_TS)
-      END AS END_TIMESTAMP,
-    STATUS,
-    FILE_STATUS,
-    CASE
-      WHEN END_TS = 0
-        THEN 0
-      ELSE
-        ROUND((END_TS - START_TS)/1000/1000,0)
-      END AS ELAPSED_SECONDES,
-    PLUS_ARCHIVELOG,
-    START_REPLAY_SCN,
-    CASE
-      WHEN START_REPLAY_SCN = 0
-        THEN NULL
-      ELSE
-        SCN_TO_TIMESTAMP(START_REPLAY_SCN)
-      END AS START_REPLAY_SCN_DISPLAY,
-    MIN_RESTORE_SCN,
-    CASE
-      WHEN MIN_RESTORE_SCN_DISPLAY != ''
-        THEN MIN_RESTORE_SCN_DISPLAY
-      WHEN MIN_RESTORE_SCN = 0 
-        THEN NULL
-      ELSE
-        SCN_TO_TIMESTAMP(MIN_RESTORE_SCN)
-      END AS MIN_RESTORE_SCN_DISPLAY,
-    INPUT_BYTES,
-    OUTPUT_BYTES,
-    CASE
-      WHEN END_TS = 0
-        THEN 0
-      ELSE
-        OUTPUT_BYTES / ((END_TS - START_TS)/1000/1000)
-      END AS OUTPUT_RATE_BYTES,
-    EXTRA_BYTES AS EXTRA_META_BYTES,
-    TABLET_COUNT,
-    FINISH_TABLET_COUNT,
-    MACRO_BLOCK_COUNT,
-    FINISH_MACRO_BLOCK_COUNT,
-    FILE_COUNT,
-    META_TURN_ID,
-    DATA_TURN_ID,
-    RESULT,
-    COMMENT,
-    ENCRYPTION_MODE,
-    PASSWD,
-    TENANT_COMPATIBLE,
-    BACKUP_COMPATIBLE,
-    PATH,
-    CLUSTER_VERSION,
-    CONSISTENT_SCN,
-    MINOR_TURN_ID,
-    MAJOR_TURN_ID
-    FROM OCEANBASE.__ALL_VIRTUAL_BACKUP_SET_FILES
-    WHERE TENANT_ID = EFFECTIVE_TENANT_ID()
-""".replace("\n", " ")
-)
+# 21260: DBA_OB_BACKUP_JOBS # abandoned
+# 21261: DBA_OB_BACKUP_JOB_HISTORY # abandoned
+# 21262: DBA_OB_BACKUP_TASKS # abandoned
+# 21263: DBA_OB_BACKUP_TASK_HISTORY # abandoned
+# 21264: DBA_OB_BACKUP_SET_FILES (abandoned)
 
 # 21265: DBA_SQL_PLAN_BASELINES abandoned
 # 21266: DBA_SQL_MANAGEMENT_CONFIG abandoned
@@ -26847,294 +22703,14 @@ def_table_schema(
     ],
 )
 
-def_table_schema(
-  owner = 'wenjinyu.wjy',
-  table_name      = 'CDB_OB_BACKUP_STORAGE_INFO_HISTORY',
-  table_id        = '21274',
-  table_type      = 'SYSTEM_VIEW',
-  rowkey_columns  = [],
-  normal_columns  = [],
-  gm_columns      = [],
-  view_definition = """
-    SELECT
-    TENANT_ID,
-    PATH,
-    ENDPOINT,
-    DEST_ID,
-    DEST_TYPE,
-    AUTHORIZATION,
-    EXTENSION,
-    CHECK_FILE_NAME,
-    USEC_TO_TIME(LAST_CHECK_TIME) AS LAST_CHECK_TIMESTAMP,
-    MAX_IOPS,
-    MAX_BANDWIDTH,
-    CASE
-      WHEN MAX_BANDWIDTH = 0
-        THEN "UNLIMITED"
-      WHEN MAX_BANDWIDTH >= 1024*1024*1024*1024*1024
-        THEN CONCAT(ROUND(MAX_BANDWIDTH/1024/1024/1024/1024/1024,2), 'PB/s')
-      WHEN MAX_BANDWIDTH >= 1024*1024*1024*1024
-        THEN CONCAT(ROUND(MAX_BANDWIDTH/1024/1024/1024/1024,2), 'TB/s')
-      WHEN MAX_BANDWIDTH >= 1024*1024*1024
-        THEN CONCAT(ROUND(MAX_BANDWIDTH/1024/1024/1024,2), 'GB/s')
-      WHEN MAX_BANDWIDTH >= 1024*1024
-        THEN CONCAT(ROUND(MAX_BANDWIDTH/1024/1024,2), 'MB/s')
-      WHEN MAX_BANDWIDTH >= 1024
-        THEN CONCAT(ROUND(MAX_BANDWIDTH/1024,2), 'KB/s')
-      ELSE
-        CONCAT(ROUND(MAX_BANDWIDTH,2), 'B/s')
-    END AS MAX_BANDWIDTH_DISPLAY
-    FROM oceanbase.__all_virtual_backup_storage_info_history
-""".replace("\n", " ")
-)
-
-def_table_schema(
-  owner = 'wenjinyu.wjy',
-  table_name      = 'DBA_OB_BACKUP_STORAGE_INFO',
-  table_id        = '21275',
-  table_type      = 'SYSTEM_VIEW',
-  rowkey_columns  = [],
-  normal_columns  = [],
-  gm_columns      = [],
-  in_tenant_space = True,
-  view_definition = """
-    SELECT
-    TENANT_ID,
-    PATH,
-    ENDPOINT,
-    DEST_ID,
-    DEST_TYPE,
-    AUTHORIZATION,
-    EXTENSION,
-    CHECK_FILE_NAME,
-    USEC_TO_TIME(LAST_CHECK_TIME) AS LAST_CHECK_TIMESTAMP,
-    MAX_IOPS,
-    MAX_BANDWIDTH,
-    CASE
-      WHEN MAX_BANDWIDTH = 0
-        THEN "UNLIMITED"
-      WHEN MAX_BANDWIDTH >= 1024*1024*1024*1024*1024
-        THEN CONCAT(ROUND(MAX_BANDWIDTH/1024/1024/1024/1024/1024,2), 'PB/s')
-      WHEN MAX_BANDWIDTH >= 1024*1024*1024*1024
-        THEN CONCAT(ROUND(MAX_BANDWIDTH/1024/1024/1024/1024,2), 'TB/s')
-      WHEN MAX_BANDWIDTH >= 1024*1024*1024
-        THEN CONCAT(ROUND(MAX_BANDWIDTH/1024/1024/1024,2), 'GB/s')
-      WHEN MAX_BANDWIDTH >= 1024*1024
-        THEN CONCAT(ROUND(MAX_BANDWIDTH/1024/1024,2), 'MB/s')
-      WHEN MAX_BANDWIDTH >= 1024
-        THEN CONCAT(ROUND(MAX_BANDWIDTH/1024,2), 'KB/s')
-      ELSE
-        CONCAT(ROUND(MAX_BANDWIDTH,2), 'B/s')
-    END AS MAX_BANDWIDTH_DISPLAY
-    FROM OCEANBASE.__ALL_VIRTUAL_BACKUP_STORAGE_INFO
-    WHERE TENANT_ID = EFFECTIVE_TENANT_ID()
-""".replace("\n", " ")
-)
-
-def_table_schema(
-  owner = 'wenjinyu.wjy',
-  table_name      = 'DBA_OB_BACKUP_STORAGE_INFO_HISTORY',
-  table_id        = '21276',
-  table_type      = 'SYSTEM_VIEW',
-  rowkey_columns  = [],
-  normal_columns  = [],
-  gm_columns      = [],
-  in_tenant_space = True,
-  view_definition = """
-    SELECT
-    TENANT_ID,
-    PATH,
-    ENDPOINT,
-    DEST_ID,
-    DEST_TYPE,
-    AUTHORIZATION,
-    EXTENSION,
-    CHECK_FILE_NAME,
-    USEC_TO_TIME(LAST_CHECK_TIME) AS LAST_CHECK_TIMESTAMP,
-    MAX_IOPS,
-    MAX_BANDWIDTH,
-    CASE
-      WHEN MAX_BANDWIDTH = 0
-        THEN "UNLIMITED"
-      WHEN MAX_BANDWIDTH >= 1024*1024*1024*1024*1024
-        THEN CONCAT(ROUND(MAX_BANDWIDTH/1024/1024/1024/1024/1024,2), 'PB/s')
-      WHEN MAX_BANDWIDTH >= 1024*1024*1024*1024
-        THEN CONCAT(ROUND(MAX_BANDWIDTH/1024/1024/1024/1024,2), 'TB/s')
-      WHEN MAX_BANDWIDTH >= 1024*1024*1024
-        THEN CONCAT(ROUND(MAX_BANDWIDTH/1024/1024/1024,2), 'GB/s')
-      WHEN MAX_BANDWIDTH >= 1024*1024
-        THEN CONCAT(ROUND(MAX_BANDWIDTH/1024/1024,2), 'MB/s')
-      WHEN MAX_BANDWIDTH >= 1024
-        THEN CONCAT(ROUND(MAX_BANDWIDTH/1024,2), 'KB/s')
-      ELSE
-        CONCAT(ROUND(MAX_BANDWIDTH,2), 'B/s')
-    END AS MAX_BANDWIDTH_DISPLAY
-    FROM OCEANBASE.__ALL_VIRTUAL_BACKUP_STORAGE_INFO_HISTORY
-    WHERE TENANT_ID = EFFECTIVE_TENANT_ID()
-""".replace("\n", " ")
-)
-
-def_table_schema(
-  owner = 'wenjinyu.wjy',
-  table_name      = 'DBA_OB_BACKUP_DELETE_POLICY',
-  table_id        = '21277',
-  table_type      = 'SYSTEM_VIEW',
-  rowkey_columns  = [],
-  normal_columns  = [],
-  gm_columns      = [],
-  in_tenant_space = True,
-  view_definition = """
-    SELECT
-      POLICY_NAME,
-      RECOVERY_WINDOW
-    FROM OCEANBASE.__ALL_VIRTUAL_BACKUP_DELETE_POLICY
-    WHERE TENANT_ID = EFFECTIVE_TENANT_ID()
-""".replace("\n", " ")
-)
-
-def_table_schema(
-  owner = 'wenjinyu.wjy',
-  table_name      = 'DBA_OB_BACKUP_DELETE_JOBS',
-  table_id        = '21278',
-  table_type      = 'SYSTEM_VIEW',
-  rowkey_columns  = [],
-  normal_columns  = [],
-  gm_columns      = [],
-  in_tenant_space = True,
-  view_definition = """
-    SELECT
-      JOB_ID,
-      INCARNATION,
-      INITIATOR_TENANT_ID,
-      INITIATOR_JOB_ID,
-      EXECUTOR_TENANT_ID,
-      TYPE,
-      USEC_TO_TIME(PARAMETER) AS PARAMETER,
-      JOB_LEVEL,
-      USEC_TO_TIME(START_TS) AS START_TIMESTAMP,
-      CASE
-        WHEN END_TS = 0
-          THEN NULL
-        ELSE
-          USEC_TO_TIME(END_TS)
-        END AS END_TIMESTAMP,
-      STATUS,
-      TASK_COUNT,
-      SUCCESS_TASK_COUNT,
-      RESULT,
-      COMMENT
-    FROM OCEANBASE.__ALL_VIRTUAL_BACKUP_DELETE_JOB
-    WHERE TENANT_ID = EFFECTIVE_TENANT_ID()
-""".replace("\n", " ")
-)
-
-def_table_schema(
-  owner = 'wenjinyu.wjy',
-  table_name      = 'DBA_OB_BACKUP_DELETE_JOB_HISTORY',
-  table_id        = '21279',
-  table_type      = 'SYSTEM_VIEW',
-  rowkey_columns  = [],
-  normal_columns  = [],
-  gm_columns      = [],
-  in_tenant_space = True,
-  view_definition = """
-    SELECT
-      JOB_ID,
-      INCARNATION,
-      INITIATOR_TENANT_ID,
-      INITIATOR_JOB_ID,
-      EXECUTOR_TENANT_ID,
-      TYPE,
-      USEC_TO_TIME(PARAMETER) AS PARAMETER,
-      JOB_LEVEL,
-      USEC_TO_TIME(START_TS) AS START_TIMESTAMP,
-      CASE
-        WHEN END_TS = 0
-          THEN NULL
-        ELSE
-          USEC_TO_TIME(END_TS)
-        END AS END_TIMESTAMP,
-      STATUS,
-      TASK_COUNT,
-      SUCCESS_TASK_COUNT,
-      RESULT,
-      COMMENT
-    FROM OCEANBASE.__ALL_VIRTUAL_BACKUP_DELETE_JOB_HISTORY
-    WHERE TENANT_ID = EFFECTIVE_TENANT_ID()
-""".replace("\n", " ")
-)
-
-def_table_schema(
-  owner = 'wenjinyu.wjy',
-  table_name      = 'DBA_OB_BACKUP_DELETE_TASKS',
-  table_id        = '21280',
-  table_type      = 'SYSTEM_VIEW',
-  rowkey_columns  = [],
-  normal_columns  = [],
-  gm_columns      = [],
-  in_tenant_space = True,
-  view_definition = """
-    SELECT
-      TASK_ID,
-      INCARNATION,
-      JOB_ID,
-      TASK_TYPE,
-      ID,
-      ROUND_ID,
-      DEST_ID,
-      USEC_TO_TIME(START_TS) AS START_TIMESTAMP,
-      CASE
-        WHEN END_TS = 0
-          THEN NULL
-        ELSE
-          USEC_TO_TIME(END_TS)
-        END AS END_TIMESTAMP,
-      STATUS,
-      TOTAL_LS_COUNT,
-      FINISH_LS_COUNT,
-      RESULT,
-      COMMENT,
-      PATH
-    FROM OCEANBASE.__ALL_VIRTUAL_BACKUP_DELETE_TASK
-    WHERE TENANT_ID = EFFECTIVE_TENANT_ID()
-""".replace("\n", " ")
-)
-
-def_table_schema(
-  owner = 'wenjinyu.wjy',
-  table_name      = 'DBA_OB_BACKUP_DELETE_TASK_HISTORY',
-  table_id        = '21281',
-  table_type      = 'SYSTEM_VIEW',
-  rowkey_columns  = [],
-  normal_columns  = [],
-  gm_columns      = [],
-  in_tenant_space = True,
-  view_definition = """
-    SELECT
-      TASK_ID,
-      INCARNATION,
-      JOB_ID,
-      TASK_TYPE,
-      ID,
-      ROUND_ID,
-      DEST_ID,
-      USEC_TO_TIME(START_TS) AS START_TIMESTAMP,
-      CASE
-        WHEN END_TS = 0
-          THEN NULL
-        ELSE
-          USEC_TO_TIME(END_TS)
-        END AS END_TIMESTAMP,
-      STATUS,
-      TOTAL_LS_COUNT,
-      FINISH_LS_COUNT,
-      RESULT,
-      COMMENT,
-      PATH
-    FROM OCEANBASE.__ALL_VIRTUAL_BACKUP_DELETE_TASK_HISTORY
-    WHERE TENANT_ID = EFFECTIVE_TENANT_ID()
-""".replace("\n", " ")
-)
+# 21274: CDB_OB_BACKUP_STORAGE_INFO_HISTORY # abandoned
+# 21275: DBA_OB_BACKUP_STORAGE_INFO # abandoned
+# 21276: DBA_OB_BACKUP_STORAGE_INFO_HISTORY # abandoned
+# 21277: DBA_OB_BACKUP_DELETE_POLICY # abandoned
+# 21278: DBA_OB_BACKUP_DELETE_JOBS # abandoned
+# 21279: DBA_OB_BACKUP_DELETE_JOB_HISTORY # abandoned
+# 21280: DBA_OB_BACKUP_DELETE_TASKS # abandoned
+# 21281: DBA_OB_BACKUP_DELETE_TASK_HISTORY # abandoned
 
 
 def_table_schema(
@@ -27197,837 +22773,22 @@ def_table_schema(
     normal_columns = [
     ],
 )
-
-def_table_schema(
-  owner = 'wangxiaohui.wxh',
-  table_name      = 'DBA_OB_RESTORE_PROGRESS',
-  table_id        = '21284',
-  table_type      = 'SYSTEM_VIEW',
-  rowkey_columns  = [],
-  normal_columns  = [],
-  gm_columns      = [],
-  in_tenant_space = True,
-  view_definition = """
-    SELECT
-    P.JOB_ID AS JOB_ID,
-    RESTORE_TENANT_NAME,
-    RESTORE_TENANT_ID,
-    BACKUP_TENANT_NAME,
-    BACKUP_TENANT_ID,
-    BACKUP_CLUSTER_NAME,
-    BACKUP_DEST,
-    RESTORE_OPTION,
-    RESTORE_TYPE,
-    RESTORE_SCN,
-    CASE
-      WHEN RESTORE_SCN IS NULL
-        THEN NULL
-      WHEN RESTORE_SCN=0
-        THEN NULL
-      ELSE
-        SCN_TO_TIMESTAMP(RESTORE_SCN)
-      END AS RESTORE_SCN_DISPLAY,
-    CASE
-      WHEN STATUS = 'RESTORE_PRE'
-        THEN 'RESTORING'
-      WHEN STATUS = 'RESTORE_CREATE_INIT_LS'
-        THEN 'RESTORING'
-      WHEN STATUS = 'RESTORE_WAIT_LS'
-        THEN 'RESTORING'
-      WHEN STATUS = 'POST_CHECK'
-        THEN 'RESTORING'
-      ELSE STATUS
-      END AS STATUS,
-    CASE
-      WHEN START_TIMESTAMP IS NULL
-        THEN NULL
-      WHEN START_TIMESTAMP=''
-        THEN NULL
-      WHEN START_TIMESTAMP='0'
-        THEN NULL
-      ELSE
-        USEC_TO_TIME(START_TIMESTAMP)
-      END AS START_TIMESTAMP,
-    BACKUP_SET_LIST,
-    BACKUP_PIECE_LIST,
-    RECOVER_SCN,
-    CASE
-      WHEN RECOVER_SCN IS NULL
-        THEN NULL
-      WHEN RECOVER_SCN <= 1
-        THEN NULL
-      ELSE
-        SCN_TO_TIMESTAMP(RECOVER_SCN)
-      END AS RECOVER_SCN_DISPLAY,
-    CASE
-      WHEN RECOVER_SCN IS NULL
-        THEN NULL
-      WHEN STATUS IN ('RESTORE_PRE', 'RESTORE_CREATE_INIT_LS', 'PHYSICAL_RESTORE_WAIT_RESTORE_TO_CONSISTENT_SCN')
-        THEN CAST(0 AS DECIMAL(6, 2))
-      WHEN RESTORE_SCN = RECOVER_START_SCN
-        THEN CAST(100 AS DECIMAL(6, 2))
-      ELSE CAST(TRUNCATE((RECOVER_SCN - RECOVER_START_SCN) / (RESTORE_SCN - RECOVER_START_SCN) * 100, 2) AS DECIMAL(6, 2))
-      END AS RECOVER_PROGRESS,
-    TABLET_COUNT,
-    FINISH_TABLET_COUNT,
-    CASE PROGRESS_DISPLAY_MODE
-      WHEN 'BYTES' THEN
-        CASE 
-          WHEN FINISH_BYTES IS NULL THEN NULL
-          ELSE CAST(TRUNCATE((FINISH_BYTES / TOTAL_BYTES) * 100, 2) AS DECIMAL(6, 2))
-          END
-      WHEN 'TABLET_CNT' THEN
-        CASE
-          WHEN FINISH_TABLET_COUNT IS NULL THEN NULL
-          ELSE CAST(TRUNCATE((FINISH_TABLET_COUNT / TABLET_COUNT) * 100, 2) AS DECIMAL(6, 2))
-          END
-      END AS RESTORE_PROGRESS,
-    TOTAL_BYTES,
-    CASE
-      WHEN TOTAL_BYTES >= 1024*1024*1024*1024*1024
-        THEN CONCAT(ROUND(TOTAL_BYTES/1024/1024/1024/1024/1024,2), 'PB')
-      WHEN TOTAL_BYTES >= 1024*1024*1024*1024
-        THEN CONCAT(ROUND(TOTAL_BYTES/1024/1024/1024/1024,2), 'TB')
-      WHEN TOTAL_BYTES >= 1024*1024*1024
-        THEN CONCAT(ROUND(TOTAL_BYTES/1024/1024/1024,2), 'GB')
-      ELSE
-        CONCAT(ROUND(TOTAL_BYTES/1024/1024,2), 'MB')
-      END AS TOTAL_BYTES_DISPLAY,
-    FINISH_BYTES,
-    CASE
-      WHEN FINISH_BYTES >= 1024*1024*1024*1024*1024
-        THEN CONCAT(ROUND(FINISH_BYTES/1024/1024/1024/1024/1024,2), 'PB')
-      WHEN FINISH_BYTES >= 1024*1024*1024*1024
-        THEN CONCAT(ROUND(FINISH_BYTES/1024/1024/1024/1024,2), 'TB')
-      WHEN FINISH_BYTES >= 1024*1024*1024
-        THEN CONCAT(ROUND(FINISH_BYTES/1024/1024/1024,2), 'GB')
-      ELSE
-        CONCAT(ROUND(FINISH_BYTES/1024/1024,2), 'MB')
-      END AS FINISH_BYTES_DISPLAY,
-    DESCRIPTION
-    FROM
-  (
-      SELECT
-      TENANT_ID,
-      JOB_ID,
-      MAX(CASE NAME WHEN 'tenant_name' THEN VALUE ELSE '' END) AS RESTORE_TENANT_NAME,
-      MAX(CASE NAME WHEN 'tenant_id' THEN VALUE ELSE '' END) AS RESTORE_TENANT_ID,
-      MAX(CASE NAME WHEN 'backup_tenant_name' THEN VALUE ELSE '' END) AS BACKUP_TENANT_NAME,
-      MAX(CASE NAME WHEN 'backup_tenant_id' THEN VALUE ELSE '' END) AS BACKUP_TENANT_ID,
-      MAX(CASE NAME WHEN 'backup_cluster_name' THEN VALUE ELSE '' END) AS BACKUP_CLUSTER_NAME,
-      MAX(CASE NAME WHEN 'target_tenant_role' THEN VALUE ELSE '' END) AS TENANT_ROLE,
-      MAX(CASE NAME WHEN 'backup_dest' THEN VALUE ELSE '' END) AS BACKUP_DEST,
-      MAX(CASE NAME WHEN 'restore_option' THEN VALUE ELSE '' END) AS RESTORE_OPTION,
-      MAX(CASE NAME WHEN 'status' THEN VALUE ELSE '' END) AS STATUS,
-      MAX(CASE NAME WHEN 'consistent_scn' THEN VALUE ELSE '' END) AS RECOVER_START_SCN,
-      MAX(CASE NAME WHEN 'restore_scn' THEN VALUE ELSE '' END) AS RESTORE_SCN,
-      MAX(CASE NAME WHEN 'restore_start_ts' THEN VALUE ELSE '' END) AS START_TIMESTAMP,
-      MAX(CASE NAME WHEN 'backup_set_list' THEN VALUE ELSE '' END) AS BACKUP_SET_LIST,
-      MAX(CASE NAME WHEN 'backup_piece_list' THEN VALUE ELSE '' END) AS BACKUP_PIECE_LIST,
-      MAX(CASE NAME WHEN 'description' THEN VALUE ELSE '' END) AS DESCRIPTION,
-      MAX(CASE NAME WHEN 'restore_type' THEN VALUE ELSE '' END) AS RESTORE_TYPE,
-      MAX(CASE NAME WHEN 'progress_display_mode' THEN VALUE ELSE '' END) AS PROGRESS_DISPLAY_MODE
-      FROM OCEANBASE.__ALL_VIRTUAL_RESTORE_JOB GROUP BY TENANT_ID, JOB_ID
-  ) P LEFT JOIN
-  (
-      SELECT
-      TENANT_ID,
-      JOB_ID,
-      TABLET_COUNT,
-      FINISH_TABLET_COUNT,
-      TOTAL_BYTES,
-      FINISH_BYTES
-      FROM OCEANBASE.__ALL_VIRTUAL_RESTORE_PROGRESS
-  ) J
-    ON P.TENANT_ID=J.TENANT_ID AND P.JOB_ID=J.JOB_ID
-    LEFT JOIN
-  (
-      SELECT
-      TENANT_ID,
-      READABLE_SCN AS RECOVER_SCN
-      FROM OCEANBASE.__ALL_VIRTUAL_TENANT_INFO
-  ) Q
-    ON P.TENANT_ID=Q.TENANT_ID
-    WHERE P.TENANT_ID = EFFECTIVE_TENANT_ID()
-""".replace("\n", " ")
-)
-
-def_table_schema(
-  owner = 'wangxiaohui.wxh',
-  table_name      = 'DBA_OB_RESTORE_HISTORY',
-  table_id        = '21285',
-  table_type      = 'SYSTEM_VIEW',
-  rowkey_columns  = [],
-  normal_columns  = [],
-  gm_columns      = [],
-  in_tenant_space = True,
-  view_definition = """
-    SELECT
-    JOB_ID,
-    RESTORE_TENANT_NAME,
-    RESTORE_TENANT_ID,
-    BACKUP_TENANT_NAME,
-    BACKUP_TENANT_ID,
-    BACKUP_CLUSTER_NAME,
-    BACKUP_DEST,
-    RESTORE_SCN,
-    CASE
-      WHEN RESTORE_SCN = 0
-        THEN NULL
-      ELSE
-        SCN_TO_TIMESTAMP(RESTORE_SCN)
-      END AS RESTORE_SCN_DISPLAY,
-    RESTORE_OPTION,
-    RESTORE_TYPE,
-    START_TIME AS START_TIMESTAMP,
-    FINISH_TIME AS FINISH_TIMESTAMP,
-    STATUS,
-    BACKUP_PIECE_LIST,
-    BACKUP_SET_LIST,
-    BACKUP_CLUSTER_VERSION,
-    LS_COUNT,
-    FINISH_LS_COUNT,
-    TABLET_COUNT,
-    FINISH_TABLET_COUNT,
-    TOTAL_BYTES,
-    CASE
-      WHEN TOTAL_BYTES >= 1024*1024*1024*1024*1024
-        THEN CONCAT(ROUND(TOTAL_BYTES/1024/1024/1024/1024/1024,2), 'PB')
-      WHEN TOTAL_BYTES >= 1024*1024*1024*1024
-        THEN CONCAT(ROUND(TOTAL_BYTES/1024/1024/1024/1024,2), 'TB')
-      WHEN TOTAL_BYTES >= 1024*1024*1024
-        THEN CONCAT(ROUND(TOTAL_BYTES/1024/1024/1024,2), 'GB')
-      ELSE
-        CONCAT(ROUND(TOTAL_BYTES/1024/1024,2), 'MB')
-      END AS TOTAL_BYTES_DISPLAY,
-    FINISH_BYTES,
-    CASE
-      WHEN FINISH_BYTES >= 1024*1024*1024*1024*1024
-        THEN CONCAT(ROUND(FINISH_BYTES/1024/1024/1024/1024/1024,2), 'PB')
-      WHEN FINISH_BYTES >= 1024*1024*1024*1024
-        THEN CONCAT(ROUND(FINISH_BYTES/1024/1024/1024/1024,2), 'TB')
-      WHEN FINISH_BYTES >= 1024*1024*1024
-        THEN CONCAT(ROUND(FINISH_BYTES/1024/1024/1024,2), 'GB')
-      ELSE
-        CONCAT(ROUND(FINISH_BYTES/1024/1024,2), 'MB')
-      END AS FINISH_BYTES_DISPLAY,
-    DESCRIPTION,
-    COMMENT
-    FROM OCEANBASE.__ALL_VIRTUAL_RESTORE_JOB_HISTORY
-    WHERE TENANT_ID = EFFECTIVE_TENANT_ID()
-""".replace("\n", " ")
-)
+# 21284: DBA_OB_RESTORE_PROGRESS (abandoned)
+# 21285: DBA_OB_RESTORE_HISTORY (abandoned)
 
 # 21286: DBA_OB_ARCHIVE_MODE
-
-def_table_schema(
-  owner = 'wangxiaohui.wxh',
-  table_name      = 'DBA_OB_ARCHIVE_DEST',
-  table_id        = '21287',
-  table_type      = 'SYSTEM_VIEW',
-  rowkey_columns  = [],
-  normal_columns  = [],
-  gm_columns      = [],
-  in_tenant_space = True,
-  view_definition = """
-    SELECT
-    DEST_NO,
-    NAME,
-    VALUE
-    FROM OCEANBASE.__ALL_VIRTUAL_LOG_ARCHIVE_DEST_PARAMETER
-    WHERE TENANT_ID = EFFECTIVE_TENANT_ID()
-""".replace("\n", " ")
-)
-
-def_table_schema(
-  owner = 'wangxiaohui.wxh',
-  table_name      = 'DBA_OB_ARCHIVELOG',
-  table_id        = '21288',
-  table_type      = 'SYSTEM_VIEW',
-  rowkey_columns  = [],
-  normal_columns  = [],
-  gm_columns      = [],
-  in_tenant_space = True,
-  view_definition = """
-    SELECT
-    DEST_ID,
-    ROUND_ID,
-    INCARNATION,
-    DEST_NO,
-    STATUS,
-    START_SCN,
-    CASE
-      WHEN START_SCN = 0
-        THEN NULL
-      ELSE
-        SCN_TO_TIMESTAMP(START_SCN)
-      END AS START_SCN_DISPLAY,
-    CHECKPOINT_SCN,
-    CASE
-      WHEN CHECKPOINT_SCN = 0
-        THEN NULL
-      ELSE
-        SCN_TO_TIMESTAMP(CHECKPOINT_SCN)
-      END AS CHECKPOINT_SCN_DISPLAY,
-    COMPATIBLE,
-    BASE_PIECE_ID,
-    USED_PIECE_ID,
-    PIECE_SWITCH_INTERVAL,
-    UNIT_SIZE,
-    COMPRESSION,
-    (FROZEN_INPUT_BYTES + ACTIVE_INPUT_BYTES) AS INPUT_BYTES,
-    CASE
-      WHEN (FROZEN_INPUT_BYTES + ACTIVE_INPUT_BYTES) >= 1024*1024*1024*1024*1024
-        THEN CONCAT(ROUND((FROZEN_INPUT_BYTES + ACTIVE_INPUT_BYTES)/1024/1024/1024/1024/1024,2), 'PB')
-      WHEN (FROZEN_INPUT_BYTES + ACTIVE_INPUT_BYTES) >= 1024*1024*1024*1024
-        THEN CONCAT(ROUND((FROZEN_INPUT_BYTES + ACTIVE_INPUT_BYTES)/1024/1024/1024/1024,2), 'TB')
-      WHEN (FROZEN_INPUT_BYTES + ACTIVE_INPUT_BYTES) >= 1024*1024*1024
-        THEN CONCAT(ROUND((FROZEN_INPUT_BYTES + ACTIVE_INPUT_BYTES)/1024/1024/1024,2), 'GB')
-      ELSE
-        CONCAT(ROUND((FROZEN_INPUT_BYTES + ACTIVE_INPUT_BYTES)/1024/1024,2), 'MB')
-      END AS INPUT_BYTES_DISPLAY,
-    (FROZEN_OUTPUT_BYTES + ACTIVE_OUTPUT_BYTES) AS OUTPUT_BYTES,
-    CASE
-      WHEN (FROZEN_OUTPUT_BYTES + ACTIVE_OUTPUT_BYTES) >= 1024*1024*1024*1024*1024
-        THEN CONCAT(ROUND((FROZEN_OUTPUT_BYTES + ACTIVE_OUTPUT_BYTES)/1024/1024/1024/1024/1024,2), 'PB')
-      WHEN (FROZEN_OUTPUT_BYTES + ACTIVE_OUTPUT_BYTES) >= 1024*1024*1024*1024
-        THEN CONCAT(ROUND((FROZEN_OUTPUT_BYTES + ACTIVE_OUTPUT_BYTES)/1024/1024/1024/1024,2), 'TB')
-      WHEN (FROZEN_OUTPUT_BYTES + ACTIVE_OUTPUT_BYTES) >= 1024*1024*1024
-        THEN CONCAT(ROUND((FROZEN_OUTPUT_BYTES + ACTIVE_OUTPUT_BYTES)/1024/1024/1024,2), 'GB')
-      ELSE
-        CONCAT(ROUND((FROZEN_OUTPUT_BYTES + ACTIVE_OUTPUT_BYTES)/1024/1024,2), 'MB')
-      END AS OUTPUT_BYTES_DISPLAY,
-    CASE
-      WHEN (FROZEN_INPUT_BYTES + ACTIVE_INPUT_BYTES) = 0
-        THEN 0
-      ELSE
-        ROUND((FROZEN_OUTPUT_BYTES + ACTIVE_OUTPUT_BYTES) / (FROZEN_INPUT_BYTES + ACTIVE_INPUT_BYTES), 2)
-      END AS COMPRESSION_RATIO,
-    DELETED_INPUT_BYTES,
-    CASE
-      WHEN DELETED_INPUT_BYTES >= 1024*1024*1024*1024*1024
-        THEN CONCAT(ROUND(DELETED_INPUT_BYTES/1024/1024/1024/1024/1024,2), 'PB')
-      WHEN DELETED_INPUT_BYTES >= 1024*1024*1024*1024
-        THEN CONCAT(ROUND(DELETED_INPUT_BYTES/1024/1024/1024/1024,2), 'TB')
-      WHEN DELETED_INPUT_BYTES >= 1024*1024*1024
-        THEN CONCAT(ROUND(DELETED_INPUT_BYTES/1024/1024/1024,2), 'GB')
-      ELSE
-        CONCAT(ROUND(DELETED_INPUT_BYTES/1024/1024,2), 'MB')
-      END AS DELETED_INPUT_BYTES_DISPLAY,
-    DELETED_OUTPUT_BYTES,
-    CASE
-      WHEN DELETED_OUTPUT_BYTES >= 1024*1024*1024*1024*1024
-        THEN CONCAT(ROUND(DELETED_OUTPUT_BYTES/1024/1024/1024/1024/1024,2), 'PB')
-      WHEN DELETED_OUTPUT_BYTES >= 1024*1024*1024*1024
-        THEN CONCAT(ROUND(DELETED_OUTPUT_BYTES/1024/1024/1024/1024,2), 'TB')
-      WHEN DELETED_OUTPUT_BYTES >= 1024*1024*1024
-        THEN CONCAT(ROUND(DELETED_OUTPUT_BYTES/1024/1024/1024,2), 'GB')
-      ELSE
-        CONCAT(ROUND(DELETED_OUTPUT_BYTES/1024/1024,2), 'MB')
-      END AS DELETED_OUTPUT_BYTES_DISPLAY,
-    COMMENT,
-    PATH
-    FROM OCEANBASE.__ALL_VIRTUAL_LOG_ARCHIVE_PROGRESS
-    WHERE TENANT_ID = EFFECTIVE_TENANT_ID()
-""".replace("\n", " ")
-)
-
-def_table_schema(
-  owner = 'wangxiaohui.wxh',
-  table_name      = 'DBA_OB_ARCHIVELOG_SUMMARY',
-  table_id        = '21289',
-  table_type      = 'SYSTEM_VIEW',
-  rowkey_columns  = [],
-  normal_columns  = [],
-  gm_columns      = [],
-  in_tenant_space = True,
-  view_definition = """
-    SELECT
-    DEST_ID,
-    ROUND_ID,
-    INCARNATION,
-    DEST_NO,
-    STATUS,
-    START_SCN,
-    CASE
-      WHEN START_SCN = 0
-        THEN NULL
-      ELSE
-        SCN_TO_TIMESTAMP(START_SCN)
-      END AS START_SCN_DISPLAY,
-    CHECKPOINT_SCN,
-    CASE
-      WHEN CHECKPOINT_SCN = 0
-        THEN NULL
-      ELSE
-        SCN_TO_TIMESTAMP(CHECKPOINT_SCN)
-      END AS CHECKPOINT_SCN_DISPLAY,
-    COMPATIBLE,
-    BASE_PIECE_ID,
-    USED_PIECE_ID,
-    PIECE_SWITCH_INTERVAL,
-    UNIT_SIZE,
-    COMPRESSION,
-    INPUT_BYTES,
-    CASE
-      WHEN INPUT_BYTES >= 1024*1024*1024*1024*1024
-        THEN CONCAT(ROUND(INPUT_BYTES/1024/1024/1024/1024/1024,2), 'PB')
-      WHEN INPUT_BYTES >= 1024*1024*1024*1024
-        THEN CONCAT(ROUND(INPUT_BYTES/1024/1024/1024/1024,2), 'TB')
-      WHEN INPUT_BYTES >= 1024*1024*1024
-        THEN CONCAT(ROUND(INPUT_BYTES/1024/1024/1024,2), 'GB')
-      ELSE
-        CONCAT(ROUND(INPUT_BYTES/1024/1024,2), 'MB')
-      END AS INPUT_BYTES_DISPLAY,
-    OUTPUT_BYTES,
-    CASE
-      WHEN OUTPUT_BYTES >= 1024*1024*1024*1024*1024
-        THEN CONCAT(ROUND(OUTPUT_BYTES/1024/1024/1024/1024/1024,2), 'PB')
-      WHEN OUTPUT_BYTES >= 1024*1024*1024*1024
-        THEN CONCAT(ROUND(OUTPUT_BYTES/1024/1024/1024/1024,2), 'TB')
-      WHEN OUTPUT_BYTES >= 1024*1024*1024
-        THEN CONCAT(ROUND(OUTPUT_BYTES/1024/1024/1024,2), 'GB')
-      ELSE
-        CONCAT(ROUND(OUTPUT_BYTES/1024/1024,2), 'MB')
-      END AS OUTPUT_BYTES_DISPLAY,
-    CASE
-      WHEN INPUT_BYTES = 0
-        THEN 0
-      ELSE
-        ROUND(OUTPUT_BYTES / INPUT_BYTES, 2)
-      END AS COMPRESSION_RATIO,
-    DELETED_INPUT_BYTES,
-    CASE
-      WHEN DELETED_INPUT_BYTES >= 1024*1024*1024*1024*1024
-        THEN CONCAT(ROUND(DELETED_INPUT_BYTES/1024/1024/1024/1024/1024,2), 'PB')
-      WHEN DELETED_INPUT_BYTES >= 1024*1024*1024*1024
-        THEN CONCAT(ROUND(DELETED_INPUT_BYTES/1024/1024/1024/1024,2), 'TB')
-      WHEN DELETED_INPUT_BYTES >= 1024*1024*1024
-        THEN CONCAT(ROUND(DELETED_INPUT_BYTES/1024/1024/1024,2), 'GB')
-      ELSE
-        CONCAT(ROUND(DELETED_INPUT_BYTES/1024/1024,2), 'MB')
-      END AS DELETED_INPUT_BYTES_DISPLAY,
-    DELETED_OUTPUT_BYTES,
-    CASE
-      WHEN DELETED_OUTPUT_BYTES >= 1024*1024*1024*1024*1024
-        THEN CONCAT(ROUND(DELETED_OUTPUT_BYTES/1024/1024/1024/1024/1024,2), 'PB')
-      WHEN DELETED_OUTPUT_BYTES >= 1024*1024*1024*1024
-        THEN CONCAT(ROUND(DELETED_OUTPUT_BYTES/1024/1024/1024/1024,2), 'TB')
-      WHEN DELETED_OUTPUT_BYTES >= 1024*1024*1024
-        THEN CONCAT(ROUND(DELETED_OUTPUT_BYTES/1024/1024/1024,2), 'GB')
-      ELSE
-        CONCAT(ROUND(DELETED_OUTPUT_BYTES/1024/1024,2), 'MB')
-      END AS DELETED_OUTPUT_BYTES_DISPLAY,
-    PATH,
-    COMMENT
-    FROM
-(
-SELECT DEST_ID,
-       ROUND_ID,
-       INCARNATION,
-       DEST_NO,
-       STATUS,
-       START_SCN,
-       CHECKPOINT_SCN,
-       COMPATIBLE,
-       BASE_PIECE_ID,
-       USED_PIECE_ID,
-       PIECE_SWITCH_INTERVAL,
-       UNIT_SIZE,
-       COMPRESSION,
-       (FROZEN_INPUT_BYTES + ACTIVE_INPUT_BYTES) AS INPUT_BYTES,
-       (FROZEN_OUTPUT_BYTES + ACTIVE_OUTPUT_BYTES) AS OUTPUT_BYTES,
-       DELETED_INPUT_BYTES,
-       DELETED_OUTPUT_BYTES,
-       PATH,
-       COMMENT
-       FROM OCEANBASE.__ALL_VIRTUAL_LOG_ARCHIVE_PROGRESS
-       WHERE TENANT_ID = EFFECTIVE_TENANT_ID() AND STATUS != 'STOP'
-UNION
-SELECT DEST_ID,
-       ROUND_ID,
-       INCARNATION,
-       DEST_NO,
-       'STOP' AS STATUS,
-       START_SCN,
-       CHECKPOINT_SCN,
-       COMPATIBLE,
-       BASE_PIECE_ID,
-       USED_PIECE_ID,
-       PIECE_SWITCH_INTERVAL,
-       UNIT_SIZE,
-       COMPRESSION,
-       INPUT_BYTES,
-       OUTPUT_BYTES,
-       DELETED_INPUT_BYTES,
-       DELETED_OUTPUT_BYTES,
-       PATH,
-       COMMENT
-       FROM OCEANBASE.__ALL_VIRTUAL_LOG_ARCHIVE_HISTORY
-       WHERE TENANT_ID = EFFECTIVE_TENANT_ID())
-""".replace("\n", " ")
-)
-
-def_table_schema(
-  owner = 'wangxiaohui.wxh',
-  table_name      = 'DBA_OB_ARCHIVELOG_PIECE_FILES',
-  table_id        = '21290',
-  table_type      = 'SYSTEM_VIEW',
-  rowkey_columns  = [],
-  normal_columns  = [],
-  gm_columns      = [],
-  in_tenant_space = True,
-  view_definition = """
-    SELECT
-    DEST_ID,
-    ROUND_ID,
-    PIECE_ID,
-    INCARNATION,
-    DEST_NO,
-    STATUS,
-    START_SCN,
-    CASE
-      WHEN START_SCN = 0
-        THEN NULL
-      ELSE
-        SCN_TO_TIMESTAMP(START_SCN)
-      END AS START_SCN_DISPLAY,
-    CHECKPOINT_SCN,
-    CASE
-      WHEN CHECKPOINT_SCN = 0
-        THEN NULL
-      ELSE
-        SCN_TO_TIMESTAMP(CHECKPOINT_SCN)
-      END AS CHECKPOINT_SCN_DISPLAY,
-    MAX_SCN,
-    END_SCN,
-    CASE
-      WHEN END_SCN = 0
-        THEN NULL
-      ELSE
-        SCN_TO_TIMESTAMP(END_SCN)
-      END AS END_SCN_DISPLAY,
-    COMPATIBLE,
-    UNIT_SIZE,
-    COMPRESSION,
-    INPUT_BYTES,
-    CASE
-      WHEN INPUT_BYTES >= 1024*1024*1024*1024*1024
-        THEN CONCAT(ROUND(INPUT_BYTES/1024/1024/1024/1024/1024,2), 'PB')
-      WHEN INPUT_BYTES >= 1024*1024*1024*1024
-        THEN CONCAT(ROUND(INPUT_BYTES/1024/1024/1024/1024,2), 'TB')
-      WHEN INPUT_BYTES >= 1024*1024*1024
-        THEN CONCAT(ROUND(INPUT_BYTES/1024/1024/1024,2), 'GB')
-      ELSE
-        CONCAT(ROUND(INPUT_BYTES/1024/1024,2), 'MB')
-      END AS INPUT_BYTES_DISPLAY,
-    OUTPUT_BYTES,
-    CASE
-      WHEN OUTPUT_BYTES >= 1024*1024*1024*1024*1024
-        THEN CONCAT(ROUND(OUTPUT_BYTES/1024/1024/1024/1024/1024,2), 'PB')
-      WHEN OUTPUT_BYTES >= 1024*1024*1024*1024
-        THEN CONCAT(ROUND(OUTPUT_BYTES/1024/1024/1024/1024,2), 'TB')
-      WHEN OUTPUT_BYTES >= 1024*1024*1024
-        THEN CONCAT(ROUND(OUTPUT_BYTES/1024/1024/1024,2), 'GB')
-      ELSE
-        CONCAT(ROUND(OUTPUT_BYTES/1024/1024,2), 'MB')
-      END AS OUTPUT_BYTES_DISPLAY,
-    CASE
-      WHEN INPUT_BYTES = 0
-        THEN 0
-      ELSE
-        ROUND(OUTPUT_BYTES / INPUT_BYTES, 2)
-      END AS COMPRESSION_RATIO,
-    FILE_STATUS,
-    PATH
-    FROM OCEANBASE.__ALL_VIRTUAL_LOG_ARCHIVE_PIECE_FILES
-    WHERE TENANT_ID = EFFECTIVE_TENANT_ID()
-""".replace("\n", " ")
-)
-
-def_table_schema(
-  owner = 'wangxiaohui.wxh',
-  table_name      = 'DBA_OB_BACKUP_PARAMETER',
-  table_id        = '21291',
-  table_type      = 'SYSTEM_VIEW',
-  rowkey_columns  = [],
-  normal_columns  = [],
-  gm_columns      = [],
-  in_tenant_space = True,
-  view_definition = """
-    SELECT
-    NAME,
-    VALUE
-    FROM OCEANBASE.__ALL_VIRTUAL_BACKUP_PARAMETER
-    WHERE TENANT_ID = EFFECTIVE_TENANT_ID()
-""".replace("\n", " ")
-)
+# 21287: DBA_OB_ARCHIVE_DEST (abandoned)
+# 21288: DBA_OB_ARCHIVELOG (abandoned)
+# 21289: DBA_OB_ARCHIVELOG_SUMMARY (abandoned)
+# 21290: DBA_OB_ARCHIVELOG_PIECE_FILES (abandoned)
+# 21291: DBA_OB_BACKUP_PARAMETER (abandoned)
 
 # 21292: CDB_OB_ARCHIVE_MODE
-
-def_table_schema(
-  owner = 'wangxiaohui.wxh',
-  table_name      = 'CDB_OB_ARCHIVE_DEST',
-  table_id        = '21293',
-  table_type      = 'SYSTEM_VIEW',
-  rowkey_columns  = [],
-  normal_columns  = [],
-  gm_columns      = [],
-  view_definition = """
-    SELECT
-    TENANT_ID,
-    DEST_NO,
-    NAME,
-    VALUE
-    FROM OCEANBASE.__ALL_VIRTUAL_LOG_ARCHIVE_DEST_PARAMETER
-""".replace("\n", " ")
-)
-
-def_table_schema(
-  owner = 'wangxiaohui.wxh',
-  table_name      = 'CDB_OB_ARCHIVELOG',
-  table_id        = '21294',
-  table_type      = 'SYSTEM_VIEW',
-  rowkey_columns  = [],
-  normal_columns  = [],
-  gm_columns      = [],
-  view_definition = """
-    SELECT
-    TENANT_ID,
-    DEST_ID,
-    ROUND_ID,
-    INCARNATION,
-    DEST_NO,
-    STATUS,
-    START_SCN,
-    CASE
-      WHEN START_SCN = 0
-        THEN NULL
-      ELSE
-        SCN_TO_TIMESTAMP(START_SCN)
-      END AS START_SCN_DISPLAY,
-    CHECKPOINT_SCN,
-    CASE
-      WHEN CHECKPOINT_SCN = 0
-        THEN NULL
-      ELSE
-        SCN_TO_TIMESTAMP(CHECKPOINT_SCN)
-      END AS CHECKPOINT_SCN_DISPLAY,
-    COMPATIBLE,
-    BASE_PIECE_ID,
-    USED_PIECE_ID,
-    PIECE_SWITCH_INTERVAL,
-    UNIT_SIZE,
-    COMPRESSION,
-    (FROZEN_INPUT_BYTES + ACTIVE_INPUT_BYTES) AS INPUT_BYTES,
-    CASE
-      WHEN (FROZEN_INPUT_BYTES + ACTIVE_INPUT_BYTES) >= 1024*1024*1024*1024*1024
-        THEN CONCAT(ROUND((FROZEN_INPUT_BYTES + ACTIVE_INPUT_BYTES)/1024/1024/1024/1024/1024,2), 'PB')
-      WHEN (FROZEN_INPUT_BYTES + ACTIVE_INPUT_BYTES) >= 1024*1024*1024*1024
-        THEN CONCAT(ROUND((FROZEN_INPUT_BYTES + ACTIVE_INPUT_BYTES)/1024/1024/1024/1024,2), 'TB')
-      WHEN (FROZEN_INPUT_BYTES + ACTIVE_INPUT_BYTES) >= 1024*1024*1024
-        THEN CONCAT(ROUND((FROZEN_INPUT_BYTES + ACTIVE_INPUT_BYTES)/1024/1024/1024,2), 'GB')
-      ELSE
-        CONCAT(ROUND((FROZEN_INPUT_BYTES + ACTIVE_INPUT_BYTES)/1024/1024,2), 'MB')
-      END AS INPUT_BYTES_DISPLAY,
-    (FROZEN_OUTPUT_BYTES + ACTIVE_OUTPUT_BYTES) AS OUTPUT_BYTES,
-    CASE
-      WHEN (FROZEN_OUTPUT_BYTES + ACTIVE_OUTPUT_BYTES) >= 1024*1024*1024*1024*1024
-        THEN CONCAT(ROUND((FROZEN_OUTPUT_BYTES + ACTIVE_OUTPUT_BYTES)/1024/1024/1024/1024/1024,2), 'PB')
-      WHEN (FROZEN_OUTPUT_BYTES + ACTIVE_OUTPUT_BYTES) >= 1024*1024*1024*1024
-        THEN CONCAT(ROUND((FROZEN_OUTPUT_BYTES + ACTIVE_OUTPUT_BYTES)/1024/1024/1024/1024,2), 'TB')
-      WHEN (FROZEN_OUTPUT_BYTES + ACTIVE_OUTPUT_BYTES) >= 1024*1024*1024
-        THEN CONCAT(ROUND((FROZEN_OUTPUT_BYTES + ACTIVE_OUTPUT_BYTES)/1024/1024/1024,2), 'GB')
-      ELSE
-        CONCAT(ROUND((FROZEN_OUTPUT_BYTES + ACTIVE_OUTPUT_BYTES)/1024/1024,2), 'MB')
-      END AS OUTPUT_BYTES_DISPLAY,
-    CASE
-      WHEN (FROZEN_INPUT_BYTES + ACTIVE_INPUT_BYTES) = 0
-        THEN 0
-      ELSE
-        ROUND((FROZEN_OUTPUT_BYTES + ACTIVE_OUTPUT_BYTES) / (FROZEN_INPUT_BYTES + ACTIVE_INPUT_BYTES), 2)
-      END AS COMPRESSION_RATIO,
-    DELETED_INPUT_BYTES,
-    CASE
-      WHEN DELETED_INPUT_BYTES >= 1024*1024*1024*1024*1024
-        THEN CONCAT(ROUND(DELETED_INPUT_BYTES/1024/1024/1024/1024/1024,2), 'PB')
-      WHEN DELETED_INPUT_BYTES >= 1024*1024*1024*1024
-        THEN CONCAT(ROUND(DELETED_INPUT_BYTES/1024/1024/1024/1024,2), 'TB')
-      WHEN DELETED_INPUT_BYTES >= 1024*1024*1024
-        THEN CONCAT(ROUND(DELETED_INPUT_BYTES/1024/1024/1024,2), 'GB')
-      ELSE
-        CONCAT(ROUND(DELETED_INPUT_BYTES/1024/1024,2), 'MB')
-      END AS DELETED_INPUT_BYTES_DISPLAY,
-    DELETED_OUTPUT_BYTES,
-    CASE
-      WHEN DELETED_OUTPUT_BYTES >= 1024*1024*1024*1024*1024
-        THEN CONCAT(ROUND(DELETED_OUTPUT_BYTES/1024/1024/1024/1024/1024,2), 'PB')
-      WHEN DELETED_OUTPUT_BYTES >= 1024*1024*1024*1024
-        THEN CONCAT(ROUND(DELETED_OUTPUT_BYTES/1024/1024/1024/1024,2), 'TB')
-      WHEN DELETED_OUTPUT_BYTES >= 1024*1024*1024
-        THEN CONCAT(ROUND(DELETED_OUTPUT_BYTES/1024/1024/1024,2), 'GB')
-      ELSE
-        CONCAT(ROUND(DELETED_OUTPUT_BYTES/1024/1024,2), 'MB')
-      END AS DELETED_OUTPUT_BYTES_DISPLAY,
-    COMMENT,
-    PATH
-    FROM OCEANBASE.__ALL_VIRTUAL_LOG_ARCHIVE_PROGRESS
-""".replace("\n", " ")
-)
-
-def_table_schema(
-  owner = 'wangxiaohui.wxh',
-  table_name      = 'CDB_OB_ARCHIVELOG_SUMMARY',
-  table_id        = '21295',
-  table_type      = 'SYSTEM_VIEW',
-  rowkey_columns  = [],
-  normal_columns  = [],
-  gm_columns      = [],
-  view_definition = """
-    SELECT
-    TENANT_ID,
-    DEST_ID,
-    ROUND_ID,
-    INCARNATION,
-    DEST_NO,
-    STATUS,
-    START_SCN,
-    CASE
-      WHEN START_SCN = 0
-        THEN NULL
-      ELSE
-        SCN_TO_TIMESTAMP(START_SCN)
-      END AS START_SCN_DISPLAY,
-    CHECKPOINT_SCN,
-    CASE
-      WHEN CHECKPOINT_SCN = 0
-        THEN NULL
-      ELSE
-        SCN_TO_TIMESTAMP(CHECKPOINT_SCN)
-      END AS CHECKPOINT_SCN_DISPLAY,
-    COMPATIBLE,
-    BASE_PIECE_ID,
-    USED_PIECE_ID,
-    PIECE_SWITCH_INTERVAL,
-    UNIT_SIZE,
-    COMPRESSION,
-    INPUT_BYTES,
-    CASE
-      WHEN INPUT_BYTES >= 1024*1024*1024*1024*1024
-        THEN CONCAT(ROUND(INPUT_BYTES/1024/1024/1024/1024/1024,2), 'PB')
-      WHEN INPUT_BYTES >= 1024*1024*1024*1024
-        THEN CONCAT(ROUND(INPUT_BYTES/1024/1024/1024/1024,2), 'TB')
-      WHEN INPUT_BYTES >= 1024*1024*1024
-        THEN CONCAT(ROUND(INPUT_BYTES/1024/1024/1024,2), 'GB')
-      ELSE
-        CONCAT(ROUND(INPUT_BYTES/1024/1024,2), 'MB')
-      END AS INPUT_BYTES_DISPLAY,
-    OUTPUT_BYTES,
-    CASE
-      WHEN OUTPUT_BYTES >= 1024*1024*1024*1024*1024
-        THEN CONCAT(ROUND(OUTPUT_BYTES/1024/1024/1024/1024/1024,2), 'PB')
-      WHEN OUTPUT_BYTES >= 1024*1024*1024*1024
-        THEN CONCAT(ROUND(OUTPUT_BYTES/1024/1024/1024/1024,2), 'TB')
-      WHEN OUTPUT_BYTES >= 1024*1024*1024
-        THEN CONCAT(ROUND(OUTPUT_BYTES/1024/1024/1024,2), 'GB')
-      ELSE
-        CONCAT(ROUND(OUTPUT_BYTES/1024/1024,2), 'MB')
-      END AS OUTPUT_BYTES_DISPLAY,
-    CASE
-      WHEN INPUT_BYTES = 0
-        THEN 0
-      ELSE
-        ROUND(OUTPUT_BYTES / INPUT_BYTES, 2)
-      END AS COMPRESSION_RATIO,
-    DELETED_INPUT_BYTES,
-    CASE
-      WHEN DELETED_INPUT_BYTES >= 1024*1024*1024*1024*1024
-        THEN CONCAT(ROUND(DELETED_INPUT_BYTES/1024/1024/1024/1024/1024,2), 'PB')
-      WHEN DELETED_INPUT_BYTES >= 1024*1024*1024*1024
-        THEN CONCAT(ROUND(DELETED_INPUT_BYTES/1024/1024/1024/1024,2), 'TB')
-      WHEN DELETED_INPUT_BYTES >= 1024*1024*1024
-        THEN CONCAT(ROUND(DELETED_INPUT_BYTES/1024/1024/1024,2), 'GB')
-      ELSE
-        CONCAT(ROUND(DELETED_INPUT_BYTES/1024/1024,2), 'MB')
-      END AS DELETED_INPUT_BYTES_DISPLAY,
-    DELETED_OUTPUT_BYTES,
-    CASE
-      WHEN DELETED_OUTPUT_BYTES >= 1024*1024*1024*1024*1024
-        THEN CONCAT(ROUND(DELETED_OUTPUT_BYTES/1024/1024/1024/1024/1024,2), 'PB')
-      WHEN DELETED_OUTPUT_BYTES >= 1024*1024*1024*1024
-        THEN CONCAT(ROUND(DELETED_OUTPUT_BYTES/1024/1024/1024/1024,2), 'TB')
-      WHEN DELETED_OUTPUT_BYTES >= 1024*1024*1024
-        THEN CONCAT(ROUND(DELETED_OUTPUT_BYTES/1024/1024/1024,2), 'GB')
-      ELSE
-        CONCAT(ROUND(DELETED_OUTPUT_BYTES/1024/1024,2), 'MB')
-      END AS DELETED_OUTPUT_BYTES_DISPLAY,
-    PATH,
-    COMMENT
-    FROM
-(
-SELECT TENANT_ID,
-       DEST_ID,
-       ROUND_ID,
-       INCARNATION,
-       DEST_NO,
-       STATUS,
-       START_SCN,
-       CHECKPOINT_SCN,
-       COMPATIBLE,
-       BASE_PIECE_ID,
-       USED_PIECE_ID,
-       PIECE_SWITCH_INTERVAL,
-       UNIT_SIZE,
-       COMPRESSION,
-       (FROZEN_INPUT_BYTES + ACTIVE_INPUT_BYTES) AS INPUT_BYTES,
-       (FROZEN_OUTPUT_BYTES + ACTIVE_OUTPUT_BYTES) AS OUTPUT_BYTES,
-       DELETED_INPUT_BYTES,
-       DELETED_OUTPUT_BYTES,
-       PATH,
-       COMMENT
-       FROM OCEANBASE.__ALL_VIRTUAL_LOG_ARCHIVE_PROGRESS
-       WHERE STATUS != 'STOP'
-UNION
-SELECT TENANT_ID,
-       DEST_ID,
-       ROUND_ID,
-       INCARNATION,
-       DEST_NO,
-       'STOP' AS STATUS,
-       START_SCN,
-       CHECKPOINT_SCN,
-       COMPATIBLE,
-       BASE_PIECE_ID,
-       USED_PIECE_ID,
-       PIECE_SWITCH_INTERVAL,
-       UNIT_SIZE,
-       COMPRESSION,
-       INPUT_BYTES,
-       OUTPUT_BYTES,
-       DELETED_INPUT_BYTES,
-       DELETED_OUTPUT_BYTES,
-       PATH,
-       COMMENT
-       FROM OCEANBASE.__ALL_VIRTUAL_LOG_ARCHIVE_HISTORY)
-""".replace("\n", " ")
-)
-
-def_table_schema(
-  owner = 'wangxiaohui.wxh',
-  table_name      = 'CDB_OB_BACKUP_PARAMETER',
-  table_id        = '21296',
-  table_type      = 'SYSTEM_VIEW',
-  rowkey_columns  = [],
-  normal_columns  = [],
-  gm_columns      = [],
-  view_definition = """
-    SELECT
-    TENANT_ID,
-    NAME,
-    VALUE
-    FROM OCEANBASE.__ALL_VIRTUAL_BACKUP_PARAMETER
-""".replace("\n", " ")
-)
+# 21293: CDB_OB_ARCHIVE_DEST (abandoned)
+# 21294: CDB_OB_ARCHIVELOG (abandoned)
+# 21295: CDB_OB_ARCHIVELOG_SUMMARY (abandoned)
+# 21296: CDB_OB_BACKUP_PARAMETER (abandoned)
+# 21297: DBA_OB_DEADLOCK_EVENT_HISTORY (abandoned)
 
 def_table_schema(
   owner           = 'wx372254',
@@ -28138,101 +22899,8 @@ def_table_schema(
   """.replace("\n", " "),
 )
 
-def_table_schema(
-  owner           = 'shenyunlong.syl',
-  table_name      = 'DBA_OB_KV_TTL_TASKS',
-  table_id        = '21300',
-  table_type      = 'SYSTEM_VIEW',
-  rowkey_columns  = [],
-  normal_columns  = [],
-  gm_columns      = [],
-  in_tenant_space = True,
-  view_definition = """
-  SELECT
-      b.table_name as TABLE_NAME,
-      a.table_id as TABLE_ID,
-      a.tablet_id as TABLET_ID,
-      a.task_id as TASK_ID,
-      usec_to_time(a.task_start_time) as START_TIME,
-      usec_to_time(a.task_update_time) as END_TIME,
-      case a.trigger_type
-        when 0 then "PERIODIC" 
-        when 1 then "USER"
-        else "INVALID" END AS TRIGGER_TYPE,
-      case a.status
-        when 0 then "PREPARED" 
-        when 1 then "RUNNING" 
-        when 2 then "PENDING" 
-        when 3 then "CANCELED" 
-        when 4 then "FINISHED" 
-        when 5 then "MOVED" 
-        when 15 then "RS_TRIGGERING"
-        when 16 then "RS_SUSPENDING"
-        when 17 then "RS_CANCELING"
-        when 18 then "RS_MOVING"
-        when 47 then "RS_TRIGGERD"
-        when 48 then "RS_SUSPENDED"
-        when 49 then "RS_CANCELED"
-        when 50 then "RS_MOVED"
-        else "INVALID" END AS STATUS,
-      a.ttl_del_cnt as TTL_DEL_CNT,
-      a.max_version_del_cnt as MAX_VERSION_DEL_CNT,
-      a.scan_cnt as SCAN_CNT,
-      a.ret_code as RET_CODE,
-      case a.task_type
-        when 0 then "NORMAL"
-        when 1 then "HBASE ROWKEY"
-        else "INVALID" END AS TASK_TYPE
-      FROM oceanbase.__all_virtual_kv_ttl_task a left outer JOIN oceanbase.__all_table b on
-          a.table_id = b.table_id and a.tenant_id = effective_tenant_id()
-          and b.table_mode >> 12 & 15 in (0,1)
-          and b.index_attributes_set & 16 = 0
-""".replace("\n", " ")
-)
-
-def_table_schema(
-  owner           = 'shenyunlong.syl',
-  table_name      = 'DBA_OB_KV_TTL_TASK_HISTORY',
-  table_id        = '21301',
-  table_type      = 'SYSTEM_VIEW',
-  rowkey_columns  = [],
-  normal_columns  = [],
-  gm_columns      = [],
-  in_tenant_space = True,
-  view_definition = """
-  SELECT
-      b.table_name as TABLE_NAME,
-      a.table_id as TABLE_ID,
-      a.tablet_id as TABLET_ID,
-      a.task_id as TASK_ID,
-      usec_to_time(a.task_start_time) as START_TIME,
-      usec_to_time(a.task_update_time) as END_TIME,
-      case a.trigger_type
-        when 0 then "PERIODIC" 
-        when 1 then "USER"
-        else "INVALID" END AS TRIGGER_TYPE,
-      case a.status
-        when 0 then "PREPARED" 
-        when 1 then "RUNNING" 
-        when 2 then "PENDING" 
-        when 3 then "CANCELED" 
-        when 4 then "FINISHED" 
-        when 5 then "MOVED" 
-        else "INVALID" END AS STATUS,
-      a.ttl_del_cnt as TTL_DEL_CNT,
-      a.max_version_del_cnt as MAX_VERSION_DEL_CNT,
-      a.scan_cnt as SCAN_CNT,
-      a.ret_code as RET_CODE,
-      case a.task_type
-        when 0 then "NORMAL"
-        when 1 then "HBASE ROWKEY"
-        else "INVALID" END AS TASK_TYPE
-      FROM oceanbase.__all_virtual_kv_ttl_task_history a left outer JOIN oceanbase.__all_table b on
-          a.table_id = b.table_id and a.tenant_id = effective_tenant_id()
-          and b.table_mode >> 12 & 15 in (0,1)
-          and b.index_attributes_set & 16 = 0
-""".replace("\n", " ")
-)
+# 21300: DBA_OB_KV_TTL_TASKS (abandoned)
+# 21301: DBA_OB_KV_TTL_TASK_HISTORY (abandoned)
 
 def_table_schema(
   owner = 'xianlin.lh',
@@ -28395,102 +23063,8 @@ def_table_schema(
 """.replace("\n", " "),
 )
 
-def_table_schema(
-  owner = 'shenyunlong.syl',
-  table_name      = 'CDB_OB_KV_TTL_TASKS',
-  table_id        = '21307',
-  table_type      = 'SYSTEM_VIEW',
-  rowkey_columns  = [],
-  normal_columns  = [],
-  gm_columns      = [],
-  view_definition = """
-  SELECT
-      a.tenant_id as TENANT_ID,
-      b.table_name as TABLE_NAME,
-      a.table_id as TABLE_ID,
-      a.tablet_id as TABLET_ID,
-      a.task_id as TASK_ID,
-      usec_to_time(a.task_start_time) as START_TIME,
-      usec_to_time(a.task_update_time) as END_TIME,
-      case a.trigger_type
-        when 0 then "PERIODIC" 
-        when 1 then "USER"
-        else "INVALID" END AS TRIGGER_TYPE,
-      case a.status
-        when 0 then "PREPARED" 
-        when 1 then "RUNNING" 
-        when 2 then "PENDING" 
-        when 3 then "CANCELED" 
-        when 4 then "FINISHED" 
-        when 5 then "MOVED" 
-        when 15 then "RS_TRIGGERING"
-        when 16 then "RS_SUSPENDING"
-        when 17 then "RS_CANCELING"
-        when 18 then "RS_MOVING"
-        when 47 then "RS_TRIGGERD"
-        when 48 then "RS_SUSPENDED"
-        when 49 then "RS_CANCELED"
-        when 50 then "RS_MOVED"
-        else "INVALID" END AS STATUS,
-      a.ttl_del_cnt as TTL_DEL_CNT,
-      a.max_version_del_cnt as MAX_VERSION_DEL_CNT,
-      a.scan_cnt as SCAN_CNT,
-      a.ret_code as RET_CODE,
-      case a.task_type
-        when 0 then "NORMAL"
-        when 1 then "HBASE ROWKEY"
-        else "INVALID" END AS TASK_TYPE
-      FROM oceanbase.__all_virtual_kv_ttl_task a left outer JOIN oceanbase.__all_virtual_table b on
-          a.table_id = b.table_id and a.tenant_id = b.tenant_id
-          and b.table_mode >> 12 & 15 in (0,1)
-          and b.index_attributes_set & 16 = 0
-""".replace("\n", " ")
-)
-
-def_table_schema(
-  owner = 'shenyunlong.syl',
-  table_name      = 'CDB_OB_KV_TTL_TASK_HISTORY',
-  table_id        = '21308',
-  table_type      = 'SYSTEM_VIEW',
-  rowkey_columns  = [],
-  normal_columns  = [],
-  gm_columns      = [],
-  view_definition = """
-  SELECT
-      a.tenant_id as TENANT_ID,
-      b.table_name as TABLE_NAME,
-      a.table_id as TABLE_ID,
-      a.tablet_id as TABLET_ID,
-      a.task_id as TASK_ID,
-      usec_to_time(a.task_start_time) as START_TIME,
-      usec_to_time(a.task_update_time) as END_TIME,
-      case a.trigger_type
-        when 0 then "PERIODIC" 
-        when 1 then "USER"
-        else "INVALID" END AS TRIGGER_TYPE,
-      case a.status
-        when 0 then "PREPARED" 
-        when 1 then "RUNNING" 
-        when 2 then "PENDING" 
-        when 3 then "CANCELED" 
-        when 4 then "FINISHED" 
-        when 5 then "MOVED" 
-        else "INVALID" END AS STATUS,
-      a.ttl_del_cnt as TTL_DEL_CNT,
-      a.max_version_del_cnt as MAX_VERSION_DEL_CNT,
-      a.scan_cnt as SCAN_CNT,
-      a.ret_code as RET_CODE,
-      case a.task_type
-        when 0 then "NORMAL"
-        when 1 then "HBASE ROWKEY"
-        else "INVALID" END AS TASK_TYPE
-      FROM oceanbase.__all_virtual_kv_ttl_task_history a left outer JOIN oceanbase.__all_virtual_table b on
-          a.table_id = b.table_id and a.tenant_id = b.tenant_id
-          and b.table_mode >> 12 & 15 in (0,1)
-          and b.index_attributes_set & 16 = 0
-""".replace("\n", " ")
-)
-
+# 21307: CDB_OB_KV_TTL_TASKS (abandoned)
+# 21308: CDB_OB_KV_TTL_TASK_HISTORY (abandoned)
 # 21309: CDB_OB_DATAFILE
 # 21310: DBA_OB_DATAFILE
 
@@ -28699,581 +23273,20 @@ def_table_schema(
              CKM.DATA_CHECKSUM,
              CKM.B_COLUMN_CHECKSUMS,
              CKM.COMPACTION_SCN,
-             CKM.CO_BASE_SNAPSHOT_VERSION,
-             M.REPLICA_TYPE
+             CKM.CO_BASE_SNAPSHOT_VERSION
       FROM OCEANBASE.__ALL_VIRTUAL_TABLET_REPLICA_CHECKSUM CKM
-      JOIN OCEANBASE.__ALL_VIRTUAL_LS_META_TABLE M
-      ON CKM.TENANT_ID = M.TENANT_ID AND CKM.LS_ID = M.LS_ID AND CKM.SVR_IP = M.SVR_IP AND CKM.SVR_PORT = M.SVR_PORT
     ) J
-  GROUP BY J.TENANT_ID, J.TABLET_ID, J.COMPACTION_SCN, 
-  CASE
-    WHEN J.REPLICA_TYPE = 1040 THEN 1040
-    ELSE 0 
-  END, 
-  J.CO_BASE_SNAPSHOT_VERSION
+  GROUP BY J.TENANT_ID, J.TABLET_ID, J.COMPACTION_SCN, J.CO_BASE_SNAPSHOT_VERSION
   HAVING MIN(J.DATA_CHECKSUM) != MAX(J.DATA_CHECKSUM)
          OR MIN(J.ROW_COUNT) != MAX(J.ROW_COUNT)
          OR MIN(J.B_COLUMN_CHECKSUMS) != MAX(J.B_COLUMN_CHECKSUMS)
   """.replace("\n", " "),
 )
 
-def_table_schema(
-  owner           = 'msy164651',
-  table_name      = 'DBA_OB_LS',
-  table_id        = '21318',
-  table_type      = 'SYSTEM_VIEW',
-  in_tenant_space = True,
-  gm_columns      = [],
-  rowkey_columns  = [],
-  normal_columns  = [],
-  view_definition =
-  """
-    SELECT A.LS_ID,
-           A.STATUS,
-           C.ZONE_PRIORITY AS PRIMARY_ZONE,
-           A.UNIT_GROUP_ID,
-           A.LS_GROUP_ID,
-
-           /* SYS LS's CREATE_SCN always is NULL, it means nothing */
-           (CASE A.LS_ID
-                WHEN 1 THEN NULL
-                ELSE B.CREATE_SCN
-           END) AS CREATE_SCN,
-
-           /* show NULL if not dropped */
-           (CASE B.DROP_SCN
-                WHEN 1 THEN NULL
-                ELSE B.DROP_SCN
-           END) AS DROP_SCN,
-
-           /* SYS tenant and Meta tenant always show NULL */
-           (CASE
-                WHEN A.TENANT_ID = 1 THEN NULL
-                WHEN (A.TENANT_ID & 0x1) = 1 THEN NULL
-                ELSE B.SYNC_SCN
-            END) AS SYNC_SCN,
-
-           /* SYS tenant and Meta tenant always show NULL */
-           (CASE
-                WHEN A.TENANT_ID = 1 THEN NULL
-                WHEN (A.TENANT_ID & 0x1) = 1 THEN NULL
-                ELSE B.READABLE_SCN
-            END) AS READABLE_SCN,
-            FLAG
-    FROM OCEANBASE.__ALL_VIRTUAL_LS_STATUS AS A
-         JOIN OCEANBASE.__ALL_VIRTUAL_LS_RECOVERY_STAT AS B
-         JOIN OCEANBASE.__ALL_VIRTUAL_LS_ELECTION_REFERENCE_INFO AS C
-              ON A.TENANT_ID = B.TENANT_ID AND A.LS_ID = B.LS_ID
-              AND A.TENANT_ID = C.TENANT_ID AND A.LS_ID = C.LS_ID
-    WHERE A.TENANT_ID = EFFECTIVE_TENANT_ID()
-  """.replace("\n", " "),
-)
-def_table_schema(
-  owner           = 'msy164651',
-  table_name      = 'CDB_OB_LS',
-  table_id        = '21319',
-  table_type      = 'SYSTEM_VIEW',
-  gm_columns      = [],
-  rowkey_columns  = [],
-  normal_columns  = [],
-  view_definition =
-  """
-    SELECT A.TENANT_ID,
-           A.LS_ID,
-           A.STATUS,
-           C.ZONE_PRIORITY AS PRIMARY_ZONE,
-           A.UNIT_GROUP_ID,
-           A.LS_GROUP_ID,
-
-           /* SYS LS's CREATE_SCN always is NULL, it means nothing */
-           (CASE A.LS_ID
-                WHEN 1 THEN NULL
-                ELSE B.CREATE_SCN
-           END) AS CREATE_SCN,
-
-           /* show NULL if not dropped */
-           (CASE B.DROP_SCN
-                WHEN 1 THEN NULL
-                ELSE B.DROP_SCN
-           END) AS DROP_SCN,
-
-           /* SYS tenant and Meta tenant always show NULL */
-           (CASE
-                WHEN A.TENANT_ID = 1 THEN NULL
-                WHEN (A.TENANT_ID & 0x1) = 1 THEN NULL
-                ELSE B.SYNC_SCN
-            END) AS SYNC_SCN,
-
-           /* SYS tenant and Meta tenant always show NULL */
-           (CASE
-                WHEN A.TENANT_ID = 1 THEN NULL
-                WHEN (A.TENANT_ID & 0x1) = 1 THEN NULL
-                ELSE B.READABLE_SCN
-            END) AS READABLE_SCN,
-            FLAG
-    FROM OCEANBASE.__ALL_VIRTUAL_LS_STATUS AS A
-         JOIN OCEANBASE.__ALL_VIRTUAL_LS_RECOVERY_STAT AS B
-         JOIN OCEANBASE.__ALL_VIRTUAL_LS_ELECTION_REFERENCE_INFO AS C
-              ON A.TENANT_ID = B.TENANT_ID AND A.LS_ID = B.LS_ID
-              AND A.TENANT_ID = C.TENANT_ID AND A.LS_ID = C.LS_ID
-  """.replace("\n", " "),
-)
-
-def_table_schema(
-  owner           = 'msy164651',
-  table_name      = 'DBA_OB_TABLE_LOCATIONS',
-  table_id        = '21320',
-  table_type      = 'SYSTEM_VIEW',
-  gm_columns      = [],
-  rowkey_columns  = [],
-  normal_columns  = [],
-  in_tenant_space = True,
-  view_definition =
-  """
-SELECT
-    D.DATABASE_NAME,
-    A.TABLE_NAME,
-    A.TABLE_ID,
-
-    CASE WHEN A.TABLE_TYPE IN (0) THEN 'SYSTEM TABLE'
-         WHEN A.TABLE_TYPE IN (3,6,8,9) THEN 'USER TABLE'
-         WHEN A.TABLE_TYPE IN (5) THEN 'INDEX'
-         WHEN A.TABLE_TYPE IN (12,13) THEN 'LOB AUX TABLE'
-         WHEN A.TABLE_TYPE IN (15) THEN 'MATERIALIZED VIEW LOG'
-         ELSE NULL
-    END AS TABLE_TYPE,
-
-    A.PARTITION_NAME,
-    A.SUBPARTITION_NAME,
-
-    /* INDEX_NAME is valid when table is index */
-    CASE WHEN A.TABLE_TYPE != 5 THEN NULL
-         WHEN D.DATABASE_NAME != '__recyclebin'
-              THEN SUBSTR(TABLE_NAME, 7 + INSTR(SUBSTR(TABLE_NAME, 7), '_'))
-         ELSE TABLE_NAME
-    END AS INDEX_NAME,
-
-    CASE WHEN DATA_TABLE_ID = 0 THEN NULL
-         ELSE DATA_TABLE_ID
-    END AS DATA_TABLE_ID,
-
-    A.TABLET_ID,
-    C.LS_ID,
-    C.ZONE,
-    C.SVR_IP AS SVR_IP,
-    C.SVR_PORT AS SVR_PORT,
-    C.ROLE,
-    C.REPLICA_TYPE,
-    CASE WHEN A.DUPLICATE_SCOPE = 1 THEN 'CLUSTER'
-         ELSE 'NONE'
-    END AS DUPLICATE_SCOPE,
-    CASE WHEN A.DUPLICATE_SCOPE = 1 AND A.DUPLICATE_READ_CONSISTENCY = 0 THEN 'STRONG'
-         WHEN A.DUPLICATE_SCOPE = 1 AND A.DUPLICATE_READ_CONSISTENCY = 1 THEN 'WEAK'
-         ELSE 'NONE'
-    END AS DUPLICATE_READ_CONSISTENCY,
-    A.OBJECT_ID,
-    TG.TABLEGROUP_NAME,
-    TG.TABLEGROUP_ID,
-    TG.SHARDING
-FROM (
-      SELECT DATABASE_ID,
-             TABLE_NAME,
-             TABLE_ID,
-             'NULL' AS PARTITION_NAME,
-             'NULL' AS SUBPARTITION_NAME,
-             TABLE_ID AS OBJECT_ID,
-             TABLET_ID AS TABLET_ID,
-             TABLE_TYPE,
-             DATA_TABLE_ID,
-             DUPLICATE_SCOPE,
-             DUPLICATE_READ_CONSISTENCY,
-             TABLEGROUP_ID
-      FROM OCEANBASE.__ALL_VIRTUAL_CORE_ALL_TABLE
-      WHERE TABLET_ID != 0 AND TENANT_ID = EFFECTIVE_TENANT_ID()
-
-      UNION ALL
-
-      SELECT
-      DATABASE_ID,
-      NEW_TABLE_NAME AS TABLE_NAME,
-      TABLE_ID,
-      'NULL' AS PARTITION_NAME,
-      'NULL' AS SUBPARTITION_NAME,
-      TABLE_ID AS OBJECT_ID,
-      TABLET_ID AS TABLET_ID,
-      TABLE_TYPE,
-      DATA_TABLE_ID,
-      DUPLICATE_SCOPE,
-      DUPLICATE_READ_CONSISTENCY,
-      TABLEGROUP_ID
-      FROM 
-			((
-			    SELECT
-			        mv_table.table_name AS new_table_name,
-			        container_table.*
-			    FROM
-			        oceanbase.__all_table AS mv_table,
-			        (
-			            SELECT * FROM
-			                oceanbase.__all_table
-			            WHERE
-			                (table_mode & 1 << 24) = 1 << 24
-			        ) AS container_table
-			    WHERE
-			        mv_table.data_table_id = container_table.table_id
-							and mv_table.table_type = 7
-			)
-			
-			UNION ALL
-			
-			(
-			    SELECT
-			        table_name as new_table_name,
-			        *
-			    FROM
-			        oceanbase.__all_table
-			    WHERE
-			        (table_mode & 1 << 24) = 0
-			))
-
-      WHERE TABLET_ID != 0 AND PART_LEVEL = 0 AND TENANT_ID = 0
-
-      UNION ALL
-
-      SELECT
-      T.DATABASE_ID AS DATABASE_ID,
-      T.NEW_TABLE_NAME AS TABLE_NAME,
-      T.TABLE_ID AS TABLE_ID,
-      P.PART_NAME AS PARTITION_NAME,
-      'NULL' AS SUBPARTITION_NAME,
-      P.PART_ID AS OBJECT_ID,
-      P.TABLET_ID AS TABLET_ID,
-      TABLE_TYPE,
-      DATA_TABLE_ID,
-      DUPLICATE_SCOPE,
-      DUPLICATE_READ_CONSISTENCY,
-      TABLEGROUP_ID
-      FROM 
-			((
-			    SELECT
-			        mv_table.table_name AS new_table_name,
-			        container_table.*
-			    FROM
-			        oceanbase.__all_table AS mv_table,
-			        (
-			            SELECT * FROM
-			                oceanbase.__all_table
-			            WHERE
-			                (table_mode & 1 << 24) = 1 << 24
-			        ) AS container_table
-			    WHERE
-			        mv_table.data_table_id = container_table.table_id
-							and mv_table.table_type = 7
-			)
-			
-			UNION ALL
-			
-			(
-			    SELECT
-			        table_name as new_table_name,
-			        *
-			    FROM
-			        oceanbase.__all_table
-			    WHERE
-			        (table_mode & 1 << 24) = 0
-			)) T JOIN OCEANBASE.__ALL_PART P
-           ON T.TABLE_ID = P.TABLE_ID AND T.TENANT_ID = P.TENANT_ID
-      WHERE T.PART_LEVEL = 1 AND T.TENANT_ID = 0
-            AND P.PARTITION_TYPE = 0
-
-      UNION ALL
-
-      SELECT
-      T.DATABASE_ID AS DATABASE_ID,
-      T.NEW_TABLE_NAME AS TABLE_NAME,
-      T.TABLE_ID AS TABLE_ID,
-      P.PART_NAME AS PARTITION_NAME,
-      Q.SUB_PART_NAME AS SUBPARTITION_NAME,
-      Q.SUB_PART_ID AS OBJECT_ID,
-      Q.TABLET_ID AS TABLET_ID,
-      TABLE_TYPE,
-      DATA_TABLE_ID,
-      DUPLICATE_SCOPE,
-      DUPLICATE_READ_CONSISTENCY,
-      TABLEGROUP_ID
-      FROM 
-			((
-			    SELECT
-			        mv_table.table_name AS new_table_name,
-			        container_table.*
-			    FROM
-			        oceanbase.__all_table AS mv_table,
-			        (
-			            SELECT * FROM
-			                oceanbase.__all_table
-			            WHERE
-			                (table_mode & 1 << 24) = 1 << 24
-			        ) AS container_table
-			    WHERE
-			        mv_table.data_table_id = container_table.table_id
-							and mv_table.table_type = 7
-			)
-			
-			UNION ALL
-			
-			(
-			    SELECT
-			        table_name as new_table_name,
-			        *
-			    FROM
-			        oceanbase.__all_table
-			    WHERE
-			        (table_mode & 1 << 24) = 0
-			)) T, OCEANBASE.__ALL_PART P,OCEANBASE.__ALL_SUB_PART Q
-      WHERE T.TABLE_ID =P.TABLE_ID AND P.TABLE_ID=Q.TABLE_ID AND P.PART_ID = Q.PART_ID
-      AND T.TENANT_ID = P.TENANT_ID AND P.TENANT_ID = Q.TENANT_ID AND T.PART_LEVEL = 2
-      AND T.TENANT_ID = 0
-      AND P.PARTITION_TYPE = 0
-      AND Q.PARTITION_TYPE = 0
-    ) A
-    JOIN OCEANBASE.DBA_OB_TABLET_TO_LS B ON A.TABLET_ID = B.TABLET_ID
-    JOIN OCEANBASE.DBA_OB_LS_LOCATIONS C ON B.LS_ID = C.LS_ID
-    JOIN OCEANBASE.__ALL_DATABASE D ON A.DATABASE_ID = D.DATABASE_ID
-    LEFT JOIN OCEANBASE.__ALL_TABLEGROUP TG ON A.TABLEGROUP_ID = TG.TABLEGROUP_ID
-    WHERE D.TENANT_ID = 0
-    ORDER BY A.TABLE_ID, A.TABLET_ID, C.ZONE, SVR_IP, SVR_PORT
-  """.replace("\n", " "),
-)
-
-def_table_schema(
-  owner           = 'msy164651',
-  table_name      = 'CDB_OB_TABLE_LOCATIONS',
-  table_id        = '21321',
-  table_type      = 'SYSTEM_VIEW',
-  gm_columns      = [],
-  rowkey_columns  = [],
-  normal_columns  = [],
-  view_definition =
-  """
-SELECT
-    A.TENANT_ID,
-    D.DATABASE_NAME,
-    A.TABLE_NAME,
-    A.TABLE_ID,
-
-    CASE WHEN A.TABLE_TYPE IN (0) THEN 'SYSTEM TABLE'
-         WHEN A.TABLE_TYPE IN (3,6,8,9) THEN 'USER TABLE'
-         WHEN A.TABLE_TYPE IN (5) THEN 'INDEX'
-         WHEN A.TABLE_TYPE IN (12,13) THEN 'LOB AUX TABLE'
-         WHEN A.TABLE_TYPE IN (15) THEN 'MATERIALIZED VIEW LOG'
-         ELSE NULL
-    END AS TABLE_TYPE,
-
-    A.PARTITION_NAME,
-    A.SUBPARTITION_NAME,
-
-    /* INDEX_NAME is valid when table is index */
-    CASE WHEN A.TABLE_TYPE != 5 THEN NULL
-         WHEN D.DATABASE_NAME != '__recyclebin'
-              THEN SUBSTR(TABLE_NAME, 7 + INSTR(SUBSTR(TABLE_NAME, 7), '_'))
-         ELSE TABLE_NAME
-    END AS INDEX_NAME,
-
-    CASE WHEN DATA_TABLE_ID = 0 THEN NULL
-         ELSE DATA_TABLE_ID
-    END AS DATA_TABLE_ID,
-
-    A.TABLET_ID,
-    C.LS_ID,
-    C.ZONE,
-    C.SVR_IP AS SVR_IP,
-    C.SVR_PORT AS SVR_PORT,
-    C.ROLE,
-    C.REPLICA_TYPE,
-    CASE WHEN A.DUPLICATE_SCOPE = 1 THEN 'CLUSTER'
-         ELSE 'NONE'
-    END AS DUPLICATE_SCOPE,
-
-    CASE WHEN A.DUPLICATE_SCOPE = 1 AND A.DUPLICATE_READ_CONSISTENCY = 0 THEN 'STRONG'
-         WHEN A.DUPLICATE_SCOPE = 1 AND A.DUPLICATE_READ_CONSISTENCY = 1 THEN 'WEAK'
-         ELSE 'NONE'
-    END AS DUPLICATE_READ_CONSISTENCY,
-
-    A.OBJECT_ID,
-    TG.TABLEGROUP_NAME,
-    TG.TABLEGROUP_ID,
-    TG.SHARDING
-FROM (
-      SELECT TENANT_ID,
-             DATABASE_ID,
-             TABLE_NAME,
-             TABLE_ID,
-             'NULL' AS PARTITION_NAME,
-             'NULL' AS SUBPARTITION_NAME,
-             TABLE_ID AS OBJECT_ID,
-             TABLET_ID AS TABLET_ID,
-             TABLE_TYPE,
-             DATA_TABLE_ID,
-             DUPLICATE_SCOPE,
-             DUPLICATE_READ_CONSISTENCY,
-             TABLEGROUP_ID
-      FROM OCEANBASE.__ALL_VIRTUAL_CORE_ALL_TABLE
-      WHERE TABLET_ID != 0
-
-      UNION ALL
-
-      SELECT
-      TENANT_ID,
-      DATABASE_ID,
-      NEW_TABLE_NAME AS TABLE_NAME,
-      TABLE_ID,
-      'NULL' AS PARTITION_NAME,
-      'NULL' AS SUBPARTITION_NAME,
-      TABLE_ID AS OBJECT_ID,
-      TABLET_ID AS TABLET_ID,
-      TABLE_TYPE,
-      DATA_TABLE_ID,
-      DUPLICATE_SCOPE,
-      DUPLICATE_READ_CONSISTENCY,
-      TABLEGROUP_ID
-      FROM 
-			((
-			    SELECT
-			        mv_table.table_name AS new_table_name,
-			        container_table.*
-			    FROM
-			        oceanbase.__all_virtual_table AS mv_table,
-			        (
-			            SELECT * FROM
-			                oceanbase.__all_virtual_table
-			            WHERE
-			                (table_mode & 1 << 24) = 1 << 24
-			        ) AS container_table
-			    WHERE
-			        mv_table.data_table_id = container_table.table_id
-							and mv_table.table_type = 7
-              and mv_table.tenant_id = container_table.tenant_id
-			)
-			
-			UNION ALL
-			
-			(
-			    SELECT
-			        table_name as new_table_name,
-			        *
-			    FROM
-			        oceanbase.__all_virtual_table
-			    WHERE
-			        (table_mode & 1 << 24) = 0
-			))
-
-      WHERE TABLET_ID != 0 AND PART_LEVEL = 0
-
-      UNION ALL
-
-      SELECT
-      P.TENANT_ID AS TENANT_ID,
-      T.DATABASE_ID AS DATABASE_ID,
-      T.NEW_TABLE_NAME AS TABLE_NAME,
-      T.TABLE_ID AS TABLE_ID,
-      P.PART_NAME AS PARTITION_NAME,
-      'NULL' AS SUBPARTITION_NAME,
-      P.PART_ID AS OBJECT_ID,
-      P.TABLET_ID AS TABLET_ID,
-      TABLE_TYPE,
-      DATA_TABLE_ID,
-      DUPLICATE_SCOPE,
-      DUPLICATE_READ_CONSISTENCY,
-      TABLEGROUP_ID
-      FROM 
-			((
-			    SELECT
-			        mv_table.table_name AS new_table_name,
-			        container_table.*
-			    FROM
-			        oceanbase.__all_virtual_table AS mv_table,
-			        (
-			            SELECT * FROM
-			                oceanbase.__all_virtual_table
-			            WHERE
-			                (table_mode & 1 << 24) = 1 << 24
-			        ) AS container_table
-			    WHERE
-			        mv_table.data_table_id = container_table.table_id
-							and mv_table.table_type = 7
-              and mv_table.tenant_id = container_table.tenant_id
-			)
-			
-			UNION ALL
-			
-			(
-			    SELECT
-			        table_name as new_table_name,
-			        *
-			    FROM
-			        oceanbase.__all_virtual_table
-			    WHERE
-			        (table_mode & 1 << 24) = 0
-			)) T JOIN OCEANBASE.__ALL_VIRTUAL_PART P ON T.TABLE_ID = P.TABLE_ID
-      WHERE T.TENANT_ID = P.TENANT_ID AND T.PART_LEVEL = 1
-            AND P.PARTITION_TYPE = 0
-      UNION ALL
-
-      SELECT
-      T.TENANT_ID AS TENANT_ID,
-      T.DATABASE_ID AS DATABASE_ID,
-      T.NEW_TABLE_NAME AS TABLE_NAME,
-      T.TABLE_ID AS TABLE_ID,
-      P.PART_NAME AS PARTITION_NAME,
-      Q.SUB_PART_NAME AS SUBPARTITION_NAME,
-      Q.SUB_PART_ID AS OBJECT_ID,
-      Q.TABLET_ID AS TABLET_ID,
-      TABLE_TYPE,
-      DATA_TABLE_ID,
-      DUPLICATE_SCOPE,
-      DUPLICATE_READ_CONSISTENCY,
-      TABLEGROUP_ID
-      FROM 
-			((
-			    SELECT
-			        mv_table.table_name AS new_table_name,
-			        container_table.*
-			    FROM
-			        oceanbase.__all_virtual_table AS mv_table,
-			        (
-			            SELECT * FROM
-			                oceanbase.__all_virtual_table
-			            WHERE
-			                (table_mode & 1 << 24) = 1 << 24
-			        ) AS container_table
-			    WHERE
-			        mv_table.data_table_id = container_table.table_id
-							and mv_table.table_type = 7
-              and mv_table.tenant_id = container_table.tenant_id
-			)
-			
-			UNION ALL
-			
-			(
-			    SELECT
-			        table_name as new_table_name,
-			        *
-			    FROM
-			        oceanbase.__all_virtual_table
-			    WHERE
-			        (table_mode & 1 << 24) = 0
-			)) T, OCEANBASE.__ALL_VIRTUAL_PART P,OCEANBASE.__ALL_VIRTUAL_SUB_PART Q
-      WHERE T.TABLE_ID =P.TABLE_ID AND P.TABLE_ID=Q.TABLE_ID AND P.PART_ID =Q.PART_ID
-      AND T.TENANT_ID = P.TENANT_ID AND P.TENANT_ID = Q.TENANT_ID AND T.PART_LEVEL = 2
-      AND P.PARTITION_TYPE = 0 AND Q.PARTITION_TYPE = 0
-    ) A
-    JOIN OCEANBASE.CDB_OB_TABLET_TO_LS B ON A.TABLET_ID = B.TABLET_ID AND A.TENANT_ID = B.TENANT_ID
-    JOIN OCEANBASE.CDB_OB_LS_LOCATIONS C ON B.LS_ID = C.LS_ID AND A.TENANT_ID = C.TENANT_ID
-    JOIN OCEANBASE.__ALL_VIRTUAL_DATABASE D ON A.TENANT_ID = D.TENANT_ID AND A.DATABASE_ID = D.DATABASE_ID
-    LEFT JOIN OCEANBASE.__ALL_VIRTUAL_TABLEGROUP TG ON A.TABLEGROUP_ID = TG.TABLEGROUP_ID AND A.TENANT_ID = TG.TENANT_ID
-ORDER BY A.TENANT_ID, A.TABLE_ID, A.TABLET_ID, C.ZONE, SVR_IP, SVR_PORT
-  """.replace("\n", " "),
-)
+# 21318: DBA_OB_LS (abandoned)
+# 21319: CDB_OB_LS (abandoned)
+# 21320: DBA_OB_TABLE_LOCATIONS (abandoned)
+# 21321: CDB_OB_TABLE_LOCATIONS (abandoned)
 
 # 21322: GV$OB_TENANTS
 # 21323: V$OB_TENANTS
@@ -29347,149 +23360,9 @@ def_table_schema(
 
 # 21327:  CDB_OB_SWITCHOVER_CHECKPOINTS
 # 21328:  DBA_OB_SWITCHOVER_CHECKPOINTS
-
-def_table_schema(
-  owner           = 'jingyu.cr',
-  table_name      = 'DBA_OB_LS_REPLICA_TASKS',
-  table_id        = '21329',
-  table_type      = 'SYSTEM_VIEW',
-  gm_columns      = [],
-  rowkey_columns  = [],
-  normal_columns  = [],
-  in_tenant_space = True,
-  view_definition =
-  """
-  (
-  SELECT LS_ID,
-         TASK_TYPE,
-         TASK_ID,
-         TASK_STATUS,
-         CAST(CASE PRIORITY
-              WHEN 0 THEN 'HIGH'
-              WHEN 1 THEN 'LOW'
-              ELSE NULL END AS CHAR(5)) AS PRIORITY,
-         TARGET_REPLICA_SVR_IP,
-         TARGET_REPLICA_SVR_PORT,
-         TARGET_PAXOS_REPLICA_NUMBER,
-         TARGET_REPLICA_TYPE,
-         (CASE SOURCE_REPLICA_SVR_IP
-              WHEN "" THEN NULL
-              ELSE SOURCE_REPLICA_SVR_IP END) AS SOURCE_REPLICA_SVR_IP,
-         SOURCE_REPLICA_SVR_PORT,
-         SOURCE_PAXOS_REPLICA_NUMBER,
-         (CASE SOURCE_REPLICA_TYPE
-              WHEN "" THEN NULL
-              ELSE SOURCE_REPLICA_TYPE END) AS SOURCE_REPLICA_TYPE,
-         (CASE DATA_SOURCE_SVR_IP
-              WHEN "" THEN NULL
-              ELSE DATA_SOURCE_SVR_IP END) AS DATA_SOURCE_SVR_IP,
-         DATA_SOURCE_SVR_PORT,
-         CAST(CASE IS_MANUAL
-              WHEN 0 THEN 'FALSE'
-              WHEN 1 THEN 'TRUE'
-              ELSE NULL END AS CHAR(6)) AS IS_MANUAL,
-         TASK_EXEC_SVR_IP,
-         TASK_EXEC_SVR_PORT,
-         CAST(GMT_CREATE AS DATETIME) AS CREATE_TIME,
-         CAST(SCHEDULE_TIME AS DATETIME) AS START_TIME,
-         CAST(GMT_MODIFIED AS DATETIME) AS MODIFY_TIME,
-         COMMENT
-  FROM OCEANBASE.__ALL_VIRTUAL_LS_REPLICA_TASK
-  WHERE
-    TENANT_ID = EFFECTIVE_TENANT_ID()
-  )
-  """.replace("\n", " "),
-)
-
-def_table_schema(
-  owner           = 'jingyu.cr',
-  table_name      = 'CDB_OB_LS_REPLICA_TASKS',
-  table_id        = '21330',
-  table_type      = 'SYSTEM_VIEW',
-  gm_columns      = [],
-  rowkey_columns  = [],
-  normal_columns  = [],
-  view_definition =
-  """
-  (
-  SELECT TENANT_ID,
-         LS_ID,
-         TASK_TYPE,
-         TASK_ID,
-         TASK_STATUS,
-         CAST(CASE PRIORITY
-              WHEN 0 THEN 'HIGH'
-              WHEN 1 THEN 'LOW'
-              ELSE NULL END AS CHAR(5)) AS PRIORITY,
-         TARGET_REPLICA_SVR_IP,
-         TARGET_REPLICA_SVR_PORT,
-         TARGET_PAXOS_REPLICA_NUMBER,
-         TARGET_REPLICA_TYPE,
-         (CASE SOURCE_REPLICA_SVR_IP
-              WHEN "" THEN NULL
-              ELSE SOURCE_REPLICA_SVR_IP END) AS SOURCE_REPLICA_SVR_IP,
-         SOURCE_REPLICA_SVR_PORT,
-         SOURCE_PAXOS_REPLICA_NUMBER,
-         (CASE SOURCE_REPLICA_TYPE
-              WHEN "" THEN NULL
-              ELSE SOURCE_REPLICA_TYPE END) AS SOURCE_REPLICA_TYPE,
-         (CASE DATA_SOURCE_SVR_IP
-              WHEN "" THEN NULL
-              ELSE DATA_SOURCE_SVR_IP END) AS DATA_SOURCE_SVR_IP,
-         DATA_SOURCE_SVR_PORT,
-         CAST(CASE IS_MANUAL
-              WHEN 0 THEN 'FALSE'
-              WHEN 1 THEN 'TRUE'
-              ELSE NULL END AS CHAR(6)) AS IS_MANUAL,
-         TASK_EXEC_SVR_IP,
-         TASK_EXEC_SVR_PORT,
-         CAST(GMT_CREATE AS DATETIME) AS CREATE_TIME,
-         CAST(SCHEDULE_TIME AS DATETIME) AS START_TIME,
-         CAST(GMT_MODIFIED AS DATETIME) AS MODIFY_TIME,
-         COMMENT
-  FROM OCEANBASE.__ALL_VIRTUAL_LS_REPLICA_TASK
-  )
-  """.replace("\n", " "),
-)
-
-def_table_schema(
-  owner           = 'jingyu.cr',
-  table_name      = 'V$OB_LS_REPLICA_TASK_PLAN',
-  table_id        = '21331',
-  table_type      = 'SYSTEM_VIEW',
-  gm_columns      = [],
-  rowkey_columns  = [],
-  normal_columns  = [],
-  in_tenant_space = True,
-  view_definition =
-  """
-  (
-  SELECT TENANT_ID,
-         LS_ID,
-         TASK_TYPE,
-         CAST(CASE PRIORITY
-              WHEN 0 THEN 'HIGH'
-              WHEN 1 THEN 'LOW'
-              ELSE NULL END AS CHAR(5)) AS PRIORITY,
-         TARGET_REPLICA_SVR_IP,
-         TARGET_REPLICA_SVR_PORT,
-         TARGET_PAXOS_REPLICA_NUMBER,
-         TARGET_REPLICA_TYPE,
-         (CASE SOURCE_REPLICA_SVR_IP
-              WHEN "" THEN NULL
-              ELSE SOURCE_REPLICA_SVR_IP END) AS SOURCE_REPLICA_SVR_IP,
-         SOURCE_REPLICA_SVR_PORT,
-         SOURCE_PAXOS_REPLICA_NUMBER,
-         (CASE SOURCE_REPLICA_TYPE
-              WHEN "" THEN NULL
-              ELSE SOURCE_REPLICA_TYPE END) AS SOURCE_REPLICA_TYPE,
-         TASK_EXEC_SVR_IP,
-         TASK_EXEC_SVR_PORT,
-         COMMENT
-  FROM OCEANBASE.__ALL_VIRTUAL_LS_REPLICA_TASK_PLAN
-  )
-  """.replace("\n", " "),
-)
+# 21329: DBA_OB_LS_REPLICA_TASKS (abandoned)
+# 21330: CDB_OB_LS_REPLICA_TASKS (abandoned)
+# 21331: V$OB_LS_REPLICA_TASK_PLAN (abandoned)
 
 def_table_schema(
   owner           = 'zuojiao.hzj',
@@ -31244,131 +25117,11 @@ WHERE T.TABLE_TYPE IN (3,6,8,9,14,15)
 
 )
 
-
-def_table_schema(
-  owner           = 'jingyu.cr',
-  table_name      = 'DBA_OB_ARBITRATION_SERVICE',
-  table_id        = '21357',
-  table_type      = 'SYSTEM_VIEW',
-  gm_columns      = [],
-  rowkey_columns  = [],
-  normal_columns  = [],
-  view_definition =
-  """
-  SELECT CAST(GMT_CREATE AS DATETIME) AS CREATE_TIME,
-         CAST(GMT_MODIFIED AS DATETIME) AS MODIFY_TIME,
-         ARBITRATION_SERVICE_KEY,
-         ARBITRATION_SERVICE,
-         PREVIOUS_ARBITRATION_SERVICE,
-         TYPE
-  FROM OCEANBASE.__all_arbitration_service;
-  """.replace("\n", " ")
-)
-
-
-def_table_schema(
-  owner           = 'jingyu.cr',
-  table_name      = 'CDB_OB_LS_ARB_REPLICA_TASKS',
-  table_id        = '21358',
-  table_type      = 'SYSTEM_VIEW',
-  gm_columns      = [],
-  rowkey_columns  = [],
-  normal_columns  = [],
-  view_definition =
-  """
-  SELECT CAST(GMT_CREATE AS DATETIME) AS CREATE_TIME,
-         CAST(GMT_MODIFIED AS DATETIME) AS MODIFY_TIME,
-         TENANT_ID,
-         LS_ID,
-         TASK_ID,
-         TRACE_ID,
-         TASK_TYPE,
-         ARBITRATION_SERVICE,
-         ARBITRATION_SERVICE_TYPE,
-         COMMENT
-  FROM OCEANBASE.__ALL_VIRTUAL_LS_ARB_REPLICA_TASK
-  """.replace("\n", " "),
-)
-
-def_table_schema(
-  owner           = 'jingyu.cr',
-  table_name      = 'DBA_OB_LS_ARB_REPLICA_TASKS',
-  table_id        = '21359',
-  table_type      = 'SYSTEM_VIEW',
-  gm_columns      = [],
-  rowkey_columns  = [],
-  normal_columns  = [],
-  in_tenant_space = True,
-  view_definition =
-  """
-  SELECT CAST(GMT_CREATE AS DATETIME) AS CREATE_TIME,
-         CAST(GMT_MODIFIED AS DATETIME) AS MODIFY_TIME,
-         TENANT_ID,
-         LS_ID,
-         TASK_ID,
-         TRACE_ID,
-         TASK_TYPE,
-         ARBITRATION_SERVICE,
-         ARBITRATION_SERVICE_TYPE,
-         COMMENT
-  FROM OCEANBASE.__ALL_VIRTUAL_LS_ARB_REPLICA_TASK
-  WHERE
-    TENANT_ID = EFFECTIVE_TENANT_ID()
-  """.replace("\n", " "),
-)
-
-def_table_schema(
-  owner           = 'jingyu.cr',
-  table_name      = 'CDB_OB_LS_ARB_REPLICA_TASK_HISTORY',
-  table_id        = '21360',
-  table_type      = 'SYSTEM_VIEW',
-  gm_columns      = [],
-  rowkey_columns  = [],
-  normal_columns  = [],
-  view_definition =
-  """
-  SELECT TENANT_ID,
-         LS_ID,
-         TASK_ID,
-         EXECUTE_RESULT,
-         CAST(CREATE_TIME AS DATETIME) AS CREATE_TIME,
-         CAST(FINISH_TIME AS DATETIME) AS FINISH_TIME,
-         TRACE_ID,
-         TASK_TYPE,
-         ARBITRATION_SERVICE,
-         ARBITRATION_SERVICE_TYPE,
-         COMMENT
-  FROM OCEANBASE.__ALL_VIRTUAL_LS_ARB_REPLICA_TASK_HISTORY
-  """.replace("\n", " "),
-)
-
-def_table_schema(
-  owner           = 'jingyu.cr',
-  table_name      = 'DBA_OB_LS_ARB_REPLICA_TASK_HISTORY',
-  table_id        = '21361',
-  table_type      = 'SYSTEM_VIEW',
-  gm_columns      = [],
-  rowkey_columns  = [],
-  normal_columns  = [],
-  in_tenant_space = True,
-  view_definition =
-  """
-  SELECT TENANT_ID,
-         LS_ID,
-         TASK_ID,
-         EXECUTE_RESULT,
-         CAST(CREATE_TIME AS DATETIME) AS CREATE_TIME,
-         CAST(FINISH_TIME AS DATETIME) AS FINISH_TIME,
-         TRACE_ID,
-         TASK_TYPE,
-         ARBITRATION_SERVICE,
-         ARBITRATION_SERVICE_TYPE,
-         COMMENT
-  FROM OCEANBASE.__ALL_VIRTUAL_LS_ARB_REPLICA_TASK_HISTORY
-  WHERE
-    TENANT_ID = EFFECTIVE_TENANT_ID()
-  """.replace("\n", " "),
-)
+# 21357: DBA_OB_ARBITRATION_SERVICE (abandoned)
+# 21358: CDB_OB_LS_ARB_REPLICA_TASKS (abandoned)
+# 21359: DBA_OB_LS_ARB_REPLICA_TASKS (abandoned)
+# 21360: CDB_OB_LS_ARB_REPLICA_TASK_HISTORY (abandoned)
+# 21361: DBA_OB_LS_ARB_REPLICA_TASK_HISTORY (abandoned)
 
 def_table_schema(
   owner           = 'zhaoyongheng.zyh',
@@ -31391,66 +25144,8 @@ def_table_schema(
   FROM OCEANBASE.__all_virtual_archive_dest_status;
   """.replace("\n", " ")
 )
-
-def_table_schema(
-  owner           = 'zhaoyongheng.zyh',
-  table_name      = 'DBA_OB_LS_LOG_ARCHIVE_PROGRESS',
-  table_id        = '21363',
-  table_type      = 'SYSTEM_VIEW',
-  gm_columns      = [],
-  rowkey_columns  = [],
-  normal_columns  = [],
-  in_tenant_space = True,
-  view_definition =
-  """
-  SELECT DEST_ID,
-         LS_ID,
-         ROUND_ID,
-         PIECE_ID,
-         INCARNATION,
-         START_SCN,
-         MIN_LSN,
-         MAX_LSN,
-         CHECKPOINT_SCN,
-         STATUS,
-         FILE_ID,
-         FILE_OFFSET,
-         INPUT_BYTES,
-         OUTPUT_BYTES
-  FROM OCEANBASE.__ALL_VIRTUAL_LS_LOG_ARCHIVE_PROGRESS
-  WHERE TENANT_ID=EFFECTIVE_TENANT_ID();
-  """.replace("\n", " ")
-)
-
-def_table_schema(
-  owner           = 'zhaoyongheng.zyh',
-  table_name      = 'CDB_OB_LS_LOG_ARCHIVE_PROGRESS',
-  table_id        = '21364',
-  table_type      = 'SYSTEM_VIEW',
-  gm_columns      = [],
-  rowkey_columns  = [],
-  normal_columns  = [],
-  view_definition =
-  """
-  SELECT TENANT_ID,
-         DEST_ID,
-         LS_ID,
-         ROUND_ID,
-         PIECE_ID,
-         INCARNATION,
-         START_SCN,
-         MIN_LSN,
-         MAX_LSN,
-         CHECKPOINT_SCN,
-         STATUS,
-         FILE_ID,
-         FILE_OFFSET,
-         INPUT_BYTES,
-         OUTPUT_BYTES
-  FROM OCEANBASE.__ALL_VIRTUAL_LS_LOG_ARCHIVE_PROGRESS;
-  """.replace("\n", " ")
-)
-
+# 21363: DBA_OB_LS_LOG_ARCHIVE_PROGRESS # abandoned
+# 21364: CDB_OB_LS_LOG_ARCHIVE_PROGRESS # abandoned
 # 21365: DBA_OB_LS_LOG_RESTORE_STAT
 # 21366: CDB_OB_LS_LOG_RESTORE_STAT
 
@@ -31540,44 +25235,8 @@ def_table_schema(
 """.replace("\n", " ")
 )
 
-def_table_schema(
-  owner           = 'zhaoyongheng.zyh',
-  table_name      = 'DBA_OB_ACCESS_POINT',
-  table_id        = '21372',
-  table_type      = 'SYSTEM_VIEW',
-  gm_columns      = [],
-  rowkey_columns  = [],
-  normal_columns  = [],
-  in_tenant_space = True,
-  view_definition =
-  """
-  SELECT a.TENANT_ID,
-        TENANT_NAME,
-        SVR_IP,
-        SQL_PORT
-  FROM OCEANBASE.__ALL_VIRTUAL_LS_META_TABLE a, OCEANBASE.DBA_OB_TENANTS b 
-  WHERE LS_ID=1 and a.TENANT_ID = b.TENANT_ID and b.TENANT_ID = EFFECTIVE_TENANT_ID();
-  """.replace("\n", " ")
-)
-
-def_table_schema(
-  owner           = 'zhaoyongheng.zyh',
-  table_name      = 'CDB_OB_ACCESS_POINT',
-  table_id        = '21373',
-  table_type      = 'SYSTEM_VIEW',
-  gm_columns      = [],
-  rowkey_columns  = [],
-  normal_columns  = [],
-  view_definition =
-  """
-  SELECT a.TENANT_ID,
-        TENANT_NAME,
-        SVR_IP,
-        SQL_PORT
-  FROM OCEANBASE.__ALL_VIRTUAL_LS_META_TABLE a, OCEANBASE.DBA_OB_TENANTS b 
-  WHERE LS_ID=1 and a.TENANT_ID = b.TENANT_ID;
-  """.replace("\n", " ")
-)
+# 21372: DBA_OB_ACCESS_POINT (abandoned)
+# 21373: CDB_OB_ACCESS_POINT (abandoned)
 
 def_table_schema(
   owner           = 'bohou.ws',
@@ -31813,84 +25472,9 @@ WHERE SVR_IP=HOST_IP() AND SVR_PORT=RPC_PORT()
 """.replace("\n", " "),
 )
 
-def_table_schema(
-  owner = 'debin.jdb',
-  table_name     = 'GV$OB_ARBITRATION_MEMBER_INFO',
-  table_id       = '21382',
-  table_type = 'SYSTEM_VIEW',
-  gm_columns = [],
-  rowkey_columns = [],
-  normal_columns  = [],
-  in_tenant_space = True,
-  view_definition = """
-  SELECT
-    TENANT_ID,
-    LS_ID,
-    SVR_IP,
-    SVR_PORT,
-    PROPOSAL_ID,
-    CONFIG_VERSION,
-    ACCESS_MODE,
-    PAXOS_MEMBER_LIST,
-    PAXOS_REPLICA_NUM,
-    ARBITRATION_MEMBER,
-    DEGRADED_LIST
-  FROM oceanbase.__all_virtual_arbitration_member_info
-""".replace("\n", " "),
-)
-
-def_table_schema(
-    owner = 'debin.jdb',
-    table_name     = 'V$OB_ARBITRATION_MEMBER_INFO',
-    table_id       = '21383',
-    table_type = 'SYSTEM_VIEW',
-    gm_columns = [],
-    rowkey_columns = [],
-    normal_columns  = [],
-    in_tenant_space = True,
-    view_definition = """
-  SELECT TENANT_ID,
-    LS_ID,
-    SVR_IP,
-    SVR_PORT,
-    PROPOSAL_ID,
-    CONFIG_VERSION,
-    ACCESS_MODE,
-    PAXOS_MEMBER_LIST,
-    PAXOS_REPLICA_NUM,
-    ARBITRATION_MEMBER,
-    DEGRADED_LIST
-  FROM oceanbase.GV$OB_ARBITRATION_MEMBER_INFO
-  WHERE svr_ip=HOST_IP() AND svr_port=RPC_PORT()
-""".replace("\n", " "),
-)
-
-def_table_schema(
-  owner           = 'shifangdan.sfd',
-  table_name      = 'DBA_OB_ZONE_STORAGE',
-  table_id        = '21384',
-  table_type      = 'SYSTEM_VIEW',
-  gm_columns      = [],
-  rowkey_columns  = [],
-  normal_columns  = [],
-  in_tenant_space = False,
-  view_definition =
-  """
-  SELECT CAST(GMT_CREATE AS DATETIME) AS CREATE_TIME,
-         CAST(GMT_MODIFIED AS DATETIME) AS MODIFY_TIME,
-         ZONE,
-         PATH,
-         ENDPOINT,
-         USED_FOR,
-         STORAGE_ID,
-         AUTHORIZATION,
-         MAX_IOPS,
-         MAX_BANDWIDTH,
-         STATE,
-         EXTENSION
-  FROM OCEANBASE.__all_zone_storage;
-  """.replace("\n", " ")
-)
+# 21382: GV$OB_ARBITRATION_MEMBER_INFO (abandoned)
+# 21383: V$OB_ARBITRATION_MEMBER_INFO (abandoned)
+# 21384: DBA_OB_ZONE_STORAGE (abandoned)
 
 def_table_schema(
   owner           = 'shifangdan.sfd',
@@ -31953,43 +25537,8 @@ def_table_schema(
 """.replace("\n", " "),
 )
 
-def_table_schema(
-  owner = 'debin.jdb',
-  table_name     = 'GV$OB_ARBITRATION_SERVICE_STATUS',
-  table_id       = '21387',
-  table_type = 'SYSTEM_VIEW',
-  gm_columns = [],
-  rowkey_columns = [],
-  normal_columns  = [],
-  in_tenant_space = True,
-  view_definition = """
-  SELECT
-    SVR_IP,
-    SVR_PORT,
-    ARBITRATION_SERVICE_ADDRESS,
-    STATUS
-  FROM oceanbase.__all_virtual_arbitration_service_status
-""".replace("\n", " "),
-)
-
-def_table_schema(
-    owner = 'debin.jdb',
-    table_name     = 'V$OB_ARBITRATION_SERVICE_STATUS',
-    table_id       = '21388',
-    table_type = 'SYSTEM_VIEW',
-    gm_columns = [],
-    rowkey_columns = [],
-    normal_columns  = [],
-    in_tenant_space = True,
-    view_definition = """
-  SELECT SVR_IP,
-    SVR_PORT,
-    ARBITRATION_SERVICE_ADDRESS,
-    STATUS
-  FROM oceanbase.GV$OB_ARBITRATION_SERVICE_STATUS
-  WHERE svr_ip=HOST_IP() AND svr_port=RPC_PORT()
-""".replace("\n", " "),
-)
+# 21387: GV$OB_ARBITRATION_SERVICE_STATUS (abandoned)
+# 21388: V$OB_ARBITRATION_SERVICE_STATUS (abandoned)
 
 # 21389: DBA_WR_ACTIVE_SESSION_HISTORY
 def_table_schema(
@@ -32517,46 +26066,8 @@ def_table_schema(
     WHERE SVR_IP = HOST_IP() AND SVR_PORT = RPC_PORT()
 """.replace("\n", " ")
 )
-
-def_table_schema(
-  owner           = 'shuning.tsn',
-  table_name      = 'CDB_OB_LOG_RESTORE_SOURCE',
-  table_id        = '21401',
-  table_type      = 'SYSTEM_VIEW',
-  gm_columns      = [],
-  rowkey_columns  = [],
-  normal_columns  = [],
-  view_definition =
-  """
-  SELECT TENANT_ID,
-    ID,
-    TYPE,
-    VALUE,
-    RECOVERY_UNTIL_SCN
-  FROM OCEANBASE.__ALL_VIRTUAL_LOG_RESTORE_SOURCE;
-  """.replace("\n", " ")
-)
-
-def_table_schema(
-  owner           = 'shuning.tsn',
-  table_name      = 'DBA_OB_LOG_RESTORE_SOURCE',
-  table_id        = '21402',
-  table_type      = 'SYSTEM_VIEW',
-  gm_columns      = [],
-  rowkey_columns  = [],
-  normal_columns  = [],
-  in_tenant_space = True,
-  view_definition =
-  """
-  SELECT TENANT_ID,
-    ID,
-    TYPE,
-    VALUE,
-    RECOVERY_UNTIL_SCN
-  FROM OCEANBASE.__ALL_VIRTUAL_LOG_RESTORE_SOURCE
-  WHERE TENANT_ID=EFFECTIVE_TENANT_ID();
-  """.replace("\n", " ")
-)
+# 21401: CDB_OB_LOG_RESTORE_SOURCE # abandoned
+# 21402: DBA_OB_LOG_RESTORE_SOURCE # abandoned
 
 # 21403: DBA_OB_EXTERNAL_TABLE_FILE
 
@@ -32587,379 +26098,18 @@ def_table_schema(
 """.replace("\n", " ")
 )
 
-# 21405: DBA_OB_BALANCE_JOBS
-def_table_schema(
-  owner           = 'wangzhennan.wzn',
-  table_name      = 'DBA_OB_BALANCE_JOBS',
-  table_id        = '21405',
-  table_type      = 'SYSTEM_VIEW',
-  gm_columns      = [],
-  rowkey_columns  = [],
-  normal_columns  = [],
-  in_tenant_space = True,
-  view_definition =
-  """
-  SELECT JOB_ID,
-         GMT_CREATE AS CREATE_TIME,
-         GMT_MODIFIED AS MODIFY_TIME,
-         BALANCE_STRATEGY_NAME AS BALANCE_STRATEGY,
-         JOB_TYPE,
-         TARGET_UNIT_NUM,
-         TARGET_PRIMARY_ZONE_NUM,
-         STATUS,
-         COMMENT,
-         MAX_END_TIME
-  FROM OCEANBASE.__ALL_BALANCE_JOB
-  """.replace("\n", " "),
-)
-
-# 21406: CDB_OB_BALANCE_JOBS
-def_table_schema(
-  owner           = 'wangzhennan.wzn',
-  table_name      = 'CDB_OB_BALANCE_JOBS',
-  table_id        = '21406',
-  table_type      = 'SYSTEM_VIEW',
-  gm_columns      = [],
-  rowkey_columns  = [],
-  normal_columns  = [],
-  view_definition =
-  """
-  SELECT TENANT_ID,
-         JOB_ID,
-         GMT_CREATE AS CREATE_TIME,
-         GMT_MODIFIED AS MODIFY_TIME,
-         BALANCE_STRATEGY_NAME AS BALANCE_STRATEGY,
-         JOB_TYPE,
-         TARGET_UNIT_NUM,
-         TARGET_PRIMARY_ZONE_NUM,
-         STATUS,
-         COMMENT,
-         MAX_END_TIME
-  FROM OCEANBASE.__ALL_VIRTUAL_BALANCE_JOB
-  """.replace("\n", " "),
-)
-# 21407: DBA_OB_BALANCE_JOB_HISTORY
-def_table_schema(
-  owner           = 'wangzhennan.wzn',
-  table_name      = 'DBA_OB_BALANCE_JOB_HISTORY',
-  table_id        = '21407',
-  table_type      = 'SYSTEM_VIEW',
-  gm_columns      = [],
-  rowkey_columns  = [],
-  normal_columns  = [],
-  in_tenant_space = True,
-  view_definition =
-  """
-  SELECT JOB_ID,
-         CREATE_TIME,
-         FINISH_TIME,
-         BALANCE_STRATEGY_NAME AS BALANCE_STRATEGY,
-         JOB_TYPE,
-         TARGET_UNIT_NUM,
-         TARGET_PRIMARY_ZONE_NUM,
-         STATUS,
-         COMMENT,
-         MAX_END_TIME
-  FROM OCEANBASE.__ALL_BALANCE_JOB_HISTORY
-  """.replace("\n", " "),
-)
-# 21408: CDB_OB_BALANCE_JOB_HISTORY
-def_table_schema(
-  owner           = 'wangzhennan.wzn',
-  table_name      = 'CDB_OB_BALANCE_JOB_HISTORY',
-  table_id        = '21408',
-  table_type      = 'SYSTEM_VIEW',
-  gm_columns      = [],
-  rowkey_columns  = [],
-  normal_columns  = [],
-  view_definition =
-  """
-  SELECT TENANT_ID,
-         JOB_ID,
-         CREATE_TIME,
-         FINISH_TIME,
-         BALANCE_STRATEGY_NAME AS BALANCE_STRATEGY,
-         JOB_TYPE,
-         TARGET_UNIT_NUM,
-         TARGET_PRIMARY_ZONE_NUM,
-         STATUS,
-         COMMENT,
-         MAX_END_TIME
-  FROM OCEANBASE.__ALL_VIRTUAL_BALANCE_JOB_HISTORY
-  """.replace("\n", " "),
-)
-# 21409: DBA_OB_BALANCE_TASKS
-def_table_schema(
-  owner           = 'wangzhennan.wzn',
-  table_name      = 'DBA_OB_BALANCE_TASKS',
-  table_id        = '21409',
-  table_type      = 'SYSTEM_VIEW',
-  gm_columns      = [],
-  rowkey_columns  = [],
-  normal_columns  = [],
-  in_tenant_space = True,
-  view_definition =
-  """
-  SELECT TASK_ID,
-         GMT_CREATE AS CREATE_TIME,
-         GMT_MODIFIED AS MODIFY_TIME,
-         TASK_TYPE,
-         SRC_LS,
-         DEST_LS,
-         PART_LIST,
-         FINISHED_PART_LIST,
-         PART_COUNT,
-         FINISHED_PART_COUNT,
-         LS_GROUP_ID,
-         STATUS,
-         PARENT_LIST,
-         CHILD_LIST,
-         CURRENT_TRANSFER_TASK_ID,
-         JOB_ID,
-         COMMENT,
-         BALANCE_STRATEGY
-  FROM OCEANBASE.__ALL_BALANCE_TASK
-  """.replace("\n", " "),
-)
-# 21410: CDB_OB_BALANCE_TASKS
-def_table_schema(
-  owner           = 'wangzhennan.wzn',
-  table_name      = 'CDB_OB_BALANCE_TASKS',
-  table_id        = '21410',
-  table_type      = 'SYSTEM_VIEW',
-  gm_columns      = [],
-  rowkey_columns  = [],
-  normal_columns  = [],
-  view_definition =
-  """
-  SELECT TENANT_ID,
-         TASK_ID,
-         GMT_CREATE AS CREATE_TIME,
-         GMT_MODIFIED AS MODIFY_TIME,
-         TASK_TYPE,
-         SRC_LS,
-         DEST_LS,
-         PART_LIST,
-         FINISHED_PART_LIST,
-         PART_COUNT,
-         FINISHED_PART_COUNT,
-         LS_GROUP_ID,
-         STATUS,
-         PARENT_LIST,
-         CHILD_LIST,
-         CURRENT_TRANSFER_TASK_ID,
-         JOB_ID,
-         COMMENT,
-         BALANCE_STRATEGY
-  FROM OCEANBASE.__ALL_VIRTUAL_BALANCE_TASK
-  """.replace("\n", " "),
-)
-# 21411: DBA_OB_BALANCE_TASK_HISTORY
-def_table_schema(
-  owner           = 'wangzhennan.wzn',
-  table_name      = 'DBA_OB_BALANCE_TASK_HISTORY',
-  table_id        = '21411',
-  table_type      = 'SYSTEM_VIEW',
-  gm_columns      = [],
-  rowkey_columns  = [],
-  normal_columns  = [],
-  in_tenant_space = True,
-  view_definition =
-  """
-  SELECT TASK_ID,
-         CREATE_TIME,
-         FINISH_TIME,
-         TASK_TYPE,
-         SRC_LS,
-         DEST_LS,
-         PART_LIST,
-         FINISHED_PART_LIST,
-         PART_COUNT,
-         FINISHED_PART_COUNT,
-         LS_GROUP_ID,
-         STATUS,
-         PARENT_LIST,
-         CHILD_LIST,
-         CURRENT_TRANSFER_TASK_ID,
-         JOB_ID,
-         COMMENT,
-         BALANCE_STRATEGY
-  FROM OCEANBASE.__ALL_BALANCE_TASK_HISTORY
-  """.replace("\n", " "),
-)
-# 21412: CDB_OB_BALANCE_TASK_HISTORY
-def_table_schema(
-  owner           = 'wangzhennan.wzn',
-  table_name      = 'CDB_OB_BALANCE_TASK_HISTORY',
-  table_id        = '21412',
-  table_type      = 'SYSTEM_VIEW',
-  gm_columns      = [],
-  rowkey_columns  = [],
-  normal_columns  = [],
-  view_definition =
-  """
-  SELECT TENANT_ID,
-         TASK_ID,
-         CREATE_TIME,
-         FINISH_TIME,
-         TASK_TYPE,
-         SRC_LS,
-         DEST_LS,
-         PART_LIST,
-         FINISHED_PART_LIST,
-         PART_COUNT,
-         FINISHED_PART_COUNT,
-         LS_GROUP_ID,
-         STATUS,
-         PARENT_LIST,
-         CHILD_LIST,
-         CURRENT_TRANSFER_TASK_ID,
-         JOB_ID,
-         COMMENT,
-         BALANCE_STRATEGY
-  FROM OCEANBASE.__ALL_VIRTUAL_BALANCE_TASK_HISTORY
-  """.replace("\n", " "),
-)
-# 21413: DBA_OB_TRANSFER_TASKS
-def_table_schema(
-  owner           = 'wangzhennan.wzn',
-  table_name      = 'DBA_OB_TRANSFER_TASKS',
-  table_id        = '21413',
-  table_type      = 'SYSTEM_VIEW',
-  gm_columns      = [],
-  rowkey_columns  = [],
-  normal_columns  = [],
-  in_tenant_space = True,
-  view_definition =
-  """
-  SELECT TASK_ID,
-         GMT_CREATE AS CREATE_TIME,
-         GMT_MODIFIED AS MODIFY_TIME,
-         SRC_LS,
-         DEST_LS,
-         PART_LIST,
-         PART_COUNT,
-         NOT_EXIST_PART_LIST,
-         LOCK_CONFLICT_PART_LIST,
-         TABLE_LOCK_TABLET_LIST,
-         TABLET_LIST,
-         TABLET_COUNT,
-         START_SCN,
-         FINISH_SCN,
-         STATUS,
-         TRACE_ID,
-         RESULT,
-         BALANCE_TASK_ID,
-         TABLE_LOCK_OWNER_ID,
-         COMMENT
-  FROM OCEANBASE.__ALL_TRANSFER_TASK
-  """.replace("\n", " "),
-)
-# 21414: CDB_OB_TRANSFER_TASKS
-def_table_schema(
-  owner           = 'wangzhennan.wzn',
-  table_name      = 'CDB_OB_TRANSFER_TASKS',
-  table_id        = '21414',
-  table_type      = 'SYSTEM_VIEW',
-  gm_columns      = [],
-  rowkey_columns  = [],
-  normal_columns  = [],
-  view_definition =
-  """
-  SELECT TENANT_ID,
-         TASK_ID,
-         GMT_CREATE AS CREATE_TIME,
-         GMT_MODIFIED AS MODIFY_TIME,
-         SRC_LS,
-         DEST_LS,
-         PART_LIST,
-         PART_COUNT,
-         NOT_EXIST_PART_LIST,
-         LOCK_CONFLICT_PART_LIST,
-         TABLE_LOCK_TABLET_LIST,
-         TABLET_LIST,
-         TABLET_COUNT,
-         START_SCN,
-         FINISH_SCN,
-         STATUS,
-         TRACE_ID,
-         RESULT,
-         BALANCE_TASK_ID,
-         TABLE_LOCK_OWNER_ID,
-         COMMENT
-  FROM OCEANBASE.__ALL_VIRTUAL_TRANSFER_TASK
-  """.replace("\n", " "),
-)
-# 21415: DBA_OB_TRANSFER_TASK_HISTORY
-def_table_schema(
-  owner           = 'wangzhennan.wzn',
-  table_name      = 'DBA_OB_TRANSFER_TASK_HISTORY',
-  table_id        = '21415',
-  table_type      = 'SYSTEM_VIEW',
-  gm_columns      = [],
-  rowkey_columns  = [],
-  normal_columns  = [],
-  in_tenant_space = True,
-  view_definition =
-  """
-  SELECT TASK_ID,
-         CREATE_TIME,
-         FINISH_TIME,
-         SRC_LS,
-         DEST_LS,
-         PART_LIST,
-         PART_COUNT,
-         NOT_EXIST_PART_LIST,
-         LOCK_CONFLICT_PART_LIST,
-         TABLE_LOCK_TABLET_LIST,
-         TABLET_LIST,
-         TABLET_COUNT,
-         START_SCN,
-         FINISH_SCN,
-         STATUS,
-         TRACE_ID,
-         RESULT,
-         BALANCE_TASK_ID,
-         TABLE_LOCK_OWNER_ID,
-         COMMENT
-  FROM OCEANBASE.__ALL_TRANSFER_TASK_HISTORY
-  """.replace("\n", " "),
-)
-# 21416: CDB_OB_TRANSFER_TASK_HISTORY
-def_table_schema(
-  owner           = 'wangzhennan.wzn',
-  table_name      = 'CDB_OB_TRANSFER_TASK_HISTORY',
-  table_id        = '21416',
-  table_type      = 'SYSTEM_VIEW',
-  gm_columns      = [],
-  rowkey_columns  = [],
-  normal_columns  = [],
-  view_definition =
-  """
-  SELECT TENANT_ID,
-         TASK_ID,
-         CREATE_TIME,
-         FINISH_TIME,
-         SRC_LS,
-         DEST_LS,
-         PART_LIST,
-         PART_COUNT,
-         NOT_EXIST_PART_LIST,
-         LOCK_CONFLICT_PART_LIST,
-         TABLE_LOCK_TABLET_LIST,
-         TABLET_LIST,
-         TABLET_COUNT,
-         START_SCN,
-         FINISH_SCN,
-         STATUS,
-         TRACE_ID,
-         RESULT,
-         BALANCE_TASK_ID,
-         TABLE_LOCK_OWNER_ID,
-         COMMENT
-  FROM OCEANBASE.__ALL_VIRTUAL_TRANSFER_TASK_HISTORY
-  """.replace("\n", " "),
-)
+# 21405: DBA_OB_BALANCE_JOBS (abandoned)
+# 21406: CDB_OB_BALANCE_JOBS (abandoned)
+# 21407: DBA_OB_BALANCE_JOB_HISTORY (abandoned)
+# 21408: CDB_OB_BALANCE_JOB_HISTORY (abandoned)
+# 21409: DBA_OB_BALANCE_TASKS (abandoned)
+# 21410: CDB_OB_BALANCE_TASKS (abandoned)
+# 21411: DBA_OB_BALANCE_TASK_HISTORY (abandoned)
+# 21412: CDB_OB_BALANCE_TASK_HISTORY (abandoned)
+# 21413: DBA_OB_TRANSFER_TASKS (abandoned)
+# 21414: CDB_OB_TRANSFER_TASKS (abandoned)
+# 21415: DBA_OB_TRANSFER_TASK_HISTORY (abandoned)
+# 21416: CDB_OB_TRANSFER_TASK_HISTORY (abandoned)
 
 def_table_schema(
   owner           = 'jim.wjh',
@@ -33416,74 +26566,9 @@ def_table_schema(
     oceanbase.__all_virtual_wr_control SETTING
   """.replace("\n", " ")
 )
-def_table_schema(
-  owner           = 'msy164651',  
-  table_name      = 'DBA_OB_LS_HISTORY',
-  table_id        = '21445',
-  table_type      = 'SYSTEM_VIEW',
-  in_tenant_space = True,
-  gm_columns      = [],
-  rowkey_columns  = [],
-  normal_columns  = [],
-  view_definition =
-  """
-    SELECT 
-          (CASE 
-               WHEN A.LS_ID IS NULL THEN B.LS_ID
-               ELSE A.LS_ID END) AS LS_ID,
-          (CASE
-               WHEN A.LS_GROUP_ID IS NULL THEN B.LS_GROUP_ID
-               ELSE A.LS_GROUP_ID END) AS LS_GROUP_ID,
-          (CASE
-               WHEN A.STATUS IS NULL THEN B.STATUS
-               ELSE A.STATUS END) AS STATUS,
-          (CASE
-               WHEN A.FLAG IS NULL THEN B.FLAG
-               ELSE A.FLAG END) AS FLAG,
-          (CASE 
-               WHEN A.LS_ID = 1 THEN 0
-               ELSE B.CREATE_SCN END) AS CREATE_SCN
-    FROM OCEANBASE.DBA_OB_LS AS A
-         FULL JOIN OCEANBASE.__ALL_LS AS B
-              ON A.LS_ID = B.LS_ID
-  """.replace("\n", " "),
-)
 
-def_table_schema(
-  owner           = 'msy164651',
-  table_name      = 'CDB_OB_LS_HISTORY',
-  table_id        = '21446',
-  table_type      = 'SYSTEM_VIEW',
-  gm_columns      = [],
-  rowkey_columns  = [],
-  normal_columns  = [],
-  view_definition =
-  """
-    SELECT
-          (CASE 
-               WHEN A.TENANT_ID IS NULL THEN B.TENANT_ID
-               ELSE A.TENANT_ID END) AS TENANT_ID,
-          (CASE 
-               WHEN A.LS_ID IS NULL THEN B.LS_ID
-               ELSE A.LS_ID END) AS LS_ID,
-          (CASE
-               WHEN A.LS_GROUP_ID IS NULL THEN B.LS_GROUP_ID
-               ELSE A.LS_GROUP_ID END) AS LS_GROUP_ID,
-          (CASE
-               WHEN A.STATUS IS NULL THEN B.STATUS
-               ELSE A.STATUS END) AS STATUS,
-          (CASE
-               WHEN A.FLAG IS NULL THEN B.FLAG
-               ELSE A.FLAG END) AS FLAG,
-          (CASE 
-               WHEN A.LS_ID = 1 THEN 0
-               ELSE B.CREATE_SCN END) AS CREATE_SCN
-    FROM OCEANBASE.CDB_OB_LS AS A
-         FULL JOIN OCEANBASE.__ALL_VIRTUAL_LS AS B
-              ON A.LS_ID = B.LS_ID AND A.TENANT_ID = B.TENANT_ID
-  """.replace("\n", " "),
-)
-
+# 21445: DBA_OB_LS_HISTORY (abandoned)
+# 21446: CDB_OB_LS_HISTORY (abandoned)
 
 def_table_schema(
   owner           = 'wanhong.wwh',
@@ -33744,532 +26829,18 @@ def_table_schema(
     normal_columns = [
     ],
 )
-
-def_table_schema(
-  owner = 'chongrong.th',
-  table_name      = 'CDB_OB_RECOVER_TABLE_JOBS',
-  table_id        = '21463',
-  table_type      = 'SYSTEM_VIEW',
-  rowkey_columns  = [],
-  normal_columns  = [],
-  gm_columns      = [],
-  view_definition = """
-    SELECT
-    TENANT_ID,
-    JOB_ID,
-    INITIATOR_TENANT_ID,
-    INITIATOR_JOB_ID,
-    USEC_TO_TIME(START_TS) AS START_TIMESTAMP,
-    CASE 
-      WHEN END_TS = 0
-        THEN NULL
-      ELSE
-        USEC_TO_TIME(END_TS)
-      END AS FINISH_TIMESTAMP,
-    STATUS,
-    AUX_TENANT_NAME,
-    TARGET_TENANT_NAME,
-    IMPORT_ALL,
-    DB_LIST,
-    TABLE_LIST,
-    RESTORE_SCN,
-    CASE
-      WHEN RESTORE_SCN = 0
-        THEN NULL
-      ELSE
-        SCN_TO_TIMESTAMP(RESTORE_SCN)
-      END AS RESTORE_SCN_DISPLAY,
-    RESTORE_OPTION,
-    BACKUP_DEST,
-    BACKUP_SET_LIST,
-    BACKUP_PIECE_LIST,
-    BACKUP_PASSWD,
-    EXTERNAL_KMS_INFO,
-    REMAP_DB_LIST,
-    REMAP_TABLE_LIST,
-    REMAP_TABLEGROUP_LIST,
-    REMAP_TABLESPACE_LIST,
-    RESULT,
-    COMMENT,
-    DESCRIPTION
-    FROM OCEANBASE.__ALL_VIRTUAL_RECOVER_TABLE_JOB;
-""".replace("\n", " ")
-)
-
-def_table_schema(
-  owner = 'chongrong.th',
-  table_name      = 'DBA_OB_RECOVER_TABLE_JOBS',
-  table_id        = '21464',
-  table_type      = 'SYSTEM_VIEW',
-  rowkey_columns  = [],
-  normal_columns  = [],
-  gm_columns      = [],
-  in_tenant_space = True,
-  view_definition = """
-    SELECT
-    JOB_ID,
-    INITIATOR_TENANT_ID,
-    INITIATOR_JOB_ID,
-    USEC_TO_TIME(START_TS) AS START_TIMESTAMP,
-    CASE 
-      WHEN END_TS = 0
-        THEN NULL
-      ELSE
-        USEC_TO_TIME(END_TS)
-      END AS FINISH_TIMESTAMP,
-    STATUS,
-    AUX_TENANT_NAME,
-    TARGET_TENANT_NAME,
-    IMPORT_ALL,
-    DB_LIST,
-    TABLE_LIST,
-    RESTORE_SCN,
-    CASE
-      WHEN RESTORE_SCN = 0
-        THEN NULL
-      ELSE
-        SCN_TO_TIMESTAMP(RESTORE_SCN)
-      END AS RESTORE_SCN_DISPLAY,
-    RESTORE_OPTION,
-    BACKUP_DEST,
-    BACKUP_SET_LIST,
-    BACKUP_PIECE_LIST,
-    BACKUP_PASSWD,
-    EXTERNAL_KMS_INFO,
-    REMAP_DB_LIST,
-    REMAP_TABLE_LIST,
-    REMAP_TABLEGROUP_LIST,
-    REMAP_TABLESPACE_LIST,
-    RESULT,
-    COMMENT,
-    DESCRIPTION
-    FROM OCEANBASE.__ALL_VIRTUAL_RECOVER_TABLE_JOB
-    WHERE TENANT_ID = EFFECTIVE_TENANT_ID()
-""".replace("\n", " ")
-)
-
-def_table_schema(
-  owner = 'chongrong.th',
-  table_name      = 'CDB_OB_RECOVER_TABLE_JOB_HISTORY',
-  table_id        = '21465',
-  table_type      = 'SYSTEM_VIEW',
-  rowkey_columns  = [],
-  normal_columns  = [],
-  gm_columns      = [],
-  view_definition = """
-    SELECT
-    TENANT_ID,
-    JOB_ID,
-    INITIATOR_TENANT_ID,
-    INITIATOR_JOB_ID,
-    USEC_TO_TIME(START_TS) AS START_TIMESTAMP,
-    USEC_TO_TIME(END_TS) AS FINISH_TIMESTAMP,
-    STATUS,
-    AUX_TENANT_NAME,
-    TARGET_TENANT_NAME,
-    IMPORT_ALL,
-    DB_LIST,
-    TABLE_LIST,
-    RESTORE_SCN,
-    CASE
-      WHEN RESTORE_SCN = 0
-        THEN NULL
-      ELSE
-        SCN_TO_TIMESTAMP(RESTORE_SCN)
-      END AS RESTORE_SCN_DISPLAY,
-    RESTORE_OPTION,
-    BACKUP_DEST,
-    BACKUP_SET_LIST,
-    BACKUP_PIECE_LIST,
-    BACKUP_PASSWD,
-    EXTERNAL_KMS_INFO,
-    REMAP_DB_LIST,
-    REMAP_TABLE_LIST,
-    REMAP_TABLEGROUP_LIST,
-    REMAP_TABLESPACE_LIST,
-    RESULT,
-    COMMENT,
-    DESCRIPTION
-    FROM OCEANBASE.__ALL_VIRTUAL_RECOVER_TABLE_JOB_HISTORY;
-""".replace("\n", " ")
-)
-
-def_table_schema(
-  owner = 'chongrong.th',
-  table_name      = 'DBA_OB_RECOVER_TABLE_JOB_HISTORY',
-  table_id        = '21466',
-  table_type      = 'SYSTEM_VIEW',
-  rowkey_columns  = [],
-  normal_columns  = [],
-  gm_columns      = [],
-  in_tenant_space = True,
-  view_definition = """
-    SELECT
-    JOB_ID,
-    INITIATOR_TENANT_ID,
-    INITIATOR_JOB_ID,
-    USEC_TO_TIME(START_TS) AS START_TIMESTAMP,
-    USEC_TO_TIME(END_TS) AS FINISH_TIMESTAMP,
-    STATUS,
-    AUX_TENANT_NAME,
-    TARGET_TENANT_NAME,
-    IMPORT_ALL,
-    DB_LIST,
-    TABLE_LIST,
-    RESTORE_SCN,
-    CASE
-      WHEN RESTORE_SCN = 0
-        THEN NULL
-      ELSE
-        SCN_TO_TIMESTAMP(RESTORE_SCN)
-      END AS RESTORE_SCN_DISPLAY,
-    RESTORE_OPTION,
-    BACKUP_DEST,
-    BACKUP_SET_LIST,
-    BACKUP_PIECE_LIST,
-    BACKUP_PASSWD,
-    EXTERNAL_KMS_INFO,
-    REMAP_DB_LIST,
-    REMAP_TABLE_LIST,
-    REMAP_TABLEGROUP_LIST,
-    REMAP_TABLESPACE_LIST,
-    RESULT,
-    COMMENT,
-    DESCRIPTION
-    FROM OCEANBASE.__ALL_VIRTUAL_RECOVER_TABLE_JOB_HISTORY
-    WHERE TENANT_ID = EFFECTIVE_TENANT_ID()
-""".replace("\n", " ")
-)
-
-def_table_schema(
-  owner = 'chongrong.th',
-  table_name      = 'CDB_OB_IMPORT_TABLE_JOBS',
-  table_id        = '21467',
-  table_type      = 'SYSTEM_VIEW',
-  rowkey_columns  = [],
-  normal_columns  = [],
-  gm_columns      = [],
-  view_definition = """
-    SELECT
-    TENANT_ID,
-    JOB_ID,
-    INITIATOR_TENANT_ID,
-    INITIATOR_JOB_ID,
-    USEC_TO_TIME(START_TS) AS START_TIMESTAMP,
-    CASE 
-      WHEN END_TS = 0
-        THEN NULL
-      ELSE
-        USEC_TO_TIME(END_TS)
-      END AS FINISH_TIMESTAMP,
-    SRC_TENANT_NAME,
-    SRC_TENANT_ID,
-    STATUS,
-    IMPORT_ALL,
-    DB_LIST,
-    TABLE_LIST,
-    REMAP_DB_LIST,
-    REMAP_TABLE_LIST,
-    REMAP_TABLEGROUP_LIST,
-    REMAP_TABLESPACE_LIST,
-    TOTAL_TABLE_COUNT,
-    FINISHED_TABLE_COUNT,
-    FAILED_TABLE_COUNT,
-    RESULT,
-    COMMENT,
-    DESCRIPTION
-    FROM OCEANBASE.__ALL_VIRTUAL_IMPORT_TABLE_JOB;
-""".replace("\n", " ")
-)
-
-def_table_schema(
-  owner = 'chongrong.th',
-  table_name      = 'DBA_OB_IMPORT_TABLE_JOBS',
-  table_id        = '21468',
-  table_type      = 'SYSTEM_VIEW',
-  rowkey_columns  = [],
-  normal_columns  = [],
-  gm_columns      = [],
-  in_tenant_space = True,
-  view_definition = """
-    SELECT
-    JOB_ID,
-    INITIATOR_TENANT_ID,
-    INITIATOR_JOB_ID,
-    USEC_TO_TIME(START_TS) AS START_TIMESTAMP,
-    CASE 
-      WHEN END_TS = 0
-        THEN NULL
-      ELSE
-        USEC_TO_TIME(END_TS)
-      END AS FINISH_TIMESTAMP,
-    SRC_TENANT_NAME,
-    SRC_TENANT_ID,
-    STATUS,
-    IMPORT_ALL,
-    DB_LIST,
-    TABLE_LIST,
-    REMAP_DB_LIST,
-    REMAP_TABLE_LIST,
-    REMAP_TABLEGROUP_LIST,
-    REMAP_TABLESPACE_LIST,
-    TOTAL_TABLE_COUNT,
-    FINISHED_TABLE_COUNT,
-    FAILED_TABLE_COUNT,
-    RESULT,
-    COMMENT,
-    DESCRIPTION
-    FROM OCEANBASE.__ALL_VIRTUAL_IMPORT_TABLE_JOB
-    WHERE TENANT_ID = EFFECTIVE_TENANT_ID()
-""".replace("\n", " ")
-)
-
-def_table_schema(
-  owner = 'chongrong.th',
-  table_name      = 'CDB_OB_IMPORT_TABLE_JOB_HISTORY',
-  table_id        = '21469',
-  table_type      = 'SYSTEM_VIEW',
-  rowkey_columns  = [],
-  normal_columns  = [],
-  gm_columns      = [],
-  view_definition = """
-    SELECT
-    TENANT_ID,
-    JOB_ID,
-    INITIATOR_TENANT_ID,
-    INITIATOR_JOB_ID,
-    USEC_TO_TIME(START_TS) AS START_TIMESTAMP,
-    USEC_TO_TIME(END_TS) AS FINISH_TIMESTAMP,
-    SRC_TENANT_NAME,
-    SRC_TENANT_ID,
-    STATUS,
-    IMPORT_ALL,
-    DB_LIST,
-    TABLE_LIST,
-    REMAP_DB_LIST,
-    REMAP_TABLE_LIST,
-    REMAP_TABLEGROUP_LIST,
-    REMAP_TABLESPACE_LIST,
-    TOTAL_TABLE_COUNT,
-    FINISHED_TABLE_COUNT,
-    FAILED_TABLE_COUNT,
-    RESULT,
-    COMMENT,
-    DESCRIPTION
-    FROM OCEANBASE.__ALL_VIRTUAL_IMPORT_TABLE_JOB_HISTORY;
-""".replace("\n", " ")
-)
-
-def_table_schema(
-  owner = 'chongrong.th',
-  table_name      = 'DBA_OB_IMPORT_TABLE_JOB_HISTORY',
-  table_id        = '21470',
-  table_type      = 'SYSTEM_VIEW',
-  rowkey_columns  = [],
-  normal_columns  = [],
-  gm_columns      = [],
-  in_tenant_space = True,
-  view_definition = """
-    SELECT
-    JOB_ID,
-    INITIATOR_TENANT_ID,
-    INITIATOR_JOB_ID,
-    USEC_TO_TIME(START_TS) AS START_TIMESTAMP,
-    USEC_TO_TIME(END_TS) AS FINISH_TIMESTAMP,
-    SRC_TENANT_NAME,
-    SRC_TENANT_ID,
-    STATUS,
-    IMPORT_ALL,
-    DB_LIST,
-    TABLE_LIST,
-    REMAP_DB_LIST,
-    REMAP_TABLE_LIST,
-    REMAP_TABLEGROUP_LIST,
-    REMAP_TABLESPACE_LIST,
-    TOTAL_TABLE_COUNT,
-    FINISHED_TABLE_COUNT,
-    FAILED_TABLE_COUNT,
-    RESULT,
-    COMMENT,
-    DESCRIPTION
-    FROM OCEANBASE.__ALL_VIRTUAL_IMPORT_TABLE_JOB_HISTORY
-    WHERE TENANT_ID = EFFECTIVE_TENANT_ID()
-""".replace("\n", " ")
-)
-
-def_table_schema(
-  owner = 'chongrong.th',
-  table_name      = 'CDB_OB_IMPORT_TABLE_TASKS',
-  table_id        = '21471',
-  table_type      = 'SYSTEM_VIEW',
-  rowkey_columns  = [],
-  normal_columns  = [],
-  gm_columns      = [],
-  view_definition = """
-    SELECT
-    TENANT_ID,
-    TASK_ID,
-    JOB_ID,
-    SRC_TENANT_ID,
-    SRC_TABLESPACE,
-    SRC_TABLEGROUP,
-    SRC_DATABASE,
-    SRC_TABLE,
-    SRC_PARTITION,
-    TARGET_TABLESPACE,
-    TARGET_TABLEGROUP,
-    TARGET_DATABASE,
-    TARGET_TABLE,
-    TABLE_COLUMN,
-    STATUS,
-    USEC_TO_TIME(START_TS) AS START_TIMESTAMP,
-    USEC_TO_TIME(COMPLETION_TS) AS COMPLETION_TIMESTAMP,
-    CUMULATIVE_TS,
-    TOTAL_INDEX_COUNT,
-    IMPORTED_INDEX_COUNT,
-    FAILED_INDEX_COUNT,
-    TOTAL_CONSTRAINT_COUNT,
-    IMPORTED_CONSTRAINT_COUNT,
-    FAILED_CONSTRAINT_COUNT,
-    TOTAL_REF_CONSTRAINT_COUNT,
-    IMPORTED_REF_CONSTRAINT_COUNT,
-    FAILED_REF_CONSTRAINT_COUNT,
-    RESULT,
-    COMMENT
-    FROM OCEANBASE.__ALL_VIRTUAL_IMPORT_TABLE_TASK;
-""".replace("\n", " ")
-)
-
-def_table_schema(
-  owner = 'chongrong.th',
-  table_name      = 'DBA_OB_IMPORT_TABLE_TASKS',
-  table_id        = '21472',
-  table_type      = 'SYSTEM_VIEW',
-  rowkey_columns  = [],
-  normal_columns  = [],
-  gm_columns      = [],
-  in_tenant_space = True,
-  view_definition = """
-    SELECT
-    TASK_ID,
-    JOB_ID,
-    SRC_TENANT_ID,
-    SRC_TABLESPACE,
-    SRC_TABLEGROUP,
-    SRC_DATABASE,
-    SRC_TABLE,
-    SRC_PARTITION,
-    TARGET_TABLESPACE,
-    TARGET_TABLEGROUP,
-    TARGET_DATABASE,
-    TARGET_TABLE,
-    TABLE_COLUMN,
-    STATUS,
-    USEC_TO_TIME(START_TS) AS START_TIMESTAMP,
-    USEC_TO_TIME(COMPLETION_TS) AS COMPLETION_TIMESTAMP,
-    CUMULATIVE_TS,
-    TOTAL_INDEX_COUNT,
-    IMPORTED_INDEX_COUNT,
-    FAILED_INDEX_COUNT,
-    TOTAL_CONSTRAINT_COUNT,
-    IMPORTED_CONSTRAINT_COUNT,
-    FAILED_CONSTRAINT_COUNT,
-    TOTAL_REF_CONSTRAINT_COUNT,
-    IMPORTED_REF_CONSTRAINT_COUNT,
-    FAILED_REF_CONSTRAINT_COUNT,
-    RESULT,
-    COMMENT
-    FROM OCEANBASE.__ALL_VIRTUAL_IMPORT_TABLE_TASK
-    WHERE TENANT_ID = EFFECTIVE_TENANT_ID()
-""".replace("\n", " ")
-)
-
-def_table_schema(
-  owner = 'chongrong.th',
-  table_name      = 'CDB_OB_IMPORT_TABLE_TASK_HISTORY',
-  table_id        = '21473',
-  table_type      = 'SYSTEM_VIEW',
-  rowkey_columns  = [],
-  normal_columns  = [],
-  gm_columns      = [],
-  view_definition = """
-    SELECT
-    TENANT_ID,
-    TASK_ID,
-    JOB_ID,
-    SRC_TENANT_ID,
-    SRC_TABLESPACE,
-    SRC_TABLEGROUP,
-    SRC_DATABASE,
-    SRC_TABLE,
-    SRC_PARTITION,
-    TARGET_TABLESPACE,
-    TARGET_TABLEGROUP,
-    TARGET_DATABASE,
-    TARGET_TABLE,
-    TABLE_COLUMN,
-    STATUS,
-    USEC_TO_TIME(START_TS) AS START_TIMESTAMP,
-    USEC_TO_TIME(COMPLETION_TS) AS COMPLETION_TIMESTAMP,
-    CUMULATIVE_TS,
-    TOTAL_INDEX_COUNT,
-    IMPORTED_INDEX_COUNT,
-    FAILED_INDEX_COUNT,
-    TOTAL_CONSTRAINT_COUNT,
-    IMPORTED_CONSTRAINT_COUNT,
-    FAILED_CONSTRAINT_COUNT,
-    TOTAL_REF_CONSTRAINT_COUNT,
-    IMPORTED_REF_CONSTRAINT_COUNT,
-    FAILED_REF_CONSTRAINT_COUNT,
-    RESULT,
-    COMMENT
-    FROM OCEANBASE.__ALL_VIRTUAL_IMPORT_TABLE_TASK_HISTORY;
-""".replace("\n", " ")
-)
-
-def_table_schema(
-  owner = 'chongrong.th',
-  table_name      = 'DBA_OB_IMPORT_TABLE_TASK_HISTORY',
-  table_id        = '21474',
-  table_type      = 'SYSTEM_VIEW',
-  rowkey_columns  = [],
-  normal_columns  = [],
-  gm_columns      = [],
-  in_tenant_space = True,
-  view_definition = """
-    SELECT
-    TASK_ID,
-    JOB_ID,
-    SRC_TENANT_ID,
-    SRC_TABLESPACE,
-    SRC_TABLEGROUP,
-    SRC_DATABASE,
-    SRC_TABLE,
-    SRC_PARTITION,
-    TARGET_TABLESPACE,
-    TARGET_TABLEGROUP,
-    TARGET_DATABASE,
-    TARGET_TABLE,
-    TABLE_COLUMN,
-    STATUS,
-    USEC_TO_TIME(START_TS) AS START_TIMESTAMP,
-    USEC_TO_TIME(COMPLETION_TS) AS COMPLETION_TIMESTAMP,
-    CUMULATIVE_TS,
-    TOTAL_INDEX_COUNT,
-    IMPORTED_INDEX_COUNT,
-    FAILED_INDEX_COUNT,
-    TOTAL_CONSTRAINT_COUNT,
-    IMPORTED_CONSTRAINT_COUNT,
-    FAILED_CONSTRAINT_COUNT,
-    TOTAL_REF_CONSTRAINT_COUNT,
-    IMPORTED_REF_CONSTRAINT_COUNT,
-    FAILED_REF_CONSTRAINT_COUNT,
-    RESULT,
-    COMMENT
-    FROM OCEANBASE.__ALL_VIRTUAL_IMPORT_TABLE_TASK_HISTORY
-    WHERE TENANT_ID = EFFECTIVE_TENANT_ID()
-""".replace("\n", " ")
-)
+# 21463: CDB_OB_RECOVER_TABLE_JOBS # abandoned
+# 21464: DBA_OB_RECOVER_TABLE_JOBS # abandoned
+# 21465: CDB_OB_RECOVER_TABLE_JOB_HISTORY # abandoned
+# 21466: DBA_OB_RECOVER_TABLE_JOB_HISTORY # abandoned
+# 21467: CDB_OB_IMPORT_TABLE_JOBS # abandoned
+# 21468: DBA_OB_IMPORT_TABLE_JOBS # abandoned
+# 21469: CDB_OB_IMPORT_TABLE_JOB_HISTORY # abandoned
+# 21470: DBA_OB_IMPORT_TABLE_JOB_HISTORY # abandoned
+# 21471: CDB_OB_IMPORT_TABLE_TASKS # abandoned
+# 21472: DBA_OB_IMPORT_TABLE_TASKS # abandoned
+# 21473: CDB_OB_IMPORT_TABLE_TASK_HISTORY # abandoned
+# 21474: DBA_OB_IMPORT_TABLE_TASK_HISTORY # abandoned
 
 # 21475: CDB_OB_IMPORT_STMT_EXEC_HISTORY
 # 21476: DBA_OB_IMPORT_STMT_EXEC_HISTORY
@@ -35160,102 +27731,10 @@ def_table_schema(
   """.replace("\n", " "),
 )
 
-def_table_schema(
-  owner           = 'msy164651',
-  table_name      = 'DBA_OB_TRANSFER_PARTITION_TASKS',
-  table_id        = '21501',
-  table_type      = 'SYSTEM_VIEW',
-  gm_columns      = [],
-  rowkey_columns  = [],
-  normal_columns  = [],
-  in_tenant_space = True,
-  view_definition =
-  """
-  SELECT TASK_ID,
-         GMT_CREATE AS CREATE_TIME,
-         GMT_MODIFIED AS MODIFY_TIME,
-         TABLE_ID,
-         OBJECT_ID,
-         DEST_LS,
-         BALANCE_JOB_ID,
-         TRANSFER_TASK_ID,
-         STATUS,
-         COMMENT
-  FROM oceanbase.__all_transfer_partition_task
-  """.replace("\n", " "),
-)
-def_table_schema(
-  owner           = 'msy164651',
-  table_name      = 'CDB_OB_TRANSFER_PARTITION_TASKS',
-  table_id        = '21502',
-  table_type      = 'SYSTEM_VIEW',
-  gm_columns      = [],
-  rowkey_columns  = [],
-  normal_columns  = [],
-  view_definition =
-  """
-  SELECT TENANT_ID,
-         TASK_ID,
-         GMT_CREATE AS CREATE_TIME,
-         GMT_MODIFIED AS MODIFY_TIME,
-         TABLE_ID,
-         OBJECT_ID,
-         DEST_LS,
-         BALANCE_JOB_ID,
-         TRANSFER_TASK_ID,
-         STATUS,
-         COMMENT
-  FROM oceanbase.__all_virtual_transfer_partition_task
-  """.replace("\n", " "),
-)
-def_table_schema(
-  owner           = 'msy164651',
-  table_name      = 'DBA_OB_TRANSFER_PARTITION_TASK_HISTORY',
-  table_id        = '21503',
-  table_type      = 'SYSTEM_VIEW',
-  gm_columns      = [],
-  rowkey_columns  = [],
-  normal_columns  = [],
-  in_tenant_space = True,
-  view_definition =
-  """
-  SELECT TASK_ID,
-         CREATE_TIME,
-         FINISH_TIME,
-         TABLE_ID,
-         OBJECT_ID,
-         DEST_LS,
-         BALANCE_JOB_ID,
-         TRANSFER_TASK_ID,
-         STATUS,
-         COMMENT
-  FROM oceanbase.__all_transfer_partition_task_history
-  """.replace("\n", " "),
-)
-def_table_schema(
-  owner           = 'msy164651',
-  table_name      = 'CDB_OB_TRANSFER_PARTITION_TASK_HISTORY',
-  table_id        = '21504',
-  table_type      = 'SYSTEM_VIEW',
-  gm_columns      = [],
-  rowkey_columns  = [],
-  normal_columns  = [],
-  view_definition =
-  """
-  SELECT TENANT_ID,
-         TASK_ID,
-         CREATE_TIME,
-         FINISH_TIME,
-         TABLE_ID,
-         OBJECT_ID,
-         DEST_LS,
-         BALANCE_JOB_ID,
-         TRANSFER_TASK_ID,
-         STATUS,
-         COMMENT
-  FROM oceanbase.__all_virtual_transfer_partition_task_history
-  """.replace("\n", " "),
-)
+# 21501: DBA_OB_TRANSFER_PARTITION_TASKS (abandoned)
+# 21502: CDB_OB_TRANSFER_PARTITION_TASKS (abandoned)
+# 21503: DBA_OB_TRANSFER_PARTITION_TASK_HISTORY (abandoned)
+# 21504: CDB_OB_TRANSFER_PARTITION_TASK_HISTORY (abandoned)
 
 def_table_schema(
   owner           = 'jiajingzhe.jjz',
@@ -35486,57 +27965,10 @@ def_table_schema(
   normal_columns  = [],
 )
 
-def_table_schema(
-  owner          = 'tony.wzh',
-  table_name     = 'DBA_OB_TRUSTED_ROOT_CERTIFICATE',
-  table_id       = '21509',
-  table_type     = 'SYSTEM_VIEW',
-  gm_columns     = [],
-  rowkey_columns = [],
-  normal_columns = [],
-  in_tenant_space = False,
-  view_definition = """
-  SELECT 
-  common_name AS COMMON_NAME,
-  description AS DESCRIPTION,
-  EXTRACT_CERT_EXPIRED_TIME(content) AS CERT_EXPIRED_TIME
-  FROM
-    oceanbase.__all_trusted_root_certificate
-  """.replace("\n", " "),
-)
+# 21509: DBA_OB_TRUSTED_ROOT_CERTIFICATE (abandoned)
 
 #### sys tenant only view
-def_table_schema(
-    owner = 'chensen.cs',
-    table_name     = 'DBA_OB_CLONE_PROGRESS',
-    table_id       = '21510',
-    table_type = 'SYSTEM_VIEW',
-    rowkey_columns  = [],
-    normal_columns  = [],
-    gm_columns      = [],
-    in_tenant_space = False,
-    view_definition = """
-SELECT job_id AS CLONE_JOB_ID,
-       trace_id AS TRACE_ID,
-       source_tenant_id AS SOURCE_TENANT_ID,
-       source_tenant_name AS SOURCE_TENANT_NAME,
-       clone_tenant_id AS CLONE_TENANT_ID,
-       clone_tenant_name AS CLONE_TENANT_NAME,
-       tenant_snapshot_id AS TENANT_SNAPSHOT_ID,
-       tenant_snapshot_name AS TENANT_SNAPSHOT_NAME,
-       resource_pool_id AS RESOURCE_POOL_ID,
-       resource_pool_name AS RESOURCE_POOL_NAME,
-       unit_config_name AS UNIT_CONFIG_NAME,
-       restore_scn AS RESTORE_SCN,
-       status AS STATUS,
-       job_type AS CLONE_JOB_TYPE,
-       clone_start_time AS CLONE_START_TIME,
-       clone_finished_time AS CLONE_FINISHED_TIME,
-       ret_code AS RET_CODE,
-       error_msg AS ERROR_MESSAGE
-FROM oceanbase.__all_clone_job ORDER BY CLONE_START_TIME
-""".replace("\n", " ")
-)
+# 21510: DBA_OB_CLONE_PROGRESS (abandoned)
 
 def_table_schema(
   owner = 'jim.wjh',
@@ -35655,309 +28087,17 @@ def_table_schema(
 """.replace("\n", " ")
 )
 
-
-def_table_schema(
-  owner = 'wendongbodongbo.wd',
-  table_name      = 'GV$OB_LS_SNAPSHOTS',
-  table_id        = '21517',
-  table_type      = 'SYSTEM_VIEW',
-  rowkey_columns  = [],
-  normal_columns  = [],
-  gm_columns      = [],
-  in_tenant_space = True,
-  view_definition = """SELECT
-      tenant_id AS TENANT_ID,
-      snapshot_id AS SNAPSHOT_ID,
-      ls_id AS LS_ID,
-      svr_ip AS SVR_IP,
-      svr_port AS SVR_PORT,
-      (CASE
-        WHEN meta_existed = 1 THEN 'YES'
-        ELSE 'NO'
-        END) AS META_EXISTED,
-      (CASE
-        WHEN build_status = 0 THEN 'BUILDING'
-        WHEN build_status = 1 THEN 'FAILED'
-        WHEN build_status = 2 THEN 'SUCCESSFUL'
-        ELSE 'UNKNOWN'
-        END) AS BUILD_STATUS,
-      rebuild_seq_start AS REBUILD_SEQ_START,
-      rebuild_seq_end AS REBUILD_SEQ_END,
-      end_interval_scn AS END_INTERVAL_SCN,
-      ls_meta_package AS LS_META_PACKAGE,
-      (CASE
-        WHEN tsnap_is_running = 1 THEN 'YES'
-        ELSE 'NO'
-        END) AS TSNAP_IS_RUNNING,
-      (CASE
-        WHEN tsnap_has_unfinished_create_dag = 1 THEN 'YES'
-        ELSE 'NO'
-        END) AS TSNAP_HAS_UNFINISHED_CREATE_DAG,
-      (CASE
-        WHEN tsnap_has_unfinished_gc_dag = 1 THEN 'YES'
-        ELSE 'NO'
-        END) AS TSNAP_HAS_UNFINISHED_GC_DAG,
-      tsnap_clone_ref AS TSNAP_CLONE_REF,
-      (CASE
-        WHEN tsnap_meta_existed = 1 THEN 'YES'
-        ELSE 'NO'
-        END) AS TSNAP_META_EXISTED
-    FROM oceanbase.__all_virtual_ls_snapshot
-""".replace("\n", " "),
-)
-
-def_table_schema(
-  owner = 'wendongbodongbo.wd',
-  table_name      = 'V$OB_LS_SNAPSHOTS',
-  table_id        = '21518',
-  table_type      = 'SYSTEM_VIEW',
-  rowkey_columns  = [],
-  normal_columns  = [],
-  gm_columns      = [],
-  in_tenant_space = True,
-  view_definition = """SELECT TENANT_ID,
-    SNAPSHOT_ID,
-    LS_ID,
-    SVR_IP,
-    SVR_PORT,
-    META_EXISTED,
-    BUILD_STATUS,
-    REBUILD_SEQ_START,
-    REBUILD_SEQ_END,
-    END_INTERVAL_SCN,
-    LS_META_PACKAGE,
-    TSNAP_IS_RUNNING,
-    TSNAP_HAS_UNFINISHED_CREATE_DAG,
-    TSNAP_HAS_UNFINISHED_GC_DAG,
-    TSNAP_CLONE_REF,
-    TSNAP_META_EXISTED
-    FROM oceanbase.GV$OB_LS_SNAPSHOTS
-    WHERE SVR_IP = HOST_IP() AND SVR_PORT = RPC_PORT()
-""".replace("\n", " "),
-)
+# 21517:GV$OB_LS_SNAPSHOTS (abandoned)
+# 21518:V$OB_LS_SNAPSHOTS (abandoned)
 
 #### sys tenant only view
-def_table_schema(
-    owner = 'chensen.cs',
-    table_name     = 'DBA_OB_CLONE_HISTORY',
-    table_id       = '21519',
-    table_type = 'SYSTEM_VIEW',
-    rowkey_columns  = [],
-    normal_columns  = [],
-    gm_columns      = [],
-    in_tenant_space = False,
-    view_definition = """
-SELECT job_id AS CLONE_JOB_ID,
-       trace_id AS TRACE_ID,
-       source_tenant_id AS SOURCE_TENANT_ID,
-       source_tenant_name AS SOURCE_TENANT_NAME,
-       clone_tenant_id AS CLONE_TENANT_ID,
-       clone_tenant_name AS CLONE_TENANT_NAME,
-       tenant_snapshot_id AS TENANT_SNAPSHOT_ID,
-       tenant_snapshot_name AS TENANT_SNAPSHOT_NAME,
-       resource_pool_id AS RESOURCE_POOL_ID,
-       resource_pool_name AS RESOURCE_POOL_NAME,
-       unit_config_name AS UNIT_CONFIG_NAME,
-       restore_scn AS RESTORE_SCN,
-       status AS STATUS,
-       job_type AS CLONE_JOB_TYPE,
-       clone_start_time AS CLONE_START_TIME,
-       clone_finished_time AS CLONE_FINISHED_TIME,
-       ret_code AS RET_CODE,
-       error_msg AS ERROR_MESSAGE
-FROM oceanbase.__all_clone_job_history ORDER BY CLONE_START_TIME
-""".replace("\n", " ")
-)
+# 21519: DBA_OB_CLONE_HISTORY (abandoned)
+# 21520: GV$OB_SHARED_STORAGE_QUOTA (abandoned)
+# 21521: V$OB_SHARED_STORAGE_QUOTA (abandoned)
+# 21523: DBA_OB_LS_REPLICA_TASK_HISTORY (abandoned)
+# 21524: CDB_OB_LS_REPLICA_TASK_HISTORY (abandoned)
 
-def_table_schema(
-  owner           = 'zz412656',
-  table_name      = 'GV$OB_SHARED_STORAGE_QUOTA',
-  table_id        = '21520',
-  table_type      = 'SYSTEM_VIEW',
-  gm_columns      = [],
-  rowkey_columns  = [],
-  normal_columns  = [],
-  in_tenant_space = True,
-  view_definition = """
-(
-SELECT
-  A.SVR_IP AS SVR_IP,
-  A.SVR_PORT AS SVR_PORT,
-  IFNULL(B.ENDPOINT, '') AS ENDPOINT,
-  IFNULL(B.PATH, 'local://') AS PATH,
-  A.CLASS_ID AS CLASS_ID,
-  A.TYPE AS TYPE,
-  A.REQUIREMENT AS REQUIREMENT,
-  A.ASSIGN AS ASSIGN
-FROM
-  oceanbase.__all_virtual_shared_storage_quota A
-JOIN
-  (SELECT dest_id, path, endpoint FROM oceanbase.__all_virtual_backup_storage_info GROUP BY dest_id, path, endpoint) B
-ON
-  A.STORAGE_ID = B.DEST_ID
-WHERE
-  A.MODULE = 'BACKUP/ARCHIVE/RESTORE'
-)
-UNION
-(
-SELECT
-  C.SVR_IP AS SVR_IP,
-  C.SVR_PORT AS SVR_PORT,
-  IFNULL(D.ENDPOINT, '') AS ENDPOINT,
-  IFNULL(D.PATH, 'local://') AS PATH,
-  C.CLASS_ID AS CLASS_ID,
-  C.TYPE AS TYPE,
-  C.REQUIREMENT AS REQUIREMENT,
-  C.ASSIGN AS ASSIGN
-FROM
-  oceanbase.__all_virtual_shared_storage_quota C
-JOIN
-  (SELECT storage_id, path, endpoint FROM oceanbase.__all_virtual_zone_storage_mysql_sys_agent GROUP BY storage_id, path, endpoint) D
-ON
-  C.STORAGE_ID = D.STORAGE_ID
-WHERE
-  C.MODULE = 'CLOG/DATA'
-)
-""".replace("\n", " "),
-)
-
-def_table_schema(
-  owner           = 'zz412656',
-  table_name      = 'V$OB_SHARED_STORAGE_QUOTA',
-  table_id        = '21521',
-  table_type      = 'SYSTEM_VIEW',
-  gm_columns      = [],
-  rowkey_columns  = [],
-  normal_columns  = [],
-  in_tenant_space = True,
-  view_definition = """
-SELECT
-  SVR_IP,
-  SVR_PORT,
-  ENDPOINT,
-  PATH,
-  CLASS_ID,
-  TYPE,
-  REQUIREMENT,
-  ASSIGN
-FROM oceanbase.GV$OB_SHARED_STORAGE_QUOTA
-WHERE SVR_IP=HOST_IP() AND SVR_PORT=RPC_PORT()
-""".replace("\n", " "),
-)
-
-#21522: CDB_UNUSED_COL_TABS
-
-def_table_schema(
-  owner           = 'jinqian.zzy',
-  table_name      = 'DBA_OB_LS_REPLICA_TASK_HISTORY',
-  table_id        = '21523',
-  table_type      = 'SYSTEM_VIEW',
-  gm_columns      = [],
-  rowkey_columns  = [],
-  normal_columns  = [],
-  in_tenant_space = True,
-  view_definition =
-  """
-  (
-  SELECT LS_ID,
-         TASK_TYPE,
-         TASK_ID,
-         TASK_STATUS,
-         CAST(CASE PRIORITY
-              WHEN 0 THEN 'HIGH'
-              WHEN 1 THEN 'LOW'
-              ELSE NULL END AS CHAR(5)) AS PRIORITY,
-         TARGET_REPLICA_SVR_IP,
-         TARGET_REPLICA_SVR_PORT,
-         TARGET_PAXOS_REPLICA_NUMBER,
-         TARGET_REPLICA_TYPE,
-         (CASE SOURCE_REPLICA_SVR_IP
-              WHEN "" THEN NULL
-              ELSE SOURCE_REPLICA_SVR_IP END) AS SOURCE_REPLICA_SVR_IP,
-         SOURCE_REPLICA_SVR_PORT,
-         SOURCE_PAXOS_REPLICA_NUMBER,
-         (CASE SOURCE_REPLICA_TYPE
-              WHEN "" THEN NULL
-              ELSE SOURCE_REPLICA_TYPE END) AS SOURCE_REPLICA_TYPE,
-         (CASE DATA_SOURCE_SVR_IP
-              WHEN "" THEN NULL
-              ELSE DATA_SOURCE_SVR_IP END) AS DATA_SOURCE_SVR_IP,
-         DATA_SOURCE_SVR_PORT,
-         CAST(CASE IS_MANUAL
-              WHEN 0 THEN 'FALSE'
-              WHEN 1 THEN 'TRUE'
-              ELSE NULL END AS CHAR(6)) AS IS_MANUAL,
-         TASK_EXEC_SVR_IP,
-         TASK_EXEC_SVR_PORT,
-         CAST(GMT_CREATE AS DATETIME) AS CREATE_TIME,
-         CAST(SCHEDULE_TIME AS DATETIME) AS START_TIME,
-         CAST(GMT_MODIFIED AS DATETIME) AS MODIFY_TIME,
-         CAST(FINISH_TIME AS DATETIME) AS FINISH_TIME,
-         (CASE EXECUTE_RESULT
-              WHEN "" THEN NULL
-              ELSE EXECUTE_RESULT END) AS EXECUTE_RESULT,
-         COMMENT
-  FROM OCEANBASE.__ALL_VIRTUAL_LS_REPLICA_TASK_HISTORY
-  WHERE TENANT_ID = EFFECTIVE_TENANT_ID()
-  )
-  """.replace("\n", " "),
-)
-
-def_table_schema(
-  owner           = 'jinqian.zzy',
-  table_name      = 'CDB_OB_LS_REPLICA_TASK_HISTORY',
-  table_id        = '21524',
-  table_type      = 'SYSTEM_VIEW',
-  gm_columns      = [],
-  rowkey_columns  = [],
-  normal_columns  = [],
-  view_definition =
-  """
-  (
-  SELECT TENANT_ID,
-         LS_ID,
-         TASK_TYPE,
-         TASK_ID,
-         TASK_STATUS,
-         CAST(CASE PRIORITY
-              WHEN 0 THEN 'HIGH'
-              WHEN 1 THEN 'LOW'
-              ELSE NULL END AS CHAR(5)) AS PRIORITY,
-         TARGET_REPLICA_SVR_IP,
-         TARGET_REPLICA_SVR_PORT,
-         TARGET_PAXOS_REPLICA_NUMBER,
-         TARGET_REPLICA_TYPE,
-         (CASE SOURCE_REPLICA_SVR_IP
-              WHEN "" THEN NULL
-              ELSE SOURCE_REPLICA_SVR_IP END) AS SOURCE_REPLICA_SVR_IP,
-         SOURCE_REPLICA_SVR_PORT,
-         SOURCE_PAXOS_REPLICA_NUMBER,
-         (CASE SOURCE_REPLICA_TYPE
-              WHEN "" THEN NULL
-              ELSE SOURCE_REPLICA_TYPE END) AS SOURCE_REPLICA_TYPE,
-         (CASE DATA_SOURCE_SVR_IP
-              WHEN "" THEN NULL
-              ELSE DATA_SOURCE_SVR_IP END) AS DATA_SOURCE_SVR_IP,
-         DATA_SOURCE_SVR_PORT,
-         CAST(CASE IS_MANUAL
-              WHEN 0 THEN 'FALSE'
-              WHEN 1 THEN 'TRUE'
-              ELSE NULL END AS CHAR(6)) AS IS_MANUAL,
-         TASK_EXEC_SVR_IP,
-         TASK_EXEC_SVR_PORT,
-         CAST(GMT_CREATE AS DATETIME) AS CREATE_TIME,
-         CAST(SCHEDULE_TIME AS DATETIME) AS START_TIME,
-         CAST(GMT_MODIFIED AS DATETIME) AS MODIFY_TIME,
-         CAST(FINISH_TIME AS DATETIME) AS FINISH_TIME,
-         (CASE EXECUTE_RESULT
-              WHEN "" THEN NULL
-              ELSE EXECUTE_RESULT END) AS EXECUTE_RESULT,
-         COMMENT
-  FROM OCEANBASE.__ALL_VIRTUAL_LS_REPLICA_TASK_HISTORY
-  )
-  """.replace("\n", " "),
-)
-
+# 21522: CDB_UNUSED_COL_TABS
 def_table_schema(
     owner           = 'suzhi.yt',
     table_name      = 'CDB_MVIEW_LOGS',
@@ -37031,48 +29171,8 @@ def_table_schema(
 """.replace("\n", " ")
 ) 
 
-def_table_schema(
-  owner           = 'shouju.zyp',
-  table_name      = 'DBA_OB_SERVICES',
-  table_id        = '21548',
-  table_type      = 'SYSTEM_VIEW',
-  gm_columns      = [],
-  rowkey_columns  = [],
-  normal_columns  = [],
-  in_tenant_space = True,
-  view_definition =
-  """
-  SELECT
-    gmt_create AS CREATE_TIME,
-    gmt_modified AS MODIFIED_TIME,
-    SERVICE_NAME_ID,
-    SERVICE_NAME,
-    SERVICE_STATUS
-  FROM oceanbase.__all_virtual_service
-  WHERE TENANT_ID=EFFECTIVE_TENANT_ID();
-  """.replace("\n", " ")
-)
-
-def_table_schema(
-  owner           = 'shouju.zyp',
-  table_name      = 'CDB_OB_SERVICES',
-  table_id        = '21549',
-  table_type      = 'SYSTEM_VIEW',
-  gm_columns      = [],
-  rowkey_columns  = [],
-  normal_columns  = [],
-  view_definition =
-  """
-  SELECT
-    TENANT_ID,
-    gmt_create AS `CREATE_TIME`,
-    gmt_modified AS 'MODIFIED_TIME',
-    SERVICE_NAME_ID,
-    SERVICE_NAME,
-    SERVICE_STATUS
-  FROM oceanbase.__all_virtual_service
-  """.replace("\n", " ")
-)
+# 21548: DBA_OB_SERVICES (abandoned)
+# 21549: CDB_OB_SERVICES (abandoned)
 
 def_table_schema(
   owner = 'cxf262476',
@@ -37327,104 +29427,8 @@ def_table_schema(
 """.replace("\n", " ")
 )
 
-def_table_schema(
-  owner           = 'wyh329796',
-  table_name      = 'DBA_OB_STORAGE_IO_USAGE',
-  table_id        = '21560',
-  table_type      = 'SYSTEM_VIEW',
-  rowkey_columns  = [],
-  normal_columns  = [],
-  gm_columns      = [],
-  in_tenant_space = True,
-  view_definition = """
-  (
-  SELECT
-    A.TENANT_ID AS TENANT_ID,
-    IFNULL(B.PATH, 'LOCAL://') AS PATH,
-    IFNULL(B.ENDPOINT, '') AS ENDPOINT,
-    A.TYPE AS TYPE,
-    A.TOTAL AS TOTAL
-  FROM
-    OCEANBASE.__ALL_VIRTUAL_STORAGE_IO_USAGE AS A
-  LEFT JOIN
-    OCEANBASE.__ALL_VIRTUAL_BACKUP_STORAGE_INFO AS B
-  ON
-    A.DEST_ID = B.DEST_ID
-    AND
-    A.TENANT_ID = B.TENANT_ID
-  WHERE
-    A.TENANT_ID = EFFECTIVE_TENANT_ID()
-    AND
-    A.STORAGE_MOD ='BACKUP/ARCHIVE/RESTORE'
-  )
-  UNION
-  (
-  SELECT
-    A.TENANT_ID,
-    IFNULL(B.PATH, 'LOCAL://') AS PATH,
-    IFNULL(B.ENDPOINT, '') AS ENDPOINT,
-    A.TYPE,
-    A.TOTAL
-  FROM
-    OCEANBASE.__ALL_VIRTUAL_STORAGE_IO_USAGE AS A 
-  JOIN
-    OCEANBASE.__ALL_VIRTUAL_ZONE_STORAGE_MYSQL_SYS_AGENT AS B
-  ON
-    A.STORAGE_ID = B.STORAGE_ID
-  WHERE
-    A.TENANT_ID = EFFECTIVE_TENANT_ID()
-    AND  
-    A.STORAGE_MOD ='CLOG/DATA'
-  )
-""".replace("\n", " ")
-)
-
-def_table_schema(
-  owner           = 'wyh329796',
-  table_name      = 'CDB_OB_STORAGE_IO_USAGE',
-  table_id        = '21561',
-  table_type      = 'SYSTEM_VIEW',
-  rowkey_columns  = [],
-  normal_columns  = [],
-  gm_columns      = [],
-  view_definition = """
-  (
-  SELECT
-    A.TENANT_ID AS TENANT_ID,
-    IFNULL(B.PATH, 'LOCAL://') AS PATH,
-    IFNULL(B.ENDPOINT, '') AS ENDPOINT,
-    A.TYPE AS TYPE,
-    A.TOTAL AS TOTAL
-  FROM
-    OCEANBASE.__ALL_VIRTUAL_STORAGE_IO_USAGE AS A
-  LEFT JOIN
-    OCEANBASE.__ALL_VIRTUAL_BACKUP_STORAGE_INFO AS B
-  ON
-    A.DEST_ID = B.DEST_ID
-    AND
-    A.TENANT_ID = B.TENANT_ID
-  WHERE
-    A.STORAGE_MOD ='BACKUP/ARCHIVE/RESTORE'
-  )
-  UNION
-  (
-  SELECT
-    A.TENANT_ID,
-    IFNULL(B.PATH, 'LOCAL://') AS PATH,
-    IFNULL(B.ENDPOINT, '') AS ENDPOINT,
-    A.TYPE,
-    A.TOTAL
-  FROM
-    OCEANBASE.__ALL_VIRTUAL_STORAGE_IO_USAGE AS A 
-  JOIN
-    OCEANBASE.__ALL_VIRTUAL_ZONE_STORAGE_MYSQL_SYS_AGENT AS B
-  ON
-    A.STORAGE_ID = B.STORAGE_ID
-  WHERE
-    A.STORAGE_MOD ='CLOG/DATA'
-  )
-""".replace("\n", " ")
-)
+# 21560: DBA_OB_STORAGE_IO_USAGE (abandoned)
+# 21561: CDB_OB_STORAGE_IO_USAGE (abandoned)
 
 def_table_schema(
   owner = 'chaser.ch',
@@ -38403,166 +30407,10 @@ SELECT
 """.replace("\n", " ")
 )
 
-# 21591: DBA_OB_SERVER_SPACE_USAGE
-
-def_table_schema(
-  owner = 'gaishun.gs',
-  table_name      = 'CDB_OB_SERVER_SPACE_USAGE',
-  table_id        = '21592',
-  table_type      = 'SYSTEM_VIEW',
-  rowkey_columns  = [],
-  normal_columns  = [],
-  gm_columns      = [],
-  view_definition = """
-    select 
-      CASE 
-        WHEN atnt.tenant_name LIKE 'META$%' THEN REPLACE(atnt.tenant_name, 'META$', '') 
-        ELSE atnt.tenant_id 
-      END AS TENANT_ID,
-      CASE 
-        WHEN atnt.tenant_name LIKE 'META$%' THEN 
-          (SELECT t.tenant_name 
-          FROM oceanbase.__all_tenant t 
-          WHERE t.tenant_id = REPLACE(atnt.tenant_name, 'META$', ''))
-        ELSE atnt.tenant_name 
-      END AS TENANT_NAME,
-      asu.svr_ip as SERVER_IP, 
-      asu.svr_port as SERVER_PORT, 
-      CASE 
-        WHEN asu.file_type IN ('tenant tmp data') 
-                          THEN 'Tmp Data'
-        WHEN asu.file_type IN ('tenant clog data') 
-                          THEN 'Clog Data'
-        WHEN asu.file_type IN ('tenant meta data') 
-                          THEN 'Meta Data'
-        WHEN asu.file_type IN ('tenant slog data') 
-                          THEN 'Slog Data'
-      END AS SPACE_TYPE,
-      sum(asu.data_size) as DATA_BYTES, 
-      sum(asu.used_size) as USAGE_BYTES
-    from oceanbase.__all_space_usage asu
-    INNER JOIN oceanbase.__all_tenant atnt
-      ON    atnt.tenant_id = asu.tenant_id
-        AND asu.file_type in ('tenant tmp data', 
-                              'tenant clog data', 
-                              'tenant meta data',
-                              'tenant slog data')
-    group by TENANT_ID, SERVER_IP, SERVER_PORT, SPACE_TYPE
-    UNION
-    select 
-      CASE 
-        WHEN atnt.tenant_name LIKE 'META$%' THEN REPLACE(atnt.tenant_name, 'META$', '') 
-        ELSE atnt.tenant_id 
-      END AS TENANT_ID,
-      CASE 
-        WHEN atnt.tenant_name LIKE 'META$%' THEN 
-          (SELECT t.tenant_name 
-          FROM oceanbase.__all_tenant t 
-          WHERE t.tenant_id = REPLACE(atnt.tenant_name, 'META$', ''))
-        ELSE atnt.tenant_name 
-      END AS TENANT_NAME,
-      avtps.svr_ip as SERVER_IP, 
-      avtps.svr_port as SERVER_PORT, 
-      'Index Data' as SPACE_TYPE,
-      sum(avtps.occupy_size) as DATA_BYTES,
-      sum(avtps.required_size) as USAGE_BYTES
-    from 
-    oceanbase.__all_virtual_tablet_pointer_status avtps
-    INNER JOIN oceanbase.__all_virtual_tablet_to_ls avttl
-      ON      avttl.tenant_id = avtps.tenant_id
-        AND 	avttl.tablet_id = avtps.tablet_id
-    INNER JOIN oceanbase.__all_tenant atnt
-      ON      atnt.tenant_id = avttl.tenant_id
-    INNER JOIN oceanbase.__all_virtual_table avt
-      ON      avt.tenant_id = atnt.tenant_id
-        AND   avt.table_type = 5 
-        AND 	avt.table_id = avttl.table_id
-    group by TENANT_ID, SERVER_IP, SERVER_PORT, SPACE_TYPE
-    UNION
-    select 
-      CASE 
-        WHEN atnt.tenant_name LIKE 'META$%' THEN REPLACE(atnt.tenant_name, 'META$', '') 
-        ELSE atnt.tenant_id 
-      END AS TENANT_ID,
-      CASE 
-        WHEN atnt.tenant_name LIKE 'META$%' THEN 
-          (SELECT t.tenant_name 
-          FROM oceanbase.__all_tenant t 
-          WHERE t.tenant_id = REPLACE(atnt.tenant_name, 'META$', ''))
-        ELSE atnt.tenant_name 
-      END AS TENANT_NAME,
-      avtps.svr_ip as SERVER_IP, 
-      avtps.svr_port as SERVER_PORT, 
-      'Table Data' as SPACE_TYPE,
-      sum(avtps.occupy_size) as DATA_BYTES,
-      sum(avtps.required_size) as USAGE_BYTES
-    from 
-    oceanbase.__all_virtual_tablet_pointer_status avtps
-    INNER JOIN oceanbase.__all_virtual_tablet_to_ls avttl
-      ON      avttl.tenant_id = avtps.tenant_id
-        AND 	avttl.tablet_id = avtps.tablet_id
-    INNER JOIN oceanbase.__all_tenant atnt
-      ON      atnt.tenant_id = avttl.tenant_id
-    INNER JOIN oceanbase.__all_virtual_table avt
-      ON      avt.tenant_id = atnt.tenant_id
-        AND   avt.table_id = avttl.table_id
-        AND   avt.table_type in (3, 12, 13) 
-    group by TENANT_ID, SERVER_IP, SERVER_PORT, SPACE_TYPE
-    order by TENANT_ID, SERVER_IP, SERVER_PORT, SPACE_TYPE
-""".replace("\n", " ")
-)
-
+# 21591: DBA_OB_SERVER_SPACE_USAGE (abandoned)
+# 21592: CDB_OB_SERVER_SPACE_USAGE (abandoned)
 # 21593: DBA_OB_SPACE_USAGE
-
-def_table_schema(
-  owner = 'gaishun.gs',
-  table_name      = 'CDB_OB_SPACE_USAGE',
-  table_id        = '21594',
-  table_type      = 'SYSTEM_VIEW',
-  rowkey_columns  = [],
-  normal_columns  = [],
-  gm_columns      = [],
-  view_definition = """
-    SELECT 
-      CASE 
-        WHEN atnt.tenant_name LIKE 'META$%' THEN REPLACE(atnt.tenant_name, 'META$', '') 
-        ELSE atnt.tenant_id 
-      END AS TENANT_ID,
-      CASE 
-        WHEN atnt.tenant_name LIKE 'META$%' THEN 
-          (SELECT t.tenant_name 
-          FROM oceanbase.__all_tenant t 
-          WHERE t.tenant_id = REPLACE(atnt.tenant_name, 'META$', ''))
-        ELSE atnt.tenant_name 
-      END AS TENANT_NAME,
-      azs.endpoint AS ENDPOINT,
-      azs.path AS PATH,
-      CASE 
-        WHEN asu.file_type IN ('tenant local data', 
-                              'tenant tmp data') 
-                          THEN 'Local Data'
-        WHEN asu.file_type IN ('tenant shared_major data') 
-                          THEN 'Shared Data'
-        WHEN asu.file_type IN ('tenant clog data') 
-                          THEN 'Clog Data'
-      END AS SPACE_TYPE,
-      SUM(asu.used_size) AS USAGE_BYTES
-    from oceanbase.__all_space_usage asu
-    INNER JOIN oceanbase.__all_tenant atnt
-      ON atnt.tenant_id = asu.tenant_id
-    INNER JOIN oceanbase.__all_server alls
-      ON alls.svr_ip = asu.svr_ip
-        and alls.svr_port = asu.svr_port
-    LEFT JOIN oceanbase.__all_zone_storage azs
-      ON azs.zone = alls.zone
-    where asu.file_type in ('tenant shared_major data', 
-                            'tenant local data', 
-                            'tenant clog data', 
-                            'tenant tmp data')
-    GROUP BY TENANT_ID, ENDPOINT, PATH, SPACE_TYPE
-    ORDER BY TENANT_ID
-""".replace("\n", " ")
-)
+# 21594: CDB_OB_SPACE_USAGE (abandoned)
 
 def_table_schema(
   owner = 'gaishun.gs',
@@ -38599,11 +30447,6 @@ def_table_schema(
           and   at.table_id > 500000
       INNER JOIN oceanbase.__all_database ad
         ON      ad.database_id = at.database_id
-      INNER JOIN oceanbase.__all_virtual_ls_meta_table avlmt
-        ON     avtps.ls_id = avlmt.ls_id
-          AND  avtps.svr_ip = avlmt.svr_ip
-          AND  avtps.svr_port = avlmt.svr_port
-          AND  avlmt.role = 1
       group by table_id
     ) as subquery
     INNER JOIN oceanbase.__all_table at_name
@@ -38662,12 +30505,6 @@ def_table_schema(
     INNER JOIN oceanbase.__all_virtual_database ad
       ON      ad.tenant_id = atnt.tenant_id
         AND   ad.database_id = avt.database_id
-    INNER JOIN oceanbase.__all_virtual_ls_meta_table avlmt
-      ON      avtps.tenant_id = avlmt.tenant_id
-        AND   avtps.ls_id = avlmt.ls_id
-        AND   avtps.svr_ip = avlmt.svr_ip
-        AND   avtps.svr_port = avlmt.svr_port
-        AND   avlmt.role = 1
     group by tenant_id, table_id
     ) as subquery
     INNER JOIN oceanbase.__all_virtual_table avt_name
@@ -39582,31 +31419,7 @@ def_table_schema(
 
 # 21637: DBA_OB_TENANT_FLASHBACK_LOG_SCN
 # 21638: CDB_OB_TENANT_FLASHBACK_LOG_SCN
-
-def_table_schema(
-    owner = 'gengli.wzy',
-    table_name     = 'DBA_OB_LICENSE',
-    table_id       = '21639',
-    table_type = 'SYSTEM_VIEW',
-    gm_columns = [],
-    rowkey_columns = [],
-    view_definition = """
-     SELECT END_USER,
-            LICENSE_ID,
-            LICENSE_CODE,
-            LICENSE_TYPE,
-            PRODUCT_TYPE,
-            ISSUANCE_DATE,
-            ACTIVATION_TIME,
-            EXPIRED_TIME,
-            OPTIONS,
-            CORE_NUM,
-            NODE_NUM,
-            CLUSTER_ULID FROM OCEANBASE.__ALL_LICENSE
-""".replace("\n", " "),
-    normal_columns = [
-    ],
-)
+# 21639: DBA_OB_LICENSE (abandoned)
 
 def_table_schema(
   owner           = 'yangjiali.yjl',
@@ -40501,22 +32314,8 @@ def_sys_index_table(
   index_using_type = 'USING_BTREE',
   index_type = 'INDEX_TYPE_NORMAL_LOCAL',
   keywords = all_def_keywords['__all_table_history'])
-
-def_sys_index_table(
-  index_name = 'idx_status',
-  index_table_id = 101002,
-  index_columns = ['tenant_id', 'dest_id', 'file_status'],
-  index_using_type = 'USING_BTREE',
-  index_type = 'INDEX_TYPE_NORMAL_LOCAL',
-  keywords = all_def_keywords['__all_log_archive_piece_files'])
-
-def_sys_index_table(
-  index_name = 'idx_status',
-  index_table_id = 101003,
-  index_columns = ['tenant_id', 'dest_id', 'file_status'],
-  index_using_type = 'USING_BTREE',
-  index_type = 'INDEX_TYPE_NORMAL_LOCAL',
-  keywords = all_def_keywords['__all_backup_set_files'])
+# 101002: __all_log_archive_piece_files # abandoned
+# 101003: __all_backup_set_files # abandoned
 
 def_sys_index_table(
   index_name = 'idx_task_key',
@@ -40822,13 +32621,7 @@ def_sys_index_table(
   index_type = 'INDEX_TYPE_NORMAL_LOCAL',
   keywords = all_def_keywords['__all_tenant_objauth'])
 
-def_sys_index_table(
-  index_name = 'idx_xa_trans_id',
-  index_table_id = 101062,
-  index_columns = ['tenant_id', 'trans_id'],
-  index_using_type = 'USING_BTREE',
-  index_type = 'INDEX_TYPE_NORMAL_LOCAL',
-  keywords = all_def_keywords['__all_tenant_global_transaction'])
+# 101062: idx_xa_trans_id (abandoned)
 
 def_sys_index_table(
   index_name = 'idx_dependency_ref_obj',
@@ -40969,13 +32762,7 @@ def_sys_index_table(
   index_type = 'INDEX_TYPE_NORMAL_LOCAL',
   keywords = all_def_keywords['__all_database_privilege'])
 
-def_sys_index_table(
-  index_name = 'idx_tenant_snapshot_name',
-  index_table_id = 101089,
-  index_columns = ['snapshot_name'],
-  index_using_type = 'USING_BTREE',
-  index_type = 'INDEX_TYPE_UNIQUE_LOCAL',
-  keywords = all_def_keywords['__all_tenant_snapshot'])
+# 101089: idx_tenant_snapshot_name (abandoned)
 
 def_sys_index_table(
   index_name = 'idx_dbms_lock_allocated_lockhandle',
@@ -41001,21 +32788,8 @@ def_sys_index_table(
   index_type = 'INDEX_TYPE_NORMAL_LOCAL',
   keywords = all_def_keywords['__all_tablet_reorganize_history'])
 
-def_sys_index_table(
-  index_name = 'idx_kv_ttl_task_table_id',
-  index_table_id = 101093,
-  index_columns = ['table_id'],
-  index_using_type = 'USING_BTREE',
-  index_type = 'INDEX_TYPE_NORMAL_LOCAL',
-  keywords = all_def_keywords['__all_kv_ttl_task'])
-
-def_sys_index_table(
-  index_name = 'idx_kv_ttl_task_history_upd_time',
-  index_table_id = 101094,
-  index_columns = ['task_update_time'],
-  index_using_type = 'USING_BTREE',
-  index_type = 'INDEX_TYPE_NORMAL_LOCAL',
-  keywords = all_def_keywords['__all_kv_ttl_task_history'])
+# 101093: idx_kv_ttl_task_table_id (abandoned)
+# 101094: idx_kv_ttl_task_history_upd_time (abandoned)
 
 def_sys_index_table(
   index_name = 'idx_mview_refresh_run_stats_num_mvs_current',
@@ -41041,13 +32815,7 @@ def_sys_index_table(
   index_type = 'INDEX_TYPE_NORMAL_LOCAL',
   keywords = all_def_keywords['__all_mview_refresh_stats'])
 
-def_sys_index_table(
-  index_name = 'idx_transfer_partition_key',
-  index_table_id = 101098,
-  index_columns = ['table_id', 'object_id'],
-  index_using_type = 'USING_BTREE',
-  index_type = 'INDEX_TYPE_UNIQUE_LOCAL',
-  keywords = all_def_keywords['__all_transfer_partition_task'])
+# 101098: idx_transfer_partition_key (abandoned)
 
 def_sys_index_table(
   index_name = 'idx_client_to_server_session_info_client_session_id',
