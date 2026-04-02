@@ -19,7 +19,6 @@
 #include "share/resource_manager/ob_cgroup_ctrl.h"
 #include "src/share/schema/ob_schema_struct.h"
 #include "observer/omt/ob_tenant_mtl_helper.h"
-#include "share/ob_tenant_info_proxy.h"
 #include "lib/resource/ob_affinity_ctrl.h"
 
 namespace oceanbase
@@ -99,7 +98,7 @@ ObTenantBase::ObTenantBase(const uint64_t id, const int64_t epoch, bool enable_t
     unit_max_cpu_(0),
     unit_min_cpu_(0),
     unit_memory_size_(0),
-    switchover_epoch_(ObAllTenantInfo::INITIAL_SWITCHOVER_EPOCH),
+    switchover_epoch_(0),
     cgroups_(nullptr),
     enable_tenant_ctx_check_(enable_tenant_ctx_check),
     thread_count_(0),
