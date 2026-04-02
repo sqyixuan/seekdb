@@ -1,0 +1,1202 @@
+#owner: dingjincheng.djc
+#owner group: sql1
+#description: dbms_stats.gather_table_stats
+#tags: pl, opt_stats, optimizer
+#author:wb-sl672505
+
+connection default;
+
+--disable_query_log
+--error 0,1396
+drop user yyl;
+sleep 3;
+create user 'yyl' identified by '123';
+GRANT all privileges ON *.* TO 'yyl'@'%' WITH GRANT OPTION;
+
+--source mysql_test/include/check_schema_sync.inc
+connect (conn_root,$OBMYSQL_MS0,root@sys,,Oceanbase,$OBMYSQL_PORT);
+connect(conn,$OBMYSQL_MS0,yyl,123,test,$OBMYSQL_PORT);
+connection conn;
+
+set ob_trx_timeout = 10000000000;
+set ob_query_timeout = 10000000000;
+
+--disable_warnings
+drop database IF EXISTS yyl;
+--enable_warnings
+
+create database yyl  character set utf8;
+use yyl;
+--echo ###无主键、唯一键、索引表,普通表、均匀分布###
+
+##由于oracle兼容的视图没有平均行长、宏块、微块字段，这里提前创建一个视图用于查询
+create view index_stats_view as SELECT
+    CAST(DB.DATABASE_NAME AS CHAR(128)) AS OWNER,
+    CAST(V.INDEX_NAME AS     CHAR(128)) AS INDEX_NAME,
+    CAST(DB.DATABASE_NAME AS     CHAR(128)) AS TABLE_OWNER,
+    CAST(T.TABLE_NAME       AS  CHAR(128)) AS TABLE_NAME,
+    CAST(V.PARTITION_NAME   AS  CHAR(128)) AS PARTITION_NAME,
+    CAST(V.SUBPARTITION_NAME  AS    CHAR(128)) AS SUBPARTITION_NAME,
+    CAST(V.OBJECT_TYPE AS CHAR(12)) AS OBJECT_TYPE,
+    CAST(STAT.ROW_CNT AS    DECIMAL) AS NUM_ROWS,
+    CAST(STAT.AVG_ROW_LEN AS    DECIMAL) AS AVG_ROW_LEN,
+    CAST(STAT.macro_blk_cnt AS    DECIMAL) AS MACRO_BLK_CNT,
+    CAST(STAT.micro_blk_cnt AS    DECIMAL) AS MICRO_BLK_CNT
+    FROM
+    (SELECT DATABASE_ID,
+            TABLE_ID,
+            DATA_TABLE_ID,
+            CASE WHEN PART_LEVEL = 0 THEN -2 ELSE -1 END AS PARTITION_ID,
+            SUBSTR(TABLE_NAME, 7 + INSTR(SUBSTR(TABLE_NAME, 7), '_')) AS INDEX_NAME,
+            NULL AS PARTITION_NAME,
+            NULL AS SUBPARTITION_NAME,
+            NULL AS PARTITION_POSITION,
+            NULL AS SUBPARTITION_POSITION,
+            'INDEX' AS OBJECT_TYPE
+        FROM
+            oceanbase.__all_table T
+        WHERE T.TABLE_TYPE = 5
+    UNION ALL
+        SELECT T.DATABASE_ID,
+                T.TABLE_ID,
+                T.DATA_TABLE_ID,
+                P.PART_ID,
+                SUBSTR(T.TABLE_NAME, 7 + INSTR(SUBSTR(T.TABLE_NAME, 7), '_')) AS INDEX_NAME,
+                P.PART_NAME,
+                NULL,
+                P.PART_ID + 1,
+                NULL,
+                'PARTITION'
+        FROM
+            oceanbase.__all_table T
+          JOIN
+            oceanbase.__all_part P
+            ON T.TABLE_ID = P.TABLE_ID
+        WHERE T.TABLE_TYPE = 5
+    UNION ALL
+        SELECT T.DATABASE_ID,
+               T.TABLE_ID,
+               T.DATA_TABLE_ID,
+               SP.SUB_PART_ID AS PARTITION_ID,
+               SUBSTR(T.TABLE_NAME, 7 + INSTR(SUBSTR(T.TABLE_NAME, 7), '_')) AS INDEX_NAME,
+               P.PART_NAME,
+               SP.SUB_PART_NAME,
+               P.PART_ID + 1,
+               SP.SUB_PART_ID + 1,
+              'SUBPARTITION'
+        FROM
+            oceanbase.__all_table T
+        JOIN
+            oceanbase.__all_part P
+            ON T.TABLE_ID = P.TABLE_ID
+        JOIN
+            oceanbase.__all_sub_part SP
+            ON T.TABLE_ID = SP.TABLE_ID
+            AND P.PART_ID = SP.PART_ID
+        WHERE T.TABLE_TYPE = 5
+    ) V
+    JOIN oceanbase.__all_table T
+         ON T.TABLE_ID = V.DATA_TABLE_ID
+         AND T.DATABASE_ID = V.DATABASE_ID
+    JOIN
+        oceanbase.__all_database DB
+        ON DB.DATABASE_ID = V.DATABASE_ID
+        AND DB.DATABASE_NAME !=  '__recyclebin'
+    LEFT JOIN
+        oceanbase.__all_table_stat STAT
+        ON V.TABLE_ID = STAT.TABLE_ID
+        AND (V.PARTITION_ID = STAT.PARTITION_ID OR V.PARTITION_ID = -2)
+        AND STAT.INDEX_TYPE = 1;
+		
+--echo ###————————————————————————————————————————————————————————————————————————————————————###
+--echo ###有主键、唯一键、索引表,普通表、均匀分布###
+--echo ### 1 ###
+--error 0,1051
+DROP TABLE i_general_tab_uniform ;
+CREATE TABLE i_general_tab_uniform (f1 int,f2 float, f3 DECIMAL(10,5),f4 DOUBLE, f5 char(10), f6 VARBINARY(10), f7 VARCHAR(20), f8 text);
+
+DELIMITER //;
+DROP PROCEDURE if EXISTS pro_insert11;
+//
+CREATE procedure pro_insert11()
+BEGIN
+DECLARE i INT;
+SET i = 0;
+WHILE i<10 DO
+		INSERT INTO i_general_tab_uniform VALUES(5, 5.12345,5.12345,5.12345, 'admin5', 'test5', 'admin5', 'test5');
+		INSERT INTO i_general_tab_uniform VALUES(10, 10.12345,10.12345,10.12345, 'admin10', NULL, 'admin10', NULL);
+		INSERT INTO i_general_tab_uniform VALUES(15, 15.12345,15.12345,15.12345, 'admin15', 'test15', 'admin15', 'test15');
+		INSERT INTO i_general_tab_uniform VALUES(20, 20.12345,20.12345,20.12345, 'admin20', 'test20', 'admin20', 'test20');
+		INSERT INTO i_general_tab_uniform VALUES(25, 25.12345,25.12345,25.12345, 'admin25', 'test25', 'admin25', 'test25');
+		INSERT INTO i_general_tab_uniform VALUES(30, 30.12345,30.12345,30.12345, 'admin30', 'test30', 'admin30', 'test30');
+		INSERT INTO i_general_tab_uniform VALUES(35, 35.12345,35.12345,35.12345, 'admin35', 'test35', 'admin35', 'test35');
+		INSERT INTO i_general_tab_uniform VALUES(40, NULL,    NULL,    NULL,     'admin40', 'test40', 'admin40', 'test40');
+		INSERT INTO i_general_tab_uniform VALUES(45, 45.12345,45.12345,45.12345, 'admin45', 'test45', 'admin45', 'test45');
+		INSERT INTO i_general_tab_uniform VALUES(50, 50.12345,50.12345,50.12345, 'admin50', 'test50', 'admin50', 'test50');
+		INSERT INTO i_general_tab_uniform VALUES(55, 55.12345,55.12345,55.12345, 'admin55', 'test55', 'admin55', 'test55');
+		INSERT INTO i_general_tab_uniform VALUES(60, 60.12345,60.12345,60.12345,  NULL, 'test60'    ,  NULL, 'test60'    );
+		INSERT INTO i_general_tab_uniform VALUES(65, 65.12345,65.12345,65.12345, 'admin65', 'test65', 'admin65', 'test65');
+		INSERT INTO i_general_tab_uniform VALUES(70, 70.12345,70.12345,70.12345, 'admin70', 'test70', 'admin70', 'test70');
+		INSERT INTO i_general_tab_uniform VALUES(75, 75.12345,75.12345,75.12345, 'admin75', 'test75', 'admin75', 'test75');
+		INSERT INTO i_general_tab_uniform VALUES(80, 80.12345,80.12345,80.12345, 'admin80', 'test80', 'admin80', 'test80');
+		INSERT INTO i_general_tab_uniform VALUES(85, 85.12345,85.12345,85.12345, 'admin85', 'test85', 'admin85', 'test85');
+		INSERT INTO i_general_tab_uniform VALUES(90, 90.12345,90.12345,90.12345, 'admin90', 'test90', 'admin90', 'test90');
+		INSERT INTO i_general_tab_uniform VALUES(95, 95.12345,95.12345,95.12345, 'admin95', 'test95', 'admin95', 'test95');
+SET i = i+1;
+END WHILE;
+END;
+//
+CALL pro_insert11();
+//
+DELIMITER ;//
+
+--error 0,1091
+DROP INDEX IDX_1 on i_general_tab_uniform;
+--error 0,1091
+DROP INDEX IDX_2 on i_general_tab_uniform;
+create index IDX_1 on i_general_tab_uniform(f1);
+create index idx_2 on i_general_tab_uniform(f1,f5) global;
+
+--echo 收集统计信息，gather_index_stats-03-02-01-02-02，gather_index_stats-03-02-01-02-03
+call dbms_stats.gather_index_stats('YYL', 'IDX_1', tabname=>'I_GENERAL_TAB_UNIFORM');
+
+--echo ### OB关注的内容
+--disable_result_log
+--sorted_result
+SELECT TABLE_NAME,PARTITION_NAME,SUBPARTITION_NAME,OBJECT_TYPE,NUM_ROWS,AVG_ROW_LEN,MACRO_BLK_CNT,MICRO_BLK_CNT FROM index_stats_view where INDEX_NAME = 'IDX_1' ;
+--sorted_result
+SELECT table_name, partition_name, partition_position, subpartition_name, subpartition_position FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='IDX_1' ORDER BY subpartition_name,partition_name;
+--sorted_result
+SELECT object_type,BLEVEL,LEAF_BLOCKS,DISTINCT_KEYS,CLUSTERING_FACTOR, num_rows FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='IDX_1' ORDER BY subpartition_name,partition_name;
+--sorted_result
+SELECT GLOBAL_STATS,USER_STATS,STATTYPE_LOCKED,STALE_STATS FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='IDX_1' ORDER BY subpartition_name,partition_name;
+
+--echo 测试set
+
+
+explain select f1,f5 FROM i_general_tab_uniform WHERE f5='admin20';
+explain select f1,f5 FROM i_general_tab_uniform WHERE f1=20 AND f5='admin20';
+explain select * FROM i_general_tab_uniform WHERE f6='test20';
+
+
+call dbms_stats.set_index_stats('YYL', 'IDX_1',tabname=>'i_general_tab_uniform', numrows=>100, avgrlen=>20, nummacroblks=>10, nummicroblks=>10);
+--sorted_result
+select OWNER, INDEX_NAME, TABLE_OWNER, TABLE_NAME, PARTITION_NAME, SUBPARTITION_NAME, OBJECT_TYPE, NUM_ROWS from oceanbase.dba_ind_statistics where owner='YYL' and INDEX_NAME='IDX_1';
+--sorted_result
+select * from index_stats_view where owner='YYL' and INDEX_NAME='IDX_1';
+call dbms_stats.delete_index_stats('YYL', 'IDX_1',tabname=>'i_general_tab_uniform');
+
+call dbms_stats.set_index_stats('YYL', 'IDX_1',tabname=>'i_general_tab_uniform', numrows=>1000, avgrlen=>20, nummacroblks=>20, nummicroblks=>20);
+--sorted_result
+select OWNER, INDEX_NAME, TABLE_OWNER, TABLE_NAME, PARTITION_NAME, SUBPARTITION_NAME, OBJECT_TYPE, NUM_ROWS from oceanbase.dba_ind_statistics where owner='YYL' and INDEX_NAME='IDX_1';
+--sorted_result
+
+CALL dbms_stats.set_index_stats('YYL', 'IDX_1',tabname=>'i_general_tab_uniform', numrows=>500000, force=>true);
+CALL dbms_stats.set_index_stats('YYL', 'IDX_1',tabname=>'i_general_tab_uniform', numrows=>500, avgrlen=>20, nummacroblks=>10, nummicroblks=>10, force=>true);
+
+
+
+explain select f1,f5 FROM i_general_tab_uniform WHERE f5='admin20';
+explain select f1,f5 FROM i_general_tab_uniform WHERE f1=20 AND f5='admin20';
+explain select * FROM i_general_tab_uniform WHERE f6='test20';
+
+
+--sorted_result
+select * from index_stats_view where owner='YYL' and INDEX_NAME='IDX_1';
+
+--echo 测试delete
+call dbms_stats.delete_index_stats('YYL', 'IDX_1',tabname=>'i_general_tab_uniform');
+--sorted_result
+select OWNER, INDEX_NAME, TABLE_OWNER, TABLE_NAME, PARTITION_NAME, SUBPARTITION_NAME, OBJECT_TYPE, NUM_ROWS from oceanbase.dba_ind_statistics where owner='YYL' and TABLE_NAME='IDX_1';
+
+CALL dbms_stats.delete_index_stats('YYL', 'IDX_1',tabname=>'i_general_tab_uniform', cascade_parts=>false);
+
+--sorted_result
+select OWNER, INDEX_NAME, TABLE_OWNER, TABLE_NAME, PARTITION_NAME, SUBPARTITION_NAME, OBJECT_TYPE, NUM_ROWS from oceanbase.dba_ind_statistics where owner='YYL' and INDEX_NAME='IDX_1';
+--sorted_result
+
+
+explain select f1,f5 FROM i_general_tab_uniform WHERE f5='admin20';
+explain select f1,f5 FROM i_general_tab_uniform WHERE f1=20 AND f5='admin20';
+explain select * FROM i_general_tab_uniform WHERE f6='test20';
+
+
+
+--echo 收集统计信息
+call dbms_stats.gather_index_stats('YYL', 'IDX_2', tabname=>'I_GENERAL_TAB_UNIFORM');
+--echo ### OB关注的内容
+
+--sorted_result
+SELECT TABLE_NAME,PARTITION_NAME,SUBPARTITION_NAME,OBJECT_TYPE,NUM_ROWS,AVG_ROW_LEN,MACRO_BLK_CNT,MICRO_BLK_CNT FROM index_stats_view where INDEX_NAME = 'IDX_2' ;
+
+--echo 测试set
+
+
+explain select f1,f5 FROM i_general_tab_uniform WHERE f5='admin20';
+explain select f1,f5 FROM i_general_tab_uniform WHERE f1=20 AND f5='admin20';
+explain select * FROM i_general_tab_uniform WHERE f6='test20';
+
+
+call dbms_stats.set_index_stats('YYL', 'IDX_2',tabname=>'i_general_tab_uniform', numrows=>100, avgrlen=>20, nummacroblks=>10, nummicroblks=>10);
+--sorted_result
+select OWNER, INDEX_NAME, TABLE_OWNER, TABLE_NAME, PARTITION_NAME, SUBPARTITION_NAME, OBJECT_TYPE, NUM_ROWS from oceanbase.dba_ind_statistics where owner='YYL' and INDEX_NAME='IDX_2';
+--sorted_result
+select * from index_stats_view where owner='YYL' and INDEX_NAME='IDX_2';
+call dbms_stats.delete_index_stats('YYL', 'IDX_2',tabname=>'i_general_tab_uniform');
+
+call dbms_stats.set_index_stats('YYL', 'IDX_2',tabname=>'i_general_tab_uniform', numrows=>1000, avgrlen=>20, nummacroblks=>20, nummicroblks=>20);
+--sorted_result
+select OWNER, INDEX_NAME, TABLE_OWNER, TABLE_NAME, PARTITION_NAME, SUBPARTITION_NAME, OBJECT_TYPE, NUM_ROWS from oceanbase.dba_ind_statistics where owner='YYL' and INDEX_NAME='IDX_2';
+--sorted_result
+
+CALL dbms_stats.set_index_stats('YYL', 'IDX_2',tabname=>'i_general_tab_uniform', numrows=>500000, force=>true);
+CALL dbms_stats.set_index_stats('YYL', 'IDX_2',tabname=>'i_general_tab_uniform', numrows=>500, avgrlen=>20, nummacroblks=>10, nummicroblks=>10, force=>true);
+
+
+
+explain select f1,f5 FROM i_general_tab_uniform WHERE f5='admin20';
+explain select f1,f5 FROM i_general_tab_uniform WHERE f1=20 AND f5='admin20';
+explain select * FROM i_general_tab_uniform WHERE f6='test20';
+
+
+--sorted_result
+select * from index_stats_view where owner='YYL' and INDEX_NAME='IDX_2';
+
+--echo 测试delete
+call dbms_stats.delete_index_stats('YYL', 'IDX_2',tabname=>'i_general_tab_uniform');
+--sorted_result
+select OWNER, INDEX_NAME, TABLE_OWNER, TABLE_NAME, PARTITION_NAME, SUBPARTITION_NAME, OBJECT_TYPE, NUM_ROWS from oceanbase.dba_ind_statistics where owner='YYL' and TABLE_NAME='IDX_2';
+
+call dbms_stats.delete_index_stats('YYL', 'IDX_2',tabname=>'i_general_tab_uniform', cascade_parts=>false);
+
+
+--sorted_result
+select OWNER, INDEX_NAME, TABLE_OWNER, TABLE_NAME, PARTITION_NAME, SUBPARTITION_NAME, OBJECT_TYPE, NUM_ROWS from oceanbase.dba_ind_statistics where owner='YYL' and INDEX_NAME='IDX_2';
+--sorted_result
+
+
+explain select f1,f5 FROM i_general_tab_uniform WHERE f5='admin20';
+explain select f1,f5 FROM i_general_tab_uniform WHERE f1=20 AND f5='admin20';
+explain select * FROM i_general_tab_uniform WHERE f6='test20';
+
+
+
+--echo ### 2 ###
+--echo ###有主键、唯一键、索引表,普通表、高斯分布###
+--error 0,1051
+DROP TABLE i_general_tab_Gaussian ;
+CREATE TABLE i_general_tab_Gaussian (f1 int,f2 float, f3 DECIMAL(10,5),f4 DOUBLE, f5 char(10), f6 VARBINARY(10), f7 VARCHAR(20), f8 text);
+
+DELIMITER //;
+DROP PROCEDURE if EXISTS pro_insert12;
+//
+CREATE procedure pro_insert12()
+BEGIN
+DECLARE i INT;
+DECLARE j INT;
+DECLARE k INT;
+DECLARE m INT;
+DECLARE n INT;
+DECLARE o INT;
+DECLARE p INT;
+DECLARE q INT;
+SET i = 1;
+SET j = 1;
+SET k = 1;
+SET m = 1;
+SET n = 1;
+SET o = 1;
+SET p = 1;
+SET q = 1;
+INSERT INTO i_general_tab_Gaussian     VALUES(2,  2.12345,  2.12345 ,  2.12345, 'admin2', 'test2'  , 'admin2', 'test2'  );
+WHILE i<5 DO
+		INSERT INTO i_general_tab_Gaussian VALUES(3,  3.12345,  3.12345 ,  3.12345 , 'admin3', 'test3'  , 'admin3', 'test3'  );
+SET i = i+1;
+END WHILE;
+WHILE j<251 DO
+		INSERT INTO i_general_tab_Gaussian VALUES(60, 60.12345, 60.12345, 60.12345, 'admin60', 'test60', 'admin60', 'test60');
+SET j = j+1;
+END WHILE;
+WHILE k<4 DO
+		INSERT INTO i_general_tab_Gaussian VALUES(70, 70.12345, 70.12345, 70.12345, 'admin70', 'test70', 'admin70', 'test70');
+SET k = k+1;
+END WHILE;
+WHILE m<171 DO
+		INSERT INTO i_general_tab_Gaussian VALUES(77, NULL,     NULL    ,NULL    ,     NULL, 'test77' ,     NULL, 'test77' );
+SET m = m+1;
+END WHILE;
+WHILE n<51 DO
+		INSERT INTO i_general_tab_Gaussian VALUES(82, 82.12345, 82.12345,82.12345, 'admin82', 'test82', 'admin82', 'test82');
+SET n = n+1;
+END WHILE;
+WHILE o<181 DO
+		INSERT INTO i_general_tab_Gaussian VALUES(86, 86.12345, 86.12345,86.12345, 'admin86', NULL    , 'admin86', NULL     );
+SET o = o+1;
+END WHILE;
+WHILE p<31 DO
+		INSERT INTO i_general_tab_Gaussian VALUES(NULL, 95.12345,95.12345,95.12345, 'admin95', 'test95', 'admin95', 'test95');
+SET p = p+1;
+END WHILE;
+WHILE q<3 DO
+		INSERT INTO i_general_tab_Gaussian VALUES(10, 10.12345, 10.12345, 10.12345, 'admin10', 'test10', 'admin10', 'test10');
+		INSERT INTO i_general_tab_Gaussian VALUES(20, 20.12345, 20.12345, 20.12345, 'admin20', 'test20', 'admin20', 'test20');
+SET q = q+1;
+END WHILE;
+END;
+//
+CALL pro_insert12();
+//
+DELIMITER ;//
+
+--error 0,1091
+DROP INDEX idx_3 on i_general_tab_Gaussian;
+--error 0,1091
+DROP INDEX idx_4 on i_general_tab_Gaussian;
+
+create index idx_3 on i_general_tab_Gaussian(f1);
+create index idx_4 on i_general_tab_Gaussian(F1,f5) global;
+
+--echo 收集统计信息
+call dbms_stats.gather_index_stats('YYL', 'IDX_3', tabname=>'I_GENERAL_TAB_GAUSSIAN');
+
+--echo ### OB关注的内容
+
+--sorted_result
+SELECT TABLE_NAME,PARTITION_NAME,SUBPARTITION_NAME,OBJECT_TYPE,NUM_ROWS,AVG_ROW_LEN,MACRO_BLK_CNT,MICRO_BLK_CNT FROM index_stats_view where INDEX_NAME = 'IDX_3' ;
+--sorted_result
+SELECT table_name, partition_name, partition_position, subpartition_name, subpartition_position FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='IDX_3' ORDER BY subpartition_name,partition_name;
+--sorted_result
+SELECT object_type,BLEVEL,LEAF_BLOCKS,DISTINCT_KEYS,CLUSTERING_FACTOR, num_rows FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='IDX_3' ORDER BY subpartition_name,partition_name;
+--sorted_result
+SELECT GLOBAL_STATS,USER_STATS,STATTYPE_LOCKED,STALE_STATS FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='IDX_3' ORDER BY subpartition_name,partition_name;
+
+--echo 测试set
+
+
+explain select f1,f5 FROM i_general_tab_Gaussian WHERE f5='admin20';
+explain select f1,f5 FROM i_general_tab_Gaussian WHERE f1=20 AND f5='admin20';
+explain select * FROM i_general_tab_Gaussian WHERE f6='test20';
+
+
+call dbms_stats.set_index_stats('YYL', 'IDX_3',tabname=>'i_general_tab_Gaussian', numrows=>100, avgrlen=>20, nummacroblks=>10, nummicroblks=>10);
+--sorted_result
+select OWNER, INDEX_NAME, TABLE_OWNER, TABLE_NAME, PARTITION_NAME, SUBPARTITION_NAME, OBJECT_TYPE, NUM_ROWS from oceanbase.dba_ind_statistics where owner='YYL' and INDEX_NAME='IDX_3';
+--sorted_result
+select * from index_stats_view where owner='YYL' and INDEX_NAME='IDX_3';
+call dbms_stats.delete_index_stats('YYL', 'IDX_3',tabname=>'i_general_tab_Gaussian');
+
+call dbms_stats.set_index_stats('YYL', 'IDX_3',tabname=>'i_general_tab_Gaussian', numrows=>1000, avgrlen=>20, nummacroblks=>20, nummicroblks=>20);
+--sorted_result
+select OWNER, INDEX_NAME, TABLE_OWNER, TABLE_NAME, PARTITION_NAME, SUBPARTITION_NAME, OBJECT_TYPE, NUM_ROWS from oceanbase.dba_ind_statistics where owner='YYL' and INDEX_NAME='IDX_3';
+--sorted_result
+
+CALL dbms_stats.set_index_stats('YYL', 'IDX_3',tabname=>'i_general_tab_Gaussian', numrows=>500000, force=>true);
+CALL dbms_stats.set_index_stats('YYL', 'IDX_3',tabname=>'i_general_tab_Gaussian', numrows=>500, avgrlen=>20, nummacroblks=>10, nummicroblks=>10, force=>true);
+
+
+explain select f1,f5 FROM i_general_tab_Gaussian WHERE f5='admin20';
+explain select f1,f5 FROM i_general_tab_Gaussian WHERE f1=20 AND f5='admin20';
+explain select * FROM i_general_tab_Gaussian WHERE f6='test20';
+
+
+--sorted_result
+select * from index_stats_view where owner='YYL' and INDEX_NAME='IDX_3';
+
+--echo 测试delete
+call dbms_stats.delete_index_stats('YYL', 'IDX_3',tabname=>'i_general_tab_Gaussian');
+--sorted_result
+select OWNER, INDEX_NAME, TABLE_OWNER, TABLE_NAME, PARTITION_NAME, SUBPARTITION_NAME, OBJECT_TYPE, NUM_ROWS from oceanbase.dba_ind_statistics where owner='YYL' and TABLE_NAME='IDX_3';
+
+CALL dbms_stats.delete_index_stats('YYL', 'IDX_3',tabname=>'i_general_tab_Gaussian', cascade_parts=>false);
+
+
+--sorted_result
+select OWNER, INDEX_NAME, TABLE_OWNER, TABLE_NAME, PARTITION_NAME, SUBPARTITION_NAME, OBJECT_TYPE, NUM_ROWS from oceanbase.dba_ind_statistics where owner='YYL' and INDEX_NAME='IDX_3';
+--sorted_result
+
+
+explain select f1,f5 FROM i_general_tab_Gaussian WHERE f5='admin20';
+explain select f1,f5 FROM i_general_tab_Gaussian WHERE f1=20 AND f5='admin20';
+explain select * FROM i_general_tab_Gaussian WHERE f6='test20';
+
+
+--echo 收集统计信息
+call dbms_stats.gather_index_stats('YYL', 'IDX_4', tabname=>'I_GENERAL_TAB_GAUSSIAN');
+--echo ### OB关注的内容
+
+--sorted_result
+SELECT TABLE_NAME,PARTITION_NAME,SUBPARTITION_NAME,OBJECT_TYPE,NUM_ROWS,AVG_ROW_LEN,MACRO_BLK_CNT,MICRO_BLK_CNT FROM index_stats_view where INDEX_NAME = 'IDX_4' ;
+
+--echo 测试set
+
+
+explain select f1,f5 FROM i_general_tab_Gaussian WHERE f5='admin20';
+explain select f1,f5 FROM i_general_tab_Gaussian WHERE f1=20 AND f5='admin20';
+explain select * FROM i_general_tab_Gaussian WHERE f6='test20';
+
+
+call dbms_stats.set_index_stats('YYL', 'IDX_4',tabname=>'i_general_tab_Gaussian', numrows=>100, avgrlen=>20, nummacroblks=>10, nummicroblks=>10);
+--sorted_result
+select OWNER, INDEX_NAME, TABLE_OWNER, TABLE_NAME, PARTITION_NAME, SUBPARTITION_NAME, OBJECT_TYPE, NUM_ROWS from oceanbase.dba_ind_statistics where owner='YYL' and INDEX_NAME='IDX_4';
+--sorted_result
+select * from index_stats_view where owner='YYL' and INDEX_NAME='IDX_4';
+call dbms_stats.delete_index_stats('YYL', 'IDX_4',tabname=>'i_general_tab_Gaussian');
+
+call dbms_stats.set_index_stats('YYL', 'IDX_4',tabname=>'i_general_tab_Gaussian', numrows=>1000, avgrlen=>20, nummacroblks=>20, nummicroblks=>20);
+--sorted_result
+select OWNER, INDEX_NAME, TABLE_OWNER, TABLE_NAME, PARTITION_NAME, SUBPARTITION_NAME, OBJECT_TYPE, NUM_ROWS from oceanbase.dba_ind_statistics where owner='YYL' and INDEX_NAME='IDX_4';
+--sorted_result
+
+CALL dbms_stats.set_index_stats('YYL', 'IDX_4',tabname=>'i_general_tab_Gaussian', numrows=>500000, force=>true);
+CALL dbms_stats.set_index_stats('YYL', 'IDX_4',tabname=>'i_general_tab_Gaussian', numrows=>500, avgrlen=>20, nummacroblks=>10, nummicroblks=>10, force=>true);
+
+
+
+explain select f1,f5 FROM i_general_tab_Gaussian WHERE f5='admin20';
+explain select f1,f5 FROM i_general_tab_Gaussian WHERE f1=20 AND f5='admin20';
+explain select * FROM i_general_tab_Gaussian WHERE f6='test20';
+
+
+--sorted_result
+select * from index_stats_view where owner='YYL' and INDEX_NAME='IDX_4';
+
+--echo 测试delete
+call dbms_stats.delete_index_stats('YYL', 'IDX_4',tabname=>'i_general_tab_Gaussian');
+--sorted_result
+select OWNER, INDEX_NAME, TABLE_OWNER, TABLE_NAME, PARTITION_NAME, SUBPARTITION_NAME, OBJECT_TYPE, NUM_ROWS from oceanbase.dba_ind_statistics where owner='YYL' and TABLE_NAME='IDX_4';
+
+CALL dbms_stats.delete_index_stats('YYL', 'IDX_4',tabname=>'i_general_tab_Gaussian', cascade_parts=>false);
+
+--sorted_result
+select OWNER, INDEX_NAME, TABLE_OWNER, TABLE_NAME, PARTITION_NAME, SUBPARTITION_NAME, OBJECT_TYPE, NUM_ROWS from oceanbase.dba_ind_statistics where owner='YYL' and INDEX_NAME='IDX_4';
+--sorted_result
+
+
+explain select f1,f5 FROM i_general_tab_Gaussian WHERE f5='admin20';
+explain select f1,f5 FROM i_general_tab_Gaussian WHERE f1=20 AND f5='admin20';
+explain select * FROM i_general_tab_Gaussian WHERE f6='test20';
+
+
+--echo ### 3 ###
+--echo ###有主键、唯一键、索引表,range分区表、均匀分布###
+--error 0,1051
+DROP TABLE i_partitioned_range_tab_uniform ;
+CREATE TABLE i_partitioned_range_tab_uniform (f1 int,f2 float, f3 DECIMAL(10,5),f4 DOUBLE, f5 char(10), f6 VARBINARY(10), f7 VARCHAR(20), f8 text)
+PARTITION BY RANGE(f1) (PARTITION p1 VALUES less than(6),PARTITION p2 VALUES less than(81),PARTITION p3 VALUES less than(MAXVALUE));
+INSERT INTO i_partitioned_range_tab_uniform SELECT * FROM i_general_tab_uniform;
+
+--echo 全局范围分区索引
+--error 0,1091
+DROP INDEX idx_5 on I_PARTITIONED_RANGE_TAB_UNIFORM;
+CREATE INDEX idx_5 ON i_partitioned_range_tab_uniform(f1)
+   GLOBAL PARTITION BY RANGE (f1)(
+	PARTITION p1 VALUES LESS THAN (30),
+    PARTITION p2 VALUES LESS THAN (60),
+    PARTITION p3 VALUES LESS THAN (MAXVALUE)
+	);
+	
+--echo 收集统计信息
+call dbms_stats.gather_index_stats('YYL', 'IDX_5', tabname=>'I_PARTITIONED_RANGE_TAB_UNIFORM');
+
+--echo ### OB关注的内容
+
+--sorted_result
+SELECT TABLE_NAME,PARTITION_NAME,SUBPARTITION_NAME,OBJECT_TYPE,NUM_ROWS,AVG_ROW_LEN,MACRO_BLK_CNT,MICRO_BLK_CNT FROM index_stats_view where INDEX_NAME = 'IDX_5' ;
+--sorted_result
+SELECT table_name, partition_name, partition_position, subpartition_name, subpartition_position FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='IDX_5' ORDER BY subpartition_name,partition_name;
+--sorted_result
+SELECT object_type,BLEVEL,LEAF_BLOCKS,DISTINCT_KEYS,CLUSTERING_FACTOR, num_rows FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='IDX_5' ORDER BY subpartition_name,partition_name;
+--sorted_result
+SELECT GLOBAL_STATS,USER_STATS,STATTYPE_LOCKED,STALE_STATS FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='IDX_5' ORDER BY subpartition_name,partition_name;
+
+--echo 测试set
+
+
+explain select f1,f5 FROM i_partitioned_range_tab_uniform WHERE f5='admin20';
+explain select f1,f5 FROM i_partitioned_range_tab_uniform WHERE f1=20 AND f5='admin20';
+explain select * FROM i_partitioned_range_tab_uniform WHERE f6='test20';
+
+
+call dbms_stats.set_index_stats('YYL', 'IDX_5',tabname=>'i_partitioned_range_tab_uniform', numrows=>100, avgrlen=>20, nummacroblks=>10, nummicroblks=>10);
+--sorted_result
+select OWNER, INDEX_NAME, TABLE_OWNER, TABLE_NAME, PARTITION_NAME, SUBPARTITION_NAME, OBJECT_TYPE, NUM_ROWS from oceanbase.dba_ind_statistics where owner='YYL' and INDEX_NAME='IDX_5';
+--sorted_result
+select * from index_stats_view where owner='YYL' and INDEX_NAME='IDX_5';
+call dbms_stats.delete_index_stats('YYL', 'IDX_5',tabname=>'i_partitioned_range_tab_uniform');
+
+call dbms_stats.set_index_stats('YYL', 'IDX_5',tabname=>'i_partitioned_range_tab_uniform', numrows=>1000, avgrlen=>20, nummacroblks=>20, nummicroblks=>20);
+--sorted_result
+select OWNER, INDEX_NAME, TABLE_OWNER, TABLE_NAME, PARTITION_NAME, SUBPARTITION_NAME, OBJECT_TYPE, NUM_ROWS from oceanbase.dba_ind_statistics where owner='YYL' and INDEX_NAME='IDX_5';
+--sorted_result
+
+CALL dbms_stats.set_index_stats('YYL', 'IDX_5',tabname=>'i_partitioned_range_tab_uniform', numrows=>500000, force=>true);
+CALL dbms_stats.set_index_stats('YYL', 'IDX_5',tabname=>'i_partitioned_range_tab_uniform', numrows=>500, avgrlen=>20, nummacroblks=>10, nummicroblks=>10, force=>true);
+
+
+
+explain select f1,f5 FROM i_partitioned_range_tab_uniform WHERE f5='admin20';
+explain select f1,f5 FROM i_partitioned_range_tab_uniform WHERE f1=20 AND f5='admin20';
+explain select * FROM i_partitioned_range_tab_uniform WHERE f6='test20';
+
+
+--sorted_result
+select * from index_stats_view where owner='YYL' and INDEX_NAME='IDX_5';
+
+--echo 测试delete
+call dbms_stats.delete_index_stats('YYL', 'IDX_5',tabname=>'i_partitioned_range_tab_uniform');
+--sorted_result
+select OWNER, INDEX_NAME, TABLE_OWNER, TABLE_NAME, PARTITION_NAME, SUBPARTITION_NAME, OBJECT_TYPE, NUM_ROWS from oceanbase.dba_ind_statistics where owner='YYL' and TABLE_NAME='IDX_5';
+
+CALL dbms_stats.delete_index_stats('YYL', 'IDX_5',tabname=>'i_partitioned_range_tab_uniform', cascade_parts=>false);
+
+--sorted_result
+select OWNER, INDEX_NAME, TABLE_OWNER, TABLE_NAME, PARTITION_NAME, SUBPARTITION_NAME, OBJECT_TYPE, NUM_ROWS from oceanbase.dba_ind_statistics where owner='YYL' and INDEX_NAME='IDX_5';
+--sorted_result
+
+
+explain select f1,f5 FROM i_partitioned_range_tab_uniform WHERE f5='admin20';
+explain select f1,f5 FROM i_partitioned_range_tab_uniform WHERE f1=20 AND f5='admin20';
+explain select * FROM i_partitioned_range_tab_uniform WHERE f6='test20';
+
+
+--echo ### 4 ###
+--echo ###有主键、唯一键、索引表,hash分区表、均匀分布###
+--error 0,1051
+DROP TABLE i_partitioned_hash_tab_uniform ;
+CREATE TABLE i_partitioned_hash_tab_uniform (f1 int,f2 float, f3 DECIMAL(10,5),f4 DOUBLE, f5 char(10), f6 VARBINARY(10), f7 VARCHAR(20), f8 text)
+partition by hash(f1) partitions 4;
+INSERT INTO i_partitioned_hash_tab_uniform SELECT * FROM i_general_tab_uniform;
+
+--error 0,1091
+DROP INDEX IDX_7 on i_partitioned_hash_tab_uniform;
+CREATE INDEX IDX_7 ON i_partitioned_hash_tab_uniform(f1)
+   GLOBAL PARTITION BY RANGE (f1)(
+	PARTITION p1 VALUES LESS THAN (30),
+    PARTITION p2 VALUES LESS THAN (60),
+    PARTITION p3 VALUES LESS THAN (MAXVALUE)
+);
+
+--echo 收集统计信息
+call dbms_stats.gather_index_stats('YYL', 'IDX_7', tabname=>'i_partitioned_hash_tab_uniform');
+--echo ### OB关注的内容
+
+--sorted_result
+SELECT TABLE_NAME,PARTITION_NAME,SUBPARTITION_NAME,OBJECT_TYPE,NUM_ROWS,AVG_ROW_LEN,MACRO_BLK_CNT,MICRO_BLK_CNT FROM index_stats_view where INDEX_NAME = 'IDX_7' ;
+--sorted_result
+SELECT table_name, partition_name, partition_position, subpartition_name, subpartition_position FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='IDX_7' ORDER BY subpartition_name,partition_name;
+--sorted_result
+SELECT object_type,BLEVEL,LEAF_BLOCKS,DISTINCT_KEYS,CLUSTERING_FACTOR, num_rows FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='IDX_7' ORDER BY subpartition_name,partition_name;
+--sorted_result
+SELECT GLOBAL_STATS,USER_STATS,STATTYPE_LOCKED,STALE_STATS FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='IDX_7' ORDER BY subpartition_name,partition_name;
+
+--echo 测试set
+
+
+explain select f1,f5 FROM i_partitioned_hash_tab_uniform WHERE f5='admin20';
+explain select f1,f5 FROM i_partitioned_hash_tab_uniform WHERE f1=20 AND f5='admin20';
+explain select * FROM i_partitioned_hash_tab_uniform WHERE f6='test20';
+
+
+call dbms_stats.set_index_stats('YYL', 'IDX_7',tabname=>'i_partitioned_hash_tab_uniform', numrows=>100, avgrlen=>20, nummacroblks=>10, nummicroblks=>10);
+--sorted_result
+select OWNER, INDEX_NAME, TABLE_OWNER, TABLE_NAME, PARTITION_NAME, SUBPARTITION_NAME, OBJECT_TYPE, NUM_ROWS from oceanbase.dba_ind_statistics where owner='YYL' and INDEX_NAME='IDX_7';
+--sorted_result
+select * from index_stats_view where owner='YYL' and INDEX_NAME='IDX_7';
+call dbms_stats.delete_index_stats('YYL', 'IDX_7',tabname=>'i_partitioned_hash_tab_uniform');
+
+call dbms_stats.set_index_stats('YYL', 'IDX_7',tabname=>'i_partitioned_hash_tab_uniform', numrows=>1000, avgrlen=>20, nummacroblks=>20, nummicroblks=>20);
+--sorted_result
+select OWNER, INDEX_NAME, TABLE_OWNER, TABLE_NAME, PARTITION_NAME, SUBPARTITION_NAME, OBJECT_TYPE, NUM_ROWS from oceanbase.dba_ind_statistics where owner='YYL' and INDEX_NAME='IDX_7';
+--sorted_result
+
+CALL dbms_stats.set_index_stats('YYL', 'IDX_7',tabname=>'i_partitioned_hash_tab_uniform', numrows=>500000, force=>true);
+CALL dbms_stats.set_index_stats('YYL', 'IDX_7',tabname=>'i_partitioned_hash_tab_uniform', numrows=>500, avgrlen=>20, nummacroblks=>10, nummicroblks=>10, force=>true);
+
+
+explain select f1,f5 FROM i_partitioned_hash_tab_uniform WHERE f5='admin20';
+explain select f1,f5 FROM i_partitioned_hash_tab_uniform WHERE f1=20 AND f5='admin20';
+explain select * FROM i_partitioned_hash_tab_uniform WHERE f6='test20';
+
+
+--sorted_result
+select * from index_stats_view where owner='YYL' and INDEX_NAME='IDX_7';
+
+--echo 测试delete
+call dbms_stats.delete_index_stats('YYL', 'IDX_7',tabname=>'i_partitioned_hash_tab_uniform');
+--sorted_result
+select OWNER, INDEX_NAME, TABLE_OWNER, TABLE_NAME, PARTITION_NAME, SUBPARTITION_NAME, OBJECT_TYPE, NUM_ROWS from oceanbase.dba_ind_statistics where owner='YYL' and TABLE_NAME='IDX_7';
+
+CALL dbms_stats.delete_index_stats('YYL', 'IDX_7',tabname=>'i_partitioned_hash_tab_uniform', cascade_parts=>false);
+
+--sorted_result
+select OWNER, INDEX_NAME, TABLE_OWNER, TABLE_NAME, PARTITION_NAME, SUBPARTITION_NAME, OBJECT_TYPE, NUM_ROWS from oceanbase.dba_ind_statistics where owner='YYL' and INDEX_NAME='IDX_7';
+--sorted_result
+
+
+explain select f1,f5 FROM i_partitioned_hash_tab_uniform WHERE f5='admin20';
+explain select f1,f5 FROM i_partitioned_hash_tab_uniform WHERE f1=20 AND f5='admin20';
+explain select * FROM i_partitioned_hash_tab_uniform WHERE f6='test20';
+
+
+--echo ### 5 ###
+--echo ###有主键、唯一键、索引表,range-hash、高斯分布###
+
+--error 0,1051
+DROP TABLE i_partitioned_rangehash_tab_Gaussian ;
+CREATE TABLE i_partitioned_rangehash_tab_Gaussian (f1 int,f2 float, f3 DECIMAL(10,5),f4 DOUBLE, f5 char(10), f6 VARBINARY(10), f7 VARCHAR(20), f8 text)
+partition by range(f1)
+subpartition by hash(f1) subpartitions 4
+(PARTITION p1 VALUES less than(6),PARTITION p2 VALUES less than(81),PARTITION p3 VALUES less than(MAXVALUE));
+
+INSERT INTO i_partitioned_rangehash_tab_Gaussian SELECT * FROM i_general_tab_Gaussian;
+
+--echo 全局范围分区索引
+CREATE INDEX IDX_12 ON i_partitioned_rangehash_tab_Gaussian(f1)
+   GLOBAL PARTITION BY RANGE (f1)(
+	PARTITION p1 VALUES LESS THAN (30),
+    PARTITION p2 VALUES LESS THAN (60),
+    PARTITION p3 VALUES LESS THAN (MAXVALUE)
+	);
+	
+--echo 收集统计信息
+call dbms_stats.gather_index_stats('YYL', 'IDX_12', tabname=>'i_partitioned_rangehash_tab_Gaussian');
+
+--echo ### OB关注的内容
+
+--sorted_result
+SELECT TABLE_NAME,PARTITION_NAME,SUBPARTITION_NAME,OBJECT_TYPE,NUM_ROWS,AVG_ROW_LEN,MACRO_BLK_CNT,MICRO_BLK_CNT FROM index_stats_view where INDEX_NAME = 'IDX_12' ;
+
+--echo 测试set
+
+
+explain select f1,f5 FROM i_partitioned_rangehash_tab_Gaussian WHERE f5='admin20';
+explain select f1,f5 FROM i_partitioned_rangehash_tab_Gaussian WHERE f1=20 AND f5='admin20';
+explain select * FROM i_partitioned_rangehash_tab_Gaussian WHERE f6='test20';
+
+
+call dbms_stats.set_index_stats('YYL', 'IDX_12',tabname=>'i_partitioned_rangehash_tab_Gaussian', numrows=>100, avgrlen=>20, nummacroblks=>10, nummicroblks=>10);
+--sorted_result
+select OWNER, INDEX_NAME, TABLE_OWNER, TABLE_NAME, PARTITION_NAME, SUBPARTITION_NAME, OBJECT_TYPE, NUM_ROWS from oceanbase.dba_ind_statistics where owner='YYL' and INDEX_NAME='IDX_12';
+--sorted_result
+select * from index_stats_view where owner='YYL' and INDEX_NAME='IDX_12';
+call dbms_stats.delete_index_stats('YYL', 'IDX_12',tabname=>'i_partitioned_rangehash_tab_Gaussian');
+
+call dbms_stats.set_index_stats('YYL', 'IDX_12',tabname=>'i_partitioned_rangehash_tab_Gaussian', numrows=>1000, avgrlen=>20, nummacroblks=>20, nummicroblks=>20);
+--sorted_result
+select OWNER, INDEX_NAME, TABLE_OWNER, TABLE_NAME, PARTITION_NAME, SUBPARTITION_NAME, OBJECT_TYPE, NUM_ROWS from oceanbase.dba_ind_statistics where owner='YYL' and INDEX_NAME='IDX_12';
+--sorted_result
+
+CALL dbms_stats.set_index_stats('YYL', 'IDX_12',tabname=>'i_partitioned_rangehash_tab_Gaussian', numrows=>500000, force=>true);
+CALL dbms_stats.set_index_stats('YYL', 'IDX_12',tabname=>'i_partitioned_rangehash_tab_Gaussian', numrows=>500, avgrlen=>20, nummacroblks=>10, nummicroblks=>10, force=>true);
+
+
+explain select f1,f5 FROM i_partitioned_rangehash_tab_Gaussian WHERE f5='admin20';
+explain select f1,f5 FROM i_partitioned_rangehash_tab_Gaussian WHERE f1=20 AND f5='admin20';
+explain select * FROM i_partitioned_rangehash_tab_Gaussian WHERE f6='test20';
+
+
+--sorted_result
+select * from index_stats_view where owner='YYL' and INDEX_NAME='IDX_12';
+
+--echo 测试delete
+call dbms_stats.delete_index_stats('YYL', 'IDX_12',tabname=>'i_partitioned_rangehash_tab_Gaussian');
+--sorted_result
+select OWNER, INDEX_NAME, TABLE_OWNER, TABLE_NAME, PARTITION_NAME, SUBPARTITION_NAME, OBJECT_TYPE, NUM_ROWS from oceanbase.dba_ind_statistics where owner='YYL' and TABLE_NAME='IDX_12';
+
+CALL dbms_stats.delete_index_stats('YYL', 'IDX_12',tabname=>'i_partitioned_rangehash_tab_Gaussian', cascade_parts=>false);
+
+--sorted_result
+select OWNER, INDEX_NAME, TABLE_OWNER, TABLE_NAME, PARTITION_NAME, SUBPARTITION_NAME, OBJECT_TYPE, NUM_ROWS from oceanbase.dba_ind_statistics where owner='YYL' and INDEX_NAME='IDX_12';
+--sorted_result
+
+
+explain select f1,f5 FROM i_partitioned_rangehash_tab_Gaussian WHERE f5='admin20';
+explain select f1,f5 FROM i_partitioned_rangehash_tab_Gaussian WHERE f1=20 AND f5='admin20';
+explain select * FROM i_partitioned_rangehash_tab_Gaussian WHERE f6='test20';
+
+
+--echo ### 6 ###
+--echo ###有主键、唯一键、索引表,range-list、均匀分布###
+--error 0,1051
+DROP TABLE i_partitioned_rangelist_tab_uniform ;
+CREATE TABLE i_partitioned_rangelist_tab_uniform (f1 int,f2 float, f3 DECIMAL(10,5),f4 DOUBLE, f5 char(10), f6 VARBINARY(10), f7 VARCHAR(20), f8 text)
+partition by range(f1)
+subpartition by list(f1)
+subpartition template
+(
+subpartition part1 values IN (5,10,15),
+subpartition part2 values IN (20,25,30),
+subpartition part3 values IN (35,40,45),
+subpartition part4 values IN (50,55,60,65),
+subpartition part5 values IN (70,75,80,85),
+subpartition part6 values IN (default))
+(PARTITION p1 VALUES less than(6),PARTITION p2 VALUES less than(81),PARTITION p3 VALUES less than(MAXVALUE))
+;
+
+INSERT INTO i_partitioned_rangelist_tab_uniform SELECT * FROM i_general_tab_uniform;
+
+--error 0,1091
+DROP INDEX IDX_13 on i_partitioned_rangelist_tab_uniform;
+
+--echo 全局范围分区索引
+CREATE INDEX IDX_13 ON i_partitioned_rangelist_tab_uniform(f1)
+   GLOBAL PARTITION BY RANGE (f1)(
+	PARTITION p1 VALUES LESS THAN (30),
+    PARTITION p2 VALUES LESS THAN (60),
+    PARTITION p3 VALUES LESS THAN (MAXVALUE)
+	);
+	
+
+--echo 收集统计信息
+call dbms_stats.gather_index_stats('YYL', 'IDX_13', tabname=>'i_partitioned_rangelist_tab_uniform');
+--echo ### OB关注的内容
+
+--sorted_result
+SELECT TABLE_NAME,PARTITION_NAME,SUBPARTITION_NAME,OBJECT_TYPE,NUM_ROWS,AVG_ROW_LEN,MACRO_BLK_CNT,MICRO_BLK_CNT FROM index_stats_view where INDEX_NAME = 'IDX_13' ;
+
+--echo 测试set
+
+
+explain select f1,f5 FROM i_partitioned_rangelist_tab_uniform WHERE f5='admin20';
+explain select f1,f5 FROM i_partitioned_rangelist_tab_uniform WHERE f1=20 AND f5='admin20';
+explain select * FROM i_partitioned_rangelist_tab_uniform WHERE f6='test20';
+
+
+call dbms_stats.set_index_stats('YYL', 'IDX_13',tabname=>'i_partitioned_rangelist_tab_uniform', numrows=>100, avgrlen=>20, nummacroblks=>10, nummicroblks=>10);
+--sorted_result
+select OWNER, INDEX_NAME, TABLE_OWNER, TABLE_NAME, PARTITION_NAME, SUBPARTITION_NAME, OBJECT_TYPE, NUM_ROWS from oceanbase.dba_ind_statistics where owner='YYL' and INDEX_NAME='IDX_13';
+--sorted_result
+select * from index_stats_view where owner='YYL' and INDEX_NAME='IDX_13';
+call dbms_stats.delete_index_stats('YYL', 'IDX_13',tabname=>'i_partitioned_rangelist_tab_uniform');
+
+call dbms_stats.set_index_stats('YYL', 'IDX_13',tabname=>'i_partitioned_rangelist_tab_uniform', numrows=>1000, avgrlen=>20, nummacroblks=>20, nummicroblks=>20);
+--sorted_result
+select OWNER, INDEX_NAME, TABLE_OWNER, TABLE_NAME, PARTITION_NAME, SUBPARTITION_NAME, OBJECT_TYPE, NUM_ROWS from oceanbase.dba_ind_statistics where owner='YYL' and INDEX_NAME='IDX_13';
+--sorted_result
+
+CALL dbms_stats.set_index_stats('YYL', 'IDX_13',tabname=>'i_partitioned_rangelist_tab_uniform', numrows=>500000, force=>true);
+CALL dbms_stats.set_index_stats('YYL', 'IDX_13',tabname=>'i_partitioned_rangelist_tab_uniform', numrows=>500, avgrlen=>20, nummacroblks=>10, nummicroblks=>10, force=>true);
+
+
+explain select f1,f5 FROM i_partitioned_rangelist_tab_uniform WHERE f5='admin20';
+explain select f1,f5 FROM i_partitioned_rangelist_tab_uniform WHERE f1=20 AND f5='admin20';
+explain select * FROM i_partitioned_rangelist_tab_uniform WHERE f6='test20';
+
+
+--sorted_result
+select * from index_stats_view where owner='YYL' and INDEX_NAME='IDX_13';
+
+--echo 测试delete
+call dbms_stats.delete_index_stats('YYL', 'IDX_13',tabname=>'i_partitioned_rangelist_tab_uniform');
+--sorted_result
+select OWNER, INDEX_NAME, TABLE_OWNER, TABLE_NAME, PARTITION_NAME, SUBPARTITION_NAME, OBJECT_TYPE, NUM_ROWS from oceanbase.dba_ind_statistics where owner='YYL' and TABLE_NAME='IDX_13';
+
+CALL dbms_stats.delete_index_stats('YYL', 'IDX_13',tabname=>'i_partitioned_rangelist_tab_uniform', cascade_parts=>false);
+
+--sorted_result
+select OWNER, INDEX_NAME, TABLE_OWNER, TABLE_NAME, PARTITION_NAME, SUBPARTITION_NAME, OBJECT_TYPE, NUM_ROWS from oceanbase.dba_ind_statistics where owner='YYL' and INDEX_NAME='IDX_13';
+--sorted_result
+
+
+explain select f1,f5 FROM i_partitioned_rangelist_tab_uniform WHERE f5='admin20';
+explain select f1,f5 FROM i_partitioned_rangelist_tab_uniform WHERE f1=20 AND f5='admin20';
+explain select * FROM i_partitioned_rangelist_tab_uniform WHERE f6='test20';
+
+
+--echo ### 8 ###
+--echo ###覆盖三种直方图，频率直方图，捅数量设置20+ 即可，桶的数量设置为10，为混合直方图###
+
+--error 0,1051
+DROP TABLE general_tab_fre ;
+CREATE TABLE general_tab_fre (f1 int,f2 float, f3 DECIMAL(10,5),f4 DOUBLE, f5 char(10), f6 VARBINARY(10), f7 VARCHAR(20), f8 text);
+
+DELIMITER //;
+DROP PROCEDURE if EXISTS pro_insert22;
+//
+CREATE procedure pro_insert22()
+BEGIN
+DECLARE i INT;
+SET i = 0;
+WHILE i<10 DO
+		INSERT INTO general_tab_fre VALUES(5, 5.12345,5.12345,5.12345, 'admin5', 'test5', 'admin5', 'test5');
+		INSERT INTO general_tab_fre VALUES(10, 10.12345,10.12345,10.12345, 'admin10', NULL, 'admin10', NULL);
+		INSERT INTO general_tab_fre VALUES(15, 15.12345,15.12345,15.12345, 'admin15', 'test15', 'admin15', 'test15');
+		INSERT INTO general_tab_fre VALUES(20, 20.12345,20.12345,20.12345, 'admin20', 'test20', 'admin20', 'test20');
+		INSERT INTO general_tab_fre VALUES(25, 25.12345,25.12345,25.12345, 'admin25', 'test25', 'admin25', 'test25');
+		INSERT INTO general_tab_fre VALUES(30, 30.12345,30.12345,30.12345, 'admin30', 'test30', 'admin30', 'test30');
+		INSERT INTO general_tab_fre VALUES(35, 35.12345,35.12345,35.12345, 'admin35', 'test35', 'admin35', 'test35');
+		INSERT INTO general_tab_fre VALUES(40, NULL,    NULL,    NULL,     'admin40', 'test40', 'admin40', 'test40');
+		INSERT INTO general_tab_fre VALUES(45, 45.12345,45.12345,45.12345, 'admin45', 'test45', 'admin45', 'test45');
+		INSERT INTO general_tab_fre VALUES(50, 50.12345,50.12345,50.12345, 'admin50', 'test50', 'admin50', 'test50');
+		INSERT INTO general_tab_fre VALUES(55, 55.12345,55.12345,55.12345, 'admin55', 'test55', 'admin55', 'test55');
+		INSERT INTO general_tab_fre VALUES(60, 60.12345,60.12345,60.12345,  NULL, 'test60'    ,  NULL, 'test60'    );
+		INSERT INTO general_tab_fre VALUES(65, 65.12345,65.12345,65.12345, 'admin65', 'test65', 'admin65', 'test65');
+		INSERT INTO general_tab_fre VALUES(70, 70.12345,70.12345,70.12345, 'admin70', 'test70', 'admin70', 'test70');
+		INSERT INTO general_tab_fre VALUES(75, 75.12345,75.12345,75.12345, 'admin75', 'test75', 'admin75', 'test75');
+		INSERT INTO general_tab_fre VALUES(80, 80.12345,80.12345,80.12345, 'admin80', 'test80', 'admin80', 'test80');
+		INSERT INTO general_tab_fre VALUES(85, 85.12345,85.12345,85.12345, 'admin85', 'test85', 'admin85', 'test85');
+		INSERT INTO general_tab_fre VALUES(90, 90.12345,90.12345,90.12345, 'admin90', 'test90', 'admin90', 'test90');
+		INSERT INTO general_tab_fre VALUES(95, 95.12345,95.12345,95.12345, 'admin95', 'test95', 'admin95', 'test95');
+		INSERT INTO general_tab_fre VALUES(NULL, 100.12345,100.12345,100.12345, 'admin100', 'test100', 'admin100', 'test100');
+SET i = i+1;
+END WHILE;
+END;
+//
+CALL pro_insert22();
+//
+DELIMITER ;//
+
+--echo 全局HASH分区索引
+CREATE INDEX IDX_24 ON general_tab_fre(f1)
+   GLOBAL PARTITION BY HASH (f1)(
+	PARTITION p1,
+    PARTITION p2
+);
+
+--echo 收集统计信息
+call dbms_stats.gather_index_stats('YYL', 'IDX_24', tabname=>'general_tab_fre');
+--echo ### OB关注的内容
+
+--sorted_result
+SELECT TABLE_NAME,PARTITION_NAME,SUBPARTITION_NAME,OBJECT_TYPE,NUM_ROWS,AVG_ROW_LEN,MACRO_BLK_CNT,MICRO_BLK_CNT FROM index_stats_view where INDEX_NAME = 'IDX_24' ;
+--sorted_result
+SELECT table_name, partition_name, partition_position, subpartition_name, subpartition_position FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='IDX_24' ORDER BY subpartition_name,partition_name;
+--sorted_result
+SELECT object_type,BLEVEL,LEAF_BLOCKS,DISTINCT_KEYS,CLUSTERING_FACTOR, num_rows FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='IDX_24' ORDER BY subpartition_name,partition_name;
+--sorted_result
+SELECT GLOBAL_STATS,USER_STATS,STATTYPE_LOCKED,STALE_STATS FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='IDX_24' ORDER BY subpartition_name,partition_name;
+
+--echo 测试set
+
+
+explain select f1,f5 FROM general_tab_fre WHERE f5='admin20';
+explain select f1,f5 FROM general_tab_fre WHERE f1=20 AND f5='admin20';
+explain select * FROM general_tab_fre WHERE f6='test20';
+
+
+call dbms_stats.set_index_stats('YYL', 'IDX_24',tabname=>'general_tab_fre', numrows=>100, avgrlen=>20, nummacroblks=>10, nummicroblks=>10);
+--sorted_result
+select OWNER, INDEX_NAME, TABLE_OWNER, TABLE_NAME, PARTITION_NAME, SUBPARTITION_NAME, OBJECT_TYPE, NUM_ROWS from oceanbase.dba_ind_statistics where owner='YYL' and INDEX_NAME='IDX_24';
+--sorted_result
+select * from index_stats_view where owner='YYL' and INDEX_NAME='IDX_24';
+call dbms_stats.delete_index_stats('YYL', 'IDX_24',tabname=>'general_tab_fre');
+
+call dbms_stats.set_index_stats('YYL', 'IDX_24',tabname=>'general_tab_fre', numrows=>1000, avgrlen=>20, nummacroblks=>20, nummicroblks=>20);
+--sorted_result
+select OWNER, INDEX_NAME, TABLE_OWNER, TABLE_NAME, PARTITION_NAME, SUBPARTITION_NAME, OBJECT_TYPE, NUM_ROWS from oceanbase.dba_ind_statistics where owner='YYL' and INDEX_NAME='IDX_24';
+--sorted_result
+
+CALL dbms_stats.set_index_stats('YYL', 'IDX_24',tabname=>'general_tab_fre', numrows=>500000, force=>true);
+CALL dbms_stats.set_index_stats('YYL', 'IDX_24',tabname=>'general_tab_fre', numrows=>500, avgrlen=>20, nummacroblks=>10, nummicroblks=>10, force=>true);
+
+
+explain select f1,f5 FROM general_tab_fre WHERE f5='admin20';
+explain select f1,f5 FROM general_tab_fre WHERE f1=20 AND f5='admin20';
+explain select * FROM general_tab_fre WHERE f6='test20';
+
+
+--sorted_result
+select * from index_stats_view where owner='YYL' and INDEX_NAME='IDX_24';
+
+--echo 测试delete
+call dbms_stats.delete_index_stats('YYL', 'IDX_24',tabname=>'general_tab_fre');
+--sorted_result
+select OWNER, INDEX_NAME, TABLE_OWNER, TABLE_NAME, PARTITION_NAME, SUBPARTITION_NAME, OBJECT_TYPE, NUM_ROWS from oceanbase.dba_ind_statistics where owner='YYL' and TABLE_NAME='IDX_24';
+
+CALL dbms_stats.delete_index_stats('YYL', 'IDX_24',tabname=>'general_tab_fre', cascade_parts=>false);
+
+--sorted_result
+select OWNER, INDEX_NAME, TABLE_OWNER, TABLE_NAME, PARTITION_NAME, SUBPARTITION_NAME, OBJECT_TYPE, NUM_ROWS from oceanbase.dba_ind_statistics where owner='YYL' and INDEX_NAME='IDX_24';
+--sorted_result
+
+
+explain select f1,f5 FROM general_tab_fre WHERE f5='admin20';
+explain select f1,f5 FROM general_tab_fre WHERE f1=20 AND f5='admin20';
+explain select * FROM general_tab_fre WHERE f6='test20';
+
+
+--echo ### 9 ###
+--echo ###top k直方图，桶的个数小于10，比如为8即可为topk直方图###
+--error 0,1051
+DROP TABLE general_tab_topk ;
+CREATE TABLE general_tab_topk (f1 int,f2 float, f3 DECIMAL(10,5),f4 DOUBLE, f5 char(10), f6 VARBINARY(10), f7 VARCHAR(20), f8 text);
+
+
+DELIMITER //;
+DROP PROCEDURE if EXISTS pro_insert23;
+//
+CREATE procedure pro_insert23()
+BEGIN
+DECLARE i INT;
+DECLARE j INT;
+DECLARE k INT;
+DECLARE m INT;
+DECLARE n INT;
+DECLARE o INT;
+DECLARE p INT;
+DECLARE q INT;
+SET i = 1;
+SET j = 1;
+SET k = 1;
+SET m = 1;
+SET n = 1;
+SET o = 1;
+SET p = 1;
+SET q = 1;
+INSERT INTO general_tab_topk     VALUES(2,  2.12345,  2.12345 ,  2.12345, 'admin2', 'test2'  , 'admin2', 'test2'  );
+WHILE i<3 DO
+		INSERT INTO general_tab_topk VALUES(3,  3.12345,  3.12345 ,  3.12345 , 'admin3', 'test3'  , 'admin3', 'test3'  );
+SET i = i+1;
+END WHILE;
+WHILE j<251 DO
+		INSERT INTO general_tab_topk VALUES(60, 60.12345, 60.12345, 60.12345, 'admin60', 'test60', 'admin60', 'test60');
+SET j = j+1;
+END WHILE;
+WHILE k<31 DO
+		INSERT INTO general_tab_topk VALUES(70, 70.12345, 70.12345, 70.12345, 'admin70', 'test70', 'admin70', 'test70');
+SET k = k+1;
+END WHILE;
+WHILE m<171 DO
+		INSERT INTO general_tab_topk VALUES(77, NULL,     NULL    ,NULL    ,     NULL, 'test77' ,     NULL, 'test77' );
+SET m = m+1;
+END WHILE;
+WHILE n<21 DO
+		INSERT INTO general_tab_topk VALUES(82, 82.12345, 82.12345,82.12345, 'admin82', 'test82', 'admin82', 'test82');
+SET n = n+1;
+END WHILE;
+WHILE o<21 DO
+		INSERT INTO general_tab_topk VALUES(86, 86.12345, 86.12345,86.12345, 'admin86', NULL    , 'admin86', NULL     );
+SET o = o+1;
+END WHILE;
+WHILE p<31 DO
+		INSERT INTO general_tab_topk VALUES(NULL, 95.12345,95.12345,95.12345, 'admin95', 'test95', 'admin95', 'test95');
+SET p = p+1;
+END WHILE;
+WHILE q<3 DO
+		INSERT INTO general_tab_topk VALUES(10, 10.12345, 10.12345, 10.12345, 'admin10', 'test10', 'admin10', 'test10');
+		INSERT INTO general_tab_topk VALUES(20, 20.12345, 20.12345, 20.12345, 'admin20', 'test20', 'admin20', 'test20');
+SET q = q+1;
+END WHILE;
+END;
+//
+CALL pro_insert23();
+//
+DELIMITER ;//
+
+--echo 全局HASH分区索引
+CREATE INDEX IDX_25 ON general_tab_topk(f1)
+   GLOBAL PARTITION BY HASH (f1)(
+	PARTITION p1,
+    PARTITION p2
+);
+
+--echo 收集统计信息
+call dbms_stats.gather_index_stats('YYL', 'IDX_25', tabname=>'general_tab_topk');
+--echo ### OB关注的内容
+
+--sorted_result
+SELECT TABLE_NAME,PARTITION_NAME,SUBPARTITION_NAME,OBJECT_TYPE,NUM_ROWS,AVG_ROW_LEN,MACRO_BLK_CNT,MICRO_BLK_CNT FROM index_stats_view where INDEX_NAME = 'IDX_25' ;
+--sorted_result
+SELECT table_name, partition_name, partition_position, subpartition_name, subpartition_position FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='IDX_25' ORDER BY subpartition_name,partition_name;
+--sorted_result
+SELECT object_type,BLEVEL,LEAF_BLOCKS,DISTINCT_KEYS,CLUSTERING_FACTOR, num_rows FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='IDX_25' ORDER BY subpartition_name,partition_name;
+--sorted_result
+SELECT GLOBAL_STATS,USER_STATS,STATTYPE_LOCKED,STALE_STATS FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='IDX_25' ORDER BY subpartition_name,partition_name;
+
+--echo 测试set
+
+
+explain select f1,f5 FROM general_tab_topk WHERE f5='admin20';
+explain select f1,f5 FROM general_tab_topk WHERE f1=20 AND f5='admin20';
+explain select * FROM general_tab_topk WHERE f6='test20';
+
+
+call dbms_stats.set_index_stats('YYL', 'IDX_25',tabname=>'general_tab_topk', numrows=>100, avgrlen=>20, nummacroblks=>10, nummicroblks=>10);
+--sorted_result
+select OWNER, INDEX_NAME, TABLE_OWNER, TABLE_NAME, PARTITION_NAME, SUBPARTITION_NAME, OBJECT_TYPE, NUM_ROWS from oceanbase.dba_ind_statistics where owner='YYL' and INDEX_NAME='IDX_25';
+--sorted_result
+select * from index_stats_view where owner='YYL' and INDEX_NAME='IDX_25';
+call dbms_stats.delete_index_stats('YYL', 'IDX_25',tabname=>'general_tab_topk');
+
+call dbms_stats.set_index_stats('YYL', 'IDX_25',tabname=>'general_tab_topk', numrows=>1000, avgrlen=>20, nummacroblks=>20, nummicroblks=>20);
+--sorted_result
+select OWNER, INDEX_NAME, TABLE_OWNER, TABLE_NAME, PARTITION_NAME, SUBPARTITION_NAME, OBJECT_TYPE, NUM_ROWS from oceanbase.dba_ind_statistics where owner='YYL' and INDEX_NAME='IDX_25';
+--sorted_result
+
+CALL dbms_stats.set_index_stats('YYL', 'IDX_25',tabname=>'general_tab_topk', numrows=>500000, force=>true);
+CALL dbms_stats.set_index_stats('YYL', 'IDX_25',tabname=>'general_tab_topk', numrows=>500, avgrlen=>20, nummacroblks=>10, nummicroblks=>10, force=>true);
+
+
+explain select f1,f5 FROM general_tab_topk WHERE f5='admin20';
+explain select f1,f5 FROM general_tab_topk WHERE f1=20 AND f5='admin20';
+explain select * FROM general_tab_topk WHERE f6='test20';
+
+
+--sorted_result
+select * from index_stats_view where owner='YYL' and INDEX_NAME='IDX_25';
+
+--echo 测试delete
+call dbms_stats.delete_index_stats('YYL', 'IDX_25',tabname=>'general_tab_topk');
+--sorted_result
+select OWNER, INDEX_NAME, TABLE_OWNER, TABLE_NAME, PARTITION_NAME, SUBPARTITION_NAME, OBJECT_TYPE, NUM_ROWS from oceanbase.dba_ind_statistics where owner='YYL' and TABLE_NAME='IDX_25';
+
+CALL dbms_stats.delete_index_stats('YYL', 'IDX_25',tabname=>'general_tab_topk', cascade_parts=>false);
+
+--sorted_result
+select OWNER, INDEX_NAME, TABLE_OWNER, TABLE_NAME, PARTITION_NAME, SUBPARTITION_NAME, OBJECT_TYPE, NUM_ROWS from oceanbase.dba_ind_statistics where owner='YYL' and INDEX_NAME='IDX_25';
+--sorted_result
+
+
+explain select f1,f5 FROM general_tab_topk WHERE f5='admin20';
+explain select f1,f5 FROM general_tab_topk WHERE f1=20 AND f5='admin20';
+explain select * FROM general_tab_topk WHERE f6='test20';
+
+
+--echo ### 7 ###
+--echo ###有主键、唯一键、索引表,list-range、高斯分布###
+
+--error 0,1051
+DROP TABLE i_partitioned_listrange_tab_Gaussian ;
+CREATE TABLE i_partitioned_listrange_tab_Gaussian (f1 int,f2 float, f3 DECIMAL(10,5),f4 DOUBLE, f5 char(10), f6 VARBINARY(10), f7 VARCHAR(20), f8 text)
+partition by list(f1)
+subpartition by range(f1)
+subpartition template
+(subpartition p1 VALUES less than(6),
+subpartition p2 VALUES less than(81),
+subpartition p3 VALUES less than(MAXVALUE))
+(
+partition part1 values  IN (2,3,60,70),
+partition part2 values  IN (77),
+partition part3 values  IN (82),
+partition part4 values  IN (86),
+partition part5 values  IN (10,20),
+partition part6 values  IN (default))
+;
+
+INSERT INTO i_partitioned_listrange_tab_Gaussian SELECT * FROM i_general_tab_Gaussian;
+
+--echo 全局范围分区索引
+CREATE INDEX IDX_16 ON i_partitioned_listrange_tab_Gaussian(f1)
+   GLOBAL PARTITION BY RANGE (f1)(
+	PARTITION p1 VALUES LESS THAN (30),
+    PARTITION p2 VALUES LESS THAN (60),
+    PARTITION p3 VALUES LESS THAN (MAXVALUE)
+	);
+	
+--echo 收集统计信息
+call dbms_stats.gather_index_stats('YYL', 'IDX_16', tabname=>'i_partitioned_listrange_tab_Gaussian');
+--echo ### OB关注的内容
+
+--sorted_result
+SELECT TABLE_NAME,PARTITION_NAME,SUBPARTITION_NAME,OBJECT_TYPE,NUM_ROWS,AVG_ROW_LEN,MACRO_BLK_CNT,MICRO_BLK_CNT FROM index_stats_view where INDEX_NAME = 'IDX_16' ;
+--sorted_result
+SELECT table_name, partition_name, partition_position, subpartition_name, subpartition_position FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='IDX_16' ORDER BY subpartition_name,partition_name;
+--sorted_result
+SELECT object_type,BLEVEL,LEAF_BLOCKS,DISTINCT_KEYS,CLUSTERING_FACTOR, num_rows FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='IDX_16' ORDER BY subpartition_name,partition_name;
+--sorted_result
+SELECT GLOBAL_STATS,USER_STATS,STATTYPE_LOCKED,STALE_STATS FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='IDX_16' ORDER BY subpartition_name,partition_name;
+
+--echo 测试set
+
+
+explain select f1,f5 FROM i_partitioned_listrange_tab_Gaussian WHERE f5='admin20';
+explain select f1,f5 FROM i_partitioned_listrange_tab_Gaussian WHERE f1=20 AND f5='admin20';
+explain select * FROM i_partitioned_listrange_tab_Gaussian WHERE f6='test20';
+
+
+--echo 测试set,参数测试
+--error 1210
+call dbms_stats.set_index_stats('', 'IDX_16',tabname=>'i_partitioned_listrange_tab_Gaussian', numrows=>100, avgrlen=>20, nummacroblks=>10, nummicroblks=>10);
+--error 1146
+call dbms_stats.set_index_stats('YYL', '',tabname=>'i_partitioned_listrange_tab_Gaussian', numrows=>100, avgrlen=>20, nummacroblks=>10, nummicroblks=>10);
+--error 1264
+call dbms_stats.set_index_stats('YYL', 'IDX_16',tabname=>'i_partitioned_listrange_tab_Gaussian', numrows=>10000000000, avgrlen=>0, nummacroblks=>10, nummicroblks=>10);
+call dbms_stats.set_index_stats('YYL', 'IDX_16',tabname=>'i_partitioned_listrange_tab_Gaussian', numrows=>1000000000, avgrlen=>0, nummacroblks=>10, nummicroblks=>10);
+--error 1327
+call dbms_stats.set_index_stats('YYL', IDX_16,tabname=>'i_partitioned_listrange_tab_Gaussian', numrows=>1000000000, avgrlen=>0, nummacroblks=>-1, nummicroblks=>10);
+call dbms_stats.set_index_stats('YYL', 'IDX_16',tabname=>'i_partitioned_listrange_tab_Gaussian', numrows=>1000000000, avgrlen=>0, nummacroblks=>'-1', nummicroblks=>10);
+call dbms_stats.set_index_stats('YYL', 'IDX_16',tabname=>'i_partitioned_listrange_tab_Gaussian', numrows=>1000000000, avgrlen=>0, nummacroblks=>-1, nummicroblks=>10);
+
+call dbms_stats.set_index_stats('YYL', 'IDX_16',tabname=>'i_partitioned_listrange_tab_Gaussian', numrows=>1000000000, avgrlen=>0, nummacroblks=>abs(1), nummicroblks=>10);
+call dbms_stats.set_index_stats('YYL', 'IDX_16',tabname=>'i_partitioned_listrange_tab_Gaussian', numrows=>1000000000, avgrlen=>0, nummacroblks=>abs(1), nummicroblks=>1+1+1);
+
+CALL dbms_stats.set_index_stats('YYL', 'IDX_16',tabname=>'i_partitioned_listrange_tab_Gaussian', numrows=>500000, force=>false);
+CALL dbms_stats.set_index_stats('YYL', 'IDX_16',tabname=>'i_partitioned_listrange_tab_Gaussian', numrows=>500, avgrlen=>20, nummacroblks=>10, nummicroblks=>10, force=>false);
+
+call dbms_stats.set_index_stats('yyl', 'IDX_16',tabname=>'i_partitioned_listrange_tab_Gaussian', numrows=>1000000000, avgrlen=>100000, nummacroblks=>100000, nummicroblks=>100000);
+--error 1318
+call dbms_stats.set_index_stats('yyl', 'IDX_16',tabname=>'i_partitioned_listrange_tab_Gaussian', 'P200', numrows=>500, avgrlen=>20, nummacroblks=>10, nummicroblks=>10);
+
+--error 1318
+call dbms_stats.set_index_stats('yyl', 'IDX_16',tabname=>'i_partitioned_listrange_tab_Gaussian', 'P1', numrows=>500, avgrlen=>20, nummacroblks=>10, nummicroblks=>10);
+call dbms_stats.set_index_stats('yyl', 'IDX_16', 'P1',tabname=>'i_partitioned_listrange_tab_Gaussian', numrows=>500, avgrlen=>20, nummacroblks=>10, nummicroblks=>10);
+--error 1735
+call dbms_stats.set_index_stats('yyl', 'IDX_16', '',tabname=>'i_partitioned_listrange_tab_Gaussian', numrows=>500, avgrlen=>20, nummacroblks=>10, nummicroblks=>10);
+--error 1318
+call dbms_stats.set_index_stats('yyl', 'IDX_16', NULL,tabname=>'i_partitioned_listrange_tab_Gaussian',NULL,NULL, numrows=>500, avgrlen=>20, nummacroblks=>10, nummicroblks=>10);
+--sorted_result
+SELECT TABLE_NAME,PARTITION_NAME,SUBPARTITION_NAME,OBJECT_TYPE,NUM_ROWS,AVG_ROW_LEN,MACRO_BLK_CNT,MICRO_BLK_CNT FROM index_stats_view where INDEX_NAME = 'IDX_16' ;
+--error 1318
+call dbms_stats.set_index_stats('yyl', 'IDX_16', NULL,tabname=>'i_partitioned_listrange_tab_Gaussian',NULL,NULL, numrows=>500, avgrlen=>length(20), nummacroblks=>1.00, nummicroblks=>1.5);
+
+call dbms_stats.set_index_stats('yyl', 'IDX_16', 'P1',tabname=>'i_partitioned_listrange_tab_Gaussian', numrows=>500, avgrlen=>length('中文'), nummacroblks=>10, nummicroblks=>10);
+call dbms_stats.set_index_stats('yyl', 'IDX_16', 'P1',tabname=>'i_partitioned_listrange_tab_Gaussian', numrows=>500, avgrlen=>length('中文'), nummacroblks=>1.338, nummicroblks=>1.338);
+--sorted_result
+SELECT TABLE_NAME,PARTITION_NAME,SUBPARTITION_NAME,OBJECT_TYPE,NUM_ROWS,AVG_ROW_LEN,MACRO_BLK_CNT,MICRO_BLK_CNT FROM index_stats_view where INDEX_NAME = 'IDX_16' ;
+
+
+call dbms_stats.delete_index_stats('YYL', 'IDX_16',tabname=>'i_partitioned_listrange_tab_Gaussian');
+call dbms_stats.set_index_stats('YYL', 'IDX_16',tabname=>'i_partitioned_listrange_tab_Gaussian', numrows=>1000, avgrlen=>20, nummacroblks=>20, nummicroblks=>20);
+--sorted_result
+select OWNER, INDEX_NAME, TABLE_OWNER, TABLE_NAME, PARTITION_NAME, SUBPARTITION_NAME, OBJECT_TYPE, NUM_ROWS from oceanbase.dba_ind_statistics where owner='YYL' and INDEX_NAME='IDX_16';
+--sorted_result
+
+CALL dbms_stats.set_index_stats('YYL', 'IDX_16',tabname=>'i_partitioned_listrange_tab_Gaussian', numrows=>500000, force=>true);
+CALL dbms_stats.set_index_stats('YYL', 'IDX_16',tabname=>'i_partitioned_listrange_tab_Gaussian', numrows=>500, avgrlen=>20, nummacroblks=>10, nummicroblks=>10, force=>true);
+
+
+explain select f1,f5 FROM i_partitioned_listrange_tab_Gaussian WHERE f5='admin20';
+explain select f1,f5 FROM i_partitioned_listrange_tab_Gaussian WHERE f1=20 AND f5='admin20';
+explain select * FROM i_partitioned_listrange_tab_Gaussian WHERE f6='test20';
+
+
+--sorted_result
+select * from index_stats_view where owner='YYL' and INDEX_NAME='IDX_16';
+
+--echo 测试delete
+call dbms_stats.delete_index_stats('YYL', 'IDX_16',tabname=>'i_partitioned_listrange_tab_Gaussian');
+--sorted_result
+select OWNER, INDEX_NAME, TABLE_OWNER, TABLE_NAME, PARTITION_NAME, SUBPARTITION_NAME, OBJECT_TYPE, NUM_ROWS from oceanbase.dba_ind_statistics where owner='YYL' and TABLE_NAME='IDX_16';
+
+--error 1210
+call dbms_stats.delete_index_stats('', 'IDX_16', partname=>'P1',tabname=>'i_partitioned_listrange_tab_Gaussian');
+--error 1146
+call dbms_stats.delete_index_stats('YYL', '',tabname=>'i_partitioned_listrange_tab_Gaussian', partname=>'P1');
+--error 1735
+call dbms_stats.delete_index_stats('YYL', 'IDX_16',tabname=>'i_partitioned_listrange_tab_Gaussian', partname=>'');
+
+CALL dbms_stats.delete_index_stats('YYL', 'IDX_16',tabname=>'i_partitioned_listrange_tab_Gaussian', cascade_parts=>false);
+
+--sorted_result
+select OWNER, INDEX_NAME, TABLE_OWNER, TABLE_NAME, PARTITION_NAME, SUBPARTITION_NAME, OBJECT_TYPE, NUM_ROWS from oceanbase.dba_ind_statistics where owner='YYL' and INDEX_NAME='IDX_16';
+--sorted_result
+
+call dbms_stats.delete_index_stats('YYL', 'IDX_16',tabname=>'i_partitioned_listrange_tab_Gaussian', partname=>'P1');
+--error 1735
+call dbms_stats.delete_index_stats('YYL', 'IDX_16',tabname=>'i_partitioned_listrange_tab_Gaussian', partname=>'P222');
+
+
+explain select f1,f5 FROM i_partitioned_listrange_tab_Gaussian WHERE f5='admin20';
+explain select f1,f5 FROM i_partitioned_listrange_tab_Gaussian WHERE f1=20 AND f5='admin20';
+explain select * FROM i_partitioned_listrange_tab_Gaussian WHERE f6='test20';
+--enable_result_log
+
+commit;
+
+connection default;
+--disable_warnings
+--error 0,1396
+drop user yyl;
+--enable_warnings
+
+purge recyclebin;

@@ -1,0 +1,169 @@
+# owner: cxf262476
+# owner group: transaction
+# description: basic test for mysql lock table
+
+--disable_warnings
+--disable_query_log
+DROP USER IF EXISTS table_lock;
+DROP TABLE IF EXISTS t;
+DROP TABLE IF EXISTS t_new;
+DROP TABLE IF EXISTS tt;
+--enable_query_log
+--enable_warnings
+
+CREATE USER table_lock IDENTIFIED BY "table_lock";
+grant all on *.* to table_lock;
+
+--source mysql_test/include/check_schema_sync.inc
+connect (conn_sys,$OBMYSQL_MS0,root,"",oceanbase,$OBMYSQL_PORT);
+connection conn_sys;
+--disable_abort_on_error
+--disable_query_log
+--disable_result_log
+alter proxyconfig set client_session_id_version=2;
+alter proxyconfig set enable_single_leader_node_routing=false;
+--enable_abort_on_error
+--enable_query_log
+--enable_result_log
+sleep 3;
+
+connect (conn1,$OBMYSQL_MS0,table_lock,table_lock,test,$OBMYSQL_PORT);
+connect (conn2,$OBMYSQL_MS0,table_lock,table_lock,test,$OBMYSQL_PORT);
+
+connection conn1;
+--disable_query_log
+set SESSION ob_trx_timeout = 10000000000;
+set SESSION ob_query_timeout = 10000000; #-- 10s
+set SESSION ob_trx_idle_timeout = 10000000000;
+
+CREATE TABLE t(k int);
+CREATE TABLE tt(k int);
+INSERT INTO t VALUES(1);
+
+let $tenant_id=query_get_value(select effective_tenant_id() as tenant_id, tenant_id, 1);
+let $database_id=query_get_value(select /*+QUERY_TIMEOUT(10000000)*/ database_id from oceanbase.__all_database where database_name='test', database_id, 1);
+
+let $tablet_table_id=query_get_value(select /*+QUERY_TIMEOUT(10000000)*/ table_id from oceanbase.__all_virtual_table where table_name = 't' and database_id=$database_id, table_id, 1);
+let $tablett_table_id =query_get_value(select /*+QUERY_TIMEOUT(10000000)*/ table_id from oceanbase.__all_virtual_table where table_name = 'tt' and database_id=$database_id, table_id, 1);
+--enable_query_log
+
+ALTER SYSTEM SET enable_lock_priority=true;  # mysql lock table can work when this configuration is true
+sleep 3;  # configuration should take time to take effect
+
+# 1. LOCK GRAMMAR CHECK
+# 1.1 LOCK ONE TABLE
+--echo "STEP: before lock"
+UNLOCK TABLE;
+UNLOCK TABLES;
+
+--echo "STEP: lock single table"
+--error 1146
+LOCK TABLE ttt WRITE;
+--error 1146
+LOCK TABLE ttt READ;
+
+LOCK TABLE t WRITE;
+--disable_query_log
+eval select 1 as ls_id,lock_mode,op_type,op_status,extra_info from oceanbase.__all_virtual_obj_lock where lock_id like '%$tablet_table_id%' group by lock_mode, extra_info order by lock_mode, extra_info;
+--enable_query_log
+LOCK TABLES tt READ;
+--disable_query_log
+eval select 1 as ls_id,lock_mode,op_type,op_status,extra_info from oceanbase.__all_virtual_obj_lock where lock_id like '%$tablett_table_id%' group by lock_mode, extra_info order by lock_mode, extra_info;
+--enable_query_log
+
+UNLOCK TABLE;
+--disable_query_log
+eval select 1 as ls_id,lock_mode,op_type,op_status,extra_info from oceanbase.__all_virtual_obj_lock where lock_id like '%$tablet_table_id%' group by lock_mode, extra_info order by lock_mode, extra_info;
+eval select 1 as ls_id,lock_mode,op_type,op_status,extra_info from oceanbase.__all_virtual_obj_lock where lock_id like '%$tablett_table_id%' group by lock_mode, extra_info order by lock_mode, extra_info;
+--enable_query_log
+
+# 1.2 LOCK MULTI TABLES
+--echo "STEP: lock multi tables"
+--error 1066
+LOCK TABLE t WRITE, t READ;
+--error 1066
+LOCK TABLE t WRITE, t WRITE;
+--error 1066
+LOCK TABLE t READ, t READ;
+
+LOCK TABLE t WRITE, tt READ;
+--disable_query_log
+eval select 1 as ls_id,lock_mode,op_type,op_status,extra_info from oceanbase.__all_virtual_obj_lock where lock_id like '%$tablet_table_id%' group by lock_mode, extra_info order by lock_mode, extra_info;
+eval select 1 as ls_id,lock_mode,op_type,op_status,extra_info from oceanbase.__all_virtual_obj_lock where lock_id like '%$tablett_table_id%' group by lock_mode, extra_info order by lock_mode, extra_info;
+--enable_query_log
+
+UNLOCK TABLES;
+--disable_query_log
+eval select 1 as ls_id,lock_mode,op_type,op_status,extra_info from oceanbase.__all_virtual_obj_lock where lock_id like '%$tablet_table_id%' group by lock_mode, extra_info order by lock_mode, extra_info;
+eval select 1 as ls_id,lock_mode,op_type,op_status,extra_info from oceanbase.__all_virtual_obj_lock where lock_id like '%$tablett_table_id%' group by lock_mode, extra_info order by lock_mode, extra_info;
+--enable_query_log
+
+# 2. CONFLICT CHECK: W vs others.
+# 2.1 LOCK W
+connection conn1;
+--disable_query_log
+set SESSION ob_query_timeout = 20000000; #-- 20s
+--enable_query_log
+LOCK TABLES t WRITE;
+
+# 2.2 only has W lock
+--disable_query_log
+eval select 1 as ls_id,lock_mode,op_type,op_status,extra_info from oceanbase.__all_virtual_obj_lock where lock_id like '%$tablet_table_id%' group by lock_mode, extra_info order by lock_mode, extra_info;
+--enable_query_log
+
+# 2.3 check conflict with others
+connection conn2;
+--disable_query_log
+set SESSION ob_query_timeout = 1000000; #-- 1s
+--enable_query_log
+--error 1205
+LOCK TABLE t READ;
+--error 1205
+LOCK TABLE t WRITE;
+
+# conflict with dml
+--error 1205
+INSERT INTO t VALUES(2);
+--error 1205
+UPDATE t SET k=2;
+--error 1205
+DELETE FROM t;
+--error 1205
+SELECT * FROM t FOR UPDATE;
+
+# select does not conflict with write now.
+SELECT * FROM t;
+
+# 3. LOCK AND RENAME
+--echo "STEP: lock and rename"
+connection conn1;
+RENAME TABLE t TO t_new;
+--error 1146
+INSERT INTO t VALUES(2);
+SELECT * FROM t_new;
+RENAME TABLE t_new TO t;
+UNLOCK TABLES;
+
+# 4. CLEAN
+--echo "STEP: clean"
+ALTER SYSTEM SET enable_lock_priority=false;
+--disable_warnings
+--echo "STEP: drop table"
+DROP TABLE t;
+DROP TABLE tt;
+--echo "STEP: drop user"
+--error 0,942
+DROP USER table_lock;
+--enable_warnings
+
+connection conn_sys;
+--disable_abort_on_error
+--disable_query_log
+--disable_result_log
+alter proxyconfig set client_session_id_version=1;
+alter proxyconfig set enable_single_leader_node_routing=true;
+--enable_abort_on_error
+--enable_query_log
+--enable_result_log
+
+sleep 3;  # configuration should take time to take effect

@@ -1,0 +1,412 @@
+#owner: dingjincheng.djc
+#owner group: sql1
+#description: dbms_stats.gather_index_stats
+#tags: pl, opt_stats, optimizer
+#author:wb-sl672505
+
+connect (conn_admin, $OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection conn_admin;
+alter system set_tp tp_no = 368, error_code = 0, frequency = 1;
+connection default;
+--disable_query_log
+--source mysql_test/include/check_schema_sync.inc
+--source mysql_test/test_suite/histogram/include/create_mysql_tenant.inc
+--source mysql_test/include/check_schema_sync.inc
+--enable_query_log
+connect (conn_root,$OBMYSQL_MS0,root@sys,,Oceanbase,$OBMYSQL_PORT);
+--source mysql_test/test_suite/histogram/include/conn_mysql_tenant.inc
+set ob_trx_timeout = 10000000000;
+set ob_query_timeout = 10000000000;
+
+--echo ###无主键、唯一键、索引表,普通表、均匀分布###
+
+##由于oracle兼容的视图没有平均行长、宏块、微块字段，这里提前创建一个视图用于查询
+create view index_stats_view as SELECT
+    CAST(DB.DATABASE_NAME AS CHAR(128)) AS OWNER,
+    CAST(V.INDEX_NAME AS     CHAR(128)) AS INDEX_NAME,
+    CAST(DB.DATABASE_NAME AS     CHAR(128)) AS TABLE_OWNER,
+    CAST(T.TABLE_NAME       AS  CHAR(128)) AS TABLE_NAME,
+    CAST(V.PARTITION_NAME   AS  CHAR(128)) AS PARTITION_NAME,
+    CAST(V.SUBPARTITION_NAME  AS    CHAR(128)) AS SUBPARTITION_NAME,
+    CAST(V.OBJECT_TYPE AS CHAR(12)) AS OBJECT_TYPE,
+    CAST(STAT.ROW_CNT AS    DECIMAL) AS NUM_ROWS,
+    CAST(STAT.AVG_ROW_LEN AS    DECIMAL) AS AVG_ROW_LEN,
+    CAST(STAT.macro_blk_cnt AS    DECIMAL) AS MACRO_BLK_CNT,
+    CAST(STAT.micro_blk_cnt AS    DECIMAL) AS MICRO_BLK_CNT
+    FROM
+    (SELECT DATABASE_ID,
+            TABLE_ID,
+            DATA_TABLE_ID,
+            CASE WHEN PART_LEVEL = 0 THEN -2 ELSE -1 END AS PARTITION_ID,
+            SUBSTR(TABLE_NAME, 7 + INSTR(SUBSTR(TABLE_NAME, 7), '_')) AS INDEX_NAME,
+            NULL AS PARTITION_NAME,
+            NULL AS SUBPARTITION_NAME,
+            NULL AS PARTITION_POSITION,
+            NULL AS SUBPARTITION_POSITION,
+            'INDEX' AS OBJECT_TYPE
+        FROM
+            oceanbase.__all_table T
+        WHERE T.TABLE_TYPE = 5
+    UNION ALL
+        SELECT T.DATABASE_ID,
+                T.TABLE_ID,
+                T.DATA_TABLE_ID,
+                P.PART_ID,
+                SUBSTR(T.TABLE_NAME, 7 + INSTR(SUBSTR(T.TABLE_NAME, 7), '_')) AS INDEX_NAME,
+                P.PART_NAME,
+                NULL,
+                P.PART_ID + 1,
+                NULL,
+                'PARTITION'
+        FROM
+            oceanbase.__all_table T
+          JOIN
+            oceanbase.__all_part P
+            ON T.TABLE_ID = P.TABLE_ID
+        WHERE T.TABLE_TYPE = 5
+    UNION ALL
+        SELECT T.DATABASE_ID,
+               T.TABLE_ID,
+               T.DATA_TABLE_ID,
+               SP.SUB_PART_ID AS PARTITION_ID,
+               SUBSTR(T.TABLE_NAME, 7 + INSTR(SUBSTR(T.TABLE_NAME, 7), '_')) AS INDEX_NAME,
+               P.PART_NAME,
+               SP.SUB_PART_NAME,
+               P.PART_ID + 1,
+               SP.SUB_PART_ID + 1,
+              'SUBPARTITION'
+        FROM
+            oceanbase.__all_table T
+        JOIN
+            oceanbase.__all_part P
+            ON T.TABLE_ID = P.TABLE_ID
+        JOIN
+            oceanbase.__all_sub_part SP
+            ON T.TABLE_ID = SP.TABLE_ID
+            AND P.PART_ID = SP.PART_ID
+        WHERE T.TABLE_TYPE = 5
+    ) V
+    JOIN oceanbase.__all_table T
+         ON T.TABLE_ID = V.DATA_TABLE_ID
+         AND T.DATABASE_ID = V.DATABASE_ID
+    JOIN
+        oceanbase.__all_database DB
+        ON DB.DATABASE_ID = V.DATABASE_ID
+        AND DB.DATABASE_NAME !=  '__recyclebin'
+    LEFT JOIN
+        oceanbase.__all_table_stat STAT
+        ON V.TABLE_ID = STAT.TABLE_ID
+        AND (V.PARTITION_ID = STAT.PARTITION_ID OR V.PARTITION_ID = -2)
+        AND STAT.INDEX_TYPE = 1;
+		
+
+--echo ###————————————————————————————————————————————————————————————————————————————————————###
+--echo ###有主键、唯一键、索引表,普通表、均匀分布###
+
+--error 0,1051
+DROP TABLE i_general_tab_uniform ;
+CREATE TABLE i_general_tab_uniform (f1 int,f2 float, f3 DECIMAL(10,5),f4 DOUBLE, f5 char(10), f6 VARBINARY(10), f7 VARCHAR(20), f8 text);
+
+DELIMITER //;
+DROP PROCEDURE if EXISTS pro_insert11;
+//
+CREATE procedure pro_insert11()
+BEGIN
+DECLARE i INT;
+SET i = 0;
+WHILE i<10 DO
+		INSERT INTO i_general_tab_uniform VALUES(5, 5.12345,5.12345,5.12345, 'admin5', 'test5', 'admin5', 'test5');
+		INSERT INTO i_general_tab_uniform VALUES(10, 10.12345,10.12345,10.12345, 'admin10', NULL, 'admin10', NULL);
+		INSERT INTO i_general_tab_uniform VALUES(15, 15.12345,15.12345,15.12345, 'admin15', 'test15', 'admin15', 'test15');
+		INSERT INTO i_general_tab_uniform VALUES(20, 20.12345,20.12345,20.12345, 'admin20', 'test20', 'admin20', 'test20');
+		INSERT INTO i_general_tab_uniform VALUES(25, 25.12345,25.12345,25.12345, 'admin25', 'test25', 'admin25', 'test25');
+		INSERT INTO i_general_tab_uniform VALUES(30, 30.12345,30.12345,30.12345, 'admin30', 'test30', 'admin30', 'test30');
+		INSERT INTO i_general_tab_uniform VALUES(35, 35.12345,35.12345,35.12345, 'admin35', 'test35', 'admin35', 'test35');
+		INSERT INTO i_general_tab_uniform VALUES(40, NULL,    NULL,    NULL,     'admin40', 'test40', 'admin40', 'test40');
+		INSERT INTO i_general_tab_uniform VALUES(45, 45.12345,45.12345,45.12345, 'admin45', 'test45', 'admin45', 'test45');
+		INSERT INTO i_general_tab_uniform VALUES(50, 50.12345,50.12345,50.12345, 'admin50', 'test50', 'admin50', 'test50');
+		INSERT INTO i_general_tab_uniform VALUES(55, 55.12345,55.12345,55.12345, 'admin55', 'test55', 'admin55', 'test55');
+		INSERT INTO i_general_tab_uniform VALUES(60, 60.12345,60.12345,60.12345,  NULL, 'test60'    ,  NULL, 'test60'    );
+		INSERT INTO i_general_tab_uniform VALUES(65, 65.12345,65.12345,65.12345, 'admin65', 'test65', 'admin65', 'test65');
+		INSERT INTO i_general_tab_uniform VALUES(70, 70.12345,70.12345,70.12345, 'admin70', 'test70', 'admin70', 'test70');
+		INSERT INTO i_general_tab_uniform VALUES(75, 75.12345,75.12345,75.12345, 'admin75', 'test75', 'admin75', 'test75');
+		INSERT INTO i_general_tab_uniform VALUES(80, 80.12345,80.12345,80.12345, 'admin80', 'test80', 'admin80', 'test80');
+		INSERT INTO i_general_tab_uniform VALUES(85, 85.12345,85.12345,85.12345, 'admin85', 'test85', 'admin85', 'test85');
+		INSERT INTO i_general_tab_uniform VALUES(90, 90.12345,90.12345,90.12345, 'admin90', 'test90', 'admin90', 'test90');
+		INSERT INTO i_general_tab_uniform VALUES(95, 95.12345,95.12345,95.12345, 'admin95', 'test95', 'admin95', 'test95');
+SET i = i+1;
+END WHILE;
+END;
+//
+CALL pro_insert11();
+//
+DELIMITER ;//
+
+--error 0,1091
+DROP INDEX IDX_1 on i_general_tab_uniform;
+--error 0,1091
+DROP INDEX IDX_2 on i_general_tab_uniform;
+create index IDX_1 on i_general_tab_uniform(f1);
+create index idx_2 on i_general_tab_uniform(f1,f5) global;
+
+
+
+--echo ###有主键、唯一键、索引表,普通表、高斯分布###
+--error 0,1051
+DROP TABLE i_general_tab_Gaussian ;
+CREATE TABLE i_general_tab_Gaussian (f1 int,f2 float, f3 DECIMAL(10,5),f4 DOUBLE, f5 char(10), f6 VARBINARY(10), f7 VARCHAR(20), f8 text);
+
+DELIMITER //;
+DROP PROCEDURE if EXISTS pro_insert12;
+//
+CREATE procedure pro_insert12()
+BEGIN
+DECLARE i INT;
+DECLARE j INT;
+DECLARE k INT;
+DECLARE m INT;
+DECLARE n INT;
+DECLARE o INT;
+DECLARE p INT;
+DECLARE q INT;
+SET i = 1;
+SET j = 1;
+SET k = 1;
+SET m = 1;
+SET n = 1;
+SET o = 1;
+SET p = 1;
+SET q = 1;
+INSERT INTO i_general_tab_Gaussian     VALUES(2,  2.12345,  2.12345 ,  2.12345, 'admin2', 'test2'  , 'admin2', 'test2'  );
+WHILE i<5 DO
+		INSERT INTO i_general_tab_Gaussian VALUES(3,  3.12345,  3.12345 ,  3.12345 , 'admin3', 'test3'  , 'admin3', 'test3'  );
+SET i = i+1;
+END WHILE;
+WHILE j<251 DO
+		INSERT INTO i_general_tab_Gaussian VALUES(60, 60.12345, 60.12345, 60.12345, 'admin60', 'test60', 'admin60', 'test60');
+SET j = j+1;
+END WHILE;
+WHILE k<4 DO
+		INSERT INTO i_general_tab_Gaussian VALUES(70, 70.12345, 70.12345, 70.12345, 'admin70', 'test70', 'admin70', 'test70');
+SET k = k+1;
+END WHILE;
+WHILE m<171 DO
+		INSERT INTO i_general_tab_Gaussian VALUES(77, NULL,     NULL    ,NULL    ,     NULL, 'test77' ,     NULL, 'test77' );
+SET m = m+1;
+END WHILE;
+WHILE n<51 DO
+		INSERT INTO i_general_tab_Gaussian VALUES(82, 82.12345, 82.12345,82.12345, 'admin82', 'test82', 'admin82', 'test82');
+SET n = n+1;
+END WHILE;
+WHILE o<181 DO
+		INSERT INTO i_general_tab_Gaussian VALUES(86, 86.12345, 86.12345,86.12345, 'admin86', NULL    , 'admin86', NULL     );
+SET o = o+1;
+END WHILE;
+WHILE p<31 DO
+		INSERT INTO i_general_tab_Gaussian VALUES(NULL, 95.12345,95.12345,95.12345, 'admin95', 'test95', 'admin95', 'test95');
+SET p = p+1;
+END WHILE;
+WHILE q<3 DO
+		INSERT INTO i_general_tab_Gaussian VALUES(10, 10.12345, 10.12345, 10.12345, 'admin10', 'test10', 'admin10', 'test10');
+		INSERT INTO i_general_tab_Gaussian VALUES(20, 20.12345, 20.12345, 20.12345, 'admin20', 'test20', 'admin20', 'test20');
+SET q = q+1;
+END WHILE;
+END;
+//
+CALL pro_insert12();
+//
+DELIMITER ;//
+
+--error 0,1091
+DROP INDEX idx_3 on i_general_tab_Gaussian;
+--error 0,1091
+DROP INDEX idx_4 on i_general_tab_Gaussian;
+
+create index idx_3 on i_general_tab_Gaussian(f1);
+create index idx_4 on i_general_tab_Gaussian(F1,f5) global;
+
+
+--echo ###有主键、唯一键、索引表,range分区表、均匀分布###
+--error 0,1051
+DROP TABLE i_partitioned_range_tab_uniform ;
+CREATE TABLE i_partitioned_range_tab_uniform (f1 int,f2 float, f3 DECIMAL(10,5),f4 DOUBLE, f5 char(10), f6 VARBINARY(10), f7 VARCHAR(20), f8 text)
+PARTITION BY RANGE(f1) (PARTITION p1 VALUES less than(6),PARTITION p2 VALUES less than(81),PARTITION p3 VALUES less than(MAXVALUE));
+INSERT INTO i_partitioned_range_tab_uniform SELECT * FROM i_general_tab_uniform;
+
+--echo 全局范围分区索引
+--error 0,1091
+DROP INDEX idx_5 on I_PARTITIONED_RANGE_TAB_UNIFORM;
+CREATE INDEX idx_5 ON i_partitioned_range_tab_uniform(f1)
+   GLOBAL PARTITION BY RANGE (f1)(
+	PARTITION p1 VALUES LESS THAN (30),
+    PARTITION p2 VALUES LESS THAN (60),
+    PARTITION p3 VALUES LESS THAN (MAXVALUE)
+	);
+
+
+--echo ###有主键、唯一键、索引表,range-hash、高斯分布###
+
+--error 0,1051
+DROP TABLE i_partitioned_rangehash_tab_Gaussian ;
+CREATE TABLE i_partitioned_rangehash_tab_Gaussian (f1 int,f2 float, f3 DECIMAL(10,5),f4 DOUBLE, f5 char(10), f6 VARBINARY(10), f7 VARCHAR(20), f8 text)
+partition by range(f1)
+subpartition by hash(f1) subpartitions 4
+(PARTITION p1 VALUES less than(6),PARTITION p2 VALUES less than(81),PARTITION p3 VALUES less than(MAXVALUE));
+
+INSERT INTO i_partitioned_rangehash_tab_Gaussian SELECT * FROM i_general_tab_Gaussian;
+
+
+--echo 全局范围分区索引
+CREATE INDEX IDX_12 ON i_partitioned_rangehash_tab_Gaussian(f1)
+   GLOBAL PARTITION BY RANGE (f1)(
+	PARTITION p1 VALUES LESS THAN (30),
+    PARTITION p2 VALUES LESS THAN (60),
+    PARTITION p3 VALUES LESS THAN (MAXVALUE)
+	);
+	
+
+
+--echo ###设置自动化收集任务，10s之后开始，gather_index_stats-03-02-01-02###
+--disable_query_log
+--disable_result_log
+let $point = query_get_value("select substr(date_add(now(),interval 10 second), 1, 26) as X from dual;", X, 1);
+let $day = query_get_value("select WEEKDAY(now()) as X from dual;", X, 1);
+if ($day == 0) {
+  eval call dbms_scheduler.set_attribute('MONDAY_WINDOW', 'NEXT_DATE', '$point');
+}
+if ($day == 1) {
+  eval call dbms_scheduler.set_attribute('TUESDAY_WINDOW', 'NEXT_DATE', '$point');
+}
+if ($day == 2) {
+  eval call dbms_scheduler.set_attribute('WEDNESDAY_WINDOW', 'NEXT_DATE', '$point');
+}
+if ($day == 3) {
+  eval call dbms_scheduler.set_attribute('THURSDAY_WINDOW', 'NEXT_DATE', '$point');
+}
+if ($day == 4) {
+  eval call dbms_scheduler.set_attribute('FRIDAY_WINDOW', 'NEXT_DATE', '$point');
+}
+if ($day == 5) {
+  eval call dbms_scheduler.set_attribute('SATURDAY_WINDOW', 'NEXT_DATE', '$point');
+}
+if ($day == 6) {
+  eval call dbms_scheduler.set_attribute('SUNDAY_WINDOW', 'NEXT_DATE', '$point');
+}
+--enable_result_log
+--enable_query_log
+
+--disable_query_log
+--sorted_result
+select TABLE_NAME, partition_name, subpartition_name, OBJECT_TYPE, NUM_ROWS, AVG_ROW_LEN, SAMPLE_SIZE from oceanbase.DBA_TAB_STATISTICS where table_name in ('i_general_tab_uniform','i_general_tab_Gaussian','i_partitioned_rangehash_tab_Gaussian','i_partitioned_rangehash_tab_Gaussian') and OWNER = 'TEST';
+
+##wait auto gather table stats finish
+let $__i__= 180;
+while($__i__ > 0)
+{
+  sleep 1;
+  dec $__i__;
+  let $__memstore_cnt__ = query_get_value("select count(*) as CNT from oceanbase.DBA_TAB_STATISTICS where LAST_ANALYZED is not null and table_name in (
+'i_general_tab_uniform','i_general_tab_Gaussian','i_partitioned_rangehash_tab_Gaussian','i_partitioned_rangehash_tab_Gaussian'
+) and OWNER = 'TEST';", CNT, 1);
+  if ($__memstore_cnt__ == 578)
+  {
+    let $__i__ = -1;
+  }
+}
+if ($__i__ != -1)
+{
+  --echo auto gather table sats failed
+}
+--sorted_result
+select TABLE_NAME, partition_name, subpartition_name, OBJECT_TYPE, NUM_ROWS, AVG_ROW_LEN, SAMPLE_SIZE from oceanbase.DBA_TAB_STATISTICS where table_name in ('GENERAL_TAB_UNIFORM','GENERAL_TAB_GAUSSIAN','GENERAL_TAB_FRE','GENERAL_TAB_TOPK') and OWNER = 'TEST';
+select count(*) from oceanbase.__all_tenant_scheduler_job where this_date is not null or last_date is not null;
+
+--echo ###自动收集任务完成后，root用户登录查看任务状态###
+connection conn_root;
+--disable_result_log
+select * from __all_virtual_scheduler_job_run_detail_v2 ORDER BY TIME;
+--enable_result_log
+
+--echo ###自动收集任务完成后，普通用户登录查看信息收集结果###
+connection conn_stat_test_sys_mysql;
+use test;
+--disable_result_log
+select * from oceanbase.DBA_SCHEDULER_JOBS;
+--enable_result_log
+
+
+--echo 收集统计信息
+--echo ### OB关注的内容
+--sorted_result
+SELECT TABLE_NAME,PARTITION_NAME,SUBPARTITION_NAME,OBJECT_TYPE,NUM_ROWS,AVG_ROW_LEN FROM index_stats_view where INDEX_NAME = 'IDX_1' and ((MACRO_BLK_CNT > 0 and MICRO_BLK_CNT > 0) or MACRO_BLK_CNT is null);
+--sorted_result
+SELECT table_name, partition_name, partition_position, subpartition_name, subpartition_position FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='IDX_1' ORDER BY subpartition_name,partition_name;
+--sorted_result
+SELECT object_type,BLEVEL,LEAF_BLOCKS,DISTINCT_KEYS,CLUSTERING_FACTOR, num_rows FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='IDX_1' ORDER BY subpartition_name,partition_name;
+--sorted_result
+SELECT GLOBAL_STATS,USER_STATS,STATTYPE_LOCKED,STALE_STATS FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='IDX_1' ORDER BY subpartition_name,partition_name;
+
+--echo 收集统计信息
+--echo ### OB关注的内容
+--sorted_result
+SELECT TABLE_NAME,PARTITION_NAME,SUBPARTITION_NAME,OBJECT_TYPE,NUM_ROWS,AVG_ROW_LEN FROM index_stats_view where INDEX_NAME = 'IDX_2' and ((MACRO_BLK_CNT > 0 and MICRO_BLK_CNT > 0) or MACRO_BLK_CNT is null);
+--sorted_result
+SELECT table_name, partition_name, partition_position, subpartition_name, subpartition_position FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='IDX_2' ORDER BY subpartition_name,partition_name;
+--sorted_result
+SELECT object_type,BLEVEL,LEAF_BLOCKS,DISTINCT_KEYS,CLUSTERING_FACTOR, num_rows FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='IDX_2' ORDER BY subpartition_name,partition_name;
+--sorted_result
+SELECT GLOBAL_STATS,USER_STATS,STATTYPE_LOCKED,STALE_STATS FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='IDX_2' ORDER BY subpartition_name,partition_name;
+
+--echo 收集统计信息
+--echo ### OB关注的内容
+--sorted_result
+SELECT TABLE_NAME,PARTITION_NAME,SUBPARTITION_NAME,OBJECT_TYPE,NUM_ROWS,AVG_ROW_LEN FROM index_stats_view where INDEX_NAME = 'IDX_3' and ((MACRO_BLK_CNT > 0 and MICRO_BLK_CNT > 0) or MACRO_BLK_CNT is null);
+--sorted_result
+SELECT table_name, partition_name, partition_position, subpartition_name, subpartition_position FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='IDX_3' ORDER BY subpartition_name,partition_name;
+--sorted_result
+SELECT object_type,BLEVEL,LEAF_BLOCKS,DISTINCT_KEYS,CLUSTERING_FACTOR, num_rows FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='IDX_3' ORDER BY subpartition_name,partition_name;
+--sorted_result
+SELECT GLOBAL_STATS,USER_STATS,STATTYPE_LOCKED,STALE_STATS FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='IDX_3' ORDER BY subpartition_name,partition_name;
+
+--echo 收集统计信息
+--echo ### OB关注的内容
+--sorted_result
+SELECT TABLE_NAME,PARTITION_NAME,SUBPARTITION_NAME,OBJECT_TYPE,NUM_ROWS,AVG_ROW_LEN FROM index_stats_view where INDEX_NAME = 'IDX_4' and ((MACRO_BLK_CNT > 0 and MICRO_BLK_CNT > 0) or MACRO_BLK_CNT is null);
+--sorted_result
+SELECT table_name, partition_name, partition_position, subpartition_name, subpartition_position FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='IDX_4' ORDER BY subpartition_name,partition_name;
+--sorted_result
+SELECT object_type,BLEVEL,LEAF_BLOCKS,DISTINCT_KEYS,CLUSTERING_FACTOR, num_rows FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='IDX_4' ORDER BY subpartition_name,partition_name;
+--sorted_result
+SELECT GLOBAL_STATS,USER_STATS,STATTYPE_LOCKED,STALE_STATS FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='IDX_4' ORDER BY subpartition_name,partition_name;
+
+
+--echo 收集统计信息
+--echo ### OB关注的内容
+--sorted_result
+SELECT TABLE_NAME,PARTITION_NAME,SUBPARTITION_NAME,OBJECT_TYPE,NUM_ROWS,AVG_ROW_LEN FROM index_stats_view where INDEX_NAME = 'IDX_5' and ((MACRO_BLK_CNT > 0 and MICRO_BLK_CNT > 0) or MACRO_BLK_CNT is null);
+--sorted_result
+SELECT table_name, partition_name, partition_position, subpartition_name, subpartition_position FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='IDX_5' ORDER BY subpartition_name,partition_name;
+--sorted_result
+SELECT object_type,BLEVEL,LEAF_BLOCKS,DISTINCT_KEYS,CLUSTERING_FACTOR, num_rows FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='IDX_5' ORDER BY subpartition_name,partition_name;
+--sorted_result
+SELECT GLOBAL_STATS,USER_STATS,STATTYPE_LOCKED,STALE_STATS FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='IDX_5' ORDER BY subpartition_name,partition_name;
+
+
+--echo 收集统计信息
+--echo ### OB关注的内容
+--sorted_result
+SELECT TABLE_NAME,PARTITION_NAME,SUBPARTITION_NAME,OBJECT_TYPE,NUM_ROWS,AVG_ROW_LEN FROM index_stats_view where INDEX_NAME = 'IDX_12' and ((MACRO_BLK_CNT > 0 and MICRO_BLK_CNT > 0) or MACRO_BLK_CNT is null);
+--sorted_result
+SELECT table_name, partition_name, partition_position, subpartition_name, subpartition_position FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='IDX_12' ORDER BY subpartition_name,partition_name;
+--sorted_result
+SELECT object_type,BLEVEL,LEAF_BLOCKS,DISTINCT_KEYS,CLUSTERING_FACTOR, num_rows FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='IDX_12' ORDER BY subpartition_name,partition_name;
+--sorted_result
+SELECT GLOBAL_STATS,USER_STATS,STATTYPE_LOCKED,STALE_STATS FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='IDX_12' ORDER BY subpartition_name,partition_name;
+
+--source mysql_test/test_suite/histogram/include/drop_mysql_tenant.inc
+connection default;
+
+purge recyclebin;
+connection conn_admin;
+alter system set_tp tp_no = 368, error_code = 4016, frequency = 1;
+connection default;
