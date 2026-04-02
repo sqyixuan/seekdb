@@ -23,12 +23,9 @@
 #endif
 #include "rootserver/ob_tenant_info_loader.h" // ObTenantInfoLoader
 #include "rootserver/ob_ls_recovery_reportor.h" //ObLSRecoveryReportor
-#include "rootserver/ob_disaster_recovery_task_utils.h"//DisasterRecoveryUtils
-#include "src/share/balance/ob_balance_task_helper_operator.h"//insert_new_ls
 #include "share/ls/ob_ls_life_manager.h"            //ObLSLifeManger
 #include "share/ob_upgrade_utils.h"  // ObUpgradeChecker
 #include "share/ob_global_stat_proxy.h" // ObGlobalStatProxy
-#include "rootserver/tenant_snapshot/ob_tenant_snapshot_util.h" // ObTenantSnapshotUtil
 
 namespace oceanbase
 {

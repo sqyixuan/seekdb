@@ -457,9 +457,7 @@ int ObTenantRoleTransitionService::do_prepare_flashback_for_switch_to_primary_(
     SOURCE_TENANT_CHECK_USER_ERROR_FOR_SWITCHOVER_TO_PRIMARY;
     LOG_WARN("errsim wait_tenant_sync_to_latest_until_timeout", K(ret));
   }
-  if (FAILEDx(wait_ls_balance_task_finish_())) {
-    LOG_WARN("failed to wait ls balance task finish", KR(ret));
-  } else if (OB_FAIL(switchover_update_tenant_status(tenant_id_,
+  if (FAILEDx(switchover_update_tenant_status(tenant_id_,
                                               true /* switch_to_primary */,
                                               tenant_info.get_tenant_role(), 
                                               tenant_info.get_switchover_status(), 
@@ -493,8 +491,6 @@ int ObTenantRoleTransitionService::do_prepare_flashback_for_failover_to_primary_
     // reset error code and USER_ERROR to avoid print recover error log
     ret = OB_OP_NOT_ALLOW;
     LOG_USER_ERROR(OB_OP_NOT_ALLOW, "recover cancel failed, failover to primary");
-  } else if (OB_FAIL(wait_ls_balance_task_finish_())) {
-    LOG_WARN("failed to wait ls balance task finish", KR(ret));
   } else if (OB_FAIL(ObAllTenantInfoProxy::update_tenant_switchover_status(
                      tenant_id_, sql_proxy_, tenant_info.get_switchover_epoch(),
                      tenant_info.get_switchover_status(), share::FLASHBACK_SWITCHOVER_STATUS))) {
@@ -725,190 +721,6 @@ int ObTenantRoleTransitionService::get_tenant_ref_scn_(const share::SCN &sync_sc
     }
 
     END_TRANSACTION(trans);
-  }
-  return ret;
-}
-
-ERRSIM_POINT_DEF(ERRSIM_TENANT_NOT_REPLAY_TO_LATEST);
-void ObTenantRoleTransitionService::try_print_wait_balance_task_user_error_(
-    const share::ObAllTenantInfo &cur_tenant_info,
-    const ObArray<ObBalanceTaskHelper> &ls_balance_tasks,
-    const ObBalanceTaskArray &balance_task_array,
-    const char * const op_str)
-{
-  ObArray<ObLSID> ls_id_array;
-  int ret = OB_SUCCESS;
-  const int64_t COMMENT_LENGTH = 512;
-  char comment[COMMENT_LENGTH] = {0};
-  int64_t pos = 0;
-  if (cur_tenant_info.get_sync_scn() != cur_tenant_info.get_readable_scn() || ERRSIM_TENANT_NOT_REPLAY_TO_LATEST) {
-    if (OB_FAIL(databuff_printf(comment, COMMENT_LENGTH, pos,
-          "The tenant fails to replay to the latest log, %s is", op_str))) {
-      LOG_WARN("failed to printf to comment", KR(ret), K(op_str));
-    } else {
-      LOG_USER_ERROR(OB_OP_NOT_ALLOW, comment);
-    }
-    if (OB_UNLIKELY(ERRSIM_TENANT_NOT_REPLAY_TO_LATEST)) {
-      FLOG_WARN("ERRSIM_TENANT_NOT_REPLAY_TO_LATEST opened", KR(ret), K(cur_tenant_info));
-    }
-  } else {
-    for (int64_t i = 0; i < ls_balance_tasks.size() && OB_SUCC(ret); ++i) {
-      const ObBalanceTaskHelper &task = ls_balance_tasks[i];
-      const ObLSID &src_ls = task.get_src_ls();
-      const ObLSID &dest_ls = task.get_dest_ls();
-      if (!has_exist_in_array(ls_id_array, src_ls) && OB_FAIL(ls_id_array.push_back(src_ls))) {
-        LOG_WARN("fail to push back src ls", KR(ret), K(src_ls), K(ls_id_array));
-      } else if (!has_exist_in_array(ls_id_array, dest_ls) && OB_FAIL(ls_id_array.push_back(dest_ls))) {
-        LOG_WARN("fail to push back desc ls", KR(ret), K(dest_ls), K(ls_id_array));
-      }
-    }
-    for (int64_t i = 0; i < balance_task_array.size() && OB_SUCC(ret); ++i) {
-      const ObBalanceTask &task = balance_task_array[i];
-      const ObLSID &src_ls = task.get_src_ls_id();
-      const ObLSID &dest_ls = task.get_dest_ls_id();
-      if (!has_exist_in_array(ls_id_array, src_ls) && OB_FAIL(ls_id_array.push_back(src_ls))) {
-        LOG_WARN("fail to push back src ls", KR(ret), K(src_ls), K(ls_id_array));
-      } else if (!has_exist_in_array(ls_id_array, dest_ls) && OB_FAIL(ls_id_array.push_back(dest_ls))) {
-        LOG_WARN("fail to push back desc ls", KR(ret), K(dest_ls), K(ls_id_array));
-      }
-    }
-    if (OB_SUCC(ret) && ls_id_array.count() > 0) {
-      int64_t last_element_idx = ls_id_array.count() - 1;
-      if (OB_FAIL(databuff_printf(comment, COMMENT_LENGTH, pos,
-          "Some of the LS listed below have replicas failing to replay to the latest log: "))) {
-        LOG_WARN("failed to printf to comment", KR(ret));
-      }
-      for (int64_t i = 0; i < last_element_idx && OB_SUCC(ret); ++i) {
-        const ObLSID &ls_id = ls_id_array[i];
-        if (OB_FAIL(databuff_printf(comment, COMMENT_LENGTH, pos, "%ld, ", ls_id.id()))) {
-          LOG_WARN("failed to printf to comment", KR(ret), K(ls_id));
-        }
-      }
-      // we have checked ls_id_array.count() > 0, no overflow here
-      const ObLSID &ls_id = ls_id_array[last_element_idx];
-      if (FAILEDx(databuff_printf(comment, COMMENT_LENGTH, pos, "%ld. ", ls_id.id()))) {
-        LOG_WARN("failed to printf to comment", KR(ret), K(ls_id));
-      } else if (OB_FAIL(databuff_printf(comment, COMMENT_LENGTH, pos, "%s is", op_str))) {
-        LOG_WARN("failed to printf to comment", KR(ret), K(op_str));
-      }
-      if (OB_SUCC(ret)) {
-        LOG_USER_ERROR(OB_OP_NOT_ALLOW, comment);
-      }
-    }
-  }
-}
-int ObTenantRoleTransitionService::check_ls_balance_task_finish_(
-    ObBalanceTaskArray &balance_task_array, ObArray<ObBalanceTaskHelper> &ls_balance_tasks,
-    share::ObAllTenantInfo &cur_tenant_info, bool &is_finish)
-{
-  int ret = OB_SUCCESS;
-  // The purpose of storing tmp is to print which log streams have not been replayed completed
-  // Otherwise, it may time out when reading the table to update ls_balance_tasks/balance_task_array, at which point the array is empty and nothing can be printed
-  ObArray<ObBalanceTaskHelper> tmp_ls_balance_tasks;
-  ObBalanceTaskArray tmp_balance_task_array;
-  share::ObAllTenantInfo tmp_tenant_info;
-  SCN max_scn;
-  max_scn.set_max();
-  if (OB_FAIL(check_inner_stat())) {
-    LOG_WARN("error unexpected", KR(ret), K(tenant_id_), KP(sql_proxy_), KP(rpc_proxy_));
-  } else if (FALSE_IT(ret = ObBalanceTaskHelperTableOperator::load_tasks_order_by_scn(tenant_id_,
-      *sql_proxy_, max_scn, tmp_ls_balance_tasks))) {
-  } else if (OB_SUCC(ret)) {
-    if (OB_FAIL(ls_balance_tasks.assign(tmp_ls_balance_tasks))) {
-      LOG_WARN("fail to assign ls_balance_tasks", KR(ret), K(tmp_ls_balance_tasks));
-    }
-  } else if (OB_FAIL(ret) && OB_ENTRY_NOT_EXIST != ret) {
-    LOG_WARN("failed to pop task", KR(ret), K(tenant_id_));
-  } else if (OB_ENTRY_NOT_EXIST == ret) {
-    ret = OB_SUCCESS;
-    ls_balance_tasks.reset();
-    /*
-      The __all_balance_task_helper table being cleared does not mean there are no transfer tasks. Example:
-      Tenant A is the primary database and initiated a round of load balancing. The balance_task table entered the transfer state but did not finish when it switched to the backup database.
-      Tenant B is the backup database and, upon switching to the primary database, will clean up TRANSFER_BEGIN entries during replay to the latest state.
-      If tenant B also executes several rounds of transfer tasks while being the primary database but the transfer state in the balance_task table has not ended,
-      tenant A will be unable to determine if any transfers occurred when it switches back to the primary database.
-      To solve this problem, we read the __all_balance_task table. If there are tasks in this table with a transfer status, we must wait for replay to the latest state.
-      There is also an issue: could the readable point lag significantly? We discuss from two aspects why tenant A's readable point will not be problematic:
-      1. If the __all_balance_task_helper table can be cleaned, the readable point must have surpassed the records in the table. Even if tenant B initiates a new round of load balancing tasks, there will be no issues.
-      2. Simply going through a leader-follower switch will push the readable point beyond the latest GTS, so the latest transfer tasks can definitely be read.*/
-    if (OB_FAIL(ObBalanceTaskTableOperator::load_need_transfer_task(
-        tenant_id_, tmp_balance_task_array, *sql_proxy_))) {
-      LOG_WARN("failed to load need transfer task", KR(ret), K(tenant_id_));
-    } else if (OB_FAIL(balance_task_array.assign(tmp_balance_task_array))) {
-      LOG_WARN("fail to assign old_balance_task_array", KR(ret), K(tmp_balance_task_array));
-    } else if (0 == balance_task_array.count()) {
-      is_finish = true;
-      LOG_INFO("balance task finish", K(tenant_id_));
-    } else if (OB_FAIL(ObAllTenantInfoProxy::load_tenant_info(tenant_id_, sql_proxy_, false, tmp_tenant_info))) {
-      LOG_WARN("failed to load tenant info", KR(ret), K(tenant_id_));
-    } else if (FALSE_IT(cur_tenant_info.assign(tmp_tenant_info))) {
-    } else if (cur_tenant_info.get_sync_scn() == cur_tenant_info.get_readable_scn()) {
-      is_finish = true;
-      for (int64_t i = 0; OB_SUCC(ret) && i < balance_task_array.count() && is_finish; ++i) {
-        // if is_finish is false, skip this round, wait next round
-        const ObBalanceTask &task = balance_task_array.at(i);
-        bool task_finish = false;
-        if (OB_FAIL(ObLSServiceHelper::check_transfer_task_replay(tenant_id_,
-            task.get_src_ls_id(), task.get_dest_ls_id(), cur_tenant_info.get_sync_scn(), task_finish))) {
-          LOG_WARN("failed to check transfer task replay", KR(ret), K(cur_tenant_info), K(task));
-          is_finish = false;
-        } else if (!task_finish) {
-          is_finish = task_finish;
-          LOG_INFO("has transfer task, and not replay to newest", K(task));
-        }
-      }//end for
-      if (OB_SUCC(ret) && is_finish) {
-        LOG_INFO("has transfer task, and replay to newest", KR(ret), K(cur_tenant_info));
-      }
-    }
-  }
-  if (OB_SUCC(ret) && !ls_balance_tasks.empty() && !is_finish) {
-    if (OB_FAIL(notify_recovery_ls_service_())) {
-      LOG_WARN("failed to notify recovery ls service", KR(ret));
-    }
-    LOG_INFO("has balance task not finish", K(ls_balance_tasks), K(balance_task_array), K(cur_tenant_info));
-  }
-  return ret;
-}
-
-int ObTenantRoleTransitionService::wait_ls_balance_task_finish_()
-{
-  int ret = OB_SUCCESS;
-  int64_t begin_time = ObTimeUtility::current_time();
-  if (OB_FAIL(check_inner_stat())) {
-    LOG_WARN("error unexpected", KR(ret), K(tenant_id_), KP(sql_proxy_), KP(rpc_proxy_));
-  } else {
-
-    ObGlobalStatProxy global_proxy(*sql_proxy_, gen_meta_tenant_id(tenant_id_));
-    ObGlobalStatProxy user_global_proxy(*sql_proxy_, tenant_id_);
-    bool is_finish = false;
-    ObArray<ObBalanceTaskHelper> ls_balance_tasks;
-    ObBalanceTaskArray balance_task_array;
-    share::ObAllTenantInfo cur_tenant_info;
-    int tmp_ret = OB_SUCCESS;
-    while (!THIS_WORKER.is_timeout() && OB_SUCC(ret) && !is_finish) {
-      tmp_ret = OB_SUCCESS;
-      if (OB_TMP_FAIL(check_ls_balance_task_finish_(balance_task_array, ls_balance_tasks, cur_tenant_info, is_finish))) {
-        LOG_WARN("fail to execute check_ls_balance_task_finish_", KR(ret), KR(tmp_ret));
-      }
-      // if is_finish = true, check_ls_balance_task_finish_ must return OB_SUCCESS
-      if (!is_finish) {
-        usleep(100L * 1000L);
-      }
-    }
-    if (!is_finish) {
-      int prev_ret = ret;
-      ret = OB_OP_NOT_ALLOW;
-      (void) try_print_wait_balance_task_user_error_(cur_tenant_info, ls_balance_tasks,
-        balance_task_array, ObSwitchTenantArg::get_alter_type_str(switch_optype_));
-      LOG_WARN("failed to wait ls balance task finish", KR(ret), KR(prev_ret), KR(tmp_ret), K(is_finish),
-          K(balance_task_array), K(ls_balance_tasks));
-    }
-  }
-  if (OB_LIKELY(NULL != cost_detail_)) {
-    int64_t wait_balance_task = ObTimeUtility::current_time() - begin_time;
-    (void) cost_detail_->add_cost(ObTenantRoleTransCostDetail::WAIT_BALANCE_TASK, wait_balance_task);
   }
   return ret;
 }

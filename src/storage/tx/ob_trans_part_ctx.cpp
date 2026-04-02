@@ -5785,12 +5785,9 @@ int ObPartTransCtx::switch_to_leader(const SCN &start_working_ts)
     TRANS_LOG(WARN, "switch role state error", KR(ret), K(*this));
   } else {
     const bool contain_mds_table_lock = is_contain_mds_type_(ObTxDataSourceType::TABLE_LOCK);
-    const bool contain_mds_transfer_out = is_contain_mds_type_(ObTxDataSourceType::START_TRANSFER_OUT)
-                           || is_contain_mds_type_(ObTxDataSourceType::START_TRANSFER_OUT_PREPARE)
-                           || is_contain_mds_type_(ObTxDataSourceType::START_TRANSFER_OUT_V2);
+    const bool contain_mds_transfer_out = false;
     const bool contain_mds_tablet_split = is_contain_mds_type_(ObTxDataSourceType::TABLET_SPLIT);
-    const bool contain_mds_tablet_transfer_in = is_contain_mds_type_(ObTxDataSourceType::TRANSFER_IN_ABORTED)
-                           || is_contain_mds_type_(ObTxDataSourceType::FINISH_TRANSFER_IN);
+    const bool contain_mds_tablet_transfer_in = false;
     const bool need_kill_tx = contain_mds_table_lock 
                            || contain_mds_transfer_out 
                            || contain_mds_tablet_split 
@@ -6891,7 +6888,7 @@ OB_NOINLINE int ObPartTransCtx::errism_submit_prepare_log_()
   return ret;
 }
 
-OB_NOINLINE __attribute__((weak)) int ObPartTransCtx::errsim_notify_mds_()
+OB_NOINLINE int ObPartTransCtx::errsim_notify_mds_()
 {
   int ret = OB_SUCCESS;
 

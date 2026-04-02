@@ -186,10 +186,7 @@ int ObMulSourceTxDataNotifier::notify(const ObTxBufferNodeArray &array,
               buffer_ctx.on_redo(arg.scn_);\
               break;\
               case NotifyType::TX_END:\
-              if (node.type_ == ObTxDataSourceType::TEST1 ||\
-                  node.type_ == ObTxDataSourceType::START_TRANSFER_IN ||\
-                  node.type_ == ObTxDataSourceType::TRANSFER_IN_ABORTED ||\
-                  node.type_ == ObTxDataSourceType::FINISH_TRANSFER_IN) {\
+              if (node.type_ == ObTxDataSourceType::TEST1) {\
                 can_do_tx_end = common::meta::MdsCheckCanDoTxEndWrapper<HELPER_CLASS>::\
                                 check_can_do_tx_end(arg.willing_to_commit_,\
                                                     arg.for_replay_,\

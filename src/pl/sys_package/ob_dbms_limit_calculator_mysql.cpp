@@ -16,8 +16,6 @@
 
 #define USING_LOG_PREFIX PL
 #include "ob_dbms_limit_calculator_mysql.h"
-#include "share/balance/ob_balance_job_table_operator.h"//balance_job
-#include "rootserver/ob_tenant_balance_service.h"//gather_stat_primary_zone_num_and_units
 
 using namespace oceanbase::common;
 using namespace oceanbase::share;
@@ -424,23 +422,6 @@ int ObDBMSLimitCalculator::check_server_resource_(
   } else if (OB_ISNULL(GCTX.sql_proxy_) || OB_ISNULL(GCTX.server_tracer_)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("ptr is null", KR(ret), KP(GCTX.sql_proxy_), KP(GCTX.server_tracer_));
-  } else {
-    share::ObBalanceJob balance_job;
-    int64_t start_time = 0;
-    int64_t finish_time = 0;//no use
-    if (OB_FAIL(share::ObBalanceJobTableOperator::get_balance_job(tenant_id,
-            false, *GCTX.sql_proxy_, balance_job, start_time, finish_time))) {
-      if (OB_ENTRY_NOT_EXIST == ret) {
-        ret = OB_SUCCESS;
-      } else {
-        LOG_WARN("failed to get balance job", KR(ret), K(tenant_id));
-      }
-    } else {
-      //The current tenant has partition balance or log stream balance tasks, so there is a possibility of inaccurate calculation results, therefore only an alarm is triggered, but no error is reported
-      ret = OB_OP_NOT_ALLOW;
-      LOG_WARN("tenant has balance job", KR(ret), K(tenant_id), K(balance_job));
-      LOG_USER_WARN(OB_OP_NOT_ALLOW, "Tenant is doing balance job. Operation is");
-    }
   }
   if (OB_SUCC(ret)) {
     share::ObLSStatusOperator ls_op;
@@ -482,37 +463,7 @@ int ObDBMSLimitCalculator::get_max_ls_count_of_server_(
     int64_t &ls_count)
 {
   int ret = OB_SUCCESS;
-  int64_t primary_zone_num = 0;
-  int64_t unit_group_num = 0;
-  ObArray<share::ObSimpleUnitGroup> unit_group_array;
-  if (OB_UNLIKELY(!is_user_tenant(tenant_id))) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid argument", KR(ret), K(tenant_id));
-  } else if (OB_FAIL(rootserver::ObTenantBalanceService::gather_stat_primary_zone_num_and_units(
-          tenant_id, primary_zone_num, unit_group_array))) {
-    LOG_WARN("failed to gather stat of primary zone and unit", KR(ret), K(tenant_id));
-  } else {
-    unit_group_num = unit_group_array.count();
-  }
-  if (OB_SUCC(ret)) {
-    //If the number of Units is N, the number of Primary Zones is P
-    //Steady-state user log stream count: U = N*P,
-    //Consider the log stream expansion scenario, during the partition balancing process, each log stream will perform Transfer with all other log streams, requiring the generation of new log streams.
-    //During this process, it is necessary to exclude the scenario of Transfer between log streams on a single Unit, because Transfer between log streams within a single Unit does not require the generation of new log streams.
-    //So, the extra inflated number of log streams is:
-    //1. Every log stream will generate a new log stream with every other log stream (including itself), resulting in: U * U
-    //2. The calculation result of the first step is redundant: each Unit contains P log streams, so during the transfer process among P log streams, no new log streams will be generated, thus the number of redundancies is: U * P
-    //In addition, the Transfer function was introduced between broadcast log streams in 4.2.3, so broadcast log streams will also grow.
-    //1. Transfer between broadcast log streams does not need to generate a new log stream
-    //2. Broadcast log stream Transfer to user log stream, no need to generate a new log stream
-    //3. Transfer user log stream to broadcast log stream, need to generate a new broadcast log stream
-    //So, the number of broadcast log stream expansions equals the steady-state number of user log streams U
-    //Do not consider the system log stream, the total number of log streams on one machine is
-    //U + 1 + number of user log stream expansions + number of broadcast log stream expansions = U + 2 + U*U - U*P + U = U*U - U*(P-2) + 1
-    //Since the broadcast log stream actually exists as a resource on every machine, the final number of log streams on each machine is
-    //NPP-PP+2P+1
-    ls_count = (unit_group_num - 1) * primary_zone_num * primary_zone_num + 2 * primary_zone_num + 1;
-  }
+  ls_count = 1;
   return ret;
 }
 

@@ -20,7 +20,6 @@
 #include "common/ob_tablet_id.h"
 #include "lib/mysqlclient/ob_isql_client.h"
 #include "ob_storage_ha_struct.h"
-#include "ob_transfer_struct.h"
 #include "storage/ob_storage_rpc.h"
 
 namespace oceanbase
@@ -105,10 +104,6 @@ public:
   static int get_gts(const uint64_t tenant_id, share::SCN &gts);
   static void set_transfer_module();
   static void clear_transfer_module();
-  static void set_transfer_related_info(
-      const share::ObLSID &dest_ls_id,
-      const share::ObTransferTaskID &task_id, 
-      const share::SCN &start_scn);
   static void reset_related_info(const share::ObLSID &dest_ls_id);
 
 private:

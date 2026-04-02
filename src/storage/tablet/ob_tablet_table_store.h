@@ -206,11 +206,6 @@ public:
       ObTablet &tablet,
       const ObBatchUpdateTableStoreParam &param,
       const ObTabletTableStore &old_store);
-  int build_fork_new_table_store(
-      common::ObArenaAllocator &allocator,
-      ObTablet &tablet,
-      const ObBatchUpdateTableStoreParam &param,
-      const ObTabletTableStore &old_store);
   const blocksstable::ObMajorChecksumInfo &get_major_ckm_info() const { return major_ckm_info_; }
   int get_all_minor_sstables(ObTableStoreIterator &iter) const;
 private:
@@ -346,13 +341,6 @@ private:
       common::ObIArray<ObITable *> &old_store_sstables,
       common::ObIArray<ObITable *> &need_add_sstables,
       common::ObIArray<ObITable *> &new_sstables);
-  int combine_transfer_minor_sstables_(
-      common::ObArenaAllocator &allocator,
-      const ObTablet &tablet,
-      common::ObIArray<ObITable *> &old_store_minor_sstables,
-      common::ObIArray<ObITable *> &need_add_minor_sstables,
-      const ObBatchUpdateTableStoreParam &param,
-      common::ObIArray<ObITable *> &new_minor_sstables);
   int replace_ha_minor_sstables_(
       common::ObArenaAllocator &allocator,
       const ObTablet &tablet,
@@ -365,11 +353,6 @@ private:
       const ObBatchUpdateTableStoreParam &param,
       const ObTabletTableStore &old_store,
       const int64_t inc_base_snapshot_version);
-  int replace_transfer_minor_sstables_(
-      common::ObArenaAllocator &allocator,
-      const ObTablet &tablet,
-      const ObBatchUpdateTableStoreParam &param,
-      const ObTabletTableStore &old_store);
 
   // ddl
   int pull_ddl_memtables(common::ObArenaAllocator &allocator, const ObTablet &tablet);
@@ -420,17 +403,6 @@ private:
       const ObTablet &tablet,
       const ObBatchUpdateTableStoreParam &param,
       const ObTabletTableStore &old_store);
-  int build_fork_new_table_store_(
-      common::ObArenaAllocator &allocator,
-      const ObTablet &tablet,
-      const ObBatchUpdateTableStoreParam &param,
-      const ObTabletTableStore &old_store);
-  int build_fork_minor_tables_(
-      common::ObArenaAllocator &allocator,
-      const ObTablet &tablet,
-      const ObBatchUpdateTableStoreParam &param,
-      const ObTabletTableStore &dst_store,
-      const ObIArray<ObITable *> &tables_array);
   int build_split_minor_tables_(
       common::ObArenaAllocator &allocator,
       const ObTabletTableStore &old_store,

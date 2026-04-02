@@ -194,8 +194,6 @@ int ObDDLServiceLauncher::switch_to_follower_gracefully()
       // try reset cache for schema refresh
       GCTX.root_service_->get_ddl_service().get_index_name_checker().reset_all_cache();
       FLOG_INFO("reset index name checker success");
-      GCTX.root_service_->get_ddl_service().get_non_partitioned_tablet_allocator().reset_all_cache();
-      FLOG_INFO("reset non partitioned tablet allocator success");
     }
     ATOMIC_SET(&is_ddl_service_started_, false);
   }

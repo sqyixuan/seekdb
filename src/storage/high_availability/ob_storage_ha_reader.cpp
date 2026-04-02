@@ -1267,17 +1267,6 @@ int ObCopySSTableInfoRestoreReader::get_backup_tablet_meta_(
               || !backup_tablet_meta.tablet_meta_.ha_status_.is_none()) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("backup tablet meta is invalid", K(ret), K(tablet_id), K(backup_data_type), K(backup_tablet_meta));
-    } else if (!ObTabletRestoreAction::is_restore_major(restore_action_)
-               && local_tablet->get_tablet_meta().transfer_info_.transfer_seq_ != backup_tablet_meta.tablet_meta_.transfer_info_.transfer_seq_) {
-      // If transfer seq of backup tablet is not equal to local tablet,
-      // treat it as tablet not exist when restore minor. But, transfer seq
-      // should not be compared when restore major.
-      copy_header.status_ = ObCopyTabletStatus::TABLET_NOT_EXIST;
-      LOG_INFO("tablet not exist as transfer seq is not equal",
-                K(tablet_id),
-                K(backup_data_type),
-                "local tablet meta", local_tablet->get_tablet_meta(),
-                "backup tablet meta", backup_tablet_meta.tablet_meta_);
     } else if (OB_FAIL(copy_header.tablet_meta_.assign(backup_tablet_meta.tablet_meta_))) {
       LOG_WARN("failed to assign tablet meta", K(ret), K(backup_tablet_meta));
     } else {
@@ -2005,7 +1994,7 @@ int ObCopyRemoteSSTableInfoObProducer::get_next_sstable_info(
       } else if (!need_copy_sstable) {
        //do nothing
         LOG_INFO("no need copy sstable", KPC(sstable));
-      } else if (OB_FAIL(tablet_handle_.get_obj()->build_migration_sstable_param(table->get_key(), sstable_info.param_, false/*is_fork_table*/))) {
+      } else if (OB_FAIL(tablet_handle_.get_obj()->build_migration_sstable_param(table->get_key(), sstable_info.param_))) {
         LOG_WARN("failed to build migration sstable param", K(ret), K(*table));
       } else {
         sstable_info.tablet_id_ = tablet_id_;

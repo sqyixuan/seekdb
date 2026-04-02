@@ -19,7 +19,6 @@
 
 #include "share/location_cache/ob_location_struct.h"
 #include "observer/ob_uniq_task_queue.h"
-#include "share/ob_balance_define.h"  // ObTransferTaskID
 #include "share/transfer/ob_transfer_info.h" // ObTransferTabletInfo
 
 namespace oceanbase
@@ -217,15 +216,15 @@ public:
   virtual uint64_t get_group_id() const { return tenant_id_; }
 
   inline uint64_t get_tenant_id() const { return tenant_id_; }
-  inline const ObTransferTaskID &get_task_id() const { return task_id_; }
+  //inline const ObTransferTaskID &get_task_id() const { return task_id_; }
   inline const ObLSID &get_ls_id() const { return ls_id_; }
   inline const TabletInfoList &get_tablet_list() const { return tablet_list_; }
   inline int64_t get_tablet_cnt() const { return tablet_list_.count(); }
 
-  TO_STRING_KV(K_(tenant_id), K_(task_id), K_(ls_id), K_(tablet_list));
+  TO_STRING_KV(K_(tenant_id), /*K_(task_id),*/ K_(ls_id), K_(tablet_list));
 private:
   uint64_t tenant_id_;
-  ObTransferTaskID task_id_;
+  //ObTransferTaskID task_id_;
   ObLSID ls_id_;
   TabletInfoList tablet_list_;
 };

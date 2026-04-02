@@ -56,23 +56,15 @@
 #include "rootserver/ddl_task/ob_ddl_scheduler.h" // ObDDLScheduler
 #include "rootserver/ob_ddl_service_launcher.h" // for ObDDLServiceLauncher
 #include "rootserver/ob_tenant_info_loader.h"//ObTenantInfoLoader
-#include "rootserver/ob_tenant_balance_service.h"//ObTenantBalanceService
 #include "rootserver/ob_ls_recovery_reportor.h"//ObLSRecoveryReportor
 #include "rootserver/ob_standby_schema_refresh_trigger.h"//ObStandbySchemaRefreshTrigger
 #include "rootserver/ob_tenant_info_loader.h"//ObTenantInfoLoader
 #include "rootserver/ob_create_standby_from_net_actor.h" // ObCreateStandbyFromNetActor
 #include "rootserver/standby/ob_recovery_ls_service.h"//ObRecoveryLSService
 #include "rootserver/ob_common_ls_service.h"//ObCommonLSService
-#include "rootserver/ob_disaster_recovery_service.h" // ObDRService
 #include "rootserver/restore/ob_restore_service.h" //ObRestoreService
-#include "rootserver/ob_balance_task_execute_service.h" //ObBalanceTaskExecuteService
 #include "rootserver/backup/ob_archive_scheduler_service.h" // ObArchiveSchedulerService
 #include "observer/dbms_scheduler/ob_dbms_sched_service.h" // ObDBMSSchedService
-#include "rootserver/tenant_snapshot/ob_tenant_snapshot_scheduler.h"
-#include "rootserver/restore/ob_clone_scheduler.h"
-#ifdef OB_BUILD_ARBITRATION
-#include "rootserver/ob_arbitration_service.h"
-#endif
 #include "sql/udr/ob_udr_mgr.h"
 #include "storage/blocksstable/ob_shared_macro_block_manager.h"
 #include "observer/table_load/ob_table_load_service.h"
@@ -84,7 +76,6 @@
 #include "share/errsim_module/ob_tenant_errsim_event_mgr.h"
 #endif
 #include "observer/ob_server_event_history_table_operator.h"
-#include "storage/tenant_snapshot/ob_tenant_snapshot_service.h"
 #include "share/index_usage/ob_index_usage_info_mgr.h"
 #include "rootserver/mview/ob_mview_maintenance_service.h"
 #include "storage/restore/ob_tenant_restore_info_mgr.h"
@@ -360,11 +351,6 @@ int ObMultiTenant::init(ObAddr myaddr,
     MTL_BIND2(mtl_new_default, rootserver::ObCreateStandbyFromNetActor::mtl_init, nullptr, rootserver::ObCreateStandbyFromNetActor::mtl_stop, rootserver::ObCreateStandbyFromNetActor::mtl_wait, mtl_destroy_default);
     MTL_BIND2(mtl_new_default, rootserver::ObPrimaryLSService::mtl_init, nullptr, rootserver::ObPrimaryLSService::mtl_stop, rootserver::ObPrimaryLSService::mtl_wait, mtl_destroy_default);
     MTL_BIND2(mtl_new_default, rootserver::ObCommonLSService::mtl_init, nullptr, rootserver::ObCommonLSService::mtl_stop, rootserver::ObCommonLSService::mtl_wait, mtl_destroy_default);
-#ifndef OB_BUILD_LITE
-    MTL_BIND2(mtl_new_default, rootserver::ObDRService::mtl_init, nullptr, rootserver::ObDRService::mtl_stop, rootserver::ObDRService::mtl_wait, mtl_destroy_default);
-#endif // OB_BUILD_LITE
-    MTL_BIND2(mtl_new_default, rootserver::ObBalanceTaskExecuteService::mtl_init, nullptr, rootserver::ObBalanceTaskExecuteService::mtl_stop, rootserver::ObBalanceTaskExecuteService::mtl_wait, mtl_destroy_default);
-    MTL_BIND2(mtl_new_default, rootserver::ObTenantBalanceService::mtl_init, nullptr, rootserver::ObTenantBalanceService::mtl_stop, rootserver::ObTenantBalanceService::mtl_wait, mtl_destroy_default);
     MTL_BIND2(mtl_new_default, rootserver::ObRecoveryLSService::mtl_init, nullptr, rootserver::ObRecoveryLSService::mtl_stop, rootserver::ObRecoveryLSService::mtl_wait, mtl_destroy_default);
     MTL_BIND2(mtl_new_default, rootserver::ObRestoreService::mtl_init, nullptr, rootserver::ObRestoreService::mtl_stop, rootserver::ObRestoreService::mtl_wait, mtl_destroy_default);
     MTL_BIND2(mtl_new_default, coordinator::ObLeaderCoordinator::mtl_init, coordinator::ObLeaderCoordinator::mtl_start, coordinator::ObLeaderCoordinator::mtl_stop, coordinator::ObLeaderCoordinator::mtl_wait, mtl_destroy_default);
@@ -374,10 +360,6 @@ int ObMultiTenant::init(ObAddr myaddr,
     MTL_BIND2(mtl_new_default, rootserver::ObArchiveSchedulerService::mtl_init, nullptr, rootserver::ObArchiveSchedulerService::mtl_stop, rootserver::ObArchiveSchedulerService::mtl_wait, mtl_destroy_default);
     MTL_BIND2(mtl_new_default, ObGlobalAutoIncService::mtl_init, nullptr, nullptr, nullptr, mtl_destroy_default);
     MTL_BIND2(mtl_new_default, share::detector::ObDeadLockDetectorMgr::mtl_init, mtl_start_default, mtl_stop_default, mtl_wait_default, mtl_destroy_default);
-    MTL_BIND2(mtl_new_default, rootserver::ObTenantSnapshotScheduler::mtl_init, nullptr, rootserver::ObTenantSnapshotScheduler::mtl_stop, rootserver::ObTenantSnapshotScheduler::mtl_wait, mtl_destroy_default);
-#ifndef OB_BUILD_LITE
-    MTL_BIND2(mtl_new_default, rootserver::ObCloneScheduler::mtl_init, nullptr, rootserver::ObCloneScheduler::mtl_stop, rootserver::ObCloneScheduler::mtl_wait, mtl_destroy_default);
-#endif
     MTL_BIND2(mtl_new_default, ObTenantSchemaService::mtl_init, nullptr, nullptr, nullptr, mtl_destroy_default);
     MTL_BIND2(mtl_new_default, ObTimestampService::mtl_init, mtl_start_default, mtl_stop_default, mtl_wait_default, mtl_destroy_default);
     MTL_BIND2(mtl_new_default, ObStandbyTimestampService::mtl_init, mtl_start_default, mtl_stop_default, mtl_wait_default, mtl_destroy_default);
@@ -435,7 +417,6 @@ int ObMultiTenant::init(ObAddr myaddr,
     MTL_BIND2(mtl_new_default, ObOptStatMonitorManager::mtl_init, ObOptStatMonitorManager::mtl_start, ObOptStatMonitorManager::mtl_stop, ObOptStatMonitorManager::mtl_wait, mtl_destroy_default);
     MTL_BIND2(mtl_new_default, ObTenantSrs::mtl_init, mtl_start_default, mtl_stop_default, mtl_wait_default, mtl_destroy_default);
     MTL_BIND2(mtl_new_default, table::ObTableObjectPoolMgr::mtl_init, mtl_start_default, mtl_stop_default, mtl_wait_default, mtl_destroy_default);
-    MTL_BIND2(mtl_new_default, ObTenantSnapshotService::mtl_init, mtl_start_default, mtl_stop_default, mtl_wait_default, mtl_destroy_default);
     //MTL_BIND2(ObTenantFTPluginMgr::mtl_new, mtl_init_default, nullptr, nullptr, nullptr, mtl_destroy_default);
     MTL_BIND2(mtl_new_default, ObIndexUsageInfoMgr::mtl_init, mtl_start_default, mtl_stop_default, mtl_wait_default, mtl_destroy_default);
     MTL_BIND2(mtl_new_default, storage::ObTabletMemtableMgrPool::mtl_init, nullptr, nullptr, nullptr, mtl_destroy_default);
@@ -746,6 +727,17 @@ int ObMultiTenant::create_tenant(const ObTenantMeta &meta, bool write_slog, cons
       create_step = ObTenantCreateStep::STEP_CTX_MEM_CONFIG_SETTED; // step1
     }
   }
+  if (OB_SUCC(ret)) {
+    if (!is_virtual_tenant_id(tenant_id)
+        && OB_FAIL(GCTX.log_block_mgr_->create_tenant(log_disk_size))) {
+      LOG_ERROR("create_tenant in ObServerLogBlockMgr failed", KR(ret));
+    }
+    // if create_tenant in ObServerLogBlockMGR success, the log disk size need by this tenant has been pinned,
+    // otherwise, the assigned log disk size of ObServerLogBlockMGR is origin.
+    if (OB_SUCC(ret)) {
+      create_step = ObTenantCreateStep::STEP_LOG_DISK_SIZE_PINNED;  // step2
+    }
+  }
 
   if (OB_FAIL(ret)) {
     // do nothing
@@ -840,6 +832,15 @@ int ObMultiTenant::create_tenant(const ObTenantMeta &meta, bool write_slog, cons
             LOG_ERROR("fail to cleanup ctx mem config", K(tmp_ret), K(tenant_id), K(ctx_id));
             SLEEP(1);
           }
+        }
+      }
+    } while (OB_SUCCESS != tmp_ret);
+
+    do {
+      tmp_ret = OB_SUCCESS;
+      if (create_step >= ObTenantCreateStep::STEP_LOG_DISK_SIZE_PINNED) {
+        if (!is_virtual_tenant_id(tenant_id)) {
+          GCTX.log_block_mgr_->abort_create_tenant(log_disk_size);
         }
       }
     } while (OB_SUCCESS != tmp_ret);
@@ -1239,7 +1240,7 @@ int ObMultiTenant::update_tenant_query_response_time_flush_config()
         LOG_DEBUG("config result is null", K(tenant_id), K(ret));
       } else if (OB_FAIL(result.get_result()->next())) {
         LOG_WARN("get result next failed", K(tenant_id), K(ret));
-      } else if (OB_FAIL(result.get_result()->get_int(static_cast<int64_t>(0L), flush_version))) {
+      } else if (OB_FAIL(result.get_result()->get_int(0L, flush_version))) {
         if (OB_ERR_NULL_VALUE != ret) {
           LOG_WARN("get config_version failed", K(tenant_id), K(ret));
         } else {
@@ -1550,6 +1551,9 @@ void ObMultiTenant::remove_tenant()
     }
 
     if (OB_SUCC(ret)) {
+      const share::ObUnitInfoGetter::ObTenantConfig &config = tenant_->get_unit();
+      const int64_t log_disk_size = config.config_.log_disk_size();
+      GCTX.log_block_mgr_->remove_tenant(log_disk_size);
       tenant_->destroy();
       ob_delete(tenant_);
       LOG_INFO("remove tenant success", K(tenant_id));

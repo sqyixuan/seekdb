@@ -27,7 +27,6 @@ namespace obrpc
 class ObSrvRpcProxy;
 struct ObRsListArg;
 // struct ObAdminServerArg;
-class ObAdminStorageArg;
 }
 namespace share
 {
@@ -123,27 +122,6 @@ public:
   int finish_delete_server(
       const common::ObAddr &server,
       const common::ObZone &zone);
-  // stop the given server
-  // In this func, we set the server's stop_time be now in __all_server table
-  // Stopping server should guarantee that there is no other zone's server is stopped.
-  // Isolating server should guarantee that there still exists started server in primary region after isolating
-  // In addition, stop server will check majority and log sync.
-  //
-  // @param[in]  server	  the server which we want to stop
-  // @param[in]  zone     the zone in which the server is located
-  // @param[in]  is_stop  true if stop, otherwise isolate
-  //
-  // @ret OB_SUCCESS 		               stop the server successfully
-  // @ret OB_INVALID_ARGUMENT          an invalid server
-  // @ret OB_SERVER_ZONE_NOT_MATCH     the arg zone is not the same as the server's zone in __all_server table
-  // @ret OB_NOT_MASTER                not rs leader, cannot execute the command
-  // @ret OB_SERVER_NOT_IN_WHITE_LIST  the server is not in the cluster
-
-  // @ret other error code		 failure
-  int stop_servers(
-      const ObIArray<ObAddr> &servers,
-      const ObZone &zone,
-      const obrpc::ObAdminServerArg::AdminServerOp &op);
   // start the given server
   // In this func, we set the server's stop_time be zero in __all_server table
   //
@@ -161,9 +139,6 @@ public:
   int start_servers(
       const ObIArray<ObAddr> &servers,
       const ObZone &zone);
-  int stop_server_precheck(
-      const ObIArray<ObAddr> &servers,
-      const obrpc::ObAdminServerArg::AdminServerOp &op);
 private:
   int check_startup_mode_match_(const share::ObServerMode startup_mode);
   int zone_checking_for_adding_server_(
@@ -209,10 +184,6 @@ private:
       const common::ObAddr &server,
       const common::ObZone &zone,
       const int64_t start_time);
-  int get_and_check_storage_infos_by_zone_(const ObZone &zone,
-      ObIArray<share::ObZoneStorageTableInfo> &result);
-  int check_storage_infos_not_changed_(common::ObISQLClient &proxy, const ObZone &zone,
-      const ObIArray<share::ObZoneStorageTableInfo> &storage_infos);
   int precheck_server_empty_and_get_zone_(const ObAddr &server,
       const ObTimeoutCtx &timeout,
       const bool is_bootstrap,

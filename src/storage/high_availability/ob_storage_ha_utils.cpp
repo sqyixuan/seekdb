@@ -491,14 +491,6 @@ void ObTransferUtils::clear_transfer_module()
 #endif
 }
 
-
-void ObTransferUtils::set_transfer_related_info(
-    const share::ObLSID &dest_ls_id,
-    const share::ObTransferTaskID &task_id,
-    const share::SCN &start_scn)
-{
-}
-
 int ObTransferUtils::get_ls_(
     ObLSHandle &ls_handle,
     const share::ObLSID &dest_ls_id,

@@ -46,8 +46,6 @@
 #include "sql/resolver/ddl/ob_rename_table_stmt.h"
 #include "sql/resolver/ddl/ob_truncate_table_stmt.h"
 #include "sql/resolver/ddl/ob_create_table_like_stmt.h"
-#include "sql/resolver/ddl/ob_fork_table_stmt.h"
-#include "sql/resolver/ddl/ob_fork_database_stmt.h"
 #include "sql/resolver/ddl/ob_flashback_stmt.h"
 #include "sql/resolver/ddl/ob_purge_stmt.h"
 #include "sql/resolver/ddl/ob_lock_table_stmt.h"
@@ -131,10 +129,6 @@
 #include "sql/resolver/dcl/ob_alter_role_stmt.h"
 #include "sql/resolver/ddl/ob_drop_context_resolver.h"
 #include "sql/engine/cmd/ob_context_executor.h"
-#include "sql/resolver/cmd/ob_tenant_snapshot_stmt.h"
-#include "sql/engine/cmd/ob_tenant_snapshot_executor.h"
-#include "sql/resolver/cmd/ob_tenant_clone_stmt.h"
-#include "sql/engine/cmd/ob_clone_executor.h"
 #include "sql/resolver/cmd/ob_olap_async_job_stmt.h"
 #include "sql/engine/cmd/ob_olap_async_job_executor.h"
 #include "sql/resolver/cmd/ob_event_stmt.h"
@@ -417,14 +411,6 @@ int ObCmdExecutor::execute(ObExecContext &ctx, ObICmd &cmd)
         DEFINE_EXECUTE_CMD(ObCreateTableLikeStmt, ObCreateTableLikeExecutor);
         break;
       }
-      case stmt::T_FORK_TABLE: {
-        DEFINE_EXECUTE_CMD(ObForkTableStmt, ObForkTableExecutor);
-        break;
-      }
-      case stmt::T_FORK_DATABASE: {
-        DEFINE_EXECUTE_CMD(ObForkDatabaseStmt, ObForkDatabaseExecutor);
-        break;
-      }
       case stmt::T_FLASHBACK_TABLE_FROM_RECYCLEBIN: {
         DEFINE_EXECUTE_CMD(ObFlashBackTableFromRecyclebinStmt, ObFlashBackTableFromRecyclebinExecutor);
         break;
@@ -550,10 +536,6 @@ int ObCmdExecutor::execute(ObExecContext &ctx, ObICmd &cmd)
         DEFINE_EXECUTE_CMD(ObAdminZoneStmt, ObAdminZoneExecutor);
         break;
       }
-      case stmt::T_ADMIN_STORAGE: {
-        DEFINE_EXECUTE_CMD(ObAdminStorageStmt, ObAdminStorageExecutor);
-        break;
-      }
 #ifdef OB_BUILD_SHARED_STORAGE
       case stmt::T_TRIGGER_STORAGE_CACHE: {
         DEFINE_EXECUTE_CMD(ObTriggerStorageCacheStmt, ObTriggerStorageCacheExecutor);
@@ -605,14 +587,6 @@ int ObCmdExecutor::execute(ObExecContext &ctx, ObICmd &cmd)
       case stmt::T_GRANT_PROXY:
       case stmt::T_REVOKE_PROXY: {
         DEFINE_EXECUTE_CMD(ObMockStmt, ObMockExecutor);
-        break;
-      }
-      case stmt::T_SWITCH_REPLICA_ROLE: {
-        DEFINE_EXECUTE_CMD(ObSwitchReplicaRoleStmt, ObSwitchReplicaRoleExecutor);
-        break;
-      }
-      case stmt::T_SWITCH_RS_ROLE: {
-        DEFINE_EXECUTE_CMD(ObSwitchRSRoleStmt, ObSwitchRSRoleExecutor);
         break;
       }
       case stmt::T_REPORT_REPLICA: {
@@ -677,22 +651,6 @@ int ObCmdExecutor::execute(ObExecContext &ctx, ObICmd &cmd)
       }
       case stmt::T_CLEAR_MERGE_ERROR: {
         DEFINE_EXECUTE_CMD(ObClearMergeErrorStmt, ObClearMergeErrorExecutor);
-        break;
-      }
-      case stmt::T_ALTER_LS_REPLICA: {
-        DEFINE_EXECUTE_CMD(ObAlterLSReplicaStmt, ObAlterLSReplicaExecutor);
-        break;
-      }
-      case stmt::T_ADD_ARBITRATION_SERVICE: {
-        DEFINE_EXECUTE_CMD(ObAddArbitrationServiceStmt, ObAddArbitrationServiceExecutor);
-        break;
-      }
-      case stmt::T_REMOVE_ARBITRATION_SERVICE: {
-        DEFINE_EXECUTE_CMD(ObRemoveArbitrationServiceStmt, ObRemoveArbitrationServiceExecutor);
-        break;
-      }
-      case stmt::T_REPLACE_ARBITRATION_SERVICE: {
-        DEFINE_EXECUTE_CMD(ObReplaceArbitrationServiceStmt, ObReplaceArbitrationServiceExecutor);
         break;
       }
       case stmt::T_UPGRADE_VIRTUAL_SCHEMA: {
@@ -804,10 +762,6 @@ int ObCmdExecutor::execute(ObExecContext &ctx, ObICmd &cmd)
       }
       case stmt::T_SET_DISK_VALID: {
         DEFINE_EXECUTE_CMD(ObSetDiskValidStmt, ObSetDiskValidExecutor);
-        break;
-      }
-      case stmt::T_CLEAR_BALANCE_TASK: {
-        DEFINE_EXECUTE_CMD(ObClearBalanceTaskStmt, ObClearBalanceTaskExecutor);
         break;
       }
       case stmt::T_ANALYZE: {
@@ -1033,32 +987,12 @@ int ObCmdExecutor::execute(ObExecContext &ctx, ObICmd &cmd)
         DEFINE_EXECUTE_CMD(ObTableTTLStmt, ObTableTTLExecutor);
         break;
       }
-      case stmt::T_CREATE_TENANT_SNAPSHOT: {
-        DEFINE_EXECUTE_CMD(ObCreateTenantSnapshotStmt, ObCreateTenantSnapshotExecutor);
-        break;
-      }
-      case stmt::T_DROP_TENANT_SNAPSHOT: {
-        DEFINE_EXECUTE_CMD(ObDropTenantSnapshotStmt, ObDropTenantSnapshotExecutor);
-        break;
-      }
-      case stmt::T_CLONE_TENANT: {
-        DEFINE_EXECUTE_CMD(ObCloneTenantStmt, ObCloneTenantExecutor);
-        break;
-      }
       case stmt::T_SERVICE_NAME: {
         DEFINE_EXECUTE_CMD(ObServiceNameStmt, ObServiceNameExecutor);
         break;
       }
       case stmt::T_ALTER_SYSTEM_RESET_PARAMETER: {
         DEFINE_EXECUTE_CMD(ObResetConfigStmt, ObResetConfigExecutor);
-        break;
-      }
-      case stmt::T_CANCEL_CLONE: {
-        DEFINE_EXECUTE_CMD(ObCancelCloneStmt, ObCancelCloneExecutor);
-        break;
-       }
-      case stmt::T_TRANSFER_PARTITION: {
-        DEFINE_EXECUTE_CMD(ObTransferPartitionStmt, ObTransferPartitionExecutor);
         break;
       }
       case stmt::T_CHANGE_EXTERNAL_STORAGE_DEST: {

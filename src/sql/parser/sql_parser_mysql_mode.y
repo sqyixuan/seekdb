@@ -273,7 +273,7 @@ END_P SET_VAR DELIMITER
 //-----------------------------non_reserved keyword begin-------------------------------------------
         ACCESS ACCESS_INFO ACCESSID ACCESSKEY ACCESSTYPE ACCOUNT ACTION ACTIVE ADDDATE AFTER AGAINST AGGREGATE AI ALGORITHM ALL_META ALL_USER ALWAYS ALLOW ANALYSE ANY
         APPID APPROX_COUNT_DISTINCT APPROX_COUNT_DISTINCT_SYNOPSIS APPROX_COUNT_DISTINCT_SYNOPSIS_MERGE
-        ARBITRATION ARRAY ASCII ASIS AT ATTRIBUTE AUTHORS AUTO AUTOEXTEND_SIZE AUTO_INCREMENT AUTO_INCREMENT_MODE AUTO_INCREMENT_CACHE_SIZE
+        ARRAY ASCII ASIS AT ATTRIBUTE AUTHORS AUTO AUTOEXTEND_SIZE AUTO_INCREMENT AUTO_INCREMENT_MODE AUTO_INCREMENT_CACHE_SIZE
         AVG AVG_ROW_LENGTH ACTIVATE AVAILABILITY ARCHIVELOG ASYNCHRONOUS AUDIT ADMIN AUTO_REFRESH API_MODE APPROX APPROXIMATE ARRAY_AGG ARRAY_FILTER ARRAY_FIRST ARRAY_MAP ARRAY_SORTBY 
 
         BACKUP BACKUP_COPIES BALANCE BANDWIDTH BASE BASELINE BASELINE_ID BASIC BEGI BINDING SHARDING BINARY_FORMAT BINLOG BIT BIT_AND
@@ -282,23 +282,23 @@ END_P SET_VAR DELIMITER
         BADFILE BOUNDARY_COLUMN BOUNDARY_COLUMN_UNIT BUFFER_SIZE BIGINT_PRECISION
 
         CACHE CALIBRATION CALIBRATION_INFO CANCEL CASCADED CAST CATALOG CATALOGS CATALOG_NAME CHAIN CHANGED CHARSET CHECKSUM CHECKPOINT CHUNK CIPHER
-        CLASS_ORIGIN CLEAN CLEAR CLIENT CLONE CLOG CLOSE CLUSTER CLUSTER_ID CLUSTER_NAME COALESCE COLUMN_BLOOM_FILTER COLUMN_STAT
+        CLASS_ORIGIN CLEAN CLEAR CLIENT CLOG CLOSE CLUSTER CLUSTER_ID CLUSTER_NAME COALESCE COLUMN_BLOOM_FILTER COLUMN_STAT
         CODE COLLATION COLLECT_STATISTICS_ON_CREATE COLUMN_FORMAT COLUMN_INDEX_TYPE COLUMN_NAME COLUMNS COMMENT COMMIT COMMITTED COMPACT COMPLETION COMPLETE
         COMPRESSED COMPRESSION COMPRESSION_BLOCK_SIZE COMPRESSION_CODE COMPUTATION COMPUTE CONCURRENT CONCURRENT_LIMITING_RULE CONDENSED CONDITIONAL CONFIGS CONNECTION CONSISTENT CONSISTENT_MODE CONSTRAINT_CATALOG
         CONSTRAINT_NAME CONSTRAINT_SCHEMA CONTAINS CONTEXT CONTRIBUTORS COPY COSINE COUNT CPU CREATE_TIMESTAMP CREDENTIAL
         CTXCAT CTX_ID CUBE CURDATE CURRENT STACKED CURTIME CURSOR_NAME CUME_DIST CYCLE CALC_PARTITION_ID CONNECT
 
         DAG DATA DATAFILE DATA_DISK_SIZE DATA_SOURCE DATA_TABLE_ID DATE DATE_ADD DATE_SUB DATETIME DAY DEALLOCATE DECRYPT DECRYPTION
-        DEFAULT_AUTH DEFAULT_LOB_INROW_THRESHOLD DEFINER DELAY DELAY_KEY_WRITE DEPTH DES_KEY_FILE DENSE_RANK DESCRIPTION DESTINATION DIAGNOSTICS DICT_TABLE
+        DEFAULT_AUTH DEFAULT_LOB_INROW_THRESHOLD DEFINER DELAY DELAY_KEY_WRITE DEPTH DES_KEY_FILE DENSE_RANK DESCRIPTION DIAGNOSTICS DICT_TABLE
         DIRECTORY DISABLE DISALLOW DISCARD DISK DISKGROUP DO DOT DUMP DUMPFILE DUPLICATE DUPLICATE_SCOPE DUPLICATE_READ_CONSISTENCY DYNAMIC
         DATABASE_ID DEFAULT_TABLEGROUP DISCONNECT DEMAND DELETE_INSERT DYNAMIC_PARTITION_POLICY
 
-        EFFECTIVE EMPTY ENABLE ENABLE_ARBITRATION_SERVICE ENABLE_EXTENDED_ROWID ENABLE_MACRO_BLOCK_BLOOM_FILTER ENCRYPT ENCRYPTED ENCRYPTION END ENDPOINT ENDS ENFORCED ENGINE_ ENGINES ENUM ENTITY ERROR_CODE ERROR_P ERRORS ESTIMATE
+        EFFECTIVE EMPTY ENABLE ENABLE_EXTENDED_ROWID ENABLE_MACRO_BLOCK_BLOOM_FILTER ENCRYPT ENCRYPTED ENCRYPTION END ENDPOINT ENDS ENFORCED ENGINE_ ENGINES ENUM ENTITY ERROR_CODE ERROR_P ERRORS ESTIMATE
         ESCAPE EVENT EVENTS EVERY EXCHANGE EXCLUDING EXECUTE EXPANSION EXPIRE EXPIRE_INFO EXPORT OUTLINE EXTENDED
         EXTENDED_NOADDR EXTENT_SIZE EXTRACT EXCEPT EXPIRED ENCODING EMPTY_FIELD_AS_NULL EUCLIDEAN EXTERNAL EXTERNAL_STORAGE_DEST EXPIRE_TIME
 
         FAILOVER FAST FAULTS FILE_BLOCK_SIZE FIELDS FILEX FINAL_COUNT FIRST FIRST_VALUE FIXED FLUSH FOLLOWER FORMAT
-        FOUND FORK FREEZE FREQUENCY FUNCTION FOLLOWING FLASHBACK FULL FRAGMENTATION FROZEN FILE_ID FILTER
+        FOUND FREEZE FREQUENCY FUNCTION FOLLOWING FLASHBACK FULL FRAGMENTATION FROZEN FILE_ID FILTER
         FIELD_OPTIONALLY_ENCLOSED_BY FIELD_DELIMITER FIELD_ENCLOSED_BY FILE_EXTENSION
 
         GENERAL GEOMETRY GEOMCOLLECTION GEOMETRYCOLLECTION GET_FORMAT GLOBAL GRANTS GRANULARITY GROUP_CONCAT GROUPING GTS
@@ -348,7 +348,7 @@ END_P SET_VAR DELIMITER
         RELAY_LOG_FILE RELAY_LOG_POS RELAY_THREAD RELOAD REMAP REMOVE REORGANIZE REPAIR REPEATABLE REPLICA
         REPLICA_NUM REPLICA_TYPE REPLICATION REPORT RESET RESOURCE RESOURCE_POOL RESOURCE_POOL_LIST RESPECT RESTART
         RESTORE RESUME RETURNED_SQLSTATE RETURNS RETURNING REVERSE REWRITE ROLLBACK ROLLUP ROOT
-        ROARINGBITMAP ROOTTABLE ROOTSERVICE ROOTSERVICE_LIST ROUTINE ROW ROLLING ROWID ROW_COUNT ROW_FORMAT ROW_GROUP_SIZE ROW_INDEX_STRIDE ROWS RTREE RUN
+        ROARINGBITMAP ROOTTABLE ROOTSERVICE_LIST ROUTINE ROW ROLLING ROWID ROW_COUNT ROW_FORMAT ROW_GROUP_SIZE ROW_INDEX_STRIDE ROWS RTREE RUN
         RECYCLEBIN ROTATE ROW_NUMBER RUDUNDANT RECURSIVE RANDOM REDO_TRANSPORT_OPTIONS REMOTE_OSS RT
         RANK READ_ONLY RECOVERY REJECT ROLE
 
@@ -389,7 +389,7 @@ END_P SET_VAR DELIMITER
 %type <node> sql_stmt stmt_list stmt opt_end_p
 %type <node> select_stmt update_stmt delete_stmt
 %type <node> insert_stmt single_table_insert values_clause dml_table_name
-%type <node> create_table_stmt create_table_like_stmt fork_table_stmt fork_database_stmt opt_table_option_list table_option_list table_option table_option_list_space_seperated create_function_stmt drop_function_stmt parallel_option lob_storage_clause lob_storage_parameter lob_storage_parameters lob_chunk_size
+%type <node> create_table_stmt create_table_like_stmt opt_table_option_list table_option_list table_option table_option_list_space_seperated create_function_stmt drop_function_stmt parallel_option lob_storage_clause lob_storage_parameter lob_storage_parameters lob_chunk_size
 %type <node> opt_force
 %type <node> index_or_heap
 %type <node> create_sequence_stmt alter_sequence_stmt drop_sequence_stmt opt_sequence_option_list sequence_option_list sequence_option simple_num
@@ -494,10 +494,10 @@ END_P SET_VAR DELIMITER
 %type <node> create_mview_stmt create_mview_opts mview_refresh_opt mv_refresh_on_clause mv_refresh_mode mv_refresh_interval mv_start_clause mv_next_clause mv_nested_refresh_opt mview_nested_refresh_mode
 %type <ival> mv_refresh_method mview_enable_disable
 %type <node> name_list
-%type <node> partition_role ls_role zone_desc opt_zone_desc server_or_zone opt_server_or_zone opt_partitions opt_subpartitions add_or_alter_zone_options alter_or_change_or_modify
-%type <node> ls opt_tenant_list_or_ls_or_tablet_id ls_server_or_server_or_zone_or_tenant add_or_alter_zone_option
+%type <node> zone_desc opt_zone_desc server_or_zone opt_server_or_zone opt_partitions opt_subpartitions add_or_alter_zone_options alter_or_change_or_modify
+%type <node> ls opt_tenant_list_or_ls_or_tablet_id add_or_alter_zone_option
 %type <node> opt_tenant_list_v2
-%type <node> suspend_or_resume tenant_name opt_tenant_name cache_name opt_cache_name file_id opt_file_id cancel_task_type opt_data_source opt_paxos_replica_num
+%type <node> suspend_or_resume tenant_name opt_tenant_name cache_name opt_cache_name file_id opt_file_id cancel_task_type
 %type <node> sql_id_or_schema_id_expr opt_sql_id_or_schema_id outline_type
 %type <node> namespace_expr opt_namespace
 %type <node> server_action server_list opt_server_list
@@ -509,10 +509,9 @@ END_P SET_VAR DELIMITER
 %type <node> set_transaction_stmt transaction_characteristics transaction_access_mode isolation_level
 %type <node> lock_tables_stmt unlock_tables_stmt lock_type lock_table_list lock_table opt_local
 %type <node> flashback_stmt purge_stmt opt_flashback_rename_table opt_flashback_rename_database opt_flashback_rename_tenant
-%type <node> tenant_name_list opt_tenant_list tenant_list_tuple cache_type flush_scope opt_zone_list
+%type <node> tenant_name_list opt_tenant_list tenant_list_tuple cache_type flush_scope
 %type <node> into_opt into_clause field_opt field_term field_term_list line_opt line_term line_term_list into_var_list into_var file_partition_opt file_opt file_option_list file_option file_size_const binary_format
 %type <node> string_list text_string string_val_list ulong_num
-%type <node> balance_task_type opt_balance_task_type
 %type <node> list_expr list_partition_element list_partition_expr list_partition_list list_partition_option opt_list_partition_list opt_list_subpartition_list list_subpartition_list list_subpartition_element drop_partition_name_list
 %type <node> primary_zone_name change_tenant_name_or_tenant_id distribute_method distribute_method_list opt_distribute_method_list
 %type <node> load_data_stmt opt_load_local opt_duplicate opt_compression opt_load_charset opt_load_ignore_rows infile_string url_spec
@@ -556,8 +555,6 @@ END_P SET_VAR DELIMITER
 %type <node> json_table_ordinality_column_def json_table_exists_column_def json_table_value_column_def json_table_nested_column_def
 %type <node> opt_value_on_empty_or_error_or_mismatch opt_on_mismatch
 %type <node> table_values_clause table_values_clause_with_order_by_and_limit values_row_list row_value
-%type <node> create_tenant_snapshot_stmt snapshot_name drop_tenant_snapshot_stmt clone_tenant_stmt clone_snapshot_option clone_tenant_option clone_tenant_option_list
-%type <node> transfer_partition_stmt transfer_partition_clause part_info cancel_transfer_partition_clause
 %type <node> geometry_collection
 %type <node> mock_stmt check_table_options check_table_option user_host_or_current_user install_plugin_stmt plugin_name uninstall_plugin_stmt flush_stmt flush_options flush_options_list flush_option opt_no_write_to_binlog opt_flush_lock handler_stmt handler_read_or_scan handler_scan_function handler_rkey_function handler_rkey_mode
 %type <node> show_plugin_stmt merge_insert_types opt_table_list
@@ -638,8 +635,6 @@ stmt:
   | create_function_stmt    { $$ = $1; check_question_mark($$, result); }
   | drop_function_stmt      { $$ = $1; check_question_mark($$, result); }
   | create_table_like_stmt  { $$ = $1; check_question_mark($$, result); }
-  | fork_table_stmt         { $$ = $1; check_question_mark($$, result); }
-  | fork_database_stmt      { $$ = $1; check_question_mark($$, result); }
   | create_database_stmt    { $$ = $1; check_question_mark($$, result); }
   | drop_database_stmt      { $$ = $1; check_question_mark($$, result); }
   | alter_database_stmt     { $$ = $1; check_question_mark($$, result); }
@@ -753,10 +748,6 @@ stmt:
   | method_opt              { $$ = $1; check_question_mark($$, result); }
   | switchover_tenant_stmt   { $$ = $1; check_question_mark($$, result); }
   | recover_tenant_stmt   { $$ = $1; check_question_mark($$, result); }
-  | create_tenant_snapshot_stmt   { $$ = $1; check_question_mark($$, result); }
-  | drop_tenant_snapshot_stmt   { $$ = $1; check_question_mark($$, result); }
-  | clone_tenant_stmt   { $$ = $1; check_question_mark($$, result); }
-  | transfer_partition_stmt { $$ = $1; check_question_mark($$, result); }
   | mock_stmt {$$ = $1; check_question_mark($$, result);}
   | service_name_stmt { $$ = $1; check_question_mark($$, result); }
   | create_location_stmt  { $$ = $1; check_question_mark($$, result); }
@@ -4671,11 +4662,6 @@ LOGONLY_REPLICA_NUM opt_equal_mark INTNUM
   (void)($2) ; /* make bison mute */
   merge_nodes($$, result, T_TENANT_RESOURCE_POOL_LIST, $4);
 }
-| ENABLE_ARBITRATION_SERVICE opt_equal_mark BOOL_VALUE
-{
-  (void)($2) ;
-  malloc_non_terminal_node($$, result->malloc_pool_, T_ENABLE_ARBITRATION_SERVICE, 1, $3);
-}
 | ZONE_LIST opt_equal_mark '(' zone_list ')'
 {
   (void)($2) ; /* make bison mute */
@@ -4818,88 +4804,6 @@ alter_with_opt_hint TENANT relation_name opt_set opt_tenant_option_list opt_glob
   malloc_non_terminal_node($$, result->malloc_pool_, T_LOCK_TENANT, 2,
                            $3,                   /* tenant name */
                            $4);                  /* lock opt */
-}
-;
-
-create_tenant_snapshot_stmt:
-CREATE SNAPSHOT snapshot_name FOR TENANT relation_name
-{
-  malloc_non_terminal_node($$, result->malloc_pool_, T_CREATE_TENANT_SNAPSHOT, 2,
-                           $3,                   /* snapshot name */
-                           $6);                  /* tenant name */
-}
-| CREATE SNAPSHOT snapshot_name
-{
-  malloc_non_terminal_node($$, result->malloc_pool_, T_CREATE_TENANT_SNAPSHOT, 2,
-                           $3,                   /* snapshot name */
-                           NULL);
-}
-;
-
-snapshot_name:
-relation_name
-{ $$ = $1; }
-| /* EMPTY */
-{ $$ = NULL; }
-;
-
-drop_tenant_snapshot_stmt:
-DROP SNAPSHOT relation_name FOR TENANT relation_name
-{
-  malloc_non_terminal_node($$, result->malloc_pool_, T_DROP_TENANT_SNAPSHOT, 2,
-                           $3,                   /* snapshot name */
-                           $6);                  /* tenant name */
-}
-| DROP SNAPSHOT relation_name
-{
-  malloc_non_terminal_node($$, result->malloc_pool_, T_DROP_TENANT_SNAPSHOT, 2,
-                           $3,                   /* snapshot name */
-                           NULL);
-}
-;
-
-clone_tenant_stmt:
-create_with_opt_hint TENANT opt_if_not_exists relation_name FROM relation_name
-clone_snapshot_option WITH clone_tenant_option_list
-{
-  (void)($1);
-  malloc_non_terminal_node($$, result->malloc_pool_, T_CLONE_TENANT, 5,
-                           $3,                   /* if not exist */
-                           $4,                   /* cloned tenant name */
-                           $6,                   /* source tenant name */
-                           $7,                   /* tenant snapshot name */
-                           $9);                  /* clone option list */
-}
-;
-
-clone_snapshot_option:
-USING SNAPSHOT relation_name
-{
-  $$ = $3;
-}
-| /*EMPTY*/
-{
-  $$ = NULL;
-}
-;
-
-clone_tenant_option:
-RESOURCE_POOL opt_equal_mark relation_name_or_string
-{
-  (void)($2);
-  malloc_non_terminal_node($$, result->malloc_pool_, T_RESOURCE_POOL_LIST, 1, $3);
-}
-| UNIT opt_equal_mark relation_name_or_string
-{
-  (void)($2);
-  malloc_non_terminal_node($$, result->malloc_pool_, T_UNIT, 1, $3);
-}
-;
-
-clone_tenant_option_list:
-clone_tenant_option ',' clone_tenant_option
-{
-  malloc_non_terminal_node($$, result->malloc_pool_, T_LINK_NODE, 2, $1, $3);
 }
 ;
 
@@ -5555,26 +5459,6 @@ create_with_opt_hint special_table_type TABLE opt_if_not_exists relation_factor 
 {
   (void)($1);
   malloc_non_terminal_node($$, result->malloc_pool_, T_CREATE_TABLE_LIKE, 4, $2, $4, $5, $8);
-}
-;
-
-/*****************************************************************************
- *
- *	FORK TABLE grammar
- *
- *****************************************************************************/
-
-fork_table_stmt:
-FORK TABLE relation_factor TO relation_factor
-{
-  malloc_non_terminal_node($$, result->malloc_pool_, T_FORK_TABLE, 2, $5, $3);
-}
-;
-
-fork_database_stmt:
-FORK DATABASE database_factor TO database_factor
-{
-  malloc_non_terminal_node($$, result->malloc_pool_, T_FORK_DATABASE, 2, $5, $3);
 }
 ;
 
@@ -11289,8 +11173,11 @@ with_param_column_ref { $$ = $1}
 with_param_column_ref:
 no_param_column_ref '^' literal
 {
+  ParseNode *node = NULL;
+  malloc_non_terminal_node(node, result->malloc_pool_, T_COLUMN_REF, 3, NULL, NULL, $1);
+  dup_node_string($1, node, result->malloc_pool_);
   ParseNode *list_node = NULL;
-  malloc_non_terminal_node(list_node, result->malloc_pool_, T_LINK_NODE, 2, $1, $3);
+  malloc_non_terminal_node(list_node, result->malloc_pool_, T_LINK_NODE, 2, node, $3);
   merge_nodes($$, result, T_MATCH_COLUMN_LIST, list_node);
 }
 ;
@@ -19664,18 +19551,6 @@ alter_with_opt_hint SYSTEM FLUSH ILOGCACHE opt_file_id
   malloc_non_terminal_node($$, result->malloc_pool_, T_FLUSH_ILOGCACHE, 1, $5);
 }
 |
-alter_with_opt_hint SYSTEM SWITCH REPLICA ls_role ls_server_or_server_or_zone_or_tenant
-{
-  (void)($1);
-  malloc_non_terminal_node($$, result->malloc_pool_, T_SWITCH_REPLICA_ROLE, 2, $5, $6);
-}
-|
-alter_with_opt_hint SYSTEM SWITCH ROOTSERVICE partition_role server_or_zone
-{
-  (void)($1);
-  malloc_non_terminal_node($$, result->malloc_pool_, T_SWITCH_RS_ROLE, 2, $5, $6);
-}
-|
 alter_with_opt_hint SYSTEM REPORT REPLICA opt_server_or_zone
 {
   (void)($1);
@@ -19713,24 +19588,6 @@ alter_with_opt_hint SYSTEM CLEAR MERGE ERROR_P opt_tenant_list_v2
 {
   (void)($1);
   malloc_non_terminal_node($$, result->malloc_pool_, T_CLEAR_MERGE_ERROR, 1, $6);
-}
-|
-alter_with_opt_hint SYSTEM ADD ARBITRATION SERVICE STRING_VALUE
-{
-  (void)($1);
-  malloc_non_terminal_node($$, result->malloc_pool_, T_ADD_ARBITRATION_SERVICE, 1, $6);
-}
-|
-alter_with_opt_hint SYSTEM REMOVE ARBITRATION SERVICE STRING_VALUE
-{
-  (void)($1);
-  malloc_non_terminal_node($$, result->malloc_pool_, T_REMOVE_ARBITRATION_SERVICE, 1, $6);
-}
-|
-alter_with_opt_hint SYSTEM REPLACE ARBITRATION SERVICE STRING_VALUE WITH STRING_VALUE
-{
-  (void)($1);
-  malloc_non_terminal_node($$, result->malloc_pool_, T_REPLACE_ARBITRATION_SERVICE, 2, $6, $8);
 }
 |
 alter_with_opt_hint SYSTEM CANCEL cancel_task_type TASK STRING_VALUE
@@ -19871,12 +19728,6 @@ alter_with_opt_hint SYSTEM CLEAR LOCATION CACHE opt_server_or_zone
   malloc_non_terminal_node($$, result->malloc_pool_, T_CLEAR_LOCATION_CACHE, 1, $6);
 }
 |
-alter_with_opt_hint SYSTEM REMOVE BALANCE TASK opt_tenant_list opt_zone_list opt_balance_task_type
-{
-  (void)($1);
-  malloc_non_terminal_node($$, result->malloc_pool_, T_CLEAR_BALANCE_TASK, 3, $6, $7, $8);
-}
-|
 alter_with_opt_hint SYSTEM RELOAD GTS
 {
   (void)($1);
@@ -19899,65 +19750,6 @@ alter_with_opt_hint SYSTEM RELOAD ZONE
 {
   (void)($1);
   malloc_terminal_node($$, result->malloc_pool_, T_RELOAD_ZONE);
-}
-|
-alter_with_opt_hint SYSTEM MIGRATE UNIT opt_equal_mark INTNUM DESTINATION opt_equal_mark STRING_VALUE
-{
-  (void)($1);
-  (void)($5);
-  (void)($8);
-  malloc_non_terminal_node($$, result->malloc_pool_, T_MIGRATE_UNIT, 2, $6, $9);
-}
-|
-alter_with_opt_hint SYSTEM CANCEL MIGRATE UNIT INTNUM
-{
-  (void)($1);
-   malloc_non_terminal_node($$, result->malloc_pool_, T_MIGRATE_UNIT, 2, $6, NULL);
-}
-|
-alter_with_opt_hint SYSTEM ADD REPLICA ls SERVER opt_equal_mark STRING_VALUE REPLICA_TYPE opt_equal_mark STRING_VALUE opt_data_source opt_paxos_replica_num opt_tenant_name
-{
-  (void)($1);
-  (void)($7);
-  (void)($10);
-  malloc_non_terminal_node($$, result->malloc_pool_, T_ADD_LS_REPLICA, 6, $5, $8, $11, $12, $13, $14);
-}
-|
-alter_with_opt_hint SYSTEM REMOVE REPLICA ls SERVER opt_equal_mark STRING_VALUE opt_paxos_replica_num opt_tenant_name
-{
-  (void)($1);
-  (void)($7);
-  malloc_non_terminal_node($$, result->malloc_pool_, T_REMOVE_LS_REPLICA, 4, $5, $8, $9, $10);
-}
-|
-alter_with_opt_hint SYSTEM MIGRATE REPLICA ls SOURCE opt_equal_mark STRING_VALUE DESTINATION opt_equal_mark STRING_VALUE opt_data_source opt_tenant_name
-{
-  (void)($1);
-  (void)($7);
-  (void)($10);
-  malloc_non_terminal_node($$, result->malloc_pool_, T_MIGRATE_LS_REPLICA, 5, $5, $8, $11, $12, $13);
-}
-|
-alter_with_opt_hint SYSTEM MODIFY REPLICA ls SERVER opt_equal_mark STRING_VALUE REPLICA_TYPE opt_equal_mark STRING_VALUE opt_paxos_replica_num opt_tenant_name
-{
-  (void)($1);
-  (void)($7);
-  (void)($10);
-  malloc_non_terminal_node($$, result->malloc_pool_, T_MODIFY_LS_REPLICA_TYPE, 5, $5, $8, $11, $12, $13);
-}
-|
-alter_with_opt_hint SYSTEM MODIFY ls PAXOS_REPLICA_NUM opt_equal_mark INTNUM opt_tenant_name
-{
-  (void)($1);
-  (void)($6);
-  malloc_non_terminal_node($$, result->malloc_pool_, T_MODIFY_LS_PAXOS_REPLICA_NUM, 3, $4, $7, $8);
-}
-|
-alter_with_opt_hint SYSTEM CANCEL REPLICA TASK TASK_ID opt_equal_mark STRING_VALUE opt_tenant_name
-{
-  (void)($1);
-  (void)($7);
-  malloc_non_terminal_node($$, result->malloc_pool_, T_CANCEL_LS_REPLICA_TASK, 2, $8, $9);
 }
 |
 alter_with_opt_hint SYSTEM UPGRADE VIRTUAL SCHEMA
@@ -20662,11 +20454,6 @@ alter_with_opt_hint SYSTEM RESET alter_system_reset_parameter_actions
   merge_nodes($$, result, T_SYTEM_ACTION_LIST, $4);
   malloc_non_terminal_node($$, result->malloc_pool_, T_ALTER_SYSTEM_RESET_PARAMETER, 1, $$);
 }
-| alter_with_opt_hint SYSTEM CANCEL CLONE relation_name
-{
-  (void)($1);
-  malloc_non_terminal_node($$, result->malloc_pool_, T_CANCEL_CLONE, 1, $5);
-}
 |
 REPAIR opt_repair_mode TABLE opt_table_list opt_repair_option_list
 {
@@ -20919,30 +20706,6 @@ RT COMP_EQ int_or_decimal
 }
 ;
 
-opt_data_source:
-DATA_SOURCE opt_equal_mark STRING_VALUE
-{
-  (void)($2);
-  $$ = $3;
-}
-| /*EMPTY*/
-{
-  $$ = NULL;
-}
-;
-
-opt_paxos_replica_num:
-PAXOS_REPLICA_NUM opt_equal_mark INTNUM
-{
-  (void)($2);
-  $$ = $3;
-}
-| /*EMPTY*/
-{
-  $$ = NULL;
-}
-;
-
 opt_disk_alias:
 NAME opt_equal_mark relation_name_or_string
 {
@@ -21047,34 +20810,6 @@ ALL
 }
 ;
 
-balance_task_type:
-AUTO
-{
-  malloc_terminal_node($$, result->malloc_pool_, T_INT);
-  $$->value_ = 0;
-}
-|
-MANUAL
-{
-  malloc_terminal_node($$, result->malloc_pool_, T_INT);
-  $$->value_ = 1;
-}
-|
-ALL
-{
-  malloc_terminal_node($$, result->malloc_pool_, T_INT);
-  $$->value_ = 2;
-}
-;
-
-opt_balance_task_type:
-TYPE opt_equal_mark balance_task_type
-{
-  (void)($2);
-  malloc_non_terminal_node($$, result->malloc_pool_, T_BALANCE_TASK_TYPE, 1, $3);
-}
-| /*empty*/ {$$ = NULL;}
-
 opt_tenant_list:
 TENANT COMP_EQ tenant_name_list
 {
@@ -21124,13 +20859,6 @@ GLOBAL
   malloc_terminal_node($$, result->malloc_pool_, T_BOOL);
   $$->value_ = 0; // 0 表示flush租户当前server上对应的cache
 }
-
-opt_zone_list:
-ZONE COMP_EQ zone_list
-{
-  merge_nodes($$, result, T_ZONE_LIST, $3);
-}
-| /*empty*/ {$$ = NULL;}
 
 server_action:
 ADD
@@ -21746,21 +21474,6 @@ REBUILD COLUMN GROUP
 }
 ;
 
-ls_server_or_server_or_zone_or_tenant:
-ls ip_port tenant_name
-{
-  malloc_non_terminal_node($$, result->malloc_pool_, T_LS_SERVER_TENANT, 3, $1, $2, $3);
-}
-| ip_port opt_tenant_name
-{
-  malloc_non_terminal_node($$, result->malloc_pool_, T_SERVER_TENANT, 2, $1, $2);
-}
-| zone_desc opt_tenant_name
-{
-  malloc_non_terminal_node($$, result->malloc_pool_, T_ZONE_TENANT, 2, $1, $2);
-}
-;
-
 suspend_or_resume:
 SUSPEND
 {
@@ -22201,37 +21914,6 @@ MINOR FREEZE
 }
 ;
 */
-
-partition_role:
-LEADER
-{
-  malloc_terminal_node($$, result->malloc_pool_, T_INT);
-  $$->value_ = 0;
-}
-| FOLLOWER
-{
-  malloc_terminal_node($$, result->malloc_pool_, T_INT);
-  $$->value_ = 1;
-}
-;
-
-ls_role:
-LEADER
-{
-  malloc_terminal_node($$, result->malloc_pool_, T_INT);
-  $$->value_ = 0;
-}
-| FOLLOWER
-{
-  malloc_terminal_node($$, result->malloc_pool_, T_INT);
-  $$->value_ = 1;
-}
-| DEFAULT
-{
-  malloc_terminal_node($$, result->malloc_pool_, T_INT);
-  $$->value_ = 2;
-}
-;
 
 upgrade_action:
 BEGI
@@ -23593,53 +23275,6 @@ opt_restore_until
 {
   malloc_terminal_node($$, result->malloc_pool_, T_RECOVER_CANCEL);
 };
-/*===========================================================
- *
- * 手动transfer命令
- *
- *===========================================================*/
-transfer_partition_stmt:
-alter_with_opt_hint SYSTEM transfer_partition_clause opt_tenant_name
-{
-  (void)($1);
-  (void)($2);
-  malloc_non_terminal_node($$, result->malloc_pool_, T_TRANSFER_PARTITION, 2, $3, $4);
-}
-| alter_with_opt_hint SYSTEM CANCEL TRANSFER PARTITION cancel_transfer_partition_clause opt_tenant_name
-{
-  (void)($1);
-  malloc_non_terminal_node($$, result->malloc_pool_, T_CANCEL_TRANSFER_PARTITION, 2, $6, $7);
-}
-| alter_with_opt_hint SYSTEM CANCEL BALANCE JOB opt_tenant_name
-{
-  (void)($1);
-  malloc_non_terminal_node($$, result->malloc_pool_, T_CANCEL_BALANCE_JOB, 1, $6)
-}
-;
-transfer_partition_clause:
-TRANSFER PARTITION part_info TO LS INTNUM
-{
-  (void)($2);
-  malloc_non_terminal_node($$, result->malloc_pool_, T_TRANSFER_PARTITION_TO_LS, 2, $3, $6);
-}
-;
-part_info:
-TABLE_ID opt_equal_mark INTNUM ',' OBJECT_ID opt_equal_mark INTNUM
-{
-  (void) ($2);
-  (void) ($6);
-   malloc_non_terminal_node($$, result->malloc_pool_, T_PARTITION_INFO, 2, $3, $7);
-};
-cancel_transfer_partition_clause:
-part_info
-{
-  $$ = $1;
-}
-| ALL
-{
-  malloc_terminal_node($$, result->malloc_pool_, T_ALL);
-}
-;
 /*===========================================================
  *
  *	Name classification
@@ -25101,7 +24736,6 @@ ACCESS_INFO
 |       APPROX_COUNT_DISTINCT_SYNOPSIS
 |       APPROX_COUNT_DISTINCT_SYNOPSIS_MERGE
 |       ARCHIVELOG
-|       ARBITRATION
 |       ARRAY
 |       ASIS
 |       ASCII
@@ -25179,7 +24813,6 @@ ACCESS_INFO
 |       CLEAN
 |       CLEAR
 |       CLIENT
-|       CLONE
 |       CLOSE
 |       CLOG
 |       CLUSTER
@@ -25259,7 +24892,6 @@ ACCESS_INFO
 |       DEPTH
 |       DES_KEY_FILE
 |       DESCRIPTION
-|       DESTINATION
 |       DEMAND
 |       DIAGNOSTICS
 |       DICT_TABLE
@@ -25285,7 +24917,6 @@ ACCESS_INFO
 |       EMPTY
 |       EMPTY_FIELD_AS_NULL
 |       ENABLE
-|       ENABLE_ARBITRATION_SERVICE
 |       ENABLE_EXTENDED_ROWID
 |       ENABLE_MACRO_BLOCK_BLOOM_FILTER
 |       ENCODING
@@ -25696,7 +25327,6 @@ ACCESS_INFO
 |       ROLLING
 |       ROLLUP
 |       ROOT
-|       ROOTSERVICE
 |       ROOTSERVICE_LIST
 |       ROOTTABLE
 |       ROUTINE
