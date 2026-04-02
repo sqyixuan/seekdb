@@ -168,7 +168,7 @@ function do_build
       # Linux
       CMAKE_PATH="${TOOLS_DIR}/bin/cmake"
     fi
-
+    
     if [ -z "$CMAKE_PATH" ]; then
       echo_log "[NOTICE] Your workspace has not initialized dependencies, please append '--init' args to initialize dependencies"
       exit 1
@@ -195,13 +195,6 @@ function build_package
     STATIC_LINK_LGPL_DEPS_OPTION=ON
     ENABLE_BOLT_OPTION=OFF
     do_build "$@" -DOB_BUILD_PACKAGE=ON -DCMAKE_BUILD_TYPE=RelWithDebInfo -DOB_USE_LLD=$LLD_OPTION -DENABLE_FATAL_ERROR_HANG=OFF -DENABLE_AUTO_FDO=ON -DENABLE_THIN_LTO=ON -DENABLE_HOTFUNC=ON -DENABLE_BOLT=$ENABLE_BOLT_OPTION -DOB_STATIC_LINK_LGPL_DEPS=$STATIC_LINK_LGPL_DEPS_OPTION -DDEFAULT_LOG_LEVEL=OB_LOG_LEVEL_DBA_WARN -DDEFAULT_LOG_FILE_SIZE_MB=16
-}
-
-function build_package_tgz
-{
-    STATIC_LINK_LGPL_DEPS_OPTION=ON
-    ENABLE_BOLT_OPTION=OFF
-    do_build "$@" -DOB_BUILD_PACKAGE=ON -DCMAKE_BUILD_TYPE=RelWithDebInfo -DOB_USE_LLD=$LLD_OPTION -DENABLE_THIN_LTO=ON -DDEFAULT_LOG_LEVEL=OB_LOG_LEVEL_DBA_WARN -DDEFAULT_LOG_FILE_SIZE_MB=16 -DENABLE_FATAL_ERROR_HANG=OFF -DENABLE_AUTO_FDO=OFF -DENABLE_HOTFUNC=OFF -DOB_ENABLE_BOLT=$ENABLE_BOLT_OPTION -DOB_STATIC_LINK_LGPL_DEPS=$STATIC_LINK_LGPL_DEPS_OPTION
 }
 
 # build - configurate project and prepare to compile, by calling make
@@ -248,9 +241,6 @@ function build
         ;;
       xrpm) 
         build_package "$@" -DCMAKE_BUILD_RPM=ON
-        ;;
-      xtgz)
-        build_package_tgz "$@" -DCMAKE_BUILD_TGZ=ON
         ;;
       xdeb) 
         build_package "$@" -DCMAKE_BUILD_DEB=ON
