@@ -159,6 +159,7 @@ public:
   const ObTenantRestoreCtx &get_restore_ctx() const { return ls_restore_arg_; }
   const ObLSRestoreStat &get_restore_stat() const { return restore_stat_; }
   ObLSRestoreStat &restore_stat() { return restore_stat_; }
+  int get_ls_restore_status(share::ObLSRestoreStatus &status) const;
 private:
   int cancel_task_();
   int check_before_do_restore_(bool &can_do_restore);
@@ -176,7 +177,7 @@ private:
   bool is_stop_; // used by ls destory
   bool is_online_; // used by ls online/offline
   int64_t rebuild_seq_; // update by rebuild
-  lib::ObMutex mtx_;
+  mutable lib::ObMutex mtx_;
   ObLSRestoreResultMgr result_mgr_;
   storage::ObLS *ls_;
   ObTenantRestoreCtx ls_restore_arg_;
@@ -274,8 +275,6 @@ protected:
       const share::SCN &target_scn, 
       bool &replayed) const;
   bool need_notify_rs_restore_finish_(const ObLSRestoreStatus &ls_restore_status);
-
-  void notify_rs_restore_finish_();
 
 protected:
   bool is_inited_;

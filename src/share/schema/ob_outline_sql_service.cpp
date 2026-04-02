@@ -83,8 +83,7 @@ int ObOutlineSqlService::replace_outline(const ObOutlineInfo &outline_info,
       if (OB_SUCC(ret)) {
         ObDMLExecHelper exec(sql_client, exec_tenant_id);
         ObDMLSqlSplicer dml;
-        if (OB_FAIL(dml.add_pk_column("tenant_id", ObSchemaUtils::get_extract_tenant_id(exec_tenant_id, tenant_id)))
-            || OB_FAIL(dml.add_pk_column("outline_id", ObSchemaUtils::get_extract_schema_id(exec_tenant_id, outline_id)))
+        if (OB_FAIL(dml.add_pk_column("outline_id", ObSchemaUtils::get_extract_schema_id(exec_tenant_id, outline_id)))
             || OB_FAIL(dml.add_column("outline_content", ObHexEscapeSqlStr(
                         outline_info.get_outline_content_str().empty() ? ObString::make_string("")
                         : outline_info.get_outline_content_str())))
@@ -171,8 +170,7 @@ int ObOutlineSqlService::alter_outline(const ObOutlineInfo &outline_info,
       if (OB_SUCC(ret)) {
         ObDMLExecHelper exec(sql_client, exec_tenant_id);
         ObDMLSqlSplicer dml;
-        if (OB_FAIL(dml.add_pk_column("tenant_id", ObSchemaUtils::get_extract_tenant_id(exec_tenant_id, tenant_id)))
-            || OB_FAIL(dml.add_pk_column("outline_id", ObSchemaUtils::get_extract_schema_id(exec_tenant_id, outline_id)))
+        if (OB_FAIL(dml.add_pk_column("outline_id", ObSchemaUtils::get_extract_schema_id(exec_tenant_id, outline_id)))
             || OB_FAIL(dml.add_column("outline_content", ObHexEscapeSqlStr(
                         outline_info.get_outline_content_str().empty() ? ObString::make_string("")
                         : outline_info.get_outline_content_str())))
@@ -246,10 +244,9 @@ int ObOutlineSqlService::delete_outline(const uint64_t tenant_id,
   } else {
     // insert into __all_table_history
     if (FAILEDx(sql.assign_fmt(
-                   "INSERT INTO %s(tenant_id, outline_id,schema_version,is_deleted)"
-                   " VALUES(%lu,%lu,%ld,%ld)",
+                   "INSERT INTO %s(outline_id,schema_version,is_deleted)"
+                   " VALUES(%lu,%ld,%ld)",
                    OB_ALL_OUTLINE_HISTORY_TNAME,
-                   ObSchemaUtils::get_extract_tenant_id(exec_tenant_id, tenant_id),
                    ObSchemaUtils::get_extract_schema_id(exec_tenant_id, outline_id),
                    new_schema_version, IS_DELETED))) {
       LOG_WARN("assign insert into all outline history fail",
@@ -262,9 +259,8 @@ int ObOutlineSqlService::delete_outline(const uint64_t tenant_id,
     } else {/*do nothing*/}
 
     // delete from __all_outline
-    if (FAILEDx(sql.assign_fmt("DELETE FROM %s WHERE tenant_id = %ld AND outline_id=%lu",
+    if (FAILEDx(sql.assign_fmt("DELETE FROM %s WHERE outline_id=%lu",
                                OB_ALL_OUTLINE_TNAME,
-                               ObSchemaUtils::get_extract_tenant_id(exec_tenant_id, tenant_id),
                                ObSchemaUtils::get_extract_schema_id(exec_tenant_id, outline_id)))) {
       LOG_WARN("append_fmt failed", K(ret));
     } else if (OB_FAIL(sql_client.write(exec_tenant_id, sql.ptr(), affected_rows))) {

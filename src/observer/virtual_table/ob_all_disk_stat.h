@@ -43,9 +43,7 @@ public:
 private:
   enum DISK_COLUMN
   {
-    SVR_IP = common::OB_APP_MIN_COLUMN_ID,
-    SVR_PORT,
-    TOTAL_SIZE,
+        TOTAL_SIZE = common::OB_APP_MIN_COLUMN_ID,
     USED_SIZE,
     FREE_SIZE,
     IS_DISK_VALID,
@@ -62,3 +60,4 @@ private:
 }
 }
 #endif /* OCEANBASE_OBSERVER_VIRTUAL_TABLE_OB_DISK_STAT_TABLE */
+
