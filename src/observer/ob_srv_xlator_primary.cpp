@@ -59,9 +59,7 @@ void oceanbase::observer::init_srv_xlator_for_sys(ObSrvRpcXlator *xlator) {
   RPC_PROCESSOR(ObGetMinSSTableSchemaVersionP, gctx_);
   RPC_PROCESSOR(ObInitTenantConfigP, gctx_);
   RPC_PROCESSOR(ObGetLeaderLocationsP, gctx_);
-  RPC_PROCESSOR(ObBatchBroadcastSchemaP, gctx_);
   RPC_PROCESSOR(ObRpcSendHeartbeatP, gctx_);
-  RPC_PROCESSOR(ObRpcNotifySwitchLeaderP, gctx_);
 
   // interrupt
   RPC_PROCESSOR(obrpc::ObInterruptProcessor);
@@ -100,7 +98,6 @@ void oceanbase::observer::init_srv_xlator_for_sys(ObSrvRpcXlator *xlator) {
   RPC_PROCESSOR(ObRpcStopDBMSSchedJobP, gctx_);
   RPC_PROCESSOR(ObRpcDBMSSchedPurgeP, gctx_);
 
-  RPC_PROCESSOR(ObRpcGetServerResourceInfoP, gctx_);
   RPC_PROCESSOR(ObRpcReverseKeepaliveP, gctx_);
 }
 
@@ -164,14 +161,8 @@ void oceanbase::observer::init_srv_xlator_for_logservice(ObSrvRpcXlator *xlator)
 {
   RPC_PROCESSOR(logservice::LogMembershipChangeP);
   RPC_PROCESSOR(logservice::LogGetPalfStatReqP);
-#ifdef OB_BUILD_ARBITRATION
-  RPC_PROCESSOR(logservice::LogServerProbeP);
-#endif
   RPC_PROCESSOR(logservice::LogChangeAccessModeP);
   RPC_PROCESSOR(logservice::LogFlashbackMsgP);
-#ifdef OB_BUILD_ARBITRATION
-  RPC_PROCESSOR(logservice::LogProbeRsP);
-#endif 
   RPC_PROCESSOR(logservice::LogGetCkptReqP);
 #ifdef OB_BUILD_SHARED_STORAGE
   RPC_PROCESSOR(logservice::LogSyncBaseLSNReqP);

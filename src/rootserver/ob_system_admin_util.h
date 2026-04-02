@@ -40,18 +40,13 @@ namespace obrpc
 {
 class ObSrvRpcProxy;
 class ObCommonRpcProxy;
-struct ObAdminSwitchReplicaRoleArg;
-struct ObAdminDropReplicaArg;
 struct ObAdminChangeReplicaArg;
 struct ObAdminMigrateReplicaArg;
 struct ObServerZoneArg;
-struct ObAdminReportReplicaArg;
-struct ObAdminRecycleReplicaArg;
 struct ObAdminMergeArg;
 struct ObAdminClearRoottableArg;
 struct ObAdminRefreshSchemaArg;
 struct ObAdminSetConfigArg;
-struct ObAdminClearLocationCacheArg;
 struct ObRunJobArg;
 struct ObAdminFlushCacheArg;
 struct ObFlushCacheArg;
@@ -75,7 +70,6 @@ class ObServerManager;
 class ObDDLService;
 class ObUnitManager;
 class ObRootInspection;
-class ObRootBalancer;
 class ObRootService;
 class ObSchemaSplitExecutor;
 class ObUpgradeStorageFormatVersionExecutor;
@@ -98,7 +92,7 @@ struct ObSystemAdminCtx
       : rs_status_(NULL), rpc_proxy_(NULL), sql_proxy_(NULL), server_mgr_(NULL),
       zone_mgr_(NULL), schema_service_(NULL),
       ddl_service_(NULL), config_mgr_(NULL), unit_mgr_(NULL), root_inspection_(NULL),
-      root_service_(NULL), root_balancer_(NULL), upgrade_storage_format_executor_(nullptr),
+      root_service_(NULL), upgrade_storage_format_executor_(nullptr),
       create_inner_schema_executor_(nullptr), inited_(false)
   {}
 
@@ -115,7 +109,6 @@ struct ObSystemAdminCtx
   ObUnitManager *unit_mgr_;
   ObRootInspection *root_inspection_;
   ObRootService *root_service_;
-  ObRootBalancer *root_balancer_;
   ObUpgradeStorageFormatVersionExecutor *upgrade_storage_format_executor_;
   ObCreateInnerSchemaExecutor *create_inner_schema_executor_;
   bool inited_;
@@ -136,27 +129,6 @@ private:
   DISALLOW_COPY_AND_ASSIGN(ObSystemAdminUtil);
 };
 
-class ObAdminSwitchReplicaRole : public ObSystemAdminUtil
-{
-public:
-  explicit ObAdminSwitchReplicaRole(const ObSystemAdminCtx &ctx) : ObSystemAdminUtil(ctx) {}
-  virtual ~ObAdminSwitchReplicaRole() {}
-
-  int execute(const obrpc::ObAdminSwitchReplicaRoleArg &arg);
-
-private:
-  static const int64_t TENANT_BUCKET_NUM = 1000;
-
-  static int alloc_tenant_id_set(common::hash::ObHashSet<uint64_t> &tenant_id_set);
-  template<typename T>
-  static int convert_set_to_array(const common::hash::ObHashSet<T> &set,
-      ObArray<T> &array);
-  int get_tenants_of_zone(const common::ObZone &zone,
-      common::hash::ObHashSet<uint64_t> &tenant_id_set);
-private:
-  DISALLOW_COPY_AND_ASSIGN(ObAdminSwitchReplicaRole);
-};
-
 class ObAdminCallServer : public ObSystemAdminUtil
 {
 public:
@@ -169,45 +141,6 @@ public:
   virtual int call_server(const common::ObAddr &server) = 0;
 private:
   DISALLOW_COPY_AND_ASSIGN(ObAdminCallServer);
-};
-
-class ObAdminReportReplica : public ObAdminCallServer
-{
-public:
-  explicit ObAdminReportReplica(const ObSystemAdminCtx &ctx) : ObAdminCallServer(ctx) {}
-  virtual ~ObAdminReportReplica() {}
-
-  int execute(const obrpc::ObAdminReportReplicaArg &arg);
-
-  virtual int call_server(const common::ObAddr &server);
-private:
-  DISALLOW_COPY_AND_ASSIGN(ObAdminReportReplica);
-};
-
-class ObAdminRecycleReplica : public ObAdminCallServer
-{
-public:
-  explicit ObAdminRecycleReplica(const ObSystemAdminCtx &ctx) : ObAdminCallServer(ctx) {}
-  virtual ~ObAdminRecycleReplica() {}
-
-  int execute(const obrpc::ObAdminRecycleReplicaArg &arg);
-
-  virtual int call_server(const common::ObAddr &server);
-private:
-  DISALLOW_COPY_AND_ASSIGN(ObAdminRecycleReplica);
-};
-
-class ObAdminClearLocationCache : public ObAdminCallServer
-{
-public:
-  explicit ObAdminClearLocationCache(const ObSystemAdminCtx &ctx) : ObAdminCallServer(ctx) {}
-  virtual ~ObAdminClearLocationCache() {}
-
-  int execute(const obrpc::ObAdminClearLocationCacheArg &arg);
-
-  virtual int call_server(const common::ObAddr &server);
-private:
-  DISALLOW_COPY_AND_ASSIGN(ObAdminClearLocationCache);
 };
 
 class ObAdminRefreshMemStat : public ObAdminCallServer

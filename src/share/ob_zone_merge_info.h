@@ -27,7 +27,6 @@
 #include "common/ob_region.h"
 #include "common/ob_zone_status.h"
 #include "common/ob_zone_type.h"
-#include "share/ob_replica_info.h"
 #include "share/scn.h"
 #include "common/ob_tablet_id.h"
 #include "share/tablet/ob_tablet_info.h"

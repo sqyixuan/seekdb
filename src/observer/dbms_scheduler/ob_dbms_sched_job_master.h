@@ -131,7 +131,6 @@ public:
     uint64_t tenant_id, bool is_oracle_tenant, uint64_t job_id, const common::ObString &job_name);
   void free_job_key(ObDBMSSchedJobKey *&job_key);
 
-  int server_random_pick_from_zone_list(int64_t tenant_id, common::ObIArray<common::ObZone> &zone_list, ObAddr &server);
   int get_execute_addr(ObDBMSSchedJobInfo &job_info, common::ObAddr &execute_addr);
   void switch_to_leader();
   void switch_to_follower();

@@ -485,8 +485,11 @@ int ObPartTransCtx::handle_timeout(const int64_t delay)
           TRANS_LOG(INFO, "callback scheduler txn commit has timeout", K(tmp_ret), KPC(this));
         } else {
           // make scheduler retry commit if clog disk has fatal error
-          logservice::coordinator::ObFailureDetector *detector = MTL(logservice::coordinator::ObFailureDetector *);
-          if (NULL != detector && detector->is_clog_disk_has_fatal_error()) {
+          bool clog_is_full = false;
+          bool clog_is_hang = false;
+          if (OB_FAIL(ObShareUtil::check_clog_disk_full_or_hang(clog_is_full, clog_is_hang))) {
+            TRANS_LOG(WARN, "fail to check clog disk status", KR(ret));
+          } else if (clog_is_full || clog_is_hang) {
             tmp_ret = post_tx_commit_resp_(OB_NOT_MASTER);
             TRANS_LOG(WARN, "clog disk has fatal error, make scheduler retry commit", K(tmp_ret), KPC(this));
           }
@@ -5785,12 +5788,9 @@ int ObPartTransCtx::switch_to_leader(const SCN &start_working_ts)
     TRANS_LOG(WARN, "switch role state error", KR(ret), K(*this));
   } else {
     const bool contain_mds_table_lock = is_contain_mds_type_(ObTxDataSourceType::TABLE_LOCK);
-    const bool contain_mds_transfer_out = is_contain_mds_type_(ObTxDataSourceType::START_TRANSFER_OUT)
-                           || is_contain_mds_type_(ObTxDataSourceType::START_TRANSFER_OUT_PREPARE)
-                           || is_contain_mds_type_(ObTxDataSourceType::START_TRANSFER_OUT_V2);
+    const bool contain_mds_transfer_out = false;
     const bool contain_mds_tablet_split = is_contain_mds_type_(ObTxDataSourceType::TABLET_SPLIT);
-    const bool contain_mds_tablet_transfer_in = is_contain_mds_type_(ObTxDataSourceType::TRANSFER_IN_ABORTED)
-                           || is_contain_mds_type_(ObTxDataSourceType::FINISH_TRANSFER_IN);
+    const bool contain_mds_tablet_transfer_in = false;
     const bool need_kill_tx = contain_mds_table_lock 
                            || contain_mds_transfer_out 
                            || contain_mds_tablet_split 
@@ -6891,7 +6891,7 @@ OB_NOINLINE int ObPartTransCtx::errism_submit_prepare_log_()
   return ret;
 }
 
-OB_NOINLINE __attribute__((weak)) int ObPartTransCtx::errsim_notify_mds_()
+OB_NOINLINE int ObPartTransCtx::errsim_notify_mds_()
 {
   int ret = OB_SUCCESS;
 
@@ -8113,30 +8113,6 @@ int ObPartTransCtx::dump_2_text(FILE *fd)
   }
 
   fprintf(fd, "\n********** ObPartTransCtx ***********\n");
-  return ret;
-}
-
-int ObPartTransCtx::get_ls_replica_readable_scn_(const ObLSID &ls_id, SCN &snapshot_version)
-{
-  int ret = OB_SUCCESS;
-  ObLSService *ls_svr =  MTL(ObLSService *);
-  ObLSHandle handle;
-  ObLS *ls = nullptr;
-
-  if (OB_ISNULL(ls_svr)) {
-    ret = OB_ERR_UNEXPECTED;
-    TRANS_LOG(WARN, "log stream service is NULL", K(ret));
-  } else if (OB_FAIL(ls_svr->get_ls(ls_id, handle, ObLSGetMod::TRANS_MOD))) {
-    TRANS_LOG(WARN, "get log stream failed", K(ret));
-  } else if (OB_ISNULL(ls = handle.get_ls())) {
-    ret = OB_ERR_UNEXPECTED;
-    TRANS_LOG(WARN, "get ls failed", K(ret));
-  } else if (OB_FAIL(ls->get_ls_replica_readable_scn(snapshot_version))) {
-    TRANS_LOG(WARN, "get ls replica readable scn failed", K(ret), K(ls_id));
-  } else {
-    // do nothing
-  }
-  TRANS_LOG(INFO, "get ls replica readable scn", K(ret), K(snapshot_version), KPC(this));
   return ret;
 }
 

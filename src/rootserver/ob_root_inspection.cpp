@@ -31,124 +31,6 @@ using namespace sql;
 namespace rootserver
 {
 ////////////////////////////////////////////////////////////////
-int ObTenantChecker::inspect(bool &passed, const char* &warning_info)
-{
-  int ret = OB_SUCCESS;
-  int tmp_ret = OB_SUCCESS;
-  passed = true;
-  UNUSED(warning_info);
-  if (OB_SUCCESS != (tmp_ret = alter_tenant_primary_zone_())) {
-    ret = OB_SUCC(ret) ? tmp_ret : ret;
-    LOG_WARN("fail to alter tenant primary_zone", KR(ret), KR(tmp_ret));
-  }
-
-  if (OB_SUCCESS != (tmp_ret = check_garbage_tenant_(passed))) {
-    ret = OB_SUCC(ret) ? tmp_ret : ret;
-    LOG_WARN("fail to check garbage tenant", KR(ret), KR(tmp_ret));
-  }
-  return ret;
-}
-
-// If the primary_zone of tenant is null, need to set to 'RANDOM'
-int ObTenantChecker::alter_tenant_primary_zone_()
-{
-  int ret = OB_SUCCESS;
-  ObSchemaGetterGuard schema_guard;
-  ObArray<uint64_t> tenant_ids;
-  if (OB_ISNULL(schema_service_)) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("schema service not init", K(ret));
-  } else if (OB_FAIL(schema_service_->get_tenant_schema_guard(OB_SYS_TENANT_ID, schema_guard))) {
-    LOG_WARN("get_schema_guard failed", K(ret));
-  } else if (OB_FAIL(schema_guard.get_tenant_ids(tenant_ids))) {
-    LOG_WARN("get_tenant_ids failed", K(ret));
-  } else {
-    const ObTenantSchema *tenant_schema = NULL;
-    int64_t affected_rows = 0;
-    FOREACH_CNT_X(tenant_id, tenant_ids, OB_SUCCESS == ret) {
-      if (OB_ISNULL(tenant_id)) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("tenant_id is null", K(ret));
-      } else if (OB_FAIL(schema_guard.get_tenant_info(*tenant_id, tenant_schema))) {
-        LOG_WARN("fail to get tenant info", K(ret), K(*tenant_id));
-      } else if (OB_ISNULL(tenant_schema)) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("tenant schema is null", K(ret), K(*tenant_id));
-      } else if (tenant_schema->get_primary_zone().empty()) {
-        ObSqlString sql;
-        if (OB_FAIL(sql.append_fmt("ALTER TENANT %s set primary_zone = RANDOM",
-                                   tenant_schema->get_tenant_name()))) {
-          LOG_WARN("fail to generate sql", K(ret), K(*tenant_id));
-        } else if (OB_ISNULL(sql_proxy_)) {
-          ret = OB_ERR_UNEXPECTED;
-          LOG_WARN("sql_proxy is null", K(ret));
-        } else if (OB_FAIL(sql_proxy_->write(sql.ptr(), affected_rows))) {
-          LOG_WARN("execute sql failed", K(ret));
-        } else {
-          ROOTSERVICE_EVENT_ADD("inspector", "alter_tenant_primary_zone",
-                                "tenant_id", tenant_schema->get_tenant_id(),
-                                "tenant", tenant_schema->get_tenant_name());
-        }
-      }
-    }
-  }
-  return ret;
-}
-
-int ObTenantChecker::check_garbage_tenant_(bool &passed)
-{
-  int ret = OB_SUCCESS;
-  if (OB_ISNULL(schema_service_)) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("schema service not init", KR(ret));
-  } else if (!schema_service_->is_sys_full_schema()) {
-    // skip
-  } else {
-    obrpc::ObGetSchemaArg arg;
-    obrpc::ObTenantSchemaVersions result;
-    ObSchemaGetterGuard schema_guard;
-    arg.ignore_fail_ = true;
-    arg.exec_tenant_id_ = OB_SYS_TENANT_ID;
-    const int64_t rpc_timeout = GCONF.rpc_timeout * 10;
-    // There may have multi RootService, so we won't force drop tenant here.
-    if (OB_FAIL(rpc_proxy_.timeout(rpc_timeout).get_tenant_schema_versions(arg, result))) {
-      LOG_WARN("fail to get tenant schema versions", KR(ret));
-    } else if (OB_FAIL(schema_service_->get_tenant_schema_guard(OB_SYS_TENANT_ID, schema_guard))) {
-      LOG_WARN("get_schema_guard failed", KR(ret));
-    }
-    for (int64_t i = 0; OB_SUCC(ret) && i < result.tenant_schema_versions_.count(); i++) {
-      TenantIdAndSchemaVersion &tenant = result.tenant_schema_versions_.at(i);
-      int tmp_ret = OB_SUCCESS;
-      if (!GCTX.root_service_->is_full_service()) {
-        ret = OB_CANCELED;
-        LOG_WARN("rs is not in full service", KR(ret));
-      } else if (!ObSchemaService::is_formal_version(tenant.schema_version_)) {
-        const ObSimpleTenantSchema *tenant_schema = NULL;
-        uint64_t tenant_id = tenant.tenant_id_;
-        if (OB_SUCCESS != (tmp_ret = schema_guard.get_tenant_info(tenant_id, tenant_schema))) {
-          LOG_WARN("fail to get tenant info", KR(tmp_ret), K(tenant_id));
-        } else if (OB_ISNULL(tenant_schema)) {
-          tmp_ret = OB_TENANT_NOT_EXIST;
-        } else if (tenant_schema->is_restore()) {
-          LOG_INFO("tenant is in restore", KPC(tenant_schema));
-        } else if (tenant_schema->is_creating()) {
-          LOG_ERROR("the tenant may be in the process of creating, if the error reports continuously, please check", K(tenant_id));
-          LOG_DBA_WARN(OB_ERR_ROOT_INSPECTION, "msg", "the tenant may be in the process of creating, if the error reports continuously, please check",
-                       K(tenant_id), "tenant_name", tenant_schema->get_tenant_name());
-          ROOTSERVICE_EVENT_ADD("inspector", "tenant_checker",
-                                "info", "the tenant may be in the process of creating, if the error reports continuously, please check",
-                                "tenant_id", tenant_id,
-                                "tenant_name", tenant_schema->get_tenant_name_str());
-        }
-        ret = OB_SUCC(ret) ? tmp_ret : ret;
-      }
-    } // end for
-    passed = OB_SUCC(ret);
-  }
-  return ret;
-}
-
-////////////////////////////////////////////////////////////////
 ObTableGroupChecker::ObTableGroupChecker(share::schema::ObMultiVersionSchemaService &schema_service)
     : schema_service_(schema_service),
       check_part_option_map_(),
@@ -356,7 +238,6 @@ int ObInspector::process()
   int ret = OB_SUCCESS;
   ObTableGroupChecker tablegroup_checker(rs_.get_schema_service());
   ObRootInspection system_schema_checker;
-  ObTenantChecker tenant_checker(rs_.get_schema_service(), rs_.get_sql_proxy(), rs_.get_common_rpc_proxy());
 
   ret = OB_E(EventTable::EN_STOP_ROOT_INSPECTION) OB_SUCCESS;
   if (OB_FAIL(ret)) {
@@ -368,8 +249,7 @@ int ObInspector::process()
   } else {
     ObInspectionTask *inspection_tasks[] = {
       &tablegroup_checker,
-      &system_schema_checker,
-      &tenant_checker
+      &system_schema_checker
     };
     bool passed = true;
     const char* warning_info = NULL;
@@ -1367,7 +1247,7 @@ int ObRootInspection::check_sys_view_(
         // case 1: check column name with lower case
         ObString col_name;
         while (OB_SUCC(ret) && OB_SUCC(result->next())) {
-          if (OB_FAIL(result->get_varchar(static_cast<int64_t>(0), col_name))) {
+          if (OB_FAIL(result->get_varchar(0L, col_name))) {
             LOG_WARN("fail to get filed", KR(ret), K(tenant_id), K(table_name));
           } else if (check_str_with_lower_case_(col_name)) {
             ret = OB_SCHEMA_ERROR;

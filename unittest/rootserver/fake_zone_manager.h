@@ -66,12 +66,6 @@ public:
     return common::OB_SUCCESS;
   }
 
-  virtual int update_config_version(const int64_t ver)
-  {
-    config_version_ = ver;
-    return common::OB_SUCCESS;
-  }
-
   virtual int get_merge_list(common::ObIArray<common::ObZone> &) const
   {
     return common::OB_SUCCESS;

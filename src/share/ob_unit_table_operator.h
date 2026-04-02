@@ -45,16 +45,7 @@ public:
   virtual int get_units(const common::ObIArray<uint64_t> &pool_ids,
                         common::ObIArray<ObUnit> &units) const;
   virtual int update_unit(common::ObISQLClient &client,
-                          const ObUnit &unit,
-                          const bool need_check_conflict_with_clone);
-  virtual int remove_units(common::ObISQLClient &client,
-                           const uint64_t resource_pool_id);
-  virtual int remove_unit(common::ObISQLClient &client,
                           const ObUnit &unit);
-
-  virtual int remove_units_in_zones(common::ObISQLClient &client,
-                                    const uint64_t resource_pool_id,
-                                    const common::ObIArray<common::ObZone> &to_be_removed_zones);
   virtual int get_resource_pools(common::ObIArray<ObResourcePool> &pools) const;
   virtual int get_resource_pools(const uint64_t tenant_id,
                                  common::ObIArray<ObResourcePool> &pools) const;
@@ -65,8 +56,7 @@ public:
                         const bool select_for_update,
                         ObResourcePool &resource_pool) const;
   virtual int update_resource_pool(common::ObISQLClient &client,
-                                   const ObResourcePool &resource_pool,
-                                   const bool need_check_conflict_with_clone);
+                                   const ObResourcePool &resource_pool);
   virtual int remove_resource_pool(common::ObISQLClient &client,
                                    const uint64_t resource_pool_id);
 
@@ -75,8 +65,6 @@ public:
                                common::ObIArray<ObUnitConfig> &configs) const;
   virtual int update_unit_config(common::ObISQLClient &client,
                                  const ObUnitConfig &config);
-  virtual int remove_unit_config(common::ObISQLClient &client,
-                                 const uint64_t unit_config_id);
   virtual int get_tenants(common::ObIArray<uint64_t> &tenants) const;
   virtual int get_unit_config_by_name(const common::ObString &unit_name,
                                       ObUnitConfig &unit_config);

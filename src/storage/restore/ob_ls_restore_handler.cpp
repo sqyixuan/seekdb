@@ -884,7 +884,6 @@ int ObILSRestoreState::advance_status_(
   }
 
   if (need_notify_rs_restore_finish_(next_status)) {
-    notify_rs_restore_finish_();
   }
   return ret;
 }
@@ -1481,22 +1480,7 @@ int ObILSRestoreState::check_replay_to_target_scn_(
     const share::SCN &target_scn, 
     bool &replayed) const
 {
-  int ret = OB_SUCCESS;
-  replayed = false;
-  rootserver::ObLSRecoveryStatHandler *ls_recovery_stat_handler = nullptr;
-  share::SCN readable_scn;
-  if (!target_scn.is_valid_and_not_min()) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid target scn", K(ret), K(target_scn));
-  } else if (OB_ISNULL(ls_recovery_stat_handler = ls_->get_ls_recovery_stat_handler())) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("ls recovery stat handler must not be null", K(ret));
-  } else if (OB_FAIL(ls_recovery_stat_handler->get_ls_replica_readable_scn(readable_scn))) {
-    LOG_WARN("failed to get ls replica readable scn", K(ret), KPC(ls_));
-  } else if (target_scn <= readable_scn) {
-    replayed = true;
-    LOG_INFO("clog replay to target scn finish", K(target_scn), K(readable_scn), KPC(ls_));
-  }
+  int ret = OB_NOT_SUPPORTED;
   return ret;
 }
 
@@ -1596,26 +1580,6 @@ int ObILSRestoreState::report_unfinished_bytes(const int64_t bytes)
   }
 
   return ret;
-}
-
-void ObILSRestoreState::notify_rs_restore_finish_()
-{
-  int ret = OB_SUCCESS;
-  const uint64_t tenant_id = ls_restore_arg_->tenant_id_;
-  common::ObAddr leader_addr;
-  obrpc::ObNotifyLSRestoreFinishArg arg;
-  arg.set_tenant_id(tenant_id);
-  arg.set_ls_id(ls_->get_ls_id());
-
-  if (OB_ISNULL(GCTX.srv_rpc_proxy_) || OB_ISNULL(GCTX.location_service_)) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("rpc proxy or location service is null", KR(ret), KP(GCTX.srv_rpc_proxy_), KP(GCTX.location_service_));
-  } else if (OB_FAIL(GCTX.location_service_->get_leader_with_retry_until_timeout(
-              GCONF.cluster_id, gen_meta_tenant_id(tenant_id), ObLSID(ObLSID::SYS_LS_ID), leader_addr))) {
-    LOG_WARN("failed to get meta tenant leader address", KR(ret), K(tenant_id));
-  } else if (OB_FAIL(GCTX.srv_rpc_proxy_->to(leader_addr).by(tenant_id).notify_ls_restore_finish(arg))) {
-    LOG_WARN("failed to notify tenant restore scheduler", KR(ret), K(leader_addr), K(arg));
-  }
 }
 
 //================================ObLSRestoreStartState=======================================

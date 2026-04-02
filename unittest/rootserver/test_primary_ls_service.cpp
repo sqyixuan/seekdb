@@ -17,7 +17,6 @@
 #define USING_LOG_PREFIX RS
 #include <gmock/gmock.h>
 #define  private public
-#include "rootserver/ob_primary_ls_service.h"
 namespace oceanbase {
 using namespace common;
 using namespace share;

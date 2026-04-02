@@ -27,7 +27,6 @@ namespace obrpc
 class ObSrvRpcProxy;
 struct ObRsListArg;
 // struct ObAdminServerArg;
-class ObAdminStorageArg;
 }
 namespace share
 {
@@ -69,101 +68,6 @@ public:
   int add_servers(const ObIArray<ObAddr> &servers,
       const ObZone &zone,
       const bool is_bootstrap = false);
-  // Try to delete the given servers from the cluster (logically).
-  // In this func, we only set their statuses in __all_server table be OB_SERVER_DELETING.
-  // Root balancer will detect servers with such statuses
-  // and start to migrate units on these servers to other servers.
-  // Once a server with status OB_SERVER_DELETING has no units and no records in __all_ls_meta_table,
-  // this server will be deleted from __all_server table, which means this server is no longer in the cluster
-  // (see related machanism in ObEmptyServerChecker).
-  //
-  // @param[in]  server	  the server which we try to delete
-  // @param[in]  zone     the zone in which the server is located
-  //
-  // @ret OB_SUCCESS 		               set status be OB_SERVER_DELETING in __all_server table successfully
-  // @ret OB_SERVER_ZONE_NOT_MATCH     the arg zone is not the same as the server's zone in __all_server table
-  // @ret OB_SERVER_ALREADY_DELETED    the server's status has been OB_SERVER_DELETING already
-  // @ret OB_SERVER_NOT_IN_WHITE_LIST  the server is not in the cluster
-  // @ret OB_NOT_MASTER                not rs leader, cannot execute the command
-  //
-  // @ret other error code		 failure
-  int delete_servers(
-      const ObIArray<common::ObAddr> &servers,
-      const common::ObZone &zone);
-  // Revoke the delete operation for the given server from the cluster (logically).
-  // What we do in this func is to set servers' status be OB_SERVER_ACTIVE
-  // or OB_SERVER_INACTIVE in __all_server table
-  // and prevent units on this server be migrated to other servers.
-  //
-  // @param[in]  server  	the server for which we want to revoke the delete operation
-  // @param[in]  zone     the zone in which the server is located
-  //
-  // @ret OB_SUCCESS 		               set status be OB_SERVER_ACTIVE or OB_SERVER_INACTIVE in __all_server table successfully
-  // @ret OB_SERVER_ZONE_NOT_MATCH     the arg zone is not the same as the server's zone in __all_server table
-  // @ret OB_SERVER_NOT_DELETING       the server's status is not OB_SERVER_DELETING, we cannot cancel delete
-  // @ret OB_SERVER_NOT_IN_WHITE_LIST  the server is not in the cluster
-  // @ret OB_NOT_MASTER                not rs leader, cannot execute the command
-
-// @ret other error code		 failure
-  int cancel_delete_servers(
-      const ObIArray<common::ObAddr> &servers,
-      const common::ObZone &zone);
-  // Delete the given server from the cluster
-  // In this func, we delete the server from __all_server table.
-
-  // @param[in]  server	  the server which we want to delete
-  // @param[in]  zone     the zone in which the server is located
-
-  // @ret OB_SUCCESS 		               delete the server from __all_server table successfully
-  // @ret OB_SERVER_NOT_DELETING       the server's status is not OB_SERVER_DELETING, we cannot remove it
-  // @ret OB_SERVER_NOT_IN_WHITE_LIST  the server is not in the cluster
-  // @ret OB_NOT_MASTER                not rs leader, cannot execute the command
-
-  // @ret other error code		 failure
-  int finish_delete_server(
-      const common::ObAddr &server,
-      const common::ObZone &zone);
-  // stop the given server
-  // In this func, we set the server's stop_time be now in __all_server table
-  // Stopping server should guarantee that there is no other zone's server is stopped.
-  // Isolating server should guarantee that there still exists started server in primary region after isolating
-  // In addition, stop server will check majority and log sync.
-  //
-  // @param[in]  server	  the server which we want to stop
-  // @param[in]  zone     the zone in which the server is located
-  // @param[in]  is_stop  true if stop, otherwise isolate
-  //
-  // @ret OB_SUCCESS 		               stop the server successfully
-  // @ret OB_INVALID_ARGUMENT          an invalid server
-  // @ret OB_SERVER_ZONE_NOT_MATCH     the arg zone is not the same as the server's zone in __all_server table
-  // @ret OB_NOT_MASTER                not rs leader, cannot execute the command
-  // @ret OB_SERVER_NOT_IN_WHITE_LIST  the server is not in the cluster
-
-  // @ret other error code		 failure
-  int stop_servers(
-      const ObIArray<ObAddr> &servers,
-      const ObZone &zone,
-      const obrpc::ObAdminServerArg::AdminServerOp &op);
-  // start the given server
-  // In this func, we set the server's stop_time be zero in __all_server table
-  //
-  // @param[in]  server  	the server which we want to start
-  // @param[in]  zone     the zone in which the server is located
-  // @param[in]  op       op: isolate, stop, force_stop
-  //
-  // @ret OB_SUCCESS 		                start the server successfully
-  // @ret OB_INVALID_ARGUMENT           an invalid server
-  // @ret OB_SERVER_ZONE_NOT_MATCH      the arg zone is not the same as the server's zone in __all_server table
-  // @ret OB_NOT_MASTER                 not rs leader, cannot execute the command
-  // @ret OB_SERVER_NOT_IN_WHITE_LIST   the server is not in the cluster
-
-  // @ret other error code		 failure
-  int start_servers(
-      const ObIArray<ObAddr> &servers,
-      const ObZone &zone);
-  int stop_server_precheck(
-      const ObIArray<ObAddr> &servers,
-      const obrpc::ObAdminServerArg::AdminServerOp &op);
 private:
   int check_startup_mode_match_(const share::ObServerMode startup_mode);
   int zone_checking_for_adding_server_(
@@ -176,32 +80,10 @@ private:
       const int64_t sql_port,
       const share::ObServerInfoInTable::ObBuildVersion &build_version,
       const ObIArray<share::ObZoneStorageTableInfo> &storage_infos);
-  int delete_server_(
-      const common::ObAddr &server,
-      const common::ObZone &zone);
-  int check_and_end_delete_server_(
-      common::ObMySQLTransaction &trans,
-      const common::ObAddr &server,
-      const common::ObZone &zone,
-      const bool is_cancel,
-      share::ObServerInfoInTable &server_info);
-  int start_or_stop_server_(
-      const common::ObAddr &server,
-      const ObZone &zone,
-      const obrpc::ObAdminServerArg::AdminServerOp &op);
-  int check_and_update_service_epoch_(common::ObMySQLTransaction &trans);
   int fetch_new_server_id_(uint64_t &server_id);
   bool check_server_index_(
       const uint64_t candidate_server_id,
       const common::ObIArray<uint64_t> &server_id_in_cluster) const;
-  int check_server_have_enough_resource_for_delete_server_(
-      const ObIArray<common::ObAddr> &servers,
-      const common::ObZone &zone);
-  int check_zone_and_server_(
-    const ObIArray<share::ObServerInfoInTable> &servers_info,
-    const ObIArray<ObAddr> &servers,
-    bool &is_same_zone,
-    bool &is_all_stopped);
   void end_trans_and_on_server_change_(
       int &ret,
       common::ObMySQLTransaction &trans,
@@ -209,10 +91,6 @@ private:
       const common::ObAddr &server,
       const common::ObZone &zone,
       const int64_t start_time);
-  int get_and_check_storage_infos_by_zone_(const ObZone &zone,
-      ObIArray<share::ObZoneStorageTableInfo> &result);
-  int check_storage_infos_not_changed_(common::ObISQLClient &proxy, const ObZone &zone,
-      const ObIArray<share::ObZoneStorageTableInfo> &storage_infos);
   int precheck_server_empty_and_get_zone_(const ObAddr &server,
       const ObTimeoutCtx &timeout,
       const bool is_bootstrap,

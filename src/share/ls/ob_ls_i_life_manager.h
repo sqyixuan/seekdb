@@ -121,13 +121,6 @@ public:
                       const SCN &drop_scn,
                       const ObTenantSwitchoverStatus &working_sw_status,
                       ObMySQLTransaction &trans) = 0;
-  //update ls primary zone
-  virtual int update_ls_primary_zone(
-      const uint64_t &tenant_id,
-      const share::ObLSID &ls_id,
-      const common::ObZone &primary_zone,
-      const common::ObString &zone_priority,
-      ObMySQLTransaction &trans) = 0;
 
   /*
    *description: The table related to the log stream status needs to be reported to the meta tenant or system tenant.
