@@ -1,0 +1,70 @@
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+#owner: lana.lgx
+#owner group: seekdb
+#description: Big transaction tests for async vector index
+
+connection default;
+alter system set ob_vector_memory_limit_percentage = 30;
+
+--echo ========== setup ==========
+--disable_warnings
+drop table if exists t_big_txn_3d;
+drop table if exists t_big_txn_4096d;
+--enable_warnings
+
+--echo
+--echo ========== 1. Single transaction: insert 100000 rows with 3-dim vectors ==========
+create table t_big_txn_3d (
+  id int primary key,
+  vec vector(3),
+  name varchar(64),
+  VECTOR INDEX idx_vec(vec) WITH (distance=l2, type=hnsw, lib=vsag, sync_mode=async)
+) organization heap;
+
+begin;
+--disable_query_log
+let $i = 1;
+while ($i <= 100000) {
+  eval insert into t_big_txn_3d values ($i, '[$i.0, $i.0, $i.0]', concat('item_', $i));
+  inc $i;
+}
+--enable_query_log
+commit;
+
+call dbms_index_manager.refresh();
+select count(*) as total_rows_3d from t_big_txn_3d;
+select id, name from t_big_txn_3d order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 5;
+
+--echo
+--echo ========== 2. Single transaction: insert 5 rows with 4096-dim vectors ==========
+create table t_big_txn_4096d (
+  id int primary key,
+  vec vector(4096),
+  name varchar(64),
+  VECTOR INDEX idx_vec(vec) WITH (distance=l2, type=hnsw, lib=vsag, sync_mode=async, ef_construction=200, m=16)
+) organization heap;
+
+begin;
+--disable_query_log
+let $j = 1;
+while ($j <= 5) {
+  eval insert into t_big_txn_4096d values ($j, concat('[', repeat(concat($j, '.0,'), 4095), $j, '.0]'), concat('item_', $j));
+  inc $j;
+}
+--enable_query_log
+commit;
+
+call dbms_index_manager.refresh();
+select count(*) as total_rows_4096d from t_big_txn_4096d;
+--replace_regex /__type_[0-9]+_[0-9]+/__type_0_0/g /, $/,/g
+explain basic select id, name from t_big_txn_4096d order by l2_distance(vec, concat('[', repeat('1.0,', 4095), '3.0]')) approximate limit 3;
+select id, name from t_big_txn_4096d order by l2_distance(vec, concat('[', repeat('1.0,', 4095), '3.0]')) limit 3;
+
+--echo
+--echo ========== cleanup ==========
+drop table t_big_txn_3d;
+drop table t_big_txn_4096d;
+alter system set ob_vector_memory_limit_percentage = 0;
+PURGE RECYCLEBIN;

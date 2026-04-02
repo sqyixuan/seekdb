@@ -1,0 +1,253 @@
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+#owner: lana.lgx
+#owner group: seekdb
+#description: System tables and metadata tests for async vector index
+#  Covers: __all_vector_index_task, __all_vector_index_task_history, __all_virtual_vector_index_info,
+#          DBA/CDB views, internal tables verification
+
+connection default;
+alter system set ob_vector_memory_limit_percentage = 30;
+
+--echo ========== setup ==========
+--disable_warnings
+drop table if exists t1;
+drop table if exists t2;
+drop table if exists t3;
+drop table if exists t4;
+drop table if exists t5;
+--enable_warnings
+
+--echo
+--echo ========== 6.1 System Table Queries ==========
+--echo
+--echo === 6.1.1 __all_vector_index_task - query async index task status ===
+create table t1 (
+  id int primary key,
+  vec vector(3)
+) organization heap;
+
+--echo --- Create async index and generate task ---
+create vector index idx1 on t1(vec) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async);
+
+
+--echo --- Insert data to trigger async task ---
+insert into t1 values (1, '[1.0, 1.0, 1.0]');
+insert into t1 values (2, '[2.0, 2.0, 2.0]');
+insert into t1 values (3, '[3.0, 3.0, 3.0]');
+
+--echo --- Get table and index IDs ---
+let $data_table_id = query_get_value(select table_id from oceanbase.__all_table where table_name='t1', table_id, 1);
+let $index_table_id = query_get_value(select table_id from oceanbase.__all_table where table_name like '__idx_%idx1', table_id, 1);
+
+--echo --- Wait for CDC sync ---
+call dbms_index_manager.refresh();
+
+--echo --- Query __all_vector_index_task (task should be completed or moved to history) ---
+--disable_query_log
+eval select count(*) as active_tasks from oceanbase.__all_vector_index_task where table_id=$index_table_id;
+--enable_query_log
+
+--echo --- Verify task fields (trigger_type, task_type, status, ret_code) ---
+--disable_query_log
+eval select trigger_type, task_type, status, ret_code from oceanbase.__all_vector_index_task where table_id=$index_table_id;
+--enable_query_log
+
+drop table t1;
+
+--echo
+--echo === 6.1.2 __all_vector_index_task_history - verify completed task history ===
+create table t2 (
+  id int primary key,
+  vec vector(3)
+) organization heap;
+
+create vector index idx2 on t2(vec) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async);
+
+--echo --- Insert data ---
+insert into t2 values (1, '[1.0, 1.0, 1.0]');
+insert into t2 values (2, '[2.0, 2.0, 2.0]');
+
+--echo --- Get table IDs ---
+let $data_table_id = query_get_value(select table_id from oceanbase.__all_table where table_name='t2', table_id, 1);
+let $index_table_id = query_get_value(select table_id from oceanbase.__all_table where table_name like '__idx_%idx2', table_id, 1);
+
+--echo --- Wait for CDC sync ---
+call dbms_index_manager.refresh();
+
+--echo --- Wait 12 seconds for task to transfer to history table ---
+sleep 12;
+
+--echo --- Query __all_vector_index_task_history ---
+--disable_query_log
+eval select trigger_type, task_type, status, ret_code from oceanbase.__all_vector_index_task_history where table_id=$index_table_id;
+eval select count(*) as history_count from oceanbase.__all_vector_index_task_history where table_id=$index_table_id;
+--enable_query_log
+
+drop table t2;
+
+--echo
+--echo === 6.1.4 __all_virtual_change_stream_refresh_stat - change stream info ===
+create table t4 (
+  id int primary key,
+  vec vector(3)
+) organization heap;
+
+create vector index idx4 on t4(vec) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async);
+
+--echo --- Insert data ---
+insert into t4 values (1, '[1.0, 1.0, 1.0]');
+insert into t4 values (2, '[2.0, 2.0, 2.0]');
+insert into t4 values (3, '[3.0, 3.0, 3.0]');
+
+call dbms_index_manager.refresh();
+
+--echo --- Query __all_virtual_change_stream_refresh_stat ---
+--echo --- Note: This table contains change stream framework statistics ---
+select count(*) as cs_count from oceanbase.__all_virtual_change_stream_refresh_stat;
+
+drop table t4;
+
+--echo
+--echo === 6.1.5 DBA and CDB views ===
+create table t5 (
+  id int primary key,
+  vec vector(3)
+) organization heap;
+
+create vector index idx5 on t5(vec) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async);
+
+--echo --- Insert data ---
+insert into t5 values (1, '[1.0, 1.0, 1.0]');
+insert into t5 values (2, '[2.0, 2.0, 2.0]');
+
+let $data_table_id = query_get_value(select table_id from oceanbase.__all_table where table_name='t5', table_id, 1);
+let $index_table_id = query_get_value(select table_id from oceanbase.__all_table where table_name like '__idx_%idx5', table_id, 1);
+
+call dbms_index_manager.refresh();
+
+--echo --- Query DBA_OB_VECTOR_INDEX_TASKS ---
+--disable_query_log
+eval select trigger_type, task_type, status, ret_code from oceanbase.DBA_OB_VECTOR_INDEX_TASKS where table_id=$index_table_id;
+--enable_query_log
+
+--echo --- Wait for task to move to history ---
+sleep 12;
+
+--echo --- Query DBA_OB_VECTOR_INDEX_TASK_HISTORY ---
+--disable_query_log
+eval select trigger_type, task_type, status, ret_code from oceanbase.DBA_OB_VECTOR_INDEX_TASK_HISTORY where table_id=$index_table_id;
+--enable_query_log
+
+--echo --- Query DBA_OB_CHANGE_STREAM_REFRESH_STAT ---
+select count(*) as cs_refresh_count from oceanbase.DBA_OB_CHANGE_STREAM_REFRESH_STAT;
+
+--echo --- Create sys connection for CDB views ---
+connect (conn_sys,$OBMYSQL_MS0,root@sys,,test,$OBMYSQL_PORT);
+connection conn_sys;
+
+disconnect conn_sys;
+connection default;
+
+drop table t5;
+
+--echo
+--echo ========== 6.2 Internal Table Verification ==========
+--echo
+--echo === 6.2.1 Verify internal table structure ===
+create table t6 (
+  id int primary key,
+  vec vector(3),
+  name varchar(50)
+) organization heap;
+
+create vector index idx6 on t6(vec) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async);
+
+--echo --- Insert test data ---
+insert into t6 values (1, '[1.0, 1.0, 1.0]', 'item1');
+insert into t6 values (2, '[2.0, 2.0, 2.0]', 'item2');
+insert into t6 values (3, '[3.0, 3.0, 3.0]', 'item3');
+
+call dbms_index_manager.refresh();
+
+--echo --- Verify data in base table ---
+select id, name from t6 order by id;
+
+--echo --- Verify vector search works ---
+select id, name from t6 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 3;
+
+--echo --- Query __all_table to find internal index tables ---
+--replace_regex /__idx_[0-9]+_/__idx_XXXXXX_/
+select 
+  table_name,
+  table_type
+from oceanbase.__all_table 
+where table_name like '%idx6%' 
+order by table_name;
+
+drop table t6;
+
+--echo
+--echo === 6.2.2 Verify internal tables for partitioned table ===
+create table t7 (
+  id int primary key,
+  vec vector(3)
+) organization heap
+partition by hash(id) partitions 4;
+
+create vector index idx7 on t7(vec) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async);
+
+--echo --- Insert data across partitions ---
+insert into t7 values (1, '[1.0, 1.0, 1.0]');
+insert into t7 values (101, '[2.0, 2.0, 2.0]');
+insert into t7 values (201, '[3.0, 3.0, 3.0]');
+insert into t7 values (301, '[4.0, 4.0, 4.0]');
+
+call dbms_index_manager.refresh();
+
+--echo --- Verify data across partitions ---
+select count(*) from t7;
+select id from t7 order by id;
+
+--echo --- Verify vector search across partitions ---
+select id from t7 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 4;
+
+--echo --- Query internal tables for partitioned index ---
+--replace_regex /__idx_[0-9]+_/__idx_XXXXXX_/
+select 
+  table_name,
+  table_type
+from oceanbase.__all_table 
+where table_name like '%idx7%' 
+order by table_name;
+
+drop table t7;
+
+--echo
+--echo === 6.2.5 Multiple async indexes - verify independent sync_info ===
+create table t10 (
+  id int primary key,
+  vec1 vector(3),
+  vec2 vector(3)
+) organization heap;
+
+create vector index idx10_1 on t10(vec1) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async);
+create vector index idx10_2 on t10(vec2) with (distance=cosine, type=hnsw, lib=vsag, sync_mode=async);
+
+--echo --- Insert data ---
+insert into t10 values (1, '[1.0, 1.0, 1.0]', '[10.0, 10.0, 10.0]');
+insert into t10 values (2, '[2.0, 2.0, 2.0]', '[20.0, 20.0, 20.0]');
+
+call dbms_index_manager.refresh();
+
+--echo --- Verify both indexes work ---
+select id from t10 order by l2_distance(vec1, '[1.0, 1.0, 1.0]') approximate limit 2;
+select id from t10 order by cosine_distance(vec2, '[10.0, 10.0, 10.0]') approximate limit 2;
+
+drop table t10;
+
+--echo
+--echo ========== cleanup ==========
+alter system set ob_vector_memory_limit_percentage = 0;
+PURGE RECYCLEBIN;
