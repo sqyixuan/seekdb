@@ -19,6 +19,8 @@
 #include "sql/engine/expr/ob_expr_lob_utils.h"
 #include "share/ob_vec_index_builder_util.h"
 #include "share/allocator/ob_shared_memory_allocator_mgr.h"
+#include "share/vector_type/ob_vector_common_util.h"
+#include "share/vector_index/ob_vector_index_util.h"
 
 namespace oceanbase
 {
@@ -277,6 +279,7 @@ int ObPluginVectorIndexMgr::create_partial_adapter(ObTabletID idx_tablet_id,
                                                    ObIndexType type,
                                                    ObIAllocator &allocator,
                                                    int64_t index_table_id,
+                                                  int64_t data_table_id,
                                                    ObString *vec_index_param,
                                                    int64_t dim)
 {
@@ -308,6 +311,9 @@ int ObPluginVectorIndexMgr::create_partial_adapter(ObTabletID idx_tablet_id,
       LOG_WARN("failed to set data tablet id", K(idx_tablet_id), K(type), K(data_tablet_id), KR(ret));
     } else if (OB_FAIL(tmp_vec_idx_adpt->set_table_id(record_type, index_table_id))) {
       LOG_WARN("failed to set index table id", K(idx_tablet_id), K(type), K(index_table_id), KR(ret));
+    } else if (OB_INVALID_ID != data_table_id
+               && OB_FAIL(tmp_vec_idx_adpt->set_table_id(VIRT_DATA, data_table_id))) {
+      LOG_WARN("failed to set data table id", K(idx_tablet_id), K(type), K(data_table_id), KR(ret));
     } else {
       tmp_vec_idx_adpt->set_create_type(ObPluginVectorIndexUtils::index_type_to_create_type(type));
     }
@@ -437,7 +443,7 @@ int ObPluginVectorIndexMgr::get_or_create_partial_adapter_(ObTabletID tablet_id,
     if (OB_HASH_NOT_EXIST != ret) {
       LOG_WARN("failed to get vector index adapter", K(tablet_id), KR(ret));
     } else { // not exist create new
-      if (OB_FAIL(create_partial_adapter(tablet_id, ObTabletID(), type, allocator, OB_INVALID_ID, vec_index_param, dim))) {
+      if (OB_FAIL(create_partial_adapter(tablet_id, ObTabletID(), type, allocator, OB_INVALID_ID, OB_INVALID_ID, vec_index_param, dim))) {
         LOG_WARN("failed to create tmp vector index instance with ls", K(tablet_id), K(type), KR(ret));
       } 
       if (OB_FAIL(ret) && (OB_HASH_EXIST != ret)) {
@@ -669,7 +675,7 @@ int ObPluginVectorIndexService::acquire_adapter_guard(ObLSID ls_id,
       LOG_WARN("failed to get vector index mgr for ls", KR(ret), K(ls_id));
     } else { // create new ls index mgr if not exist
       ret = OB_SUCCESS;
-      if (OB_FAIL(create_partial_adapter(ls_id, tablet_id, ObTabletID(), type, OB_INVALID_ID, vec_index_param, dim))) {
+      if (OB_FAIL(create_partial_adapter(ls_id, tablet_id, ObTabletID(), type, OB_INVALID_ID, OB_INVALID_ID, vec_index_param, dim))) {
         LOG_WARN("failed to create tmp vector index instance", K(ls_id), K(tablet_id), K(type), KR(ret));
       } 
       if (OB_FAIL(ret) && (OB_HASH_EXIST != ret)) {
@@ -686,7 +692,7 @@ int ObPluginVectorIndexService::acquire_adapter_guard(ObLSID ls_id,
     if (OB_HASH_NOT_EXIST != ret) {
       LOG_WARN("failed to get vector index adapter", K(ls_id), K(tablet_id), KR(ret));
     } else { // not exist create new
-      if (OB_FAIL(ls_index_mgr->create_partial_adapter(tablet_id, ObTabletID(), type, allocator_, OB_INVALID_ID, vec_index_param, dim))) {
+      if (OB_FAIL(ls_index_mgr->create_partial_adapter(tablet_id, ObTabletID(), type, allocator_, OB_INVALID_ID, OB_INVALID_ID, vec_index_param, dim))) {
         LOG_WARN("failed to create tmp vector index instance with ls", K(ls_id), K(tablet_id), K(type), KR(ret));
       } 
       if (OB_FAIL(ret) && (OB_HASH_EXIST != ret)) {
@@ -918,6 +924,7 @@ int ObPluginVectorIndexService::create_partial_adapter(ObLSID ls_id,
                                                        ObTabletID data_tablet_id,
                                                        ObIndexType type,
                                                        int64_t index_table_id,
+                                                       int64_t data_table_id,
                                                        ObString *vec_index_param,
                                                        int64_t dim)
 {
@@ -941,6 +948,7 @@ int ObPluginVectorIndexService::create_partial_adapter(ObLSID ls_id,
                                                           type,
                                                           allocator_,
                                                           index_table_id,
+                                                          data_table_id,
                                                           vec_index_param,
                                                           dim))) {
     LOG_WARN("set vector index adapter faild", K(ls_id), K(idx_tablet_id), KR(ret));
@@ -1692,11 +1700,14 @@ int ObPluginVectorIndexService::get_ivf_aux_info(
     const uint64_t table_id,
     const ObTabletID tablet_id,
     ObIAllocator &allocator,
-    ObIArray<float*> &aux_info)
+    bool is_pq_type,
+    ObIArray<float*> &aux_info,
+    uint64_t &center_prefix)
 {
   int ret = OB_SUCCESS;
   bool is_hidden_table = false;
   ObSqlString sql_string;
+  center_prefix = 0;
   if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;
     LOG_WARN("ObPluginVectorIndexService is not inited", KR(ret), K_(tenant_id));
@@ -1718,10 +1729,15 @@ int ObPluginVectorIndexService::get_ivf_aux_info(
         LOG_WARN("failed to execute sql", K(ret), K(sql_string));
       } else {
         while (OB_SUCC(ret) && OB_SUCC(result->next())) {
-          const int64_t col_idx = 0;
+          const int64_t cid_col_idx = 0;
+          const int64_t vec_col_idx = 1;
+          ObObj cid_obj;
           ObObj vec_obj;
           ObString blob_data;
-          if (OB_FAIL(result->get_obj(col_idx, vec_obj))) {
+          uint64_t cid_prefix = 0;
+          if (OB_FAIL(result->get_obj(cid_col_idx, cid_obj))) {
+            LOG_WARN("failed to get center id", K(ret));
+          } else if (OB_FAIL(result->get_obj(vec_col_idx, vec_obj))) {
             LOG_WARN("failed to get vid", K(ret));
           } else if (FALSE_IT(blob_data = vec_obj.get_string())) {
           } else if (OB_FAIL(sql::ObTextStringHelper::read_real_string_data(&allocator,
@@ -1730,6 +1746,11 @@ int ObPluginVectorIndexService::get_ivf_aux_info(
                                                                         true,
                                                                         blob_data))) {
             LOG_WARN("fail to get real data.", K(ret), K(blob_data));
+          } else if (OB_FALSE_IT(cid_prefix = ObVectorClusterHelper::get_center_prefix(cid_obj.get_string(), is_pq_type))) {
+          } else if (center_prefix == 0 && OB_FALSE_IT(center_prefix = cid_prefix)) {
+          } else if (center_prefix != cid_prefix) {
+            ret = OB_ERR_UNEXPECTED;
+            LOG_WARN("center prefix mismatch", K(ret), K(center_prefix), K(cid_prefix));
           } else {
             int64_t dim = blob_data.length() / sizeof(float);
             float *data = nullptr;
@@ -1821,28 +1842,44 @@ int ObPluginVectorIndexService::generate_get_aux_info_sql(
       }
     }
     if (OB_SUCC(ret)) {
-      if (0 == strlen(query_col) || 0 == strlen(filter_col)) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("unexpected null col name", K(ret), K(query_col), K(filter_col));
+      // get partition name by tablet_id
+      ObPartitionLevel part_level;
+      ObString partition_name;
+      if (OB_FAIL(ObVectorIndexUtil::get_partition_name_by_tablet(
+              *table_schema, *data_table_schema, tablet_id, part_level, partition_name))) {
+        LOG_WARN("failed to get partition name by tablet", K(ret), K(tablet_id));
       } else {
-        uint64_t min_center_id = 0;
-        uint64_t max_center_id = UINT64_MAX;
-        const ObString &table_name = table_schema->get_table_name_str();
-        if (OB_FAIL(sql_string.assign_fmt("SELECT %.*s FROM `%.*s`.`%.*s` WHERE %.*s >= X'%016lx%016lx' and %.*s <= X'%016lx%016lx'",
-            static_cast<int>(strlen(query_col)), query_col,
-            static_cast<int>(database_name.length()), database_name.ptr(),
-            static_cast<int>(table_name.length()), table_name.ptr(),
-            static_cast<int>(strlen(filter_col)), filter_col,
-            tablet_id.id(), min_center_id,
-            static_cast<int>(strlen(filter_col)), filter_col,
-            tablet_id.id(), max_center_id))) {
-          LOG_WARN("failed to assign sql string", K(ret));
+        if (0 == strlen(query_col) || 0 == strlen(filter_col)) {
+          ret = OB_ERR_UNEXPECTED;
+          LOG_WARN("unexpected null col name", K(ret), K(query_col), K(filter_col));
         } else {
-          LOG_DEBUG("success to generate sql string", K(ret), K(sql_string), K(table_id), K(tablet_id));
+          const ObString &table_name = table_schema->get_table_name_str();
+          if (PARTITION_LEVEL_ZERO == part_level) {
+            // non-partitioned table, no PARTITION clause
+            if (OB_FAIL(sql_string.assign_fmt("SELECT %.*s, %.*s FROM `%.*s`.`%.*s`",
+                static_cast<int>(strlen(filter_col)), filter_col,
+                static_cast<int>(strlen(query_col)), query_col,
+                static_cast<int>(database_name.length()), database_name.ptr(),
+                static_cast<int>(table_name.length()), table_name.ptr()))) {
+              LOG_WARN("failed to assign sql string", K(ret));
+            }
+          } else {
+            // partitioned table, use PARTITION clause
+            if (OB_FAIL(sql_string.assign_fmt("SELECT %.*s, %.*s FROM `%.*s`.`%.*s` PARTITION (`%.*s`)",
+                static_cast<int>(strlen(filter_col)), filter_col,
+                static_cast<int>(strlen(query_col)), query_col,
+                static_cast<int>(database_name.length()), database_name.ptr(),
+                static_cast<int>(table_name.length()), table_name.ptr(),
+                static_cast<int>(partition_name.length()), partition_name.ptr()))) {
+              LOG_WARN("failed to assign sql string", K(ret));
+            }
+          }
+          if (OB_SUCC(ret)) {
+            LOG_INFO("success to generate sql string", K(ret), K(sql_string), K(table_id), K(tablet_id));
+          }
         }
       }
     }
-    
   }
   return ret;
 }

@@ -180,6 +180,14 @@ if (${ARCHITECTURE} STREQUAL "x86_64")
   target_compile_options(oblib_lib_simd
     PRIVATE -mavx2 -mssse3
     )
+elseif(${ARCHITECTURE} STREQUAL "amd64")
+  target_compile_options(oblib_lib_simd
+    PRIVATE
+    -mavx2
+    -mssse3
+    -msse3
+    -msse4.1
+)
 endif()
 
 ob_set_subtarget(oblib_lib common_mixed
@@ -448,7 +456,7 @@ add_library(ob_malloc STATIC)
 target_link_libraries(ob_malloc ob_malloc_object)
 
 # malloc_hook is only available on Linux (uses Linux-specific syscall and weak alias)
-if(NOT APPLE)
+if(NOT APPLE AND NOT WIN32 AND NOT ANDROID)
   add_library(malloc_hook STATIC
       alloc/malloc_hook.cpp
       alloc/malloc_hook.h
@@ -459,18 +467,48 @@ if(NOT APPLE)
   target_link_libraries(malloc_hook oblib_base)
 endif()
 
-target_link_libraries(oblib_lib
-  PUBLIC ob_malloc compress restore
-  ${DEP_DIR}/lib/libxml2.a
-  ${DEP_DIR}/lib/liblzma.a
-)
+if(WIN32)
+  set(VCPKG_LIB_DIR "${OB_VCPKG_DIR}/lib")
+  target_link_libraries(oblib_lib
+    PUBLIC ob_malloc compress restore oblib_grpc
+    ${VCPKG_LIB_DIR}/libxml2.lib
+  )
+else()
+  target_link_libraries(oblib_lib
+    PUBLIC ob_malloc compress restore oblib_grpc
+    ${DEP_DIR}/lib/libxml2.a
+    ${DEP_DIR}/lib/liblzma.a
+  )
+endif()
 
 if (NOT BUILD_CDC_ONLY)
+if (ANDROID)
+# vsag vector library -- Android: all libs installed to DEP_DIR/lib by ob-deps
+target_link_directories(
+  oblib_lib PUBLIC
+  ${DEP_DIR}/lib
+)
+target_compile_options(oblib_lib PUBLIC -fopenmp)
+target_link_libraries(oblib_lib
+  PUBLIC
+  libvsag_static.a
+  libantlr4-autogen.a
+  libantlr4-runtime.a
+  libdiskann.a
+  libsimd.a
+  libcpuinfo.a
+  libfmt.a
+  libopenblas.a
+  libspdlog.a
+  libroaring.a
+  -fopenmp -static-openmp
+)
+else()
 # vsag vector library
 target_link_directories(
   oblib_lib PUBLIC ${DEP_DIR}/lib ${DEP_DIR}/lib/vsag_lib
 )
-if(NOT APPLE)
+if(UNIX)
   target_compile_options(oblib_lib PUBLIC -fopenmp)
 endif()
 
@@ -529,10 +567,13 @@ elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "arm64")
     libantlr4-autogen.a
     libfmt.a
   )
+elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "AMD64")
+  message(STATUS "Need to support Windows architecture: ${CMAKE_SYSTEM_PROCESSOR}")
 else()
-    message(FATAL_ERROR "Unsupported architecture: ${CMAKE_SYSTEM_PROCESSOR}")
+  message(FATAL_ERROR "Unsupported architecture: ${CMAKE_SYSTEM_PROCESSOR}")
 endif()
 
+endif()
 endif()
 
 # ATTENTION: add this cpp file as library only if compiled target doesn't need diagnose. like unittest or cdc.
