@@ -2413,11 +2413,11 @@ int ObDDLResolver::resolve_table_option(const ParseNode *option_node, const bool
             ret = OB_ERR_UNEXPECTED;
             LOG_WARN("unexpected child num", K(option_node->num_child_));
           } else {
-            ObString location_obj = ObString(option_node->children_[0]->str_len_,
+            ObString location_obj = ObString(option_node->children_[0]->str_len_, 
                                         option_node->children_[0]->str_value_).trim_space_only();
             ObString sub_path;
             if(OB_NOT_NULL(option_node->children_[1])) {
-              sub_path = ObString(option_node->children_[1]->str_len_,
+              sub_path = ObString(option_node->children_[1]->str_len_, 
                           option_node->children_[1]->str_value_).trim_space_only();
             }
             if (OB_FAIL(resolve_external_file_location_object(params_, arg.schema_, location_obj, sub_path))) {
@@ -6610,7 +6610,7 @@ int ObDDLResolver::resolve_vec_index_constraint(
       LOG_USER_ERROR(OB_NOT_SUPPORTED, "not user tenant create vector index is");
 #endif
     }
-
+    
     if (OB_SUCC(ret)) {
       int64_t dim = 0;
 
