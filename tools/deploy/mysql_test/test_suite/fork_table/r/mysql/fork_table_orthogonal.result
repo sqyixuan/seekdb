@@ -1,0 +1,520 @@
+drop database if exists db_fork_orthogonal;
+create database db_fork_orthogonal;
+use db_fork_orthogonal;
+SET wait_timeout=30000000;
+SET ob_trx_timeout = 100000000;
+SET ob_query_timeout = 100000000;
+# 启用debug sync
+alter system set debug_sync_timeout = '60s';
+# 设置DDL超时为1秒
+alter system set _ob_ddl_timeout = '5s';
+set ob_global_debug_sync = 'reset';
+============================================
+1. Online DDL：索引增删改/重建（fork前/中/后）
+============================================
+drop table if exists t_online_idx;
+Warnings:
+Note	1051	Unknown table 'db_fork_orthogonal.t_online_idx'
+drop table if exists t_online_idx_fork;
+Warnings:
+Note	1051	Unknown table 'db_fork_orthogonal.t_online_idx_fork'
+create table t_online_idx (
+id int primary key,
+c1 int,
+c2 int,
+c3 varchar(20)
+) partition by range(id) (
+partition p0 values less than (100),
+partition p1 values less than (200)
+);
+insert into t_online_idx values (1, 10, 100, 'A');
+insert into t_online_idx values (101, 11, 101, 'B');
+# fork前：在源表上执行索引相关DDL
+create index idx_pre_c1 on t_online_idx(c1);
+alter table t_online_idx rename index idx_pre_c1 to idx_pre_c1_r;
+drop index idx_pre_c1_r on t_online_idx;
+create index idx_base_c2 on t_online_idx(c2);
+drop index idx_base_c2 on t_online_idx;
+create index idx_base_c2 on t_online_idx(c2);
+# 让fork在BUILD_DATA阶段暂停
+set ob_global_debug_sync = 'FORK_TABLE_BUILD_DATA wait_for idx_signal execute 10000';
+fork table t_online_idx to t_online_idx_fork;
+# fork中：索引DDL预期被阻塞（特殊标注，可能返回锁冲突）
+# fork中：对fork表的索引DDL
+create index idx_mid_c1 on t_online_idx_fork(c1);
+ERROR HY000: Timeout
+drop index idx_mid_c1 on t_online_idx_fork;
+ERROR 42000: Can't DROP 'idx_mid_c1'; check that column/key exists
+drop index idx_base_c2 on t_online_idx_fork;
+ERROR HY000: Timeout
+# fork中：对源表的索引DDL
+create index idx_mid_src_c1 on t_online_idx(c1);
+ERROR HY000: Timeout
+drop index idx_base_c2 on t_online_idx;
+ERROR HY000: Timeout
+create index idx_mid_src_c2 on t_online_idx(c2);
+ERROR HY000: Timeout
+# 继续fork执行
+set ob_global_debug_sync = 'FORK_TABLE_BUILD_DATA clear';
+set ob_global_debug_sync = 'now signal idx_signal';
+# fork后：索引DDL可正常执行
+# fork后：对fork表的索引DDL
+create index idx_post_c1 on t_online_idx_fork(c1);
+alter table t_online_idx_fork rename index idx_post_c1 to idx_post_c1_r;
+drop index idx_post_c1_r on t_online_idx_fork;
+drop index idx_base_c2 on t_online_idx_fork;
+create index idx_base_c2 on t_online_idx_fork(c2);
+show indexes from t_online_idx_fork;
+Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible	Expression
+t_online_idx_fork	0	PRIMARY	1	id	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+t_online_idx_fork	1	idx_base_c2	1	c2	A	NULL	NULL	NULL	YES	BTREE	available		YES	NULL
+# fork后：对源表的索引DDL
+create index idx_post_src_c1 on t_online_idx(c1);
+alter table t_online_idx rename index idx_post_src_c1 to idx_post_src_c1_r;
+drop index idx_post_src_c1_r on t_online_idx;
+drop index idx_base_c2 on t_online_idx;
+create index idx_post_src_c2 on t_online_idx(c2);
+show indexes from t_online_idx;
+Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible	Expression
+t_online_idx	0	PRIMARY	1	id	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+t_online_idx	1	idx_post_src_c2	1	c2	A	NULL	NULL	NULL	YES	BTREE	available		YES	NULL
+============================================
+2. Online DDL：修改自增列值（fork前/中/后）
+============================================
+drop table if exists t_online_ai;
+Warnings:
+Note	1051	Unknown table 'db_fork_orthogonal.t_online_ai'
+drop table if exists t_online_ai_fork;
+Warnings:
+Note	1051	Unknown table 'db_fork_orthogonal.t_online_ai_fork'
+create table t_online_ai (
+id int auto_increment primary key,
+name varchar(20)
+) partition by range(id) (
+partition p0 values less than (1000),
+partition p1 values less than (2000)
+);
+insert into t_online_ai(name) values ('A'), ('B');
+# fork前：调整源表自增起始值
+alter table t_online_ai auto_increment = 1000;
+insert into t_online_ai(name) values ('C');
+select * from t_online_ai order by id;
+id	name
+1	A
+2	B
+1000	C
+set ob_global_debug_sync = 'FORK_TABLE_BUILD_DATA wait_for ai_signal execute 10000';
+fork table t_online_ai to t_online_ai_fork;
+# fork中：调整fork表自增值（特殊标注，预期被阻塞）
+# fork中：对fork表的自增列修改
+alter table t_online_ai_fork auto_increment = 2000;
+ERROR HY000: Timeout
+# fork中：对源表的自增列修改
+alter table t_online_ai auto_increment = 1500;
+ERROR HY000: Timeout
+set ob_global_debug_sync = 'FORK_TABLE_BUILD_DATA clear';
+set ob_global_debug_sync = 'now signal ai_signal';
+# fork后：调整fork表自增值并插入验证
+# fork后：对fork表的自增列修改
+# fork后：检查分区规则
+SHOW CREATE TABLE t_online_ai_fork;
+Table	Create Table
+t_online_ai_fork	CREATE TABLE `t_online_ai_fork` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `name` varchar(20) DEFAULT NULL,
+  PRIMARY KEY (`id`)
+) ORGANIZATION INDEX AUTO_INCREMENT = 1001 AUTO_INCREMENT_MODE = 'ORDER' DEFAULT CHARSET = utf8mb4 ROW_FORMAT = DYNAMIC COMPRESSION = 'zstd_1.3.8' REPLICA_NUM = 1 BLOCK_SIZE = 16384 USE_BLOOM_FILTER = FALSE ENABLE_MACRO_BLOCK_BLOOM_FILTER = FALSE TABLET_SIZE = 134217728 PCTFREE = 0
+ partition by range(id)
+(partition `p0` values less than (1000),
+partition `p1` values less than (2000))
+# fork后：检查分区规则,自增超过2000报错
+alter table t_online_ai_fork auto_increment = 3000;
+insert into t_online_ai_fork(name) values ('F_A');
+ERROR HY000: Table has no partition for value
+alter table t_online_ai_fork auto_increment = 1500;
+insert into t_online_ai_fork(name) values ('F_A');
+select * from t_online_ai_fork order by id;
+id	name
+1	A
+2	B
+1000	C
+1500	F_A
+# fork后：对源表的自增列修改
+# fork后：检查分区规则
+SHOW CREATE TABLE t_online_ai_fork;
+Table	Create Table
+t_online_ai_fork	CREATE TABLE `t_online_ai_fork` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `name` varchar(20) DEFAULT NULL,
+  PRIMARY KEY (`id`)
+) ORGANIZATION INDEX AUTO_INCREMENT = 1501 AUTO_INCREMENT_MODE = 'ORDER' DEFAULT CHARSET = utf8mb4 ROW_FORMAT = DYNAMIC COMPRESSION = 'zstd_1.3.8' REPLICA_NUM = 1 BLOCK_SIZE = 16384 USE_BLOOM_FILTER = FALSE ENABLE_MACRO_BLOCK_BLOOM_FILTER = FALSE TABLET_SIZE = 134217728 PCTFREE = 0
+ partition by range(id)
+(partition `p0` values less than (1000),
+partition `p1` values less than (2000))
+alter table t_online_ai auto_increment = 2500;
+insert into t_online_ai(name) values ('S_A');
+ERROR HY000: Table has no partition for value
+alter table t_online_ai auto_increment = 1700;
+insert into t_online_ai(name) values ('S_A');
+select * from t_online_ai order by id;
+id	name
+1	A
+2	B
+1000	C
+1700	S_A
+============================================
+3. Online DDL：添加分区（fork前/中/后）
+============================================
+drop table if exists t_online_part;
+Warnings:
+Note	1051	Unknown table 'db_fork_orthogonal.t_online_part'
+drop table if exists t_online_part_fork;
+Warnings:
+Note	1051	Unknown table 'db_fork_orthogonal.t_online_part_fork'
+create table t_online_part (
+id int primary key,
+name varchar(20)
+) partition by range(id) (
+partition p0 values less than (100),
+partition p1 values less than (200)
+);
+insert into t_online_part values (1, 'A');
+insert into t_online_part values (101, 'B');
+# fork前：源表添加分区
+alter table t_online_part add partition (partition p_pre values less than (300));
+set ob_global_debug_sync = 'FORK_TABLE_BUILD_DATA wait_for part_signal execute 10000';
+fork table t_online_part to t_online_part_fork;
+# fork中：目标表添加分区（特殊标注，预期被阻塞）
+# fork中：对fork表添加分区
+alter table t_online_part_fork add partition (partition p_mid values less than (400));
+ERROR HY000: Timeout
+# fork中：对源表添加分区
+alter table t_online_part add partition (partition p_mid_src values less than (350));
+ERROR HY000: Timeout
+set ob_global_debug_sync = 'FORK_TABLE_BUILD_DATA clear';
+set ob_global_debug_sync = 'now signal part_signal';
+# fork后：目标表添加分区
+# fork后：对fork表添加分区
+alter table t_online_part_fork add partition (partition p_post values less than (500));
+show create table t_online_part_fork;
+Table	Create Table
+t_online_part_fork	CREATE TABLE `t_online_part_fork` (
+  `id` int(11) NOT NULL,
+  `name` varchar(20) DEFAULT NULL,
+  PRIMARY KEY (`id`)
+) ORGANIZATION INDEX DEFAULT CHARSET = utf8mb4 ROW_FORMAT = DYNAMIC COMPRESSION = 'zstd_1.3.8' REPLICA_NUM = replica_num BLOCK_SIZE = 16384 USE_BLOOM_FILTER = FALSE ENABLE_MACRO_BLOCK_BLOOM_FILTER = FALSE TABLET_SIZE = 134217728 PCTFREE = 0
+ partition by range(id)
+(partition `p0` values less than (100),
+partition `p1` values less than (200),
+partition `p_pre` values less than (300),
+partition `p_post` values less than (500))
+# fork后：对源表添加分区
+alter table t_online_part add partition (partition p_post_src values less than (450));
+show create table t_online_part;
+Table	Create Table
+t_online_part	CREATE TABLE `t_online_part` (
+  `id` int(11) NOT NULL,
+  `name` varchar(20) DEFAULT NULL,
+  PRIMARY KEY (`id`)
+) ORGANIZATION INDEX DEFAULT CHARSET = utf8mb4 ROW_FORMAT = DYNAMIC COMPRESSION = 'zstd_1.3.8' REPLICA_NUM = replica_num BLOCK_SIZE = 16384 USE_BLOOM_FILTER = FALSE ENABLE_MACRO_BLOCK_BLOOM_FILTER = FALSE TABLET_SIZE = 134217728 PCTFREE = 0
+ partition by range(id)
+(partition `p0` values less than (100),
+partition `p1` values less than (200),
+partition `p_pre` values less than (300),
+partition `p_post_src` values less than (450))
+============================================
+4. Online DDL：修改表名（fork前/中/后）
+============================================
+drop table if exists t_online_rename;
+Warnings:
+Note	1051	Unknown table 'db_fork_orthogonal.t_online_rename'
+drop table if exists t_online_rename_fork;
+Warnings:
+Note	1051	Unknown table 'db_fork_orthogonal.t_online_rename_fork'
+create table t_online_rename (
+id int primary key,
+name varchar(20)
+);
+insert into t_online_rename values (1, 'A');
+# fork前：源表改名再改回（不影响后续fork）
+rename table t_online_rename to t_online_rename_src;
+rename table t_online_rename_src to t_online_rename;
+set ob_global_debug_sync = 'FORK_TABLE_BUILD_DATA wait_for rename_signal execute 10000';
+fork table t_online_rename to t_online_rename_fork;
+# fork中：目标表改名（特殊标注，预期被阻塞）
+# fork中：对fork表改名
+rename table t_online_rename_fork to t_online_rename_fork_mid;
+ERROR HY000: Timeout
+# fork中：对源表改名
+rename table t_online_rename to t_online_rename_mid;
+ERROR HY000: Timeout
+set ob_global_debug_sync = 'FORK_TABLE_BUILD_DATA clear';
+set ob_global_debug_sync = 'now signal rename_signal';
+# fork后：目标表改名验证
+# fork后：对fork表改名
+rename table t_online_rename_fork to t_online_rename_fork_r;
+select * from t_online_rename_fork_r;
+id	name
+1	A
+rename table t_online_rename_fork_r to t_online_rename_fork;
+# fork后：对源表改名
+rename table t_online_rename to t_online_rename_src_post;
+select * from t_online_rename_src_post;
+id	name
+1	A
+rename table t_online_rename_src_post to t_online_rename;
+============================================
+5. Offline DDL：增/删/改列（fork前/中/后）
+============================================
+drop table if exists t_offline_cols;
+Warnings:
+Note	1051	Unknown table 'db_fork_orthogonal.t_offline_cols'
+drop table if exists t_offline_cols_fork;
+Warnings:
+Note	1051	Unknown table 'db_fork_orthogonal.t_offline_cols_fork'
+create table t_offline_cols (
+id int primary key,
+c1 varchar(20)
+);
+insert into t_offline_cols values (1, 'A');
+# fork前：源表DDL
+alter table t_offline_cols add column c2 int default 0;
+alter table t_offline_cols modify column c1 varchar(50);
+alter table t_offline_cols drop column c2;
+set ob_global_debug_sync = 'FORK_TABLE_BUILD_DATA wait_for col_signal execute 10000';
+fork table t_offline_cols to t_offline_cols_fork;
+# fork中：目标表DDL（特殊标注，预期被阻塞）
+# fork中：对fork表的列DDL
+alter table t_offline_cols_fork add column c_mid int default 1;
+ERROR HY000: Timeout
+alter table t_offline_cols_fork modify column c1 varchar(80);
+ERROR HY000: Timeout
+alter table t_offline_cols_fork drop column c_mid;
+ERROR 42000: Can't DROP 'c_mid'; check that column/key exists
+# fork中：对源表的列DDL
+alter table t_offline_cols add column c_mid_src int default 1;
+ERROR HY000: Timeout
+alter table t_offline_cols modify column c1 varchar(80);
+ERROR HY000: Timeout
+alter table t_offline_cols drop column c_mid_src;
+ERROR 42000: Can't DROP 'c_mid_src'; check that column/key exists
+set ob_global_debug_sync = 'FORK_TABLE_BUILD_DATA clear';
+set ob_global_debug_sync = 'now signal col_signal';
+# fork后：目标表DDL
+# fork后：对fork表的列DDL
+alter table t_offline_cols_fork add column c_post int default 2;
+alter table t_offline_cols_fork modify column c1 varchar(80);
+alter table t_offline_cols_fork drop column c_post;
+show create table t_offline_cols_fork;
+Table	Create Table
+t_offline_cols_fork	CREATE TABLE `t_offline_cols_fork` (
+  `id` int(11) NOT NULL,
+  `c1` varchar(80) DEFAULT NULL,
+  PRIMARY KEY (`id`)
+) ORGANIZATION INDEX DEFAULT CHARSET = utf8mb4 ROW_FORMAT = DYNAMIC COMPRESSION = 'zstd_1.3.8' REPLICA_NUM = 1 BLOCK_SIZE = 16384 USE_BLOOM_FILTER = FALSE ENABLE_MACRO_BLOCK_BLOOM_FILTER = FALSE TABLET_SIZE = 134217728 PCTFREE = 0
+# fork后：对源表的列DDL
+alter table t_offline_cols add column c_post_src int default 2;
+alter table t_offline_cols modify column c1 varchar(80);
+alter table t_offline_cols drop column c_post_src;
+show create table t_offline_cols;
+Table	Create Table
+t_offline_cols	CREATE TABLE `t_offline_cols` (
+  `id` int(11) NOT NULL,
+  `c1` varchar(80) DEFAULT NULL,
+  PRIMARY KEY (`id`)
+) ORGANIZATION INDEX DEFAULT CHARSET = utf8mb4 ROW_FORMAT = DYNAMIC COMPRESSION = 'zstd_1.3.8' REPLICA_NUM = 1 BLOCK_SIZE = 16384 USE_BLOOM_FILTER = FALSE ENABLE_MACRO_BLOCK_BLOOM_FILTER = FALSE TABLET_SIZE = 134217728 PCTFREE = 0
+============================================
+6. Offline DDL：增加自增列（特殊标注：仅中/后验证）
+============================================
+drop table if exists t_offline_ai;
+Warnings:
+Note	1051	Unknown table 'db_fork_orthogonal.t_offline_ai'
+drop table if exists t_offline_ai_fork;
+Warnings:
+Note	1051	Unknown table 'db_fork_orthogonal.t_offline_ai_fork'
+create table t_offline_ai (
+c1 varchar(20)
+);
+insert into t_offline_ai values ('A'), ('B');
+set ob_global_debug_sync = 'FORK_TABLE_BUILD_DATA wait_for off_ai_signal execute 10000';
+fork table t_offline_ai to t_offline_ai_fork;
+# fork中：目标表加自增列（特殊标注，预期被阻塞）
+# fork中：对fork表加自增列
+alter table t_offline_ai_fork add column id int auto_increment primary key;
+ERROR HY000: Timeout
+# fork中：对源表加自增列
+alter table t_offline_ai add column id int auto_increment primary key;
+ERROR HY000: Timeout
+set ob_global_debug_sync = 'FORK_TABLE_BUILD_DATA clear';
+set ob_global_debug_sync = 'now signal off_ai_signal';
+# fork后：目标表加自增列并插入验证
+# fork后：对fork表加自增列
+alter table t_offline_ai_fork add column id int auto_increment primary key;
+ERROR 0A000: Not supported feature or function
+# fork后：对源表加自增列
+============================================
+7. Offline DDL：truncate表（fork前/中/后）
+============================================
+drop table if exists t_offline_trunc;
+Warnings:
+Note	1051	Unknown table 'db_fork_orthogonal.t_offline_trunc'
+drop table if exists t_offline_trunc_fork;
+Warnings:
+Note	1051	Unknown table 'db_fork_orthogonal.t_offline_trunc_fork'
+create table t_offline_trunc (
+id int primary key,
+name varchar(20)
+);
+insert into t_offline_trunc values (1, 'A'), (2, 'B');
+# fork前：源表truncate并写入新数据
+truncate table t_offline_trunc;
+insert into t_offline_trunc values (3, 'C');
+set ob_global_debug_sync = 'FORK_TABLE_BUILD_DATA wait_for trunc_signal execute 10000';
+fork table t_offline_trunc to t_offline_trunc_fork;
+# fork中：目标表truncate（特殊标注，预期被阻塞）
+# fork中：对fork表truncate
+truncate table t_offline_trunc_fork;
+ERROR HY000: Timeout
+# fork中：对源表truncate
+truncate table t_offline_trunc;
+ERROR HY000: Timeout
+set ob_global_debug_sync = 'FORK_TABLE_BUILD_DATA clear';
+set ob_global_debug_sync = 'now signal trunc_signal';
+# fork后：目标表truncate验证
+# fork后：对fork表truncate
+truncate table t_offline_trunc_fork;
+select count(*) as cnt from t_offline_trunc_fork;
+cnt
+0
+# fork后：对源表truncate
+truncate table t_offline_trunc;
+insert into t_offline_trunc values (4, 'D');
+select count(*) as cnt from t_offline_trunc;
+cnt
+1
+============================================
+8. Offline DDL：删除表（特殊标注：仅中/后验证）
+============================================
+drop table if exists t_offline_drop;
+Warnings:
+Note	1051	Unknown table 'db_fork_orthogonal.t_offline_drop'
+drop table if exists t_offline_drop_fork;
+Warnings:
+Note	1051	Unknown table 'db_fork_orthogonal.t_offline_drop_fork'
+create table t_offline_drop (
+id int primary key,
+name varchar(20)
+);
+insert into t_offline_drop values (1, 'A');
+set ob_global_debug_sync = 'FORK_TABLE_BUILD_DATA wait_for drop_signal execute 10000';
+fork table t_offline_drop to t_offline_drop_fork;
+# fork中：目标表drop（特殊标注，预期被阻塞）
+drop table t_offline_drop_fork;
+ERROR HY000: Timeout
+set ob_global_debug_sync = 'FORK_TABLE_BUILD_DATA clear';
+set ob_global_debug_sync = 'now signal drop_signal';
+# fork后：目标表drop
+drop table t_offline_drop_fork;
+============================================
+9. DML：INSERT/UPDATE/DELETE（fork前/中/后）
+============================================
+drop table if exists t_dml;
+Warnings:
+Note	1051	Unknown table 'db_fork_orthogonal.t_dml'
+drop table if exists t_dml_fork;
+Warnings:
+Note	1051	Unknown table 'db_fork_orthogonal.t_dml_fork'
+create table t_dml (
+id int primary key,
+name varchar(20),
+v int
+);
+insert into t_dml values (1, 'A', 10), (2, 'B', 20), (3, 'C', 30);
+# fork前：源表DML
+insert into t_dml values (4, 'D', 40);
+update t_dml set v = 11 where id = 1;
+delete from t_dml where id = 2;
+select count(*) as cnt from t_dml;
+cnt
+3
+select * from t_dml order by id;
+id	name	v
+1	A	11
+3	C	30
+4	D	40
+set ob_global_debug_sync = 'FORK_TABLE_BUILD_DATA wait_for dml_signal execute 10000';
+fork table t_dml to t_dml_fork;
+# fork中：目标表DML
+# fork中：对fork表的DML
+insert into t_dml_fork values (99, 'F_MID', 99);
+update t_dml_fork set v = 111 where id = 1;
+delete from t_dml_fork where id = 3;
+select count(*) as cnt from t_dml_fork;
+cnt
+3
+select * from t_dml_fork order by id;
+id	name	v
+1	A	111
+4	D	40
+99	F_MID	99
+# fork中：对源表的DML
+insert into t_dml values (99, 'S_MID', 99);
+update t_dml set v = 12 where id = 1;
+delete from t_dml where id = 3;
+select count(*) as cnt from t_dml;
+cnt
+3
+select * from t_dml order by id;
+id	name	v
+1	A	12
+4	D	40
+99	S_MID	99
+set ob_global_debug_sync = 'FORK_TABLE_BUILD_DATA clear';
+set ob_global_debug_sync = 'now signal dml_signal';
+# fork后：目标表DML
+# fork后：对fork表的DML
+insert into t_dml_fork values (100, 'F_POST', 100);
+update t_dml_fork set v = 222 where id = 4;
+delete from t_dml_fork where id = 1;
+select count(*) as cnt from t_dml_fork;
+cnt
+3
+select * from t_dml_fork order by id;
+id	name	v
+4	D	222
+99	F_MID	99
+100	F_POST	100
+# fork后：对源表的DML
+insert into t_dml values (100, 'S_POST', 100);
+update t_dml set v = 13 where id = 4;
+delete from t_dml where id = 5;
+select count(*) as cnt from t_dml;
+cnt
+4
+select * from t_dml order by id;
+id	name	v
+1	A	12
+4	D	13
+99	S_MID	99
+100	S_POST	100
+============================================
+10. 清理
+============================================
+drop table if exists t_online_idx;
+drop table if exists t_online_idx_fork;
+drop table if exists t_online_ai;
+drop table if exists t_online_ai_fork;
+drop table if exists t_online_part;
+drop table if exists t_online_part_fork;
+drop table if exists t_online_rename;
+drop table if exists t_online_rename_fork;
+drop table if exists t_offline_cols;
+drop table if exists t_offline_cols_fork;
+drop table if exists t_offline_ai;
+drop table if exists t_offline_ai_fork;
+drop table if exists t_offline_trunc;
+drop table if exists t_offline_trunc_fork;
+drop table if exists t_offline_drop;
+drop table if exists t_dml;
+drop table if exists t_dml_fork;
+drop database if exists db_fork_orthogonal;

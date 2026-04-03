@@ -1,0 +1,937 @@
+drop database if exists db_fork_basic;
+create database db_fork_basic;
+use db_fork_basic;
+SET wait_timeout=30000000;
+SET ob_trx_timeout = 100000000;
+SET ob_query_timeout = 100000000;
+============================================
+11. 交叉增删改隔离测试（有主键，源表/Fork表互不影响）
+============================================
+drop table if exists t_cross;
+Warnings:
+Note	1051	Unknown table 'db_fork_basic.t_cross'
+drop table if exists t_cross_fork;
+Warnings:
+Note	1051	Unknown table 'db_fork_basic.t_cross_fork'
+create table t_cross (
+id int primary key,
+name varchar(50),
+v int
+);
+insert into t_cross values (1, 'S_A', 10), (2, 'S_B', 20), (3, 'S_C', 30);
+fork table t_cross to t_cross_fork;
+# Fork表：更新/删除/插入
+update t_cross_fork set name = 'F_A', v = 11 where id = 1;
+delete from t_cross_fork where id = 2;
+insert into t_cross_fork values (99, 'F_NEW', 99);
+# 源表：更新/删除/插入
+update t_cross set name = 'S_C_U', v = 31 where id = 3;
+delete from t_cross where id = 1;
+insert into t_cross values (88, 'S_NEW', 88);
+# 校验数量与数据隔离
+select count(*) as cnt from t_cross;
+cnt
+3
+select count(*) as cnt from t_cross_fork;
+cnt
+3
+select * from t_cross order by id;
+id	name	v
+2	S_B	20
+3	S_C_U	31
+88	S_NEW	88
+select * from t_cross_fork order by id;
+id	name	v
+1	F_A	11
+3	S_C	30
+99	F_NEW	99
+# 同ID分别写入不同内容，主键问题
+insert into t_cross values (100, 'S_100', 100);
+insert into t_cross_fork values (100, 'F_100', 1000);
+select * from t_cross where id = 100;
+id	name	v
+100	S_100	100
+select * from t_cross_fork where id = 100;
+id	name	v
+100	F_100	1000
+drop table if exists t_cross;
+drop table if exists t_cross_fork;
+============================================
+12. 堆表Fork测试（无主键）
+============================================
+drop table if exists t_heap;
+Warnings:
+Note	1051	Unknown table 'db_fork_basic.t_heap'
+drop table if exists t_heap_fork;
+Warnings:
+Note	1051	Unknown table 'db_fork_basic.t_heap_fork'
+create table t_heap (
+c1 int,
+c2 varchar(20)
+);
+insert into t_heap values (1, 'H_A'), (2, 'H_B'), (3, 'H_C');
+fork table t_heap to t_heap_fork;
+# 校验Fork表数据与源表一致
+select count(*) as cnt from t_heap;
+cnt
+3
+select count(*) as cnt from t_heap_fork;
+cnt
+3
+# Fork表新增/更新，源表删除
+insert into t_heap_fork values (4, 'H_FORK');
+update t_heap_fork set c2 = 'H_B_U' where c1 = 2;
+delete from t_heap where c1 = 1;
+# 同ID分别写入不同内容
+insert into t_heap values (100, 'S_100');
+insert into t_heap_fork values (100, 'F_100');
+select * from t_heap where c1 = 100;
+c1	c2
+100	S_100
+select * from t_heap_fork where c1 = 100;
+c1	c2
+100	F_100
+# 校验隔离
+select count(*) as cnt from t_heap;
+cnt
+3
+select count(*) as cnt from t_heap_fork;
+cnt
+5
+select * from t_heap order by c1;
+c1	c2
+2	H_B
+3	H_C
+100	S_100
+select * from t_heap_fork order by c1;
+c1	c2
+1	H_A
+2	H_B_U
+3	H_C
+4	H_FORK
+100	F_100
+============================================
+13. 无主键但有唯一索引的Fork测试
+============================================
+drop table if exists t_nopk_unique;
+Warnings:
+Note	1051	Unknown table 'db_fork_basic.t_nopk_unique'
+drop table if exists t_nopk_unique_fork;
+Warnings:
+Note	1051	Unknown table 'db_fork_basic.t_nopk_unique_fork'
+create table t_nopk_unique (
+c1 int,
+c2 varchar(20),
+unique key uk_c1(c1)
+);
+insert into t_nopk_unique values (1, 'U_A'), (2, 'U_B');
+fork table t_nopk_unique to t_nopk_unique_fork;
+# Fork表唯一约束生效，源表、目标表受约束
+insert into t_nopk_unique_fork values (1, 'U_DUP');
+ERROR 23000: Duplicate entry '1' for key 'uk_c1'
+insert into t_nopk_unique_fork values (3, 'U_C');
+insert into t_nopk_unique values (1, 'U_DUP');
+ERROR 23000: Duplicate entry '1' for key 'uk_c1'
+insert into t_nopk_unique values (3, 'U_C_A');
+select * from t_nopk_unique order by c1;
+c1	c2
+1	U_A
+2	U_B
+3	U_C_A
+select * from t_nopk_unique_fork order by c1;
+c1	c2
+1	U_A
+2	U_B
+3	U_C
+============================================
+14. Fork表自增列：手动插入与递增验证
+============================================
+drop table if exists t_auto;
+Warnings:
+Note	1051	Unknown table 'db_fork_basic.t_auto'
+drop table if exists t_auto_fork;
+Warnings:
+Note	1051	Unknown table 'db_fork_basic.t_auto_fork'
+create table t_auto (
+id int auto_increment primary key,
+name varchar(20)
+);
+insert into t_auto(name) values ('A1'), ('A2');
+fork table t_auto to t_auto_fork;
+# Fork表手动插入较大ID，验证后续自增
+insert into t_auto_fork values (1000, 'F_1000');
+insert into t_auto_fork(name) values ('F_NEXT');
+select * from t_auto_fork order by id;
+id	name
+1	A1
+2	A2
+1000	F_1000
+1001	F_NEXT
+select * from t_auto order by id;
+id	name
+1	A1
+2	A2
+============================================
+15. 视图不支持Fork测试
+============================================
+drop table if exists t_view_base;
+Warnings:
+Note	1051	Unknown table 'db_fork_basic.t_view_base'
+drop view if exists v_test;
+Warnings:
+Note	1051	Unknown table 'db_fork_basic.v_test'
+drop view if exists v_test_fork;
+Warnings:
+Note	1051	Unknown table 'db_fork_basic.v_test_fork'
+# 创建基础表
+create table t_view_base (
+id int primary key,
+name varchar(50),
+age int
+);
+insert into t_view_base values (1, 'Alice', 25);
+insert into t_view_base values (2, 'Bob', 30);
+# 创建视图
+create view v_test as select id, name, age from t_view_base where age > 20;
+# 验证源视图存在
+select * from v_test;
+id	name	age
+1	Alice	25
+2	Bob	30
+# 尝试Fork视图（预期不支持）
+fork table v_test to v_test_fork;
+ERROR HY000: 'db_fork_basic.v_test' is not BASE TABLE
+# 验证源视图仍然存在且可用
+select * from v_test;
+id	name	age
+1	Alice	25
+2	Bob	30
+# 验证目标视图不存在
+select * from v_test_fork;
+ERROR 42S02: Table 'db_fork_basic.v_test_fork' doesn't exist
+drop view v_test;
+drop table t_view_base;
+============================================
+16. 物化视图不支持Fork测试
+============================================
+drop table if exists t_mv_base;
+Warnings:
+Note	1051	Unknown table 'db_fork_basic.t_mv_base'
+drop table if exists base_t1;
+Warnings:
+Note	1051	Unknown table 'db_fork_basic.base_t1'
+drop table if exists base_t2;
+Warnings:
+Note	1051	Unknown table 'db_fork_basic.base_t2'
+drop table if exists mv;
+Warnings:
+Note	1051	Unknown table 'db_fork_basic.mv'
+drop table if exists mv_fork;
+Warnings:
+Note	1051	Unknown table 'db_fork_basic.mv_fork'
+# 创建基础表（完全复制提供的语法）
+create table base_t1(a int primary key, b int);
+create table base_t2(c int primary key, d int);
+# 创建物化视图日志（完全复制提供的语法）
+create materialized view log on base_t1 with(b);
+create materialized view log on base_t2 with(d);
+# 创建物化视图（完全复制提供的语法）
+create materialized view mv 
+REFRESH fast 
+START WITH sysdate() 
+NEXT sysdate() + INTERVAL 1 second 
+as 
+select a,b,c,d 
+from base_t1 
+join base_t2 on base_t1.a=base_t2.c;
+# 插入测试数据（完全复制提供的语法）
+insert into base_t1 values(1, 10);
+insert into base_t2 values(1, 100);
+# 测试对物化视图进行fork操作 
+fork table mv to mv_fork;
+ERROR HY000: 'db_fork_basic.mv' is not BASE TABLE
+# 验证fork结果
+select * from mv_fork;
+ERROR 42S02: Table 'db_fork_basic.mv_fork' doesn't exist
+# 清理
+drop table if exists mv_fork;
+Warnings:
+Note	1051	Unknown table 'db_fork_basic.mv_fork'
+drop materialized view if exists mv;
+drop materialized view log on base_t1;
+drop materialized view log on base_t2;
+drop table if exists base_t1;
+drop table if exists base_t2;
+============================================
+17. 临时表不支持Fork测试
+============================================
+drop table if exists t_temp;
+Warnings:
+Note	1051	Unknown table 'db_fork_basic.t_temp'
+drop table if exists t_temp_fork;
+Warnings:
+Note	1051	Unknown table 'db_fork_basic.t_temp_fork'
+# 创建临时表
+create temporary table t_temp (
+id int primary key,
+name varchar(50)
+);
+ERROR 0A000: MySQL compatible temporary table not supported
+============================================
+18. 含外键的表Fork测试（外键信息不Fork）
+============================================
+drop table if exists t_fk_child_fork;
+Warnings:
+Note	1051	Unknown table 'db_fork_basic.t_fk_child_fork'
+drop table if exists t_fk_child;
+Warnings:
+Note	1051	Unknown table 'db_fork_basic.t_fk_child'
+drop table if exists t_fk_parent_fork;
+Warnings:
+Note	1051	Unknown table 'db_fork_basic.t_fk_parent_fork'
+drop table if exists t_fk_parent;
+Warnings:
+Note	1051	Unknown table 'db_fork_basic.t_fk_parent'
+# 创建父表
+create table t_fk_parent (
+id int primary key,
+name varchar(50)
+) partition by range(id) (
+partition p0 values less than (100),
+partition p1 values less than (300)
+);
+insert into t_fk_parent values (1, 'Parent1');
+insert into t_fk_parent values (101, 'Parent2');
+# 创建子表（含外键）
+create table t_fk_child (
+id int primary key,
+parent_id int,
+name varchar(50),
+foreign key (parent_id) references t_fk_parent(id)
+) partition by range(id) (
+partition p0 values less than (100),
+partition p1 values less than (300)
+);
+insert into t_fk_child values (1, 1, 'Child1');
+insert into t_fk_child values (101, 101, 'Child2');
+# 验证源表外键约束
+show create table t_fk_child;
+Table	Create Table
+t_fk_child	CREATE TABLE `t_fk_child` (
+  `id` int(11) NOT NULL,
+  `parent_id` int(11) DEFAULT NULL,
+  `name` varchar(50) DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  CONSTRAINT `t_fk_child_OBFK_FK_ID` FOREIGN KEY (`parent_id`) REFERENCES `db_fork_basic`.`t_fk_parent`(`id`) ON UPDATE RESTRICT ON DELETE RESTRICT 
+) ORGANIZATION INDEX DEFAULT CHARSET = utf8mb4 ROW_FORMAT = DYNAMIC COMPRESSION = 'zstd_1.3.8' REPLICA_NUM = 1 BLOCK_SIZE = 16384 USE_BLOOM_FILTER = FALSE ENABLE_MACRO_BLOCK_BLOOM_FILTER = FALSE TABLET_SIZE = 134217728 PCTFREE = 0
+ partition by range(id)
+(partition `p0` values less than (100),
+partition `p1` values less than (300))
+# 验证外键约束生效
+insert into t_fk_child values (2, 999, 'Invalid');
+ERROR 23000: Cannot add or update a child row: a foreign key constraint fails
+# Fork父表
+fork table t_fk_parent to t_fk_parent_fork;
+# Fork子表
+fork table t_fk_child to t_fk_child_fork;
+# 验证源表外键信息仍然存在
+show create table t_fk_parent;
+Table	Create Table
+t_fk_parent	CREATE TABLE `t_fk_parent` (
+  `id` int(11) NOT NULL,
+  `name` varchar(50) DEFAULT NULL,
+  PRIMARY KEY (`id`)
+) ORGANIZATION INDEX DEFAULT CHARSET = utf8mb4 ROW_FORMAT = DYNAMIC COMPRESSION = 'zstd_1.3.8' REPLICA_NUM = 1 BLOCK_SIZE = 16384 USE_BLOOM_FILTER = FALSE ENABLE_MACRO_BLOCK_BLOOM_FILTER = FALSE TABLET_SIZE = 134217728 PCTFREE = 0
+ partition by range(id)
+(partition `p0` values less than (100),
+partition `p1` values less than (300))
+show create table t_fk_child;
+Table	Create Table
+t_fk_child	CREATE TABLE `t_fk_child` (
+  `id` int(11) NOT NULL,
+  `parent_id` int(11) DEFAULT NULL,
+  `name` varchar(50) DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  CONSTRAINT `t_fk_child_OBFK_FK_ID` FOREIGN KEY (`parent_id`) REFERENCES `db_fork_basic`.`t_fk_parent`(`id`) ON UPDATE RESTRICT ON DELETE RESTRICT 
+) ORGANIZATION INDEX DEFAULT CHARSET = utf8mb4 ROW_FORMAT = DYNAMIC COMPRESSION = 'zstd_1.3.8' REPLICA_NUM = 1 BLOCK_SIZE = 16384 USE_BLOOM_FILTER = FALSE ENABLE_MACRO_BLOCK_BLOOM_FILTER = FALSE TABLET_SIZE = 134217728 PCTFREE = 0
+ partition by range(id)
+(partition `p0` values less than (100),
+partition `p1` values less than (300))
+# 验证目标表结构（外键信息不应被Fork）
+show create table t_fk_parent_fork;
+Table	Create Table
+t_fk_parent_fork	CREATE TABLE `t_fk_parent_fork` (
+  `id` int(11) NOT NULL,
+  `name` varchar(50) DEFAULT NULL,
+  PRIMARY KEY (`id`)
+) ORGANIZATION INDEX DEFAULT CHARSET = utf8mb4 ROW_FORMAT = DYNAMIC COMPRESSION = 'zstd_1.3.8' REPLICA_NUM = 1 BLOCK_SIZE = 16384 USE_BLOOM_FILTER = FALSE ENABLE_MACRO_BLOCK_BLOOM_FILTER = FALSE TABLET_SIZE = 134217728 PCTFREE = 0
+ partition by range(id)
+(partition `p0` values less than (100),
+partition `p1` values less than (300))
+show create table t_fk_child_fork;
+Table	Create Table
+t_fk_child_fork	CREATE TABLE `t_fk_child_fork` (
+  `id` int(11) NOT NULL,
+  `parent_id` int(11) DEFAULT NULL,
+  `name` varchar(50) DEFAULT NULL,
+  PRIMARY KEY (`id`)
+) ORGANIZATION INDEX DEFAULT CHARSET = utf8mb4 ROW_FORMAT = DYNAMIC COMPRESSION = 'zstd_1.3.8' REPLICA_NUM = 1 BLOCK_SIZE = 16384 USE_BLOOM_FILTER = FALSE ENABLE_MACRO_BLOCK_BLOOM_FILTER = FALSE TABLET_SIZE = 134217728 PCTFREE = 0
+ partition by range(id)
+(partition `p0` values less than (100),
+partition `p1` values less than (300))
+# 验证源表外键约束仍然有效
+insert into t_fk_child values (3, 999, 'Invalid_Src');
+ERROR 23000: Cannot add or update a child row: a foreign key constraint fails
+# 验证目标表没有外键约束（可以插入无效外键值）
+insert into t_fk_child_fork values (3, 999, 'Invalid_Fork');
+select * from t_fk_child_fork where id = 3;
+id	parent_id	name
+3	999	Invalid_Fork
+# 验证源表和目标表数据隔离
+select * from t_fk_parent order by id;
+id	name
+1	Parent1
+101	Parent2
+select * from t_fk_parent_fork order by id;
+id	name
+1	Parent1
+101	Parent2
+select * from t_fk_child order by id;
+id	parent_id	name
+1	1	Child1
+101	101	Child2
+select * from t_fk_child_fork order by id;
+id	parent_id	name
+1	1	Child1
+3	999	Invalid_Fork
+101	101	Child2
+# 在源表中插入数据，验证外键约束
+insert into t_fk_parent values (50, 'Parent3');
+insert into t_fk_child values (50, 50, 'Child3');
+select * from t_fk_child where id = 50;
+id	parent_id	name
+50	50	Child3
+# 验证目标表不受影响
+select * from t_fk_child_fork where id = 50;
+id	parent_id	name
+# 在目标表中插入数据（无外键约束）
+insert into t_fk_parent_fork values (200, 'Parent_Fork');
+insert into t_fk_child_fork values (200, 200, 'Child_Fork');
+select * from t_fk_child_fork where id = 200;
+id	parent_id	name
+200	200	Child_Fork
+# 验证源表不受影响
+select * from t_fk_child where id = 200;
+id	parent_id	name
+drop table t_fk_child;
+drop table t_fk_child_fork;
+drop table t_fk_parent;
+drop table t_fk_parent_fork;
+============================================
+19. 含Trigger的表Fork测试（Trigger信息不Fork）
+============================================
+drop table if exists t_trigger_fork;
+Warnings:
+Note	1051	Unknown table 'db_fork_basic.t_trigger_fork'
+drop table if exists t_trigger;
+Warnings:
+Note	1051	Unknown table 'db_fork_basic.t_trigger'
+drop trigger if exists trg_before_insert;
+Warnings:
+Note	1360	Trigger does not exist
+drop trigger if exists trg_before_insert_fork;
+Warnings:
+Note	1360	Trigger does not exist
+# 创建表
+create table t_trigger (
+id int primary key,
+name varchar(50),
+created_time datetime,
+updated_count int default 0
+) partition by range(id) (
+partition p0 values less than (100),
+partition p1 values less than (200)
+);
+# 创建Trigger
+create trigger trg_before_insert before insert on t_trigger
+for each row set new.created_time = now(), new.updated_count = 0;
+insert into t_trigger(id, name) values (1, 'Trigger_Test1');
+insert into t_trigger(id, name) values (101, 'Trigger_Test2');
+# 验证源表Trigger生效
+select id, name, created_time is not null as has_time, updated_count from t_trigger;
+id	name	has_time	updated_count
+1	Trigger_Test1	1	0
+101	Trigger_Test2	1	0
+# 验证源表Trigger信息
+show triggers like 't_trigger';
+Trigger	Event	Table	Statement	Timing	Created	sql_mode	Definer	character_set_client	collation_connection	Database Collation
+trg_before_insert	INSERT	t_trigger	trigger trg_before_insert before insert on t_trigger
+for each row set new.created_time = now(), new.updated_count = 0	BEFORE	TIMESTAMP	STRICT_ALL_TABLES,NO_ZERO_IN_DATE,NO_AUTO_CREATE_USER	admin@%	utf8mb4	utf8mb4_general_ci	utf8mb4_general_ci
+# Fork表
+fork table t_trigger to t_trigger_fork;
+# 验证源表Trigger信息仍然存在
+show triggers like 't_trigger';
+Trigger	Event	Table	Statement	Timing	Created	sql_mode	Definer	character_set_client	collation_connection	Database Collation
+trg_before_insert	INSERT	t_trigger	trigger trg_before_insert before insert on t_trigger
+for each row set new.created_time = now(), new.updated_count = 0	BEFORE	TIMESTAMP	STRICT_ALL_TABLES,NO_ZERO_IN_DATE,NO_AUTO_CREATE_USER	admin@%	utf8mb4	utf8mb4_general_ci	utf8mb4_general_ci
+# 验证目标表Trigger信息（Trigger不应被Fork）
+show triggers like 't_trigger_fork';
+Trigger	Event	Table	Statement	Timing	Created	sql_mode	Definer	character_set_client	collation_connection	Database Collation
+# 验证源表Trigger仍然有效
+insert into t_trigger(id, name) values (50, 'Trigger_Src');
+select id, name, created_time is not null as has_time, updated_count from t_trigger where id = 50;
+id	name	has_time	updated_count
+50	Trigger_Src	1	0
+# 验证目标表没有Trigger（插入时不会自动设置created_time）
+insert into t_trigger_fork(id, name) values (50, 'Trigger_Fork');
+select id, name, created_time is null as no_time, updated_count from t_trigger_fork where id = 50;
+id	name	no_time	updated_count
+50	Trigger_Fork	1	0
+# 验证源表和目标表数据隔离
+select count(*) as cnt from t_trigger;
+cnt
+3
+select count(*) as cnt from t_trigger_fork;
+cnt
+3
+select * from t_trigger order by id;
+id	name	created_time	updated_count
+1	Trigger_Test1	TIMESTAMP	0
+50	Trigger_Src	TIMESTAMP	0
+101	Trigger_Test2	TIMESTAMP	0
+select * from t_trigger_fork order by id;
+id	name	created_time	updated_count
+1	Trigger_Test1	TIMESTAMP	0
+50	Trigger_Fork	TIMESTAMP	0
+101	Trigger_Test2	TIMESTAMP	0
+drop trigger trg_before_insert;
+drop table t_trigger;
+drop table t_trigger_fork;
+============================================
+20. 系统表不支持Fork测试
+============================================
+# 尝试Fork系统表（预期不支持）
+fork table oceanbase.__all_table to __all_table_fork;
+ERROR HY000: 'oceanbase.__all_table' is not BASE TABLE
+# 尝试Fork其他系统表
+fork table information_schema.tables to tables_fork;
+ERROR HY000: 'information_schema.tables' is not BASE TABLE
+# 验证系统表仍然存在且可用
+select count(*) > 0 from oceanbase.__all_table limit 1;
+count(*) > 0
+1
+select count(*) > 0 from information_schema.tables limit 1;
+count(*) > 0
+1
+============================================
+21. 内部表（索引辅助表）不支持Fork测试
+============================================
+drop table if exists t_idx_base;
+Warnings:
+Note	1051	Unknown table 'db_fork_basic.t_idx_base'
+drop table if exists t_idx_base_fork;
+Warnings:
+Note	1051	Unknown table 'db_fork_basic.t_idx_base_fork'
+# 创建带索引的表
+create table t_idx_base (
+id int primary key,
+name varchar(50),
+email varchar(100),
+index idx_name(name),
+index idx_email(email)
+) partition by range(id) (
+partition p0 values less than (100),
+partition p1 values less than (200)
+);
+insert into t_idx_base values (1, 'Alice', 'alice@example.com');
+insert into t_idx_base values (101, 'Bob', 'bob@example.com');
+# Fork基础表
+fork table t_idx_base to t_idx_base_fork;
+# 查询内部索引辅助表（如果存在）
+# 注意：内部表的命名规则可能不同，这里仅做示例
+# 查找可能的索引辅助表
+select table_name, table_type from oceanbase.__all_virtual_table where data_table_id = base_table_id and table_type in ('INDEX', 'AUX_LOB_META', 'AUX_LOB_PIECE') limit 10;
+table_name	table_type
+Warnings:
+Warning	1292	Truncated incorrect DECIMAL value: 'INDEX'
+Warning	1292	Truncated incorrect DECIMAL value: 'AUX_LOB_META'
+Warning	1292	Truncated incorrect DECIMAL value: 'AUX_LOB_PIECE'
+Warning	1292	Truncated incorrect DECIMAL value: 'INDEX'
+Warning	1292	Truncated incorrect DECIMAL value: 'AUX_LOB_META'
+Warning	1292	Truncated incorrect DECIMAL value: 'AUX_LOB_PIECE'
+# 尝试Fork索引辅助表（预期不支持或不存在）
+# 注意：内部表通常不可见或不可直接访问，这里测试fork操作会失败
+fork table __idx_name_aux to __idx_name_aux_fork;
+ERROR 42S02: Table doesn't exist
+# 验证源表索引仍然可用
+select * from t_idx_base where name = 'Alice';
+id	name	email
+1	Alice	alice@example.com
+select * from t_idx_base where email = 'alice@example.com';
+id	name	email
+1	Alice	alice@example.com
+# 验证目标表索引可用
+select * from t_idx_base_fork where name = 'Alice';
+id	name	email
+1	Alice	alice@example.com
+select * from t_idx_base_fork where email = 'alice@example.com';
+id	name	email
+1	Alice	alice@example.com
+# 验证源表和目标表索引独立
+show indexes from t_idx_base;
+Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible	Expression
+t_idx_base	0	PRIMARY	1	id	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+t_idx_base	1	idx_name	1	name	A	NULL	NULL	NULL	YES	BTREE	available		YES	NULL
+t_idx_base	1	idx_email	1	email	A	NULL	NULL	NULL	YES	BTREE	available		YES	NULL
+show indexes from t_idx_base_fork;
+Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible	Expression
+t_idx_base_fork	0	PRIMARY	1	id	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+t_idx_base_fork	1	idx_name	1	name	A	NULL	NULL	NULL	YES	BTREE	available		YES	NULL
+t_idx_base_fork	1	idx_email	1	email	A	NULL	NULL	NULL	YES	BTREE	available		YES	NULL
+drop table t_idx_base;
+drop table t_idx_base_fork;
+============================================
+22. 含外键和Trigger的复合场景测试
+============================================
+drop table if exists t_complex_child_fork;
+Warnings:
+Note	1051	Unknown table 'db_fork_basic.t_complex_child_fork'
+drop table if exists t_complex_child;
+Warnings:
+Note	1051	Unknown table 'db_fork_basic.t_complex_child'
+drop table if exists t_complex_parent_fork;
+Warnings:
+Note	1051	Unknown table 'db_fork_basic.t_complex_parent_fork'
+drop table if exists t_complex_parent;
+Warnings:
+Note	1051	Unknown table 'db_fork_basic.t_complex_parent'
+# 创建父表
+create table t_complex_parent (
+id int primary key,
+name varchar(50)
+);
+insert into t_complex_parent values (1, 'Parent1');
+# 创建子表（含外键和Trigger）
+create table t_complex_child (
+id int primary key,
+parent_id int,
+name varchar(50),
+created_time datetime,
+foreign key (parent_id) references t_complex_parent(id)
+);
+# 创建Trigger
+create trigger trg_complex_insert before insert on t_complex_child
+for each row set new.created_time = now();
+insert into t_complex_child(id, parent_id, name) values (1, 1, 'Child1');
+# 验证源表外键和Trigger
+show create table t_complex_child;
+Table	Create Table
+t_complex_child	CREATE TABLE `t_complex_child` (
+  `id` int(11) NOT NULL,
+  `parent_id` int(11) DEFAULT NULL,
+  `name` varchar(50) DEFAULT NULL,
+  `created_time` datetime DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  CONSTRAINT `t_complex_child_OBFK_FK_ID` FOREIGN KEY (`parent_id`) REFERENCES `db_fork_basic`.`t_complex_parent`(`id`) ON UPDATE RESTRICT ON DELETE RESTRICT 
+) ORGANIZATION INDEX DEFAULT CHARSET = utf8mb4 ROW_FORMAT = DYNAMIC COMPRESSION = 'zstd_1.3.8' REPLICA_NUM = 1 BLOCK_SIZE = 16384 USE_BLOOM_FILTER = FALSE ENABLE_MACRO_BLOCK_BLOOM_FILTER = FALSE TABLET_SIZE = 134217728 PCTFREE = 0
+show triggers like 't_complex_child';
+Trigger	Event	Table	Statement	Timing	Created	sql_mode	Definer	character_set_client	collation_connection	Database Collation
+trg_complex_insert	INSERT	t_complex_child	trigger trg_complex_insert before insert on t_complex_child
+for each row set new.created_time = now()	BEFORE	TIMESTAMP	STRICT_ALL_TABLES,NO_ZERO_IN_DATE,NO_AUTO_CREATE_USER	admin@%	utf8mb4	utf8mb4_general_ci	utf8mb4_general_ci
+select id, parent_id, name, created_time is not null as has_time from t_complex_child;
+id	parent_id	name	has_time
+1	1	Child1	1
+# Fork父表和子表
+fork table t_complex_parent to t_complex_parent_fork;
+fork table t_complex_child to t_complex_child_fork;
+# 验证源表外键和Trigger仍然存在
+show create table t_complex_child;
+Table	Create Table
+t_complex_child	CREATE TABLE `t_complex_child` (
+  `id` int(11) NOT NULL,
+  `parent_id` int(11) DEFAULT NULL,
+  `name` varchar(50) DEFAULT NULL,
+  `created_time` datetime DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  CONSTRAINT `t_complex_child_OBFK_FK_ID` FOREIGN KEY (`parent_id`) REFERENCES `db_fork_basic`.`t_complex_parent`(`id`) ON UPDATE RESTRICT ON DELETE RESTRICT 
+) ORGANIZATION INDEX DEFAULT CHARSET = utf8mb4 ROW_FORMAT = DYNAMIC COMPRESSION = 'zstd_1.3.8' REPLICA_NUM = 1 BLOCK_SIZE = 16384 USE_BLOOM_FILTER = FALSE ENABLE_MACRO_BLOCK_BLOOM_FILTER = FALSE TABLET_SIZE = 134217728 PCTFREE = 0
+show triggers like 't_complex_child';
+Trigger	Event	Table	Statement	Timing	Created	sql_mode	Definer	character_set_client	collation_connection	Database Collation
+trg_complex_insert	INSERT	t_complex_child	trigger trg_complex_insert before insert on t_complex_child
+for each row set new.created_time = now()	BEFORE	TIMESTAMP	STRICT_ALL_TABLES,NO_ZERO_IN_DATE,NO_AUTO_CREATE_USER	admin@%	utf8mb4	utf8mb4_general_ci	utf8mb4_general_ci
+# 验证目标表没有外键和Trigger
+show create table t_complex_child_fork;
+Table	Create Table
+t_complex_child_fork	CREATE TABLE `t_complex_child_fork` (
+  `id` int(11) NOT NULL,
+  `parent_id` int(11) DEFAULT NULL,
+  `name` varchar(50) DEFAULT NULL,
+  `created_time` datetime DEFAULT NULL,
+  PRIMARY KEY (`id`)
+) ORGANIZATION INDEX DEFAULT CHARSET = utf8mb4 ROW_FORMAT = DYNAMIC COMPRESSION = 'zstd_1.3.8' REPLICA_NUM = 1 BLOCK_SIZE = 16384 USE_BLOOM_FILTER = FALSE ENABLE_MACRO_BLOCK_BLOOM_FILTER = FALSE TABLET_SIZE = 134217728 PCTFREE = 0
+show triggers like 't_complex_child_fork';
+Trigger	Event	Table	Statement	Timing	Created	sql_mode	Definer	character_set_client	collation_connection	Database Collation
+# 验证源表外键约束仍然有效
+insert into t_complex_child(id, parent_id, name) values (2, 999, 'Invalid');
+ERROR 23000: Cannot add or update a child row: a foreign key constraint fails
+# 验证源表Trigger仍然有效
+insert into t_complex_child(id, parent_id, name) values (2, 1, 'Child2');
+select id, parent_id, name, created_time is not null as has_time from t_complex_child where id = 2;
+id	parent_id	name	has_time
+2	1	Child2	1
+# 验证目标表没有外键约束（可以插入无效外键）
+insert into t_complex_child_fork(id, parent_id, name) values (2, 999, 'Invalid_Fork');
+select id, parent_id, name, created_time is null as no_time from t_complex_child_fork where id = 2;
+id	parent_id	name	no_time
+2	999	Invalid_Fork	1
+# 验证目标表没有Trigger（插入时不会自动设置created_time）
+insert into t_complex_child_fork(id, parent_id, name) values (3, 1, 'Child3');
+select id, parent_id, name, created_time is null as no_time from t_complex_child_fork where id = 3;
+id	parent_id	name	no_time
+3	1	Child3	1
+# 验证源表和目标表数据隔离
+select * from t_complex_parent order by id;
+id	name
+1	Parent1
+select * from t_complex_parent_fork order by id;
+id	name
+1	Parent1
+select * from t_complex_child order by id;
+id	parent_id	name	created_time
+1	1	Child1	TIMESTAMP
+2	1	Child2	TIMESTAMP
+select * from t_complex_child_fork order by id;
+id	parent_id	name	created_time
+1	1	Child1	TIMESTAMP
+2	999	Invalid_Fork	TIMESTAMP
+3	1	Child3	TIMESTAMP
+drop trigger trg_complex_insert;
+drop table t_complex_child;
+drop table t_complex_child_fork;
+drop table t_complex_parent;
+drop table t_complex_parent_fork;
+============================================
+23. fixbug
+============================================
+DROP TABLE IF EXISTS tbl_5;
+DROP TABLE IF EXISTS tbl_14;
+CREATE TABLE tbl_5 ( 
+col_97 mediumtext NOT NULL,
+col_98 enum('Alice','Bob','Charlie','David'),
+col_99 year DEFAULT '2020',
+col_100 double NOT NULL DEFAULT 9802.972125060098,
+col_101 double,
+col_102 datetime NOT NULL DEFAULT '1973-08-10',
+col_103 float,
+col_104 vector(85) NOT NULL,
+col_105 bigint unsigned NOT NULL,
+col_106 json NOT NULL,
+col_107 char(134) NOT NULL,
+col_108 boolean DEFAULT 1,
+col_109 time,
+col_110 mediumtext NOT NULL,
+col_111 json,
+col_112 ARRAY(int) NOT NULL,
+col_113 bit(60) NOT NULL,
+col_114 enum('Alice','Bob','Charlie','David') NOT NULL DEFAULT 'Alice',
+col_115 blob(161) NOT NULL,
+col_116 decimal(36,3) DEFAULT 7028.936,
+col_117 bit(59) NOT NULL DEFAULT 44555708410085836,
+col_118 tinyint,
+col_119 bigint unsigned NOT NULL DEFAULT 2398105313438364456,
+col_120 tinyint unsigned,
+col_121 set('Alice','Bob','Charlie','David'),
+col_122 bit(16) NOT NULL DEFAULT 30239,
+col_123 mediumint NOT NULL,
+col_124 mediumint DEFAULT -6576803,
+col_125 bit(22) NOT NULL DEFAULT 2066873,
+col_126 decimal(5,3) NOT NULL,
+FULLTEXT KEY fulltext_idx_31 (col_97(5)) WITH PARSER NGRAM2 PARSER_PROPERTIES(min_ngram_size=10, max_ngram_size=12) LOCAL,
+FULLTEXT INDEX fulltext_idx_32 (col_107(1)) WITH PARSER NGRAM PARSER_PROPERTIES(ngram_token_size=2) LOCAL,
+KEY idx_33 (col_107(1), col_103) GLOBAL,
+FULLTEXT KEY fulltext_idx_34 (col_110(3)) WITH PARSER NGRAM LOCAL,
+FULLTEXT KEY fulltext_idx_35 (col_110(4)) WITH PARSER SPACE PARSER_PROPERTIES(min_token_size=14, max_token_size=47) LOCAL,
+FULLTEXT KEY fulltext_idx_36 (col_97(4)) WITH PARSER IK PARSER_PROPERTIES(ik_mode='smart') LOCAL,
+FULLTEXT INDEX fulltext_idx_37 (col_97(2)) WITH PARSER SPACE PARSER_PROPERTIES(min_token_size=14, max_token_size=45) LOCAL,
+FULLTEXT KEY fulltext_idx_38 (col_107(4)) WITH PARSER SPACE PARSER_PROPERTIES(min_token_size=7, max_token_size=79) LOCAL,
+FULLTEXT INDEX fulltext_idx_39 (col_97(5)) WITH PARSER NGRAM2 PARSER_PROPERTIES(min_ngram_size=1, max_ngram_size=10) LOCAL,
+FULLTEXT INDEX fulltext_idx_40 (col_107(4)) WITH PARSER IK LOCAL,
+FULLTEXT KEY fulltext_idx_41 (col_110(5)) WITH PARSER IK PARSER_PROPERTIES(ik_mode='max_word') LOCAL,
+FULLTEXT KEY fulltext_idx_42 (col_107) WITH PARSER NGRAM PARSER_PROPERTIES(ngram_token_size=9) LOCAL,
+FULLTEXT INDEX fulltext_idx_43 (col_107) WITH PARSER BENG PARSER_PROPERTIES(min_token_size=8, max_token_size=35) LOCAL,
+FULLTEXT KEY fulltext_idx_44 (col_107) WITH PARSER IK LOCAL,
+FULLTEXT KEY fulltext_idx_45 (col_97(3)) WITH PARSER NGRAM2 PARSER_PROPERTIES(min_ngram_size=6, max_ngram_size=13) LOCAL,
+FULLTEXT KEY fulltext_idx_46 (col_110(4)) WITH PARSER SPACE PARSER_PROPERTIES(min_token_size=2, max_token_size=22) LOCAL,
+FULLTEXT KEY fulltext_idx_47 (col_97(5)) WITH PARSER SPACE PARSER_PROPERTIES(min_token_size=14) LOCAL,
+FULLTEXT INDEX fulltext_idx_48 (col_97(4)) WITH PARSER SPACE PARSER_PROPERTIES(max_token_size=50) LOCAL
+) DEFAULT CHARSET=utf8 
+ROW_FORMAT=DYNAMIC 
+COMPRESSION='lz4_1.9.1'  
+PARTITION BY LIST (col_120) (
+PARTITION p0 VALUES IN (1,16,21,44,55,76,78,111,151,155,171,172,174,181,192,197,202,203,204,248),
+PARTITION p_default VALUES IN (DEFAULT)
+);
+Warnings:
+Warning	1831	Duplicate index 'fulltext_idx_35' defined on the table '.tbl_5'
+Warning	1831	Duplicate index 'fulltext_idx_36' defined on the table '.tbl_5'
+Warning	1831	Duplicate index 'fulltext_idx_37' defined on the table '.tbl_5'
+Warning	1831	Duplicate index 'fulltext_idx_38' defined on the table '.tbl_5'
+Warning	1831	Duplicate index 'fulltext_idx_39' defined on the table '.tbl_5'
+Warning	1831	Duplicate index 'fulltext_idx_40' defined on the table '.tbl_5'
+Warning	1831	Duplicate index 'fulltext_idx_41' defined on the table '.tbl_5'
+Warning	1831	Duplicate index 'fulltext_idx_42' defined on the table '.tbl_5'
+Warning	1831	Duplicate index 'fulltext_idx_43' defined on the table '.tbl_5'
+Warning	1831	Duplicate index 'fulltext_idx_44' defined on the table '.tbl_5'
+Warning	1831	Duplicate index 'fulltext_idx_45' defined on the table '.tbl_5'
+Warning	1831	Duplicate index 'fulltext_idx_46' defined on the table '.tbl_5'
+Warning	1831	Duplicate index 'fulltext_idx_47' defined on the table '.tbl_5'
+Warning	1831	Duplicate index 'fulltext_idx_48' defined on the table '.tbl_5'
+INSERT /*+ PARALLEL(1) ENABLE_PARALLEL_DML */ INTO tbl_5 (
+col_97, col_98, col_101, col_103, col_104, col_105, col_106, col_107, 
+col_109, col_110, col_111, col_112, col_113, col_115, col_118, col_120, 
+col_121, col_123, col_126
+) 
+SELECT 
+'@vtipp%oG5jn&0jL1', 'Alice', 1499.1136605222857, 4060.903271955461,
+'[-0.923441,-0.416891,0.787760,0.955058,0.272354,0.785246,0.454210,0.225331,0.769865,-0.997362,-0.098301,0.398964,0.155601,0.897384,-0.293822,-0.000628,-0.057413,0.429480,0.588065,0.682008,0.945964,0.542922,-0.750039,0.768502,0.027353,0.251629,-0.878703,-0.796256,-0.708511,-0.723462,0.792237,0.861265,0.034777,0.966509,-0.246354,-0.177255,-0.686393,0.391210,0.835153,-0.223968,0.275849,-0.163072,0.265784,0.066698,-0.964663,0.165315,0.468335,-0.674784,0.727302,0.277264,-0.227462,-0.037200,0.822155,-0.130529,-0.594628,0.036370,0.413053,0.914093,-0.503767,0.581155,0.997453,-0.691164,0.743954,0.706062,0.639346,-0.151623,-0.071887,0.961170,0.390753,-0.719627,0.945670,-0.407709,0.566087,-0.114095,0.424805,-0.610073,0.516479,-0.126971,-0.111678,-0.741460,-0.021182,-0.317076,0.541430,0.158537,0.034035]',
+6585809322412899402,
+"{\"obj\":{\"num\": 10},\"lit\":false,\"num\":-16906,\"jfloat\":-966.24,\"jstring\":\"%BD_)\"}",
+'mr6b5MMpPRjg',
+'06:30:16.00',
+'vqRzaPxF$uVj',
+"{\"obj\":{\"num\": 10},\"lit\":true,\"num\":20101,\"unum\":44164,\"jfloat\":-960.41}",
+ARRAY(-1929723756,-1827634626,-1336182756,-1027354668,-729147368,-723860107,-218701136,-207628750,-159507353,-143030589,-129923363,-108615349,-93964428,14844107,119107153,200810960,326992721,663045465,746984778,857792220,1270751288,1448256371,1619104820,1668155623),
+643459780942421299,
+'ZFtiy^qkbil=',
+-91,
+67,
+'David',
+-2163913,
+75.08 
+FROM DUAL 
+ON DUPLICATE KEY UPDATE col_115 = " ";
+ALTER TABLE tbl_5 DROP COLUMN col_114;
+=====not support bug
+FORK TABLE tbl_5 TO tbl_14;
+ERROR 0A000: fork table on partitioned table with global index is not supported
+SELECT SLEEP(5);
+SLEEP(5)
+0
+SHOW TABLES LIKE 'tbl_%';
+Tables_in_db_fork_basic (tbl_%)
+tbl_5
+SHOW CREATE TABLE tbl_5;
+Table	Create Table
+tbl_5	CREATE TABLE `tbl_5` (
+  `col_97` mediumtext NOT NULL,
+  `col_98` enum('Alice','Bob','Charlie','David') DEFAULT NULL,
+  `col_99` year(4) DEFAULT '2020',
+  `col_100` double NOT NULL DEFAULT '9802.972125060098',
+  `col_101` double DEFAULT NULL,
+  `col_102` datetime NOT NULL DEFAULT '1973-08-10 00:00:00',
+  `col_103` float DEFAULT NULL,
+  `col_104` VECTOR(85) NOT NULL,
+  `col_105` bigint(20) unsigned NOT NULL,
+  `col_106` json NOT NULL,
+  `col_107` char(134) NOT NULL,
+  `col_108` tinyint(1) DEFAULT '1',
+  `col_109` time DEFAULT NULL,
+  `col_110` mediumtext NOT NULL,
+  `col_111` json DEFAULT NULL,
+  `col_112` ARRAY(INT) NOT NULL,
+  `col_113` bit(60) NOT NULL,
+  `col_115` tinyblob NOT NULL,
+  `col_116` decimal(36,3) DEFAULT '7028.936',
+  `col_117` bit(59) NOT NULL DEFAULT b'10011110010010110010111001000100011111111100000111001100',
+  `col_118` tinyint(4) DEFAULT NULL,
+  `col_119` bigint(20) unsigned NOT NULL DEFAULT '2398105313438364456',
+  `col_120` tinyint(3) unsigned DEFAULT NULL,
+  `col_121` set('Alice','Bob','Charlie','David') DEFAULT NULL,
+  `col_122` bit(16) NOT NULL DEFAULT b'111011000011111',
+  `col_123` mediumint(9) NOT NULL,
+  `col_124` mediumint(9) DEFAULT '-6576803',
+  `col_125` bit(22) NOT NULL DEFAULT b'111111000100110111001',
+  `col_126` decimal(5,3) NOT NULL,
+  FULLTEXT KEY `fulltext_idx_31` (`col_97`) WITH PARSER ngram2 PARSER_PROPERTIES=(min_ngram_size=10,max_ngram_size=12) BLOCK_SIZE 16384,
+  FULLTEXT KEY `fulltext_idx_32` (`col_107`) WITH PARSER ngram PARSER_PROPERTIES=(ngram_token_size=2) BLOCK_SIZE 16384,
+  KEY `idx_33` (`col_107`(1), `col_103`) BLOCK_SIZE 16384 GLOBAL
+ ,
+  FULLTEXT KEY `fulltext_idx_34` (`col_110`) WITH PARSER ngram PARSER_PROPERTIES=(ngram_token_size=2) BLOCK_SIZE 16384,
+  FULLTEXT KEY `fulltext_idx_35` (`col_110`) WITH PARSER space PARSER_PROPERTIES=(min_token_size=14,max_token_size=47) BLOCK_SIZE 16384,
+  FULLTEXT KEY `fulltext_idx_36` (`col_97`) WITH PARSER ik PARSER_PROPERTIES=(ik_mode="smart") BLOCK_SIZE 16384,
+  FULLTEXT KEY `fulltext_idx_37` (`col_97`) WITH PARSER space PARSER_PROPERTIES=(min_token_size=14,max_token_size=45) BLOCK_SIZE 16384,
+  FULLTEXT KEY `fulltext_idx_38` (`col_107`) WITH PARSER space PARSER_PROPERTIES=(min_token_size=7,max_token_size=79) BLOCK_SIZE 16384,
+  FULLTEXT KEY `fulltext_idx_39` (`col_97`) WITH PARSER ngram2 PARSER_PROPERTIES=(min_ngram_size=1,max_ngram_size=10) BLOCK_SIZE 16384,
+  FULLTEXT KEY `fulltext_idx_40` (`col_107`) WITH PARSER ik PARSER_PROPERTIES=(ik_mode="smart") BLOCK_SIZE 16384,
+  FULLTEXT KEY `fulltext_idx_41` (`col_110`) WITH PARSER ik PARSER_PROPERTIES=(ik_mode="max_word") BLOCK_SIZE 16384,
+  FULLTEXT KEY `fulltext_idx_42` (`col_107`) WITH PARSER ngram PARSER_PROPERTIES=(ngram_token_size=9) BLOCK_SIZE 16384,
+  FULLTEXT KEY `fulltext_idx_43` (`col_107`) WITH PARSER beng PARSER_PROPERTIES=(min_token_size=8,max_token_size=35) BLOCK_SIZE 16384,
+  FULLTEXT KEY `fulltext_idx_44` (`col_107`) WITH PARSER ik PARSER_PROPERTIES=(ik_mode="smart") BLOCK_SIZE 16384,
+  FULLTEXT KEY `fulltext_idx_45` (`col_97`) WITH PARSER ngram2 PARSER_PROPERTIES=(min_ngram_size=6,max_ngram_size=13) BLOCK_SIZE 16384,
+  FULLTEXT KEY `fulltext_idx_46` (`col_110`) WITH PARSER space PARSER_PROPERTIES=(min_token_size=2,max_token_size=22) BLOCK_SIZE 16384,
+  FULLTEXT KEY `fulltext_idx_47` (`col_97`) WITH PARSER space PARSER_PROPERTIES=(min_token_size=14,max_token_size=84) BLOCK_SIZE 16384,
+  FULLTEXT KEY `fulltext_idx_48` (`col_97`) WITH PARSER space PARSER_PROPERTIES=(min_token_size=3,max_token_size=50) BLOCK_SIZE 16384
+) ORGANIZATION INDEX DEFAULT CHARSET = utf8mb4 ROW_FORMAT = DYNAMIC COMPRESSION = 'lz4_1.9.1' REPLICA_NUM = 1 BLOCK_SIZE = 16384 USE_BLOOM_FILTER = FALSE ENABLE_MACRO_BLOCK_BLOOM_FILTER = FALSE TABLET_SIZE = 134217728 PCTFREE = 0
+ partition by list(col_120)
+(partition `p0` values in (1,16,21,44,55,76,78,111,151,155,171,172,174,181,192,197,202,203,204,248),
+partition `p_default` values in (DEFAULT))
+SELECT COUNT(*) AS tbl_5_count FROM tbl_5;
+tbl_5_count
+1
+============================================
+24. 清理
+============================================
+DROP TABLE IF EXISTS tbl_5;
+DROP TABLE IF EXISTS tbl_14;
+Warnings:
+Note	1051	Unknown table 'db_fork_basic.tbl_14'
+drop table if exists t1;
+Warnings:
+Note	1051	Unknown table 'db_fork_basic.t1'
+drop table if exists t1_fork;
+Warnings:
+Note	1051	Unknown table 'db_fork_basic.t1_fork'
+drop table if exists t2;
+Warnings:
+Note	1051	Unknown table 'db_fork_basic.t2'
+drop table if exists t2_fork;
+Warnings:
+Note	1051	Unknown table 'db_fork_basic.t2_fork'
+drop table if exists t3;
+Warnings:
+Note	1051	Unknown table 'db_fork_basic.t3'
+drop table if exists t3_fork;
+Warnings:
+Note	1051	Unknown table 'db_fork_basic.t3_fork'
+drop table if exists t4;
+Warnings:
+Note	1051	Unknown table 'db_fork_basic.t4'
+drop table if exists t4_fork;
+Warnings:
+Note	1051	Unknown table 'db_fork_basic.t4_fork'
+drop table if exists t5;
+Warnings:
+Note	1051	Unknown table 'db_fork_basic.t5'
+drop table if exists t5_fork;
+Warnings:
+Note	1051	Unknown table 'db_fork_basic.t5_fork'
+drop table if exists t_trunc;
+Warnings:
+Note	1051	Unknown table 'db_fork_basic.t_trunc'
+drop table if exists t_trunc_fork;
+Warnings:
+Note	1051	Unknown table 'db_fork_basic.t_trunc_fork'
+drop table if exists t_cross;
+Warnings:
+Note	1051	Unknown table 'db_fork_basic.t_cross'
+drop table if exists t_cross_fork;
+Warnings:
+Note	1051	Unknown table 'db_fork_basic.t_cross_fork'
+drop table if exists t_heap;
+drop table if exists t_heap_fork;
+drop table if exists t_nopk_unique;
+drop table if exists t_nopk_unique_fork;
+drop table if exists t_auto;
+drop table if exists t_auto_fork;
+drop database if exists db_fork_basic;
+alter system set _ob_enable_truncate_partition_preserve_global_index = false;
