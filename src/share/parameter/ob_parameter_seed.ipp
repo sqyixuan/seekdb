@@ -459,7 +459,7 @@ DEF_STR_WITH_CHECKER(_use_hash_rollup, OB_CLUSTER_PARAMETER, "AUTO",
          ObParameterAttr(Section::TENANT, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE),
          "auto, forced, disabled");
 
-//https://yuque.antfin.com/ob/product_functionality_review/quy4ol4wtu9ihkpx
+//[INTERNAL_URL]
 DEF_BOOL(_enable_constant_type_demotion, OB_CLUSTER_PARAMETER, "True",
          "Controls whether to enable constant type demotion to optimize comparisons between "
          "constants and columns by downgrading the constant's type to match the column's type.",
@@ -2062,7 +2062,7 @@ DEF_BOOL(_ob_sqlstat_enable, OB_CLUSTER_PARAMETER, "True", "enable/disable sql s
 
 DEF_BOOL(_enable_inner_session_mgr, OB_CLUSTER_PARAMETER, "True", "enable/disable inner session mgr",
          ObParameterAttr(Section::TENANT, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
-DEF_BOOL(_enable_trace_tablet_leak, OB_CLUSTER_PARAMETER, "False",
+DEF_BOOL(_enable_trace_tablet_leak, OB_CLUSTER_PARAMETER, "False", 
         "enable t3m tablet leak checker. The default value is False",
         ObParameterAttr(Section::TENANT, Source::DEFAULT, EditLevel::STATIC_EFFECTIVE));
 DEF_BOOL_WITH_CHECKER(enable_auto_split, OB_CLUSTER_PARAMETER, "False",
@@ -2239,7 +2239,7 @@ DEF_INT(max_partition_num, OB_CLUSTER_PARAMETER, "8192", "[8192, 65536]",
 DEF_INT(json_document_max_depth, OB_CLUSTER_PARAMETER, "100", "[100,1024]",
         "maximum nesting depth allowed in a JSON document",
         ObParameterAttr(Section::TENANT, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
-DEF_INT(_multimodel_memory_trace_level, OB_CLUSTER_PARAMETER, "0", "[0,100)",
+DEF_INT(_multimodel_memory_trace_level, OB_CLUSTER_PARAMETER, "0", "[0,100)", 
         "Multi-mode memory tracking mechanism",
         ObParameterAttr(Section::TENANT, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
 ERRSIM_DEF_INT(errsim_backup_task_batch_size, OB_CLUSTER_PARAMETER, "0", "[0,)",
@@ -2594,7 +2594,7 @@ DEF_BOOL(_enable_obdal, OB_CLUSTER_PARAMETER, "False",
 
 // for new created tenant, _ob_enable_truncate_partition_preserve_global_index will be True
 
-// https://yuque.antfin.com/ob/product_functionality_review/vkv87bipgrf22tpi
+// [INTERNAL_URL]
 DEF_BOOL(_ob_enable_truncate_partition_preserve_global_index, OB_CLUSTER_PARAMETER, "False",
          "Specifies Whether to allow global indexes to be preserved when truncating/dropping the main table partition.",
          ObParameterAttr(Section::OBSERVER, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
@@ -2659,7 +2659,7 @@ DEF_CAP(_storage_stream_rpc_buffer_size, OB_CLUSTER_PARAMETER, "2M", "[2M,128M]"
 DEF_BOOL(_enable_routine_call_param_defend, OB_CLUSTER_PARAMETER, "True",
          "Enable or disable routine call parameter defend.",
          ObParameterAttr(Section::TENANT, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
-DEF_INT_WITH_CHECKER(_hnsw_max_scan_vectors, OB_CLUSTER_PARAMETER, "20000",
+DEF_INT_WITH_CHECKER(_hnsw_max_scan_vectors, OB_CLUSTER_PARAMETER, "20000", 
                     common::ObHNSWIterFilterScanNumChecker,
                     "The upper limit of hnsw iter-filter search nums. Range: [0,)",
                     ObParameterAttr(Section::OBSERVER, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));

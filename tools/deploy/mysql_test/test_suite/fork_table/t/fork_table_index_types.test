@@ -1,0 +1,1308 @@
+##owner: chenminsi.cms
+##owner group: 底层引擎部-轻量版
+##description: Fork Table各种索引类型功能测试（fork后源表和目标表的索引功能验证）
+##tags: fork_table index_types normal_index spatial_index global_index local_index fulltext_index json_index hnsw_index ivf_index semantic_index sparse_index hybrid_index
+##author: chenminsi.cms
+
+--disable_warnings
+drop database if exists db_fork_index_types;
+--enable_warnings
+
+connect (obsys,$OBMYSQL_MS0,root@sys,,oceanbase,$OBMYSQL_PORT);
+connection default;
+create database db_fork_index_types;
+use db_fork_index_types;
+
+SET wait_timeout=30000000;
+SET ob_trx_timeout = 100000000;
+SET ob_query_timeout = 100000000;
+
+--echo # 启用debug sync
+connection obsys;
+alter system set debug_sync_timeout = '10s';
+alter system set _ob_ddl_timeout = '5s';
+sleep 3;
+set ob_global_debug_sync = 'reset';
+connection default;
+
+--echo # 设置向量索引内存限制
+alter system set ob_vector_memory_limit_percentage = 20;
+sleep 3;
+
+--echo ============================================
+--echo 1. 普通索引（Normal Index）
+--echo ============================================
+
+--echo # 1.1 随表创建普通索引
+drop table if exists t_normal_with_index;
+drop table if exists t_normal_with_index_fork;
+
+create table t_normal_with_index (
+    id int primary key,
+    name varchar(50),
+    age int,
+    email varchar(100),
+    index idx_name(name),
+    index idx_age(age),
+    index idx_email(email)
+) partition by range(id) (
+    partition p0 values less than (100),
+    partition p1 values less than (200)
+);
+
+insert into t_normal_with_index values (1, 'Alice', 25, 'alice@example.com');
+insert into t_normal_with_index values (101, 'Bob', 30, 'bob@example.com');
+insert into t_normal_with_index values (50, 'Charlie', 35, 'charlie@example.com');
+
+--echo # Fork表
+fork table t_normal_with_index to t_normal_with_index_fork;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+
+--echo # 验证fork后源表和目标表的索引结构
+--replace_regex /REPLICA_NUM = [0-9]*/REPLICA_NUM = replica_num/g
+show create table t_normal_with_index;
+show create table t_normal_with_index_fork;
+
+--echo # 验证fork后源表的索引功能
+show indexes from t_normal_with_index;
+select * from t_normal_with_index where name = 'Alice';
+select * from t_normal_with_index where age = 30;
+select * from t_normal_with_index where email = 'charlie@example.com';
+explain select * from t_normal_with_index where name = 'Alice';
+
+--echo # 验证fork后目标表的索引功能
+show indexes from t_normal_with_index_fork;
+select * from t_normal_with_index_fork where name = 'Alice';
+select * from t_normal_with_index_fork where age = 30;
+select * from t_normal_with_index_fork where email = 'charlie@example.com';
+explain select * from t_normal_with_index_fork where name = 'Alice';
+
+--echo # 1.2 后建普通索引
+drop table if exists t_normal_post_index;
+drop table if exists t_normal_post_index_fork;
+
+create table t_normal_post_index (
+    id int primary key,
+    name varchar(50),
+    age int,
+    email varchar(100)
+) partition by range(id) (
+    partition p0 values less than (100),
+    partition p1 values less than (200)
+);
+
+insert into t_normal_post_index values (1, 'Alice', 25, 'alice@example.com');
+insert into t_normal_post_index values (101, 'Bob', 30, 'bob@example.com');
+
+--echo # Fork表
+fork table t_normal_post_index to t_normal_post_index_fork;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+
+--echo # 在源表上后建索引
+create index idx_name_src on t_normal_post_index(name);
+create index idx_age_src on t_normal_post_index(age);
+
+--echo # 在目标表上后建索引
+create index idx_name_fork on t_normal_post_index_fork(name);
+create index idx_age_fork on t_normal_post_index_fork(age);
+
+--echo # 验证源表和目标表的后建索引功能
+show indexes from t_normal_post_index;
+show indexes from t_normal_post_index_fork;
+select * from t_normal_post_index where name = 'Alice';
+select * from t_normal_post_index_fork where name = 'Alice';
+explain select * from t_normal_post_index where name = 'Alice';
+explain select * from t_normal_post_index_fork where name = 'Alice';
+
+drop table t_normal_with_index;
+drop table t_normal_with_index_fork;
+drop table t_normal_post_index;
+drop table t_normal_post_index_fork;
+
+
+--echo ============================================
+--echo 2. 全局索引（Global Index）
+--echo ============================================
+
+--echo # 2.0 无分区表+全局索引+fork（验证fork后索引表正常）
+drop table if exists t_global_nopart_global_idx;
+drop table if exists t_global_nopart_global_idx_fork;
+
+create table t_global_nopart_global_idx (
+    a int,
+    b varchar(150),
+    c int,
+    primary key(a, b)
+);
+
+#create index gidx_c on t_global_nopart_global_idx(c) global;
+
+insert into t_global_nopart_global_idx values (1, 'Alice', 10);
+insert into t_global_nopart_global_idx values (2, 'Bob', 110);
+insert into t_global_nopart_global_idx values (3, 'Charlie', 50);
+
+--echo # Fork表
+fork table t_global_nopart_global_idx to t_global_nopart_global_idx_fork;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+
+--echo # fork后给全局索引加分区（删除后重建带分区的索引）
+#drop index gidx_c on t_global_nopart_global_idx;
+#drop index gidx_c on t_global_nopart_global_idx_fork;
+create index gidx_c on t_global_nopart_global_idx(c) global partition by range(c) (
+    partition p0 values less than (100),
+    partition p1 values less than MAXVALUE
+);
+create index gidx_c on t_global_nopart_global_idx_fork(c) global partition by range(c) (
+    partition p0 values less than (100),
+    partition p1 values less than MAXVALUE
+);
+
+--echo # 验证全局索引分区是否正确
+--replace_regex /REPLICA_NUM = [0-9]*/REPLICA_NUM = replica_num/g
+show create table t_global_nopart_global_idx;
+show create table t_global_nopart_global_idx_fork;
+--echo # 检查源表全局索引分区信息
+select table_name, partition_name, partition_expression, partition_method 
+from information_schema.partitions 
+where table_schema = database() and table_name like '%gidx_c%' and table_name like '%t_global_nopart_global_idx%'
+order by table_name, partition_ordinal_position;
+--echo # 检查目标表全局索引分区信息
+select table_name, partition_name, partition_expression, partition_method 
+from information_schema.partitions 
+where table_schema = database() and table_name like '%gidx_c%' and table_name like '%t_global_nopart_global_idx_fork%'
+order by table_name, partition_ordinal_position;
+insert into t_global_nopart_global_idx values (108, 'Bob', 110);
+insert into t_global_nopart_global_idx_fork values (108, 'Charlie', 50);
+
+--echo # 验证fork后源表和目标表的全局索引功能
+show indexes from t_global_nopart_global_idx;
+show indexes from t_global_nopart_global_idx_fork;
+select * from t_global_nopart_global_idx where c = 10;
+select * from t_global_nopart_global_idx_fork where c = 10;
+explain select * from t_global_nopart_global_idx where c = 10;
+explain select * from t_global_nopart_global_idx_fork where c = 10;
+select * from t_global_nopart_global_idx where c = 108;
+select * from t_global_nopart_global_idx_fork where c = 108;
+explain select * from t_global_nopart_global_idx where c = 108;
+explain select * from t_global_nopart_global_idx_fork where c = 108;
+
+drop table t_global_nopart_global_idx;
+drop table t_global_nopart_global_idx_fork;
+
+--echo # 2.1 随表创建全局索引
+drop table if exists t_global_with_index;
+drop table if exists t_global_with_index_fork;
+
+--echo Global Index with partition
+create table t_global_with_index (
+    a int,
+    b varchar(150),
+    c int,
+    primary key(a, b)
+) partition by range(a) (
+    partition p0 values less than (100),
+    partition p1 values less than (200)
+);
+
+create index gidx_c on t_global_with_index(c) global partition by range(c) (
+    partition p0 values less than (100),
+    partition p1 values less than MAXVALUE
+);
+
+insert into t_global_with_index values (1, 'Alice', 10);
+insert into t_global_with_index values (101, 'Bob', 110);
+insert into t_global_with_index values (50, 'Charlie', 50);
+
+--echo # Fork表bug not support
+--error 1235
+fork table t_global_with_index to t_global_with_index_fork;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+
+--echo # 验证fork后源表和目标表的全局索引功能
+#--replace_regex /REPLICA_NUM = [0-9]*/REPLICA_NUM = replica_num/g
+#show create table t_global_with_index;
+#show create table t_global_with_index_fork;
+#show indexes from t_global_with_index;
+#show indexes from t_global_with_index_fork;
+#select * from t_global_with_index where c = 10;
+#select * from t_global_with_index_fork where c = 10;
+#explain select * from t_global_with_index where c = 10;
+#explain select * from t_global_with_index_fork where c = 10;
+
+--echo # 2.2 后建全局索引
+drop table if exists t_global_post_index;
+drop table if exists t_global_post_index_fork;
+
+create table t_global_post_index (
+    a int,
+    b varchar(150),
+    c int,
+    primary key(a, b)
+) partition by range(a) (
+    partition p0 values less than (100),
+    partition p1 values less than (200)
+);
+
+insert into t_global_post_index values (1, 'Alice', 10);
+insert into t_global_post_index values (101, 'Bob', 110);
+
+--echo # Fork表
+fork table t_global_post_index to t_global_post_index_fork;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+
+--echo # 在源表和目标表上后建全局索引
+create index gidx_c_src on t_global_post_index(c) global partition by range(c) (
+    partition p0 values less than (100),
+    partition p1 values less than MAXVALUE
+);
+create index gidx_c_fork on t_global_post_index_fork(c) global partition by range(c) (
+    partition p0 values less than (100),
+    partition p1 values less than MAXVALUE
+);
+
+--echo # 验证后建全局索引功能
+show indexes from t_global_post_index;
+show indexes from t_global_post_index_fork;
+select * from t_global_post_index where c = 10;
+select * from t_global_post_index_fork where c = 10;
+explain select * from t_global_post_index where c = 10;
+explain select * from t_global_post_index_fork where c = 10;
+
+--echo # 2.3 先建全局索引，fork后再加分区表（fork后做DDL/DML确保分区表与全局索引无误）
+drop table if exists t_global_first_then_part;
+drop table if exists t_global_first_then_part_fork;
+
+create table t_global_first_then_part (
+    a int,
+    b varchar(150),
+    c int,
+    primary key(a, b)
+);
+
+create index gidx_c on t_global_first_then_part(c) global partition by range(c) (
+    partition p0 values less than (100),
+    partition p1 values less than MAXVALUE
+);
+
+insert into t_global_first_then_part values (1, 'Alice', 10);
+insert into t_global_first_then_part values (2, 'Bob', 110);
+insert into t_global_first_then_part values (3, 'Charlie', 50);
+
+--echo # Fork表
+fork table t_global_first_then_part to t_global_first_then_part_fork;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+
+--echo # fork后给源表和目标表加分区
+alter table t_global_first_then_part partition by range(a) (
+    partition p0 values less than (100),
+    partition p1 values less than (200)
+);
+alter table t_global_first_then_part_fork partition by range(a) (
+    partition p0 values less than (100),
+    partition p1 values less than (200)
+);
+
+--echo # fork后做DDL：加列
+alter table t_global_first_then_part add column d int default 0;
+alter table t_global_first_then_part_fork add column d int default 0;
+
+--echo # fork后做DML：源表与目标表各插入/更新/删除
+insert into t_global_first_then_part values (50, 'Dave', 50, 1);
+insert into t_global_first_then_part_fork values (60, 'Eve', 60, 2);
+update t_global_first_then_part set d = 10 where a = 1;
+update t_global_first_then_part_fork set d = 20 where a = 2;
+delete from t_global_first_then_part where a = 3;
+delete from t_global_first_then_part_fork where a = 2 and b = 'Bob';
+
+--echo # 验证分区表与全局索引：源表
+show create table t_global_first_then_part;
+show indexes from t_global_first_then_part;
+select * from t_global_first_then_part where c = 10;
+select * from t_global_first_then_part where c = 50;
+explain select * from t_global_first_then_part where c = 10;
+
+--echo # 验证分区表与全局索引：目标表
+show create table t_global_first_then_part_fork;
+show indexes from t_global_first_then_part_fork;
+select * from t_global_first_then_part_fork where c = 10;
+select * from t_global_first_then_part_fork where c = 60;
+explain select * from t_global_first_then_part_fork where c = 10;
+
+drop table t_global_first_then_part;
+drop table t_global_first_then_part_fork;
+
+drop table t_global_with_index;
+#drop table t_global_with_index_fork;
+drop table t_global_post_index;
+drop table t_global_post_index_fork;
+
+--echo ============================================
+--echo 3. 局部索引（Local Index）
+--echo ============================================
+
+--echo # 3.1 随表创建局部索引
+drop table if exists t_local_with_index;
+drop table if exists t_local_with_index_fork;
+
+create table t_local_with_index (
+    a int,
+    b varchar(150),
+    c int,
+    primary key(a, b)
+) partition by range(a) (
+    partition p0 values less than (100),
+    partition p1 values less than (200)
+);
+
+create index lidx_c on t_local_with_index(c) local;
+
+insert into t_local_with_index values (1, 'Alice', 10);
+insert into t_local_with_index values (101, 'Bob', 110);
+insert into t_local_with_index values (50, 'Charlie', 50);
+
+--echo # Fork表
+fork table t_local_with_index to t_local_with_index_fork;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+
+--echo # 验证fork后源表和目标表的局部索引功能
+--replace_regex /REPLICA_NUM = [0-9]*/REPLICA_NUM = replica_num/g
+show create table t_local_with_index;
+show create table t_local_with_index_fork;
+show indexes from t_local_with_index;
+show indexes from t_local_with_index_fork;
+select * from t_local_with_index where c = 10;
+select * from t_local_with_index_fork where c = 10;
+explain select * from t_local_with_index where c = 10;
+explain select * from t_local_with_index_fork where c = 10;
+
+--echo # 3.2 后建局部索引
+drop table if exists t_local_post_index;
+drop table if exists t_local_post_index_fork;
+
+create table t_local_post_index (
+    a int,
+    b varchar(150),
+    c int,
+    primary key(a, b)
+) partition by range(a) (
+    partition p0 values less than (100),
+    partition p1 values less than (200)
+);
+
+insert into t_local_post_index values (1, 'Alice', 10);
+insert into t_local_post_index values (101, 'Bob', 110);
+
+--echo # Fork表
+fork table t_local_post_index to t_local_post_index_fork;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+
+--echo # 在源表和目标表上后建局部索引
+create index lidx_c_src on t_local_post_index(c) local;
+create index lidx_c_fork on t_local_post_index_fork(c) local;
+
+--echo # 验证后建局部索引功能
+show indexes from t_local_post_index;
+show indexes from t_local_post_index_fork;
+select * from t_local_post_index where c = 10;
+select * from t_local_post_index_fork where c = 10;
+explain select * from t_local_post_index where c = 10;
+explain select * from t_local_post_index_fork where c = 10;
+
+drop table t_local_with_index;
+drop table t_local_with_index_fork;
+drop table t_local_post_index;
+drop table t_local_post_index_fork;
+
+--echo ============================================
+--echo 4. 全文索引（Fulltext Index）
+--echo ============================================
+
+--echo # 4.1 随表创建全文索引
+drop table if exists t_fulltext_with_index;
+drop table if exists t_fulltext_with_index_fork;
+
+create table t_fulltext_with_index (
+    id int primary key,
+    title varchar(200),
+    content text,
+    fulltext index idx_content(content)
+) partition by range(id) (
+    partition p0 values less than (100),
+    partition p1 values less than (200)
+);
+
+insert into t_fulltext_with_index values (1, 'Title1', 'This is a test content for fulltext search');
+insert into t_fulltext_with_index values (101, 'Title2', 'Another test content with different words');
+insert into t_fulltext_with_index values (50, 'Title3', 'Search functionality testing');
+
+--echo # Fork表
+fork table t_fulltext_with_index to t_fulltext_with_index_fork;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+
+--echo # 验证fork后源表和目标表的全文索引功能
+show indexes from t_fulltext_with_index;
+show indexes from t_fulltext_with_index_fork;
+select * from t_fulltext_with_index where match(content) against('test' in natural language mode);
+select * from t_fulltext_with_index_fork where match(content) against('test' in natural language mode);
+explain select * from t_fulltext_with_index where match(content) against('test' in natural language mode);
+explain select * from t_fulltext_with_index_fork where match(content) against('test' in natural language mode);
+
+--echo # 4.2 后建全文索引
+drop table if exists t_fulltext_post_index;
+drop table if exists t_fulltext_post_index_fork;
+
+create table t_fulltext_post_index (
+    id int primary key,
+    title varchar(200),
+    content text
+) partition by range(id) (
+    partition p0 values less than (100),
+    partition p1 values less than (200)
+);
+
+insert into t_fulltext_post_index values (1, 'Title1', 'This is a test content for fulltext search');
+insert into t_fulltext_post_index values (101, 'Title2', 'Another test content with different words');
+
+--echo # Fork表
+fork table t_fulltext_post_index to t_fulltext_post_index_fork;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+
+--echo # 在源表和目标表上后建全文索引
+create fulltext index idx_content_src on t_fulltext_post_index(content);
+create fulltext index idx_content_fork on t_fulltext_post_index_fork(content);
+
+--echo # 验证后建全文索引功能
+show indexes from t_fulltext_post_index;
+show indexes from t_fulltext_post_index_fork;
+select * from t_fulltext_post_index where match(content) against('test' in natural language mode);
+select * from t_fulltext_post_index_fork where match(content) against('test' in natural language mode);
+explain select * from t_fulltext_post_index where match(content) against('test' in natural language mode);
+explain select * from t_fulltext_post_index_fork where match(content) against('test' in natural language mode);
+
+drop table t_fulltext_with_index;
+drop table t_fulltext_with_index_fork;
+drop table t_fulltext_post_index;
+drop table t_fulltext_post_index_fork;
+
+--echo ============================================
+--echo 5. JSON多值索引（JSON Multi-Value Index）
+--echo ============================================
+
+--echo # 5.1 随表创建JSON多值索引
+drop table if exists t_json_with_index;
+drop table if exists t_json_with_index_fork;
+
+create table t_json_with_index (
+    id int primary key,
+    name varchar(50),
+    tags json,
+    index idx_tags ((cast(tags->'$[*]' as char(100) array)))
+) partition by range(id) (
+    partition p0 values less than (100),
+    partition p1 values less than (200)
+);
+
+insert into t_json_with_index values (1, 'Item1', '["tag1", "tag2", "tag3"]');
+insert into t_json_with_index values (101, 'Item2', '["tag2", "tag4"]');
+insert into t_json_with_index values (50, 'Item3', '["tag1", "tag5"]');
+
+--echo # Fork表
+fork table t_json_with_index to t_json_with_index_fork;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+
+--echo # 验证fork后源表和目标表的JSON多值索引功能
+--replace_regex /__doc_id_[0-9]+/__doc_id_DOC_ID/g
+show indexes from t_json_with_index;
+--replace_regex /__doc_id_[0-9]+/__doc_id_DOC_ID/g
+show indexes from t_json_with_index_fork;
+select * from t_json_with_index where json_contains(tags, '"tag1"');
+select * from t_json_with_index_fork where json_contains(tags, '"tag1"');
+explain select * from t_json_with_index where json_contains(tags, '"tag1"');
+explain select * from t_json_with_index_fork where json_contains(tags, '"tag1"');
+
+--echo # 5.2 后建JSON多值索引
+drop table if exists t_json_post_index;
+drop table if exists t_json_post_index_fork;
+
+create table t_json_post_index (
+    id int primary key,
+    name varchar(50),
+    tags json
+) partition by range(id) (
+    partition p0 values less than (100),
+    partition p1 values less than (200)
+);
+
+insert into t_json_post_index values (1, 'Item1', '["tag1", "tag2", "tag3"]');
+insert into t_json_post_index values (101, 'Item2', '["tag2", "tag4"]');
+
+--echo # Fork前
+--error 1235
+create index idx_tags_src on t_json_post_index((cast(tags->'$[*]' as char(100) array)));
+
+--echo # Fork表
+fork table t_json_post_index to t_json_post_index_fork;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+
+--echo # 在源表和目标表上后建JSON多值索引
+--error 1235
+create index idx_tags_src on t_json_post_index((cast(tags->'$[*]' as char(100) array)));
+--error 1235
+create index idx_tags_fork on t_json_post_index_fork((cast(tags->'$[*]' as char(100) array)));
+
+--echo # 验证后建JSON多值索引功能
+show indexes from t_json_post_index;
+show indexes from t_json_post_index_fork;
+
+
+drop table t_json_with_index;
+drop table t_json_with_index_fork;
+drop table t_json_post_index;
+drop table t_json_post_index_fork;
+
+--echo ============================================
+--echo 6. HNSW索引（重点关注）
+--echo ============================================
+
+--echo # 6.1 随表创建HNSW索引
+drop table if exists t_hnsw_with_index;
+drop table if exists t_hnsw_with_index_fork;
+
+create table t_hnsw_with_index (
+    id int primary key,
+    name varchar(50),
+    vec vector(3),
+    vector index idx_vec(vec) with (distance=l2, type=hnsw, lib=vsag, m=16, ef_construction=200, ef_search=200)
+) partition by range(id) (
+    partition p0 values less than (100),
+    partition p1 values less than (200)
+);
+
+
+insert into t_hnsw_with_index values (1, 'Vec1', '[0.1,0.1,0.1]');
+insert into t_hnsw_with_index values (101, 'Vec2', '[0.2,0.2,0.2]');
+insert into t_hnsw_with_index values (50, 'Vec3', '[0.3,0.3,0.3]');
+
+--echo # Fork表
+fork table t_hnsw_with_index to t_hnsw_with_index_fork;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+
+--echo # 验证fork后源表和目标表的HNSW索引功能
+show indexes from t_hnsw_with_index;
+show indexes from t_hnsw_with_index_fork;
+--echo # 源表、目标表HNSW索引查询（近似查询和精确查询）
+select * from t_hnsw_with_index order by l2_distance(vec, [0.1,0.1,0.1]) APPROXIMATE limit 3;
+select * from t_hnsw_with_index_fork order by l2_distance(vec, [0.1,0.1,0.1]) APPROXIMATE limit 3;
+select * from t_hnsw_with_index order by l2_distance(vec, [0.1,0.1,0.1]) limit 3;
+select * from t_hnsw_with_index_fork order by l2_distance(vec, [0.1,0.1,0.1]) limit 3;
+--echo # 验证近似查询和精确查询结果一致性
+--echo # 源表：比较近似查询和精确查询的前3条记录的ID是否一致
+select count(*) as match_count from (
+    select id from t_hnsw_with_index order by l2_distance(vec, [0.1,0.1,0.1]) APPROXIMATE limit 3
+) as tmp1
+inner join (
+    select id from t_hnsw_with_index order by l2_distance(vec, [0.1,0.1,0.1]) limit 3
+) as tmp2 on tmp1.id = tmp2.id;
+--echo # 目标表：比较近似查询和精确查询的前3条记录的ID是否一致
+select count(*) as match_count from (
+    select id from t_hnsw_with_index_fork order by l2_distance(vec, [0.1,0.1,0.1]) APPROXIMATE limit 3
+) as tmp1
+inner join (
+    select id from t_hnsw_with_index_fork order by l2_distance(vec, [0.1,0.1,0.1]) limit 3
+) as tmp2 on tmp1.id = tmp2.id;
+--echo # 更详细的一致性验证：显示匹配的具体记录
+select 
+    approx.id as approx_id,
+    exact.id as exact_id,
+    case when approx.id = exact.id then 'MATCH' else 'MISMATCH' end as status
+from (
+    select id, row_number() over() as rn 
+    from t_hnsw_with_index 
+    order by l2_distance(vec, [0.1,0.1,0.1]) APPROXIMATE limit 3
+) as approx
+full outer join (
+    select id, row_number() over() as rn 
+    from t_hnsw_with_index 
+    order by l2_distance(vec, [0.1,0.1,0.1]) limit 3
+) as exact on approx.rn = exact.rn;
+select 
+    approx.id as approx_id,
+    exact.id as exact_id,
+    case when approx.id = exact.id then 'MATCH' else 'MISMATCH' end as status
+from (
+    select id, row_number() over() as rn 
+    from t_hnsw_with_index_fork 
+    order by l2_distance(vec, [0.1,0.1,0.1]) APPROXIMATE limit 3
+) as approx
+full outer join (
+    select id, row_number() over() as rn 
+    from t_hnsw_with_index_fork 
+    order by l2_distance(vec, [0.1,0.1,0.1]) limit 3
+) as exact on approx.rn = exact.rn;
+
+--echo # 6.2 后建HNSW索引
+drop table if exists t_hnsw_post_index;
+drop table if exists t_hnsw_post_index_fork;
+
+create table t_hnsw_post_index (
+    id int primary key,
+    name varchar(50),
+    vec vector(3)
+) partition by range(id) (
+    partition p0 values less than (100),
+    partition p1 values less than (200)
+);
+
+insert into t_hnsw_post_index values (1, 'Vec1', '[0.1,0.1,0.1]');
+insert into t_hnsw_post_index values (101, 'Vec2', '[0.2,0.2,0.2]');
+
+--echo # Fork表
+fork table t_hnsw_post_index to t_hnsw_post_index_fork;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+
+--echo # 在源表和目标表上后建HNSW索引
+create vector index idx_vec_src on t_hnsw_post_index(vec) with (distance=l2, type=hnsw, lib=vsag, m=16, ef_construction=200, ef_search=200);
+create vector index idx_vec_fork on t_hnsw_post_index_fork(vec) with (distance=l2, type=hnsw, lib=vsag, m=16, ef_construction=200, ef_search=200);
+
+--echo # 等待索引构建完成
+sleep 5;
+
+--echo # 验证后建HNSW索引功能
+show indexes from t_hnsw_post_index;
+show indexes from t_hnsw_post_index_fork;
+select * from t_hnsw_post_index order by l2_distance(vec, [0.1,0.1,0.1]) APPROXIMATE limit 3;
+select * from t_hnsw_post_index_fork order by l2_distance(vec, [0.1,0.1,0.1]) APPROXIMATE limit 3;
+
+--echo # 验证HNSW索引重建功能
+call dbms_vector.rebuild_index('idx_vec_src', 't_hnsw_post_index', 'vec');
+call dbms_vector.rebuild_index('idx_vec_fork', 't_hnsw_post_index_fork', 'vec');
+sleep 5;
+select * from t_hnsw_post_index order by l2_distance(vec, [0.1,0.1,0.1]) APPROXIMATE limit 3;
+select * from t_hnsw_post_index_fork order by l2_distance(vec, [0.1,0.1,0.1]) APPROXIMATE limit 3;
+
+drop table t_hnsw_with_index;
+drop table t_hnsw_with_index_fork;
+drop table t_hnsw_post_index;
+drop table t_hnsw_post_index_fork;
+
+--echo ============================================
+--echo 7. 向量查询表HNSW内积距离索引测试（重点关注）
+--echo ============================================
+
+--echo # 7.1 随表创建HNSW索引（内积距离）
+drop table if exists t_vec_query;
+drop table if exists t_vec_query_fork;
+
+--echo # 创建带HNSW索引的向量查询表
+create table t_vec_query (
+    c1 int primary key, 
+    c2 vector(3),
+    vector index idx1(c2) with (distance=inner_product, type=hnsw, lib=vsag)
+) partition by range(c1) (
+    partition p0 values less than (100),
+    partition p1 values less than (200)
+);
+
+--echo # 插入向量数据（使用内积距离有意义的数据）
+insert into t_vec_query values (1, '[1.0, 0.0, 0.0]');   
+insert into t_vec_query values (2, '[0.0, 1.0, 0.0]');   
+insert into t_vec_query values (3, '[0.0, 0.0, 1.0]');   
+insert into t_vec_query values (4, '[0.5, 0.5, 0.0]');   
+insert into t_vec_query values (5, '[0.5, 0.0, 0.5]');   
+insert into t_vec_query values (101, '[0.0, 0.5, 0.5]'); 
+insert into t_vec_query values (50, '[0.7, 0.7, 0.0]');  
+
+--echo # Fork表
+fork table t_vec_query to t_vec_query_fork;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+
+--echo # 验证fork后源表和目标表的HNSW索引
+show indexes from t_vec_query;
+show indexes from t_vec_query_fork;
+
+--echo # 源表HNSW索引查询（内积距离近似查询和精确查询）
+--echo # 查询与X轴向量最相似的向量（内积越大越相似）
+select c1, c2, inner_product(c2, '[1.0, 0.0, 0.0]') as similarity 
+from t_vec_query order by inner_product(c2, '[1.0, 0.0, 0.0]') desc APPROXIMATE limit 3;
+
+select '源表精确查询（内积距离）:' as query_type;  
+select c1, c2, inner_product(c2, '[1.0, 0.0, 0.0]') as similarity
+from t_vec_query order by inner_product(c2, '[1.0, 0.0, 0.0]') desc limit 3;
+
+--echo # 目标表HNSW索引查询（内积距离近似查询和精确查询）
+select c1, c2, inner_product(c2, '[1.0, 0.0, 0.0]') as similarity
+from t_vec_query_fork order by inner_product(c2, '[1.0, 0.0, 0.0]') desc APPROXIMATE limit 3;
+
+
+select c1, c2, inner_product(c2, '[1.0, 0.0, 0.0]') as similarity
+from t_vec_query_fork order by inner_product(c2, '[1.0, 0.0, 0.0]') desc limit 3;
+
+--echo # 验证近似查询和精确查询结果一致性（内积距离）
+select count(*) as match_count from (
+    select c1 from t_vec_query order by inner_product(c2, '[1.0, 0.0, 0.0]') desc APPROXIMATE limit 3
+) as approx
+inner join (
+    select c1 from t_vec_query order by inner_product(c2, '[1.0, 0.0, 0.0]') desc limit 3  
+) as exact on approx.c1 = exact.c1;
+
+select count(*) as match_count from (
+    select c1 from t_vec_query_fork order by inner_product(c2, '[1.0, 0.0, 0.0]') desc APPROXIMATE limit 3
+) as approx
+inner join (
+    select c1 from t_vec_query_fork order by inner_product(c2, '[1.0, 0.0, 0.0]') desc limit 3
+) as exact on approx.c1 = exact.c1;
+
+--echo # 7.2 后建HNSW索引（内积距离）
+drop table if exists t_vec_query_post_index;
+drop table if exists t_vec_query_post_index_fork;
+
+--echo # 创建不带索引的向量查询表
+create table t_vec_query_post_index (
+    c1 int primary key,
+    c2 vector(3)
+) partition by range(c1) (
+    partition p0 values less than (100),
+    partition p1 values less than (200)
+);
+
+--echo # 插入测试数据
+insert into t_vec_query_post_index values (1, '[0.8, 0.2, 0.0]');
+insert into t_vec_query_post_index values (2, '[0.2, 0.8, 0.0]');
+insert into t_vec_query_post_index values (3, '[0.0, 0.2, 0.8]');
+insert into t_vec_query_post_index values (4, '[0.6, 0.3, 0.1]');
+insert into t_vec_query_post_index values (101, '[0.1, 0.6, 0.3]'); 
+insert into t_vec_query_post_index values (50, '[0.3, 0.1, 0.6]');
+
+--echo # Fork表
+fork table t_vec_query_post_index to t_vec_query_post_index_fork;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+
+--echo # 在源表和目标表上后建HNSW索引（内积距离）
+create vector index idx_vec_query_src on t_vec_query_post_index(c2) with (distance=inner_product, type=hnsw, lib=vsag);
+create vector index idx_vec_query_fork on t_vec_query_post_index_fork(c2) with (distance=inner_product, type=hnsw, lib=vsag);
+
+--echo # 等待索引构建完成
+sleep 5;
+
+--echo # 验证后建HNSW索引功能
+show indexes from t_vec_query_post_index;
+show indexes from t_vec_query_post_index_fork;
+
+--echo # 源表后建索引查询测试
+
+select c1, c2, inner_product(c2, '[0.8, 0.2, 0.0]') as similarity
+from t_vec_query_post_index order by inner_product(c2, '[0.8, 0.2, 0.0]') desc APPROXIMATE limit 3;
+
+--echo # 目标表后建索引查询测试  
+select c1, c2, inner_product(c2, '[0.8, 0.2, 0.0]') as similarity
+from t_vec_query_post_index_fork order by inner_product(c2, '[0.8, 0.2, 0.0]') desc APPROXIMATE limit 3;
+
+--echo # 8.3 验证HNSW索引重建功能（内积距离）
+--echo # 重建源表索引
+call dbms_vector.rebuild_index('idx_vec_query_src', 't_vec_query_post_index', 'c2');
+--echo # 重建目标表索引
+call dbms_vector.rebuild_index('idx_vec_query_fork', 't_vec_query_post_index_fork', 'c2');
+
+--echo # 等待索引重建完成
+sleep 5;
+
+--echo # 验证重建后索引功能
+select c1, c2, inner_product(c2, '[0.8, 0.2, 0.0]') as similarity
+from t_vec_query_post_index order by inner_product(c2, '[0.8, 0.2, 0.0]') desc APPROXIMATE limit 3;
+
+select c1, c2, inner_product(c2, '[0.8, 0.2, 0.0]') as similarity
+from t_vec_query_post_index_fork order by inner_product(c2, '[0.8, 0.2, 0.0]') desc APPROXIMATE limit 3;
+
+--echo # 8.4 数据隔离测试
+--echo # 在源表插入新数据
+insert into t_vec_query values (6, '[0.9, 0.1, 0.0]');  
+
+--echo # 在目标表插入新数据  
+insert into t_vec_query_fork values (7, '[0.95, 0.05, 0.0]');  
+
+--echo # 验证数据隔离性
+select c1, c2, inner_product(c2, '[1.0, 0.0, 0.0]') as similarity
+from t_vec_query order by inner_product(c2, '[1.0, 0.0, 0.0]') desc APPROXIMATE limit 5;
+
+
+select c1, c2, inner_product(c2, '[1.0, 0.0, 0.0]') as similarity
+from t_vec_query_fork order by inner_product(c2, '[1.0, 0.0, 0.0]') desc APPROXIMATE limit 5;
+
+--echo # 7.5 不同查询向量测试
+--echo # 测试不同方向的查询向量
+
+select c1, c2, inner_product(c2, '[0.0, 1.0, 0.0]') as similarity
+from t_vec_query_fork order by inner_product(c2, '[0.0, 1.0, 0.0]') desc APPROXIMATE limit 3;
+
+select c1, c2, inner_product(c2, '[0.577, 0.577, 0.577]') as similarity  
+from t_vec_query_fork order by inner_product(c2, '[0.577, 0.577, 0.577]') desc APPROXIMATE limit 3;
+
+--echo # 清理测试表
+drop table if exists t_vec_query;
+drop table if exists t_vec_query_fork;
+drop table if exists t_vec_query_post_index;
+drop table if exists t_vec_query_post_index_fork;
+
+
+--echo ============================================
+--echo 8. IVF_QP索引
+--echo ============================================
+
+--echo # 8.1 随表创建IVF_QP索引
+drop table if exists t_ivf_qp_with_index;
+drop table if exists t_ivf_qp_with_index_fork;
+
+
+create table t_ivf_qp_with_index (id int primary key,name varchar(50),vec vector(3));
+--error 1235
+CREATE VECTOR INDEX idx1 ON t_ivf_qp_with_index(vec) WITH (distance=l2, type=ivf_qp, lib=vsag); 
+drop table if exists t_ivf_qp_with_index;
+
+--echo ============================================
+--echo 8. hnsw_sq索引
+--echo ============================================
+
+--echo # 8.1 随表创建hnsw_sq索引
+drop table if exists t_hnsw_sq_with_index;
+drop table if exists t_hnsw_sq_with_index_fork;
+
+
+CREATE TABLE t_hnsw_sq_with_index (
+    id INT PRIMARY KEY, 
+    name VARCHAR(50),
+    vec VECTOR(3)
+);
+CREATE VECTOR INDEX idx1 ON t_hnsw_sq_with_index(vec) WITH (distance=l2, type=hnsw_sq, lib=vsag);
+
+--echo # 插入向量数据（为HNSW_SQ优化）
+insert into t_hnsw_sq_with_index values (1, 'HNSW_SQ_Point1', '[0.1, 0.1, 0.1]');
+insert into t_hnsw_sq_with_index values (2, 'HNSW_SQ_Point2', '[0.2, 0.2, 0.2]');
+insert into t_hnsw_sq_with_index values (3, 'HNSW_SQ_Point3', '[0.15, 0.15, 0.15]');
+insert into t_hnsw_sq_with_index values (4, 'HNSW_SQ_Point4', '[0.3, 0.3, 0.3]');
+insert into t_hnsw_sq_with_index values (5, 'HNSW_SQ_Point5', '[0.25, 0.25, 0.25]');
+insert into t_hnsw_sq_with_index values (101, 'HNSW_SQ_Point6', '[0.4, 0.4, 0.4]'); 
+insert into t_hnsw_sq_with_index values (50, 'HNSW_SQ_Point7', '[0.35, 0.35, 0.35]');
+--echo # Fork表
+fork table t_hnsw_sq_with_index to t_hnsw_sq_with_index_fork;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+--echo # 验证fork后源表和目标表的HNSW_SQ索引
+show indexes from t_hnsw_sq_with_index;
+show indexes from t_hnsw_sq_with_index_fork;
+--echo # 源表HNSW_SQ索引查询（L2距离近似查询和精确查询）
+select id, name, vec, l2_distance(vec, '[0.1, 0.1, 0.1]') as distance 
+from t_hnsw_sq_with_index order by l2_distance(vec, '[0.1, 0.1, 0.1]') asc APPROXIMATE limit 3; 
+select id, name, vec, l2_distance(vec, '[0.1, 0.1, 0.1]') as distance
+from t_hnsw_sq_with_index order by l2_distance(vec, '[0.1, 0.1, 0.1]') asc limit 3;
+--echo # 目标表HNSW_SQ索引查询（L2距离近似查询和精确查询）
+select id, name, vec, l2_distance(vec, '[0.1, 0.1, 0.1]') as distance
+from t_hnsw_sq_with_index_fork order by l2_distance(vec, '[0.1, 0.1, 0.1]') asc APPROXIMATE limit 3;
+select id, name, vec, l2_distance(vec, '[0.1, 0.1, 0.1]') as distance
+from t_hnsw_sq_with_index_fork order by l2_distance(vec, '[0.1, 0.1, 0.1]') asc limit 3;
+--echo # 验证近似查询和精确查询结果一致性（L2距离）
+select count(*) as match_count from (
+    select id from t_hnsw_sq_with_index order by l2_distance(vec, '[0.1, 0.1, 0.1]') asc APPROXIMATE limit 3
+) as approx
+inner join (
+    select id from t_hnsw_sq_with_index order by l2_distance(vec, '[0.1, 0.1, 0.1]') asc limit 3  
+) as exact on approx.id = exact.id;
+select count(*) as match_count from (
+    select id from t_hnsw_sq_with_index_fork order by l2_distance(vec, '[0.1, 0.1, 0.1]') asc APPROXIMATE limit 3
+) as approx
+inner join (
+    select id from t_hnsw_sq_with_index_fork order by l2_distance(vec, '[0.1, 0.1, 0.1]') asc limit 3
+) as exact on approx.id = exact.id;
+--echo # 10.2 后建HNSW_SQ索引
+drop table if exists t_hnsw_sq_post_index;
+drop table if exists t_hnsw_sq_post_index_fork;
+--echo # 创建不带索引的向量表
+create table t_hnsw_sq_post_index (
+    id int primary key,
+    name varchar(50),
+    vec vector(3)
+) partition by range(id) (
+    partition p0 values less than (100),
+    partition p1 values less than (200)
+);
+--echo # 插入测试数据
+insert into t_hnsw_sq_post_index values (1, 'Post_HNSW_SQ1', '[0.5, 0.5, 0.5]');
+insert into t_hnsw_sq_post_index values (2, 'Post_HNSW_SQ2', '[0.6, 0.6, 0.6]');
+insert into t_hnsw_sq_post_index values (3, 'Post_HNSW_SQ3', '[0.55, 0.55, 0.55]');
+insert into t_hnsw_sq_post_index values (4, 'Post_HNSW_SQ4', '[0.7, 0.7, 0.7]');
+insert into t_hnsw_sq_post_index values (101, 'Post_HNSW_SQ5', '[0.8, 0.8, 0.8]');  
+insert into t_hnsw_sq_post_index values (50, 'Post_HNSW_SQ6', '[0.75, 0.75, 0.75]');
+--echo # Fork表
+fork table t_hnsw_sq_post_index to t_hnsw_sq_post_index_fork;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+--echo # 在源表和目标表上后建HNSW_SQ索引
+create vector index idx_hnsw_sq_src on t_hnsw_sq_post_index(vec) with (distance=l2, type=hnsw_sq, lib=vsag);
+create vector index idx_hnsw_sq_fork on t_hnsw_sq_post_index_fork(vec) with (distance=l2, type=hnsw_sq, lib=vsag);
+--echo # 等待索引构建完成
+sleep 5;
+--echo # 验证后建HNSW_SQ索引功能
+show indexes from t_hnsw_sq_post_index;
+show indexes from t_hnsw_sq_post_index_fork;
+--echo # 源表后建索引查询测试
+select id, name, vec, l2_distance(vec, '[0.5, 0.5, 0.5]') as distance
+from t_hnsw_sq_post_index order by l2_distance(vec, '[0.5, 0.5, 0.5]') asc APPROXIMATE limit 3;
+--echo # 目标表后建索引查询测试  
+select id, name, vec, l2_distance(vec, '[0.5, 0.5, 0.5]') as distance
+from t_hnsw_sq_post_index_fork order by l2_distance(vec, '[0.5, 0.5, 0.5]') asc APPROXIMATE limit 3;
+--echo # 10.3 验证HNSW_SQ索引重建功能
+--echo # 重建源表索引
+call dbms_vector.rebuild_index('idx_hnsw_sq_src', 't_hnsw_sq_post_index', 'vec');
+--echo # 重建目标表索引
+call dbms_vector.rebuild_index('idx_hnsw_sq_fork', 't_hnsw_sq_post_index_fork', 'vec');
+--echo # 等待索引重建完成
+sleep 5;
+--echo # 验证重建后索引功能
+select id, name, vec, l2_distance(vec, '[0.5, 0.5, 0.5]') as distance
+from t_hnsw_sq_post_index order by l2_distance(vec, '[0.5, 0.5, 0.5]') asc APPROXIMATE limit 3;
+select id, name, vec, l2_distance(vec, '[0.5, 0.5, 0.5]') as distance
+from t_hnsw_sq_post_index_fork order by l2_distance(vec, '[0.5, 0.5, 0.5]') asc APPROXIMATE limit 3;
+--echo # 10.4 数据隔离测试
+--echo # 在源表插入新数据
+insert into t_hnsw_sq_with_index values (6, 'Source_New_Point', '[0.12, 0.12, 0.12]'); 
+--echo # 在目标表插入新数据  
+insert into t_hnsw_sq_with_index_fork values (7, 'Fork_New_Point', '[0.08, 0.08, 0.08]');  
+--echo # 验证数据隔离性
+select id, name, vec, l2_distance(vec, '[0.1, 0.1, 0.1]') as distance
+from t_hnsw_sq_with_index order by l2_distance(vec, '[0.1, 0.1, 0.1]') asc APPROXIMATE limit 5;
+select id, name, vec, l2_distance(vec, '[0.1, 0.1, 0.1]') as distance
+from t_hnsw_sq_with_index_fork order by l2_distance(vec, '[0.1, 0.1, 0.1]') asc APPROXIMATE limit 5;
+--echo # 10.5 HNSW_SQ特性测试（量化效果验证）
+--echo # 测试不同距离的查询点
+select id, name, vec, l2_distance(vec, '[1.0, 1.0, 1.0]') as distance
+from t_hnsw_sq_with_index_fork order by l2_distance(vec, '[1.0, 1.0, 1.0]') asc APPROXIMATE limit 3;
+
+--echo # 10.6 清理测试表
+drop table if exists t_hnsw_sq_with_index;
+drop table if exists t_hnsw_sq_with_index_fork;
+drop table if exists t_hnsw_sq_post_index;
+drop table if exists t_hnsw_sq_post_index_fork;
+
+
+--echo ============================================
+--echo 8.5 ivf_sq索引
+--echo ============================================
+
+--echo # 8.5.1 随表创建ivf_sq索引
+drop table if exists t_ivf_sq_with_index;
+drop table if exists t_ivf_sq_with_index_fork;
+
+
+CREATE TABLE t_ivf_sq_with_index (
+    id INT PRIMARY KEY, 
+    name VARCHAR(50),
+    vec VECTOR(3)
+);
+--error 1235
+CREATE VECTOR INDEX idx1 ON t_ivf_sq_with_index(vec) WITH (distance=l2, type=ivf_sq, lib=vsag);
+
+--echo ============================================
+--echo 9. IVF_FLAT索引
+--echo ============================================
+
+--echo # 9.1 随表创建IVF_FLAT索引
+drop table if exists t_ivf_flat_with_index;
+drop table if exists t_ivf_flat_with_index_fork;
+
+create table t_ivf_flat_with_index (
+    id int primary key,
+    name varchar(50),
+    vec vector(3),
+    vector index idx_vec(vec) with (distance=l2, type=ivf_flat)
+) partition by range(id) (
+    partition p0 values less than (100),
+    partition p1 values less than (200)
+);
+
+insert into t_ivf_flat_with_index values (1, 'Vec1', '[0.1,0.1,0.1]');
+insert into t_ivf_flat_with_index values (101, 'Vec2', '[0.2,0.2,0.2]');
+insert into t_ivf_flat_with_index values (50, 'Vec3', '[0.3,0.3,0.3]');
+
+--echo # Fork表 ivf不支持
+--error 1235
+fork table t_ivf_flat_with_index to t_ivf_flat_with_index_fork;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+
+--echo # 验证fork后源表和目标表的IVF_FLAT索引功能
+#show indexes from t_ivf_flat_with_index;
+#show indexes from t_ivf_flat_with_index_fork;
+#select * from t_ivf_flat_with_index order by l2_distance(vec, [0.1,0.1,0.1]) APPROXIMATE limit 3;
+#select * from t_ivf_flat_with_index_fork order by l2_distance(vec, [0.1,0.1,0.1]) APPROXIMATE limit 3;
+
+--echo # 9.2 后建IVF_FLAT索引
+drop table if exists t_ivf_flat_post_index;
+drop table if exists t_ivf_flat_post_index_fork;
+
+create table t_ivf_flat_post_index (
+    id int primary key,
+    name varchar(50),
+    vec vector(3)
+) partition by range(id) (
+    partition p0 values less than (100),
+    partition p1 values less than (200)
+);
+
+insert into t_ivf_flat_post_index values (1, 'Vec1', '[0.1,0.1,0.1]');
+insert into t_ivf_flat_post_index values (101, 'Vec2', '[0.2,0.2,0.2]');
+
+--echo # Fork表
+fork table t_ivf_flat_post_index to t_ivf_flat_post_index_fork;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+
+--echo # 在源表和目标表上后建IVF_FLAT索引
+create vector index idx_vec_src on t_ivf_flat_post_index(vec) with (distance=l2, type=ivf_flat);
+create vector index idx_vec_fork on t_ivf_flat_post_index_fork(vec) with (distance=l2, type=ivf_flat);
+
+--echo # 等待索引构建完成
+sleep 5;
+
+--echo # 验证后建IVF_FLAT索引功能
+show indexes from t_ivf_flat_post_index;
+show indexes from t_ivf_flat_post_index_fork;
+select * from t_ivf_flat_post_index order by l2_distance(vec, [0.1,0.1,0.1]) APPROXIMATE limit 3;
+select * from t_ivf_flat_post_index_fork order by l2_distance(vec, [0.1,0.1,0.1]) APPROXIMATE limit 3;
+
+drop table t_ivf_flat_with_index;
+#drop table t_ivf_flat_with_index_fork;
+drop table t_ivf_flat_post_index;
+drop table t_ivf_flat_post_index_fork;
+
+--echo ============================================
+--echo 10. 语义索引（Semantic Index）
+--echo ============================================
+
+--echo ============================================
+--echo 11. 稀疏向量SPIV索引测试
+--echo ============================================
+
+--echo # 11.1 随表创建稀疏向量表
+drop table if exists t_spiv_basic;
+drop table if exists t_spiv_basic_fork;
+
+--echo # 创建稀疏向量表（使用简单表结构）
+create table t_spiv_basic (
+    id int primary key,
+    sv sparsevector
+) partition by range(id) (
+    partition p0 values less than (100),
+    partition p1 values less than (200)
+);
+
+--echo # 插入稀疏向量数据
+insert into t_spiv_basic values (1, '{0:1.0, 10:2.0, 100:3.0}');      
+insert into t_spiv_basic values (2, '{1:1.5, 20:2.5, 200:3.5}');      
+insert into t_spiv_basic values (3, '{0:0.8, 15:1.8, 150:2.8}');     
+insert into t_spiv_basic values (4, '{5:1.2, 50:2.2, 500:3.2}');      
+insert into t_spiv_basic values (101, '{2:1.1, 25:2.1, 250:3.1}');    
+insert into t_spiv_basic values (50, '{3:0.9, 30:1.9, 300:2.9}');     
+
+--echo # Fork表
+fork table t_spiv_basic to t_spiv_basic_fork;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+
+--echo # 验证fork后源表和目标表的表结构
+show create table t_spiv_basic;
+show create table t_spiv_basic_fork;
+
+--echo # 验证稀疏向量数据
+select count(*) as cnt from t_spiv_basic_fork;
+select id, sv from t_spiv_basic_fork order by id;
+
+--echo # 验证源表数据未受影响
+select count(*) as cnt from t_spiv_basic;
+select id, sv from t_spiv_basic order by id;
+
+--echo # 11.2 稀疏向量基本操作测试
+select * from t_spiv_basic where id = 1;
+select * from t_spiv_basic_fork where id = 1;
+select id, sv from t_spiv_basic where id between 1 and 3 order by id;
+select id, sv from t_spiv_basic_fork where id between 1 and 3 order by id;
+--echo # 稀疏向量距离计算（如果支持）
+
+--echo # 11.3 数据隔离测试
+insert into t_spiv_basic values (6, '{0:1.5, 12:2.5, 120:3.5}');      
+
+--echo # 在目标表插入新稀疏向量数据
+insert into t_spiv_basic_fork values (7, '{1:1.3, 18:2.3, 180:3.3}');  
+
+--echo # 验证数据隔离性
+select id, sv from t_spiv_basic order by id;
+select id, sv from t_spiv_basic_fork order by id;
+
+--echo # 11.4 稀疏向量功能测试（如果支持索引）
+
+--echo # 11.5 复杂稀疏向量测试
+drop table if exists t_spiv_complex;
+drop table if exists t_spiv_complex_fork;
+--echo # 创建带额外字段的稀疏向量表
+create table t_spiv_complex (
+    id int primary key,
+    name varchar(50),
+    features sparsevector,
+    created_time timestamp default current_timestamp
+);
+--echo # 插入数据并测试Fork
+insert into t_spiv_complex (id, name, features) values 
+(1, 'Document1', '{0:0.8, 5:0.6, 10:0.9, 50:0.7}'),
+(2, 'Document2', '{1:0.7, 6:0.8, 11:0.5, 51:0.9}'),
+(3, 'Document3', '{2:0.9, 7:0.4, 12:0.8, 52:0.6}'),
+(4, 'Document4', '{3:0.6, 8:0.9, 13:0.7, 53:0.8}'),
+(101, 'Document5', '{4:0.8, 9:0.7, 14:0.9, 54:0.5}'),
+(50, 'Document6', '{5:0.7, 10:0.8, 15:0.6, 55:0.9}');
+fork table t_spiv_complex to t_spiv_complex_fork;
+--echo # 验证复杂表Fork
+select count(*) as cnt from t_spiv_complex_fork;
+select id, name, features from t_spiv_complex_fork order by id;
+--echo # 稀疏向量操作测试（只使用支持的基本操作）
+--echo # 1. 基本SELECT查询
+select id, name, features from t_spiv_complex_fork where id = 1;
+--echo # 2. 范围查询
+select id, name, features from t_spiv_complex_fork where id between 1 and 3 order by id;
+--echo # 3. 名称模式查询
+select id, name, features from t_spiv_complex_fork where name like 'Document%' order by id;
+--echo # 4. 排序查询
+select id, name from t_spiv_complex_fork order by name;
+--echo # 5. 统计查询
+select count(*) as total_docs, 
+       min(id) as min_id, 
+       max(id) as max_id,
+       count(distinct name) as unique_names
+from t_spiv_complex_fork;
+--echo # 稀疏向量更新测试
+update t_spiv_complex_fork set name = 'Updated_Doc1' where id = 1;
+--echo # 验证更新结果
+select id, name, features from t_spiv_complex_fork where id = 1;
+
+--echo # 验证源表数据未受影响
+select id, name, features from t_spiv_complex where id = 1;
+
+--echo # 11.7 边界值测试
+insert into t_spiv_basic values (8, '{}'); 
+
+--echo # 测试单元素稀疏向量
+insert into t_spiv_basic_fork values (9, '{1000:1.0}');  
+
+--echo # 验证边界值数据
+select id, sv from t_spiv_basic where id in (8);
+
+select '边界值测试 - Fork表:' as test_type;
+select id, sv from t_spiv_basic_fork where id in (9);
+
+--echo # 11.8 稀疏向量查询功能测试
+--echo # 基本查询功能
+select id, sv from t_spiv_basic_fork where id between 1 and 3 order by id;
+
+--echo # 按向量特性查询（如果支持）
+
+--echo # 11.9 性能对比测试（数据量较大时）
+insert into t_spiv_basic_fork values 
+(10, '{6:1.1, 60:2.1, 600:3.1}'),
+(11, '{7:1.2, 70:2.2, 700:3.2}'),
+(12, '{8:1.3, 80:2.3, 800:3.3}'),
+(13, '{9:1.4, 90:2.4, 900:3.4}');
+
+--echo # 验证批量插入后数据完整性
+select count(*) as total_count from t_spiv_basic_fork;
+select id, sv from t_spiv_basic_fork where id >= 10 order by id;
+
+--echo # 11.10 清理测试表
+drop table if exists t_spiv_basic;
+drop table if exists t_spiv_basic_fork;
+drop table if exists t_spiv_complex;
+drop table if exists t_spiv_complex_fork;
+
+
+
+--echo ============================================
+--echo 13. 混合索引隔离测试 - Fork后源表和目标表索引独立
+--echo ============================================
+
+--echo # 验证fork后，源表和目标表的索引修改互不影响
+drop table if exists t_isolation_test;
+drop table if exists t_isolation_test_fork;
+
+create table t_isolation_test (
+    id int primary key,
+    name varchar(50) not null,
+    age int not null,
+    vec vector(3) not null,
+    index idx_name(name) ,
+    index idx_age(age) ,
+    vector index idx_vec(vec) with (distance=l2, type=hnsw, lib=vsag, m=16, ef_construction=200)
+) partition by range(id) (
+    partition p0 values less than (100),
+    partition p1 values less than (200)
+);
+
+insert into t_isolation_test values (1, 'Alice', 25, '[0.1,0.1,0.1]');
+insert into t_isolation_test values (101, 'Bob', 30, '[0.2,0.2,0.2]');
+
+--echo # Fork表
+fork table t_isolation_test to t_isolation_test_fork;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+
+--echo # 在源表上插入新数据并验证索引
+insert into t_isolation_test values (50, 'Charlie', 35, '[0.3,0.3,0.3]');
+select * from t_isolation_test where name = 'Charlie';
+select * from t_isolation_test where age = 35;
+explain select * from t_isolation_test where name = 'Charlie';
+explain select * from t_isolation_test where age = 35;
+select * from t_isolation_test order by l2_distance(vec, [0.3,0.3,0.3]) APPROXIMATE limit 3;
+
+--echo # 验证目标表索引不受源表影响
+select * from t_isolation_test_fork where name = 'Charlie';
+select * from t_isolation_test_fork where age = 35;
+explain select * from t_isolation_test_fork where name = 'Charlie';
+explain select * from t_isolation_test_fork where age = 35;
+
+--echo # 在目标表上插入新数据并验证索引
+insert into t_isolation_test_fork values (99, 'Fork_User', 40, '[0.4,0.4,0.4]');
+select * from t_isolation_test_fork where name = 'Fork_User';
+select * from t_isolation_test_fork where age = 40;
+explain select * from t_isolation_test_fork where name = 'Fork_User';
+explain select * from t_isolation_test_fork where age = 40;
+select * from t_isolation_test_fork order by l2_distance(vec, [0.4,0.4,0.4]) APPROXIMATE limit 3;
+
+--echo # 验证源表索引不受目标表影响
+select * from t_isolation_test where name = 'Fork_User';
+select * from t_isolation_test where age = 40;
+explain select * from t_isolation_test where name = 'Fork_User';
+explain select * from t_isolation_test where age = 40;
+
+--echo # 在源表上后建新索引
+ALTER TABLE t_isolation_test ADD COLUMN email VARCHAR(100);
+create index idx_email_src on t_isolation_test(email) ;
+--echo # 验证源表有新索引
+show indexes from t_isolation_test;
+insert into t_isolation_test values (2, 'Test2', 20, '[0.5,0.5,0.5]', 'test2@example.com');
+select * from t_isolation_test where email = 'test2@example.com';
+explain select * from t_isolation_test where email = 'test2@example.com';
+
+--echo # 验证目标表没有新索引（索引独立）
+show indexes from t_isolation_test_fork;
+
+--echo # 在目标表上后建新索引
+ALTER TABLE t_isolation_test_fork ADD COLUMN email VARCHAR(100);
+create index idx_email_fork on t_isolation_test_fork(email) ;
+--echo # 验证目标表有新索引
+show indexes from t_isolation_test_fork;
+insert into t_isolation_test_fork values (3, 'Test3', 25, '[0.6,0.6,0.6]', 'test3@example.com');
+select * from t_isolation_test_fork where email = 'test3@example.com';
+explain select * from t_isolation_test_fork where email = 'test3@example.com';
+
+--echo # 验证源表索引不受影响
+show indexes from t_isolation_test;
+
+drop table t_isolation_test;
+drop table t_isolation_test_fork;
+
+--echo ============================================
+--echo 14. 清理
+--echo ============================================
+
+drop database if exists db_fork_index_types;
+
+--echo # 恢复向量索引内存限制
+alter system set ob_vector_memory_limit_percentage = 0;
