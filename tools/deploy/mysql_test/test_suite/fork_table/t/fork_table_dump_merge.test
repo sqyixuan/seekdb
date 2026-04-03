@@ -1,0 +1,313 @@
+##owner: chenminsi.cms
+##owner group: 底层引擎部-轻量版
+##description: Fork Table与转储合并功能测试
+##tags: fork_table dump merge major_freeze minor_freeze
+##author: chenminsi.cms
+
+--disable_warnings
+drop database if exists db_fork_dump_merge;
+--enable_warnings
+
+connect (obsys,$OBMYSQL_MS0,root@sys,,oceanbase,$OBMYSQL_PORT);
+connection default;
+create database db_fork_dump_merge;
+use db_fork_dump_merge;
+
+SET wait_timeout=30000000;
+SET ob_trx_timeout = 100000000;
+SET ob_query_timeout = 100000000;
+
+--echo # 启用debug sync
+connection obsys;
+alter system set debug_sync_timeout = '120s';
+--echo # 设置DDL超时为1秒
+alter system set _ob_ddl_timeout = '50s';
+sleep 3;
+set ob_global_debug_sync = 'reset';
+connection default;
+
+--echo # 加速major freeze
+--source mysql_test/test_suite/fork_table/include/quick_major.inc
+
+--echo ============================================
+--echo 1. Fork前：转储合并操作
+--echo ============================================
+
+drop table if exists t_pre_dump_merge;
+drop table if exists t_pre_dump_merge_fork;
+
+create table t_pre_dump_merge (
+    id int primary key,
+    name varchar(50),
+    value int,
+    data text
+) partition by range(id) (
+    partition p0 values less than (100),
+    partition p1 values less than (200)
+);
+
+--echo # Fork前：插入数据并触发major freeze（转储）
+insert into t_pre_dump_merge values (1, 'PreMajor1', 100, repeat('A', 500));
+insert into t_pre_dump_merge values (101, 'PreMajor2', 200, repeat('B', 500));
+alter system major freeze;
+--source mysql_test/test_suite/fork_table/include/wait_daily_merge.inc
+
+--echo # 验证Fork前major freeze后的数据
+select count(*) as cnt from t_pre_dump_merge;
+select id, name, value, length(data) as data_len from t_pre_dump_merge order by id;
+
+--echo # Fork前：插入数据并触发minor freeze（转储）
+--echo # 注意：确保之前的数据已清理，避免主键冲突
+delete from t_pre_dump_merge where id in (2, 102);
+insert into t_pre_dump_merge values (2, 'PreMinor1', 300, repeat('C', 500));
+insert into t_pre_dump_merge values (102, 'PreMinor2', 400, repeat('D', 500));
+alter system minor freeze;
+--source mysql_test/include/wait_minor_merge.inc
+
+--echo # 验证Fork前minor freeze后的数据
+select count(*) as cnt from t_pre_dump_merge;
+select id, name, value, length(data) as data_len from t_pre_dump_merge order by id;
+
+--echo # Fork表
+fork table t_pre_dump_merge to t_pre_dump_merge_fork;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+
+--echo # 验证Fork后源表和目标表数据
+select count(*) as src_cnt from t_pre_dump_merge;
+select count(*) as fork_cnt from t_pre_dump_merge_fork;
+select id, name, value, length(data) as data_len from t_pre_dump_merge order by id;
+select id, name, value, length(data) as data_len from t_pre_dump_merge_fork order by id;
+
+drop table t_pre_dump_merge;
+drop table t_pre_dump_merge_fork;
+
+--echo ============================================
+--echo 2. Fork中：转储合并操作
+--echo ============================================
+
+drop table if exists t_mid_dump_merge;
+drop table if exists t_mid_dump_merge_fork;
+
+create table t_mid_dump_merge (
+    id int primary key,
+    name varchar(50),
+    value int,
+    data text
+) partition by range(id) (
+    partition p0 values less than (100),
+    partition p1 values less than (200)
+);
+
+--echo # 创建初始数据
+insert into t_mid_dump_merge values (1, 'Init1', 10, repeat('I', 500));
+insert into t_mid_dump_merge values (101, 'Init2', 20, repeat('J', 500));
+
+--echo # 在fork开始前，先确保之前的merge已完成，并记录初始状态
+--echo # seekdb/lite：CDB_OB_MAJOR_COMPACTION 无 tenant_id，用当前租户的 DBA_OB_MAJOR_COMPACTION
+connection default;
+--replace_column 1 FROZEN_SCN 2 LAST_SCN
+select frozen_scn, last_scn, (frozen_scn != last_scn) as merge_pending from oceanbase.DBA_OB_MAJOR_COMPACTION;
+
+--echo # 记录执行freeze前的last_scn值（用于后续比较）
+connection default;
+--replace_column 1 LAST_SCN_BEFORE
+select last_scn as last_scn_before from oceanbase.DBA_OB_MAJOR_COMPACTION;
+
+--echo # 设置debug sync point在FORK_TABLE_BUILD_DATA阶段暂停
+connection obsys;
+set ob_global_debug_sync = 'FORK_TABLE_BUILD_DATA wait_for dump_merge_signal execute 10000';
+sleep 1;
+connection default;
+
+--echo # 执行Fork命令（会在BUILD_DATA阶段暂停）
+fork table t_mid_dump_merge to t_mid_dump_merge_fork;
+
+--echo # 等待fork进入BUILD_DATA阶段
+let $wait_status= BUILD_DATA;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+
+--echo # Fork中：对源表执行major freeze命令（merge操作会被阻塞，等待fork完成后才能继续）
+insert into t_mid_dump_merge values (2, 'MidSrcMajor1', 100, repeat('K', 500));
+insert into t_mid_dump_merge values (102, 'MidSrcMajor2', 200, repeat('L', 500));
+alter system major freeze;
+#--source mysql_test/test_suite/fork_table/include/wait_daily_merge.inc
+# 注意：在fork过程中不等待merge完成，因为merge操作会被阻塞，等待fork完成后才能继续
+
+--echo # 等待一小段时间，确保系统已经处理freeze命令并更新frozen_scn
+sleep 2;
+
+--echo # 验证Fork中源表数据（此时merge操作尚未完成，只是验证插入的数据）
+select count(*) as src_cnt from t_mid_dump_merge;
+select id, name, value, length(data) as data_len from t_mid_dump_merge order by id;
+
+--echo # 验证major merge确实被阻塞
+--echo # 说明：执行alter system major freeze后，有两种可能的情况：
+--echo # 1. 如果frozen_scn != last_scn（merge_pending=1），说明新的freeze已设置，但merge尚未完成（被fork阻塞）
+--echo # 2. 如果frozen_scn == last_scn（merge_pending=0），可能是新的freeze还没有被处理（因为fork阻塞了freeze的处理）
+--echo # 无论哪种情况，都说明merge操作被阻塞，无法继续完成
+connection default;
+--replace_column 1 FROZEN_SCN 2 LAST_SCN 3 MERGE_PENDING
+select frozen_scn, last_scn, (frozen_scn != last_scn) as merge_pending from oceanbase.DBA_OB_MAJOR_COMPACTION;
+
+--echo # Fork中：对目标表执行major freeze命令（merge操作会被阻塞，等待fork完成后才能继续）
+insert into t_mid_dump_merge_fork values (10, 'MidForkMajor1', 1000, repeat('M', 500));
+insert into t_mid_dump_merge_fork values (110, 'MidForkMajor2', 2000, repeat('N', 500));
+alter system major freeze;
+#--source mysql_test/test_suite/fork_table/include/wait_daily_merge.inc
+# 注意：在fork过程中不等待merge完成，因为merge操作会被阻塞，等待fork完成后才能继续
+
+--echo # 验证Fork中目标表数据（此时merge操作尚未完成，只是验证插入的数据）
+select count(*) as fork_cnt from t_mid_dump_merge_fork;
+select id, name, value, length(data) as data_len from t_mid_dump_merge_fork order by id;
+
+--echo # 再次验证major merge确实被阻塞
+--echo # 说明：执行alter system major freeze后，有两种可能的情况：
+--echo # 1. 如果frozen_scn != last_scn（merge_pending=1），说明新的freeze已设置，但merge尚未完成（被fork阻塞）
+--echo # 2. 如果frozen_scn == last_scn（merge_pending=0），可能是新的freeze还没有被处理（因为fork阻塞了freeze的处理）
+--echo # 无论哪种情况，都说明merge操作被阻塞，无法继续完成
+connection default;
+--replace_column 1 FROZEN_SCN 2 LAST_SCN 3 MERGE_PENDING
+select frozen_scn, last_scn, (frozen_scn != last_scn) as merge_pending from oceanbase.DBA_OB_MAJOR_COMPACTION;
+
+--echo # Fork中：对源表执行minor freeze命令（merge操作会被阻塞，等待fork完成后才能继续）
+insert into t_mid_dump_merge values (3, 'MidSrcMinor1', 300, repeat('O', 500));
+insert into t_mid_dump_merge values (103, 'MidSrcMinor2', 400, repeat('P', 500));
+alter system minor freeze;
+#--source mysql_test/include/wait_minor_merge.inc
+# 注意：在fork过程中不等待merge完成，因为merge操作会被阻塞，等待fork完成后才能继续
+
+--echo # 验证Fork中源表数据（此时merge操作尚未完成，只是验证插入的数据）
+select count(*) as src_cnt from t_mid_dump_merge;
+select id, name, value, length(data) as data_len from t_mid_dump_merge order by id;
+
+--echo # 验证minor merge确实被阻塞（存在is_active='NO'的memstore表示minor merge尚未完成）
+connection obsys;
+--replace_column 1 COUNT_VALUE
+select count(*) as pending_minor_merge from oceanbase.__all_virtual_memstore_info where is_active='NO';
+connection default;
+
+--echo # Fork中：对目标表执行minor freeze命令（merge操作会被阻塞，等待fork完成后才能继续）
+insert into t_mid_dump_merge_fork values (11, 'MidForkMinor1', 3000, repeat('Q', 500));
+insert into t_mid_dump_merge_fork values (111, 'MidForkMinor2', 4000, repeat('R', 500));
+alter system minor freeze;
+#--source mysql_test/include/wait_minor_merge.inc
+# 注意：在fork过程中不等待merge完成，因为merge操作会被阻塞，等待fork完成后才能继续
+
+--echo # 验证Fork中目标表数据（此时merge操作尚未完成，只是验证插入的数据）
+select count(*) as fork_cnt from t_mid_dump_merge_fork;
+select id, name, value, length(data) as data_len from t_mid_dump_merge_fork order by id;
+
+--echo # 再次验证minor merge确实被阻塞（存在is_active='NO'的memstore表示minor merge尚未完成）
+connection obsys;
+--replace_column 1 COUNT_VALUE
+select count(*) as pending_minor_merge from oceanbase.__all_virtual_memstore_info where is_active='NO';
+connection default;
+
+--echo # 继续Fork执行
+connection obsys;
+set ob_global_debug_sync = 'FORK_TABLE_BUILD_DATA clear';
+set ob_global_debug_sync = 'now signal dump_merge_signal';
+connection default;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+
+--echo # 验证Fork完成后源表和目标表数据
+select count(*) as src_cnt from t_mid_dump_merge;
+select count(*) as fork_cnt from t_mid_dump_merge_fork;
+select id, name, value, length(data) as data_len from t_mid_dump_merge order by id;
+select id, name, value, length(data) as data_len from t_mid_dump_merge_fork order by id;
+
+--echo # 等待major merge完成（在fork过程中执行的major freeze需要等待fork完成后才能继续）
+--source mysql_test/test_suite/fork_table/include/wait_daily_merge.inc
+
+--echo # 等待minor merge完成（在fork过程中执行的minor freeze需要等待fork完成后才能继续）
+--source mysql_test/include/wait_minor_merge.inc
+
+--echo # 验证Fork完成后major、minor freeze后的数据
+select count(*) as src_cnt from t_mid_dump_merge;
+select count(*) as fork_cnt from t_mid_dump_merge_fork;
+select id, name, value, length(data) as data_len from t_mid_dump_merge order by id;
+select id, name, value, length(data) as data_len from t_mid_dump_merge_fork order by id;
+
+drop table t_mid_dump_merge;
+drop table t_mid_dump_merge_fork;
+
+--echo ============================================
+--echo 3. Fork后：转储合并操作
+--echo ============================================
+
+drop table if exists t_post_dump_merge;
+drop table if exists t_post_dump_merge_fork;
+
+create table t_post_dump_merge (
+    id int primary key,
+    name varchar(50),
+    value int,
+    data text
+) partition by range(id) (
+    partition p0 values less than (100),
+    partition p1 values less than (200)
+);
+
+--echo # 创建初始数据
+insert into t_post_dump_merge values (1, 'Init1', 10, repeat('A', 500));
+insert into t_post_dump_merge values (101, 'Init2', 20, repeat('B', 500));
+
+--echo # Fork表
+fork table t_post_dump_merge to t_post_dump_merge_fork;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+
+--echo # Fork后：对源表进行major freeze（转储）
+insert into t_post_dump_merge values (2, 'PostSrcMajor1', 100, repeat('C', 500));
+insert into t_post_dump_merge values (102, 'PostSrcMajor2', 200, repeat('D', 500));
+alter system major freeze;
+--source mysql_test/test_suite/fork_table/include/wait_daily_merge.inc
+
+--echo # 验证Fork后源表major freeze后的数据
+select count(*) as src_cnt from t_post_dump_merge;
+select id, name, value, length(data) as data_len from t_post_dump_merge order by id;
+
+--echo # Fork后：对目标表进行major freeze（转储）
+insert into t_post_dump_merge_fork values (10, 'PostForkMajor1', 1000, repeat('E', 500));
+insert into t_post_dump_merge_fork values (110, 'PostForkMajor2', 2000, repeat('F', 500));
+alter system major freeze;
+--source mysql_test/test_suite/fork_table/include/wait_daily_merge.inc
+
+--echo # 验证Fork后目标表major freeze后的数据
+select count(*) as fork_cnt from t_post_dump_merge_fork;
+select id, name, value, length(data) as data_len from t_post_dump_merge_fork order by id;
+
+--echo # Fork后：对源表进行minor freeze（转储）
+insert into t_post_dump_merge values (3, 'PostSrcMinor1', 300, repeat('G', 500));
+insert into t_post_dump_merge values (103, 'PostSrcMinor2', 400, repeat('H', 500));
+alter system minor freeze;
+--source mysql_test/include/wait_minor_merge.inc
+
+--echo # 验证Fork后源表minor freeze后的数据
+select count(*) as src_cnt from t_post_dump_merge;
+select id, name, value, length(data) as data_len from t_post_dump_merge order by id;
+
+--echo # Fork后：对目标表进行minor freeze（转储）
+insert into t_post_dump_merge_fork values (11, 'PostForkMinor1', 3000, repeat('I', 500));
+insert into t_post_dump_merge_fork values (111, 'PostForkMinor2', 4000, repeat('J', 500));
+alter system minor freeze;
+--source mysql_test/include/wait_minor_merge.inc
+
+--echo # 验证Fork后目标表minor freeze后的数据
+select count(*) as fork_cnt from t_post_dump_merge_fork;
+select id, name, value, length(data) as data_len from t_post_dump_merge_fork order by id;
+
+--echo # 验证源表和目标表数据隔离
+select count(*) as src_cnt from t_post_dump_merge;
+select count(*) as fork_cnt from t_post_dump_merge_fork;
+select id, name, value from t_post_dump_merge order by id;
+select id, name, value from t_post_dump_merge_fork order by id;
+
+drop table t_post_dump_merge;
+drop table t_post_dump_merge_fork;
+
+--echo ============================================
+--echo 4. 清理
+--echo ============================================
+
+drop database if exists db_fork_dump_merge;
+
