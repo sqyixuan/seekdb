@@ -477,8 +477,10 @@ int ObForkTableTask::wait_data_complement(const ObDDLTaskStatus next_task_status
         break;
       } else if (!is_complete) {
         all_complete = false;
-        LOG_INFO("waiting for fork data complement", K(task_id_), K(tablet_id),
-            "dst_table_id", target_object_id_, "tablet_cnt", dst_tablet_ids.count());
+        if (REACH_TIME_INTERVAL(10 * 1000 * 1000)) {
+          LOG_INFO("waiting for fork data complement", K(task_id_), K(tablet_id),
+              "dst_table_id", target_object_id_, "tablet_cnt", dst_tablet_ids.count());
+        }
         // Do not block RS worker thread here. Return OB_EAGAIN to let scheduler reschedule later.
         break;
       }
@@ -579,13 +581,8 @@ int ObForkTableTask::finish()
     LOG_WARN("ObForkTableTask has not been inited", K(ret));
   } else if (OB_FAIL(get_schema_guard(schema_guard))) {
     LOG_WARN("fail to get schema guard", K(ret));
-  } else if (snapshot_version_ > 0) {
-    ObSEArray<uint64_t, 1> table_ids;
-    if (OB_FAIL(table_ids.push_back(object_id_))) {
-      LOG_WARN("fail to push back object id", K(ret), K(object_id_));
-    } else if (OB_FAIL(ObForkTableUtil::release_snapshot(this, schema_guard, tenant_id_, table_ids, snapshot_version_))) {
-      LOG_WARN("fail to release snapshot", K(ret), K(object_id_), K(snapshot_version_));
-    }
+  } else if (snapshot_version_ > 0 && OB_FAIL(ObForkTableUtil::release_snapshot(this, schema_guard, object_id_, snapshot_version_))) {
+    LOG_WARN("fail to release snapshot", K(ret), K(object_id_), K(snapshot_version_));
   }
   return ret;
 }

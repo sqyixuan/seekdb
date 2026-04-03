@@ -245,7 +245,7 @@ int ObDDLCtrlSpeedItem::do_sleep(
   }
 
   if (OB_SUCC(ret)) {
-    real_sleep_us = std::max(static_cast<int64_t>(0), next_available_ts - ObTimeUtility::current_time());
+    real_sleep_us = std::max(0L, next_available_ts - ObTimeUtility::current_time());
     ob_usleep(real_sleep_us);
   }
   return ret;
@@ -2010,7 +2010,7 @@ int ObDDLRedoLogWriterCallback::write(const ObStorageObjectHandle &macro_handle,
       redo_info.end_row_id_ = param_.row_id_offset_ + row_count - 1;
       param_.row_id_offset_ += row_count;
     }
-
+    
     if (OB_FAIL(ret)) {
     } else if (nullptr != param_.macro_meta_store_ && OB_FAIL(param_.macro_meta_store_->append(buf, buf_len, macro_handle.get_macro_id()))) {
         LOG_WARN("append macro meta store failed", K(ret), KP(buf), K(buf_len), K(macro_handle.get_macro_id()));
