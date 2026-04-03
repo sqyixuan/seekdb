@@ -757,8 +757,7 @@ void ObLogger::rotate_log(const char *filename,
       (void)snprintf(old_log_file, sizeof(old_log_file), "%s.%04d%02d%02d%02d%02d%02d%03d",
               filename, tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
               tm.tm_hour, tm.tm_min, tm.tm_sec, static_cast<int>(t.tv_usec/1000));
-      ret = rename(filename, old_log_file);
-      if (OB_SUCC(ret) && max_file_index_ > 0) {
+      if (max_file_index_ > 0) {
         if (OB_LIKELY(0 == pthread_mutex_lock(&file_index_mutex_))) {
           file_list.push_back(old_log_file);
           if (file_list.size() >= max_file_index_) {
@@ -769,6 +768,7 @@ void ObLogger::rotate_log(const char *filename,
           (void)pthread_mutex_unlock(&file_index_mutex_);
         }
       }
+      ret = rename(filename, old_log_file); //If failed, TODO
       int tmp_fd = open(filename, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, ObPLogFileStruct::LOG_FILE_MODE);
       if (tmp_fd > 0) {
         if (redirect_flag) {
