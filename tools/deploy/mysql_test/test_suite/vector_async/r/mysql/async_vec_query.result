@@ -1,0 +1,412 @@
+alter system set ob_vector_memory_limit_percentage = 30;
+========== setup ==========
+drop table if exists t1;
+drop table if exists t2;
+drop table if exists t3;
+drop table if exists t4;
+drop table if exists t5;
+drop table if exists t6;
+drop table if exists t7;
+drop table if exists t8;
+
+=== 3.1.3 Queries with filter conditions ===
+create table t3 (
+id int primary key,
+vec vector(3),
+category int,
+score int
+) organization heap;
+create vector index idx3_vec on t3(vec) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async, ef_search=200);
+create index idx3_category on t3(category);
+create index idx3_score on t3(score);
+--- Insert test data ---
+call dbms_index_manager.refresh();
+--- POST filter: vector index scan then filter ---
+select /*+index(t3 idx3_vec)*/ id, category from t3 
+where id < 30 
+order by l2_distance(vec, '[10.0, 10.0, 10.0]') approximate limit 5;
+id	category
+10	0
+9	4
+11	1
+8	3
+12	2
+--- PRE filter with primary key ---
+select /*+index(t3 primary)*/ id, category from t3 
+where id < 30 
+order by l2_distance(vec, '[10.0, 10.0, 10.0]') approximate limit 5;
+id	category
+10	0
+11	1
+9	4
+12	2
+8	3
+--- PRE filter with secondary index ---
+select /*+index(t3 idx3_category)*/ id, category, score from t3 
+where category = 1 
+order by l2_distance(vec, '[20.0, 20.0, 20.0]') approximate limit 5;
+id	category	score
+21	1	210
+16	1	160
+26	1	260
+11	1	110
+31	1	310
+--- Compound filter conditions (AND) ---
+select /*+index(t3 primary)*/ id, category, score from t3 
+where id < 40 and category = 2 
+order by l2_distance(vec, '[15.0, 15.0, 15.0]') approximate limit 5;
+id	category	score
+17	2	170
+12	2	120
+22	2	220
+7	2	70
+27	2	270
+--- Compound filter conditions (OR) ---
+select id, category from t3 
+where category = 0 or category = 1 
+order by l2_distance(vec, '[25.0, 25.0, 25.0]') approximate limit 5;
+id	category
+25	0
+26	1
+21	1
+30	0
+20	0
+drop table t3;
+
+=== 3.1.4 EXPLAIN verification ===
+create table t4 (
+id int primary key,
+vec vector(3)
+) organization heap;
+create vector index idx4 on t4(vec) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async);
+insert into t4 values (1, '[1.0, 1.0, 1.0]');
+insert into t4 values (2, '[2.0, 2.0, 2.0]');
+insert into t4 values (3, '[3.0, 3.0, 3.0]');
+call dbms_index_manager.refresh();
+--- EXPLAIN to verify vector index usage ---
+explain basic select id from t4 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 3;
+Query Plan
+===============================
+|ID|OPERATOR         |NAME    |
+-------------------------------
+|0 |VECTOR INDEX SCAN|t4(idx4)|
+===============================
+Outputs & filters:
+-------------------------------------
+  0 - output([t4.id]), filter(nil), rowset=16
+      access([t4.__pk_increment], [t4.id]), partitions(p0)
+      is_index_back=true, is_global_index=false, 
+      range_key([t4.__pk_increment], [t4.__type_0_0]), range(MIN,MIN ; MAX,MAX)always true
+--- Execute the query ---
+select id from t4 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 3;
+id
+1
+2
+3
+drop table t4;
+
+=== 3.1.5 Query with PARAMETERS clause ===
+create table t5 (
+id int primary key,
+vec vector(3)
+) organization heap;
+create vector index idx5 on t5(vec) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async, ef_search=100);
+--- Insert test data ---
+call dbms_index_manager.refresh();
+--- Query with default ef_search (100) ---
+select id from t5 order by l2_distance(vec, '[15.0, 15.0, 15.0]') approximate limit 5;
+id
+15
+14
+16
+13
+17
+--- Query with custom ef_search parameter ---
+select id from t5 order by l2_distance(vec, '[15.0, 15.0, 15.0]') approximate limit 5 
+parameters(ef_search=50);
+id
+15
+14
+16
+13
+17
+--- Query with custom ef_search parameter (higher value) ---
+select id from t5 order by l2_distance(vec, '[15.0, 15.0, 15.0]') approximate limit 5 
+parameters(ef_search=200);
+id
+15
+14
+16
+13
+17
+drop table t5;
+
+========== 3.2 Query Result Correctness Verification ==========
+
+=== 3.2.1 Result order verification ===
+create table t6 (
+id int primary key,
+vec vector(3)
+) organization heap;
+--- Create async index ---
+create vector index idx6_async on t6(vec) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async);
+insert into t6 values (1, '[1.0, 1.0, 1.0]');
+insert into t6 values (2, '[2.0, 2.0, 2.0]');
+insert into t6 values (3, '[3.0, 3.0, 3.0]');
+insert into t6 values (4, '[4.0, 4.0, 4.0]');
+insert into t6 values (5, '[5.0, 5.0, 5.0]');
+call dbms_index_manager.refresh();
+--- Query with async index (results should be ordered by distance) ---
+select id from t6 order by l2_distance(vec, '[2.5, 2.5, 2.5]') approximate limit 5;
+id
+2
+3
+1
+4
+5
+drop table t6;
+
+=== 3.2.2 Compare async vs immediate mode results ===
+create table t6 (
+id int primary key,
+vec vector(3)
+) organization heap;
+--- Create immediate index for comparison ---
+create vector index idx6_immediate on t6(vec) with (distance=l2, type=hnsw, lib=vsag, sync_mode=immediate);
+insert into t6 values (1, '[1.0, 1.0, 1.0]');
+insert into t6 values (2, '[2.0, 2.0, 2.0]');
+insert into t6 values (3, '[3.0, 3.0, 3.0]');
+insert into t6 values (4, '[4.0, 4.0, 4.0]');
+insert into t6 values (5, '[5.0, 5.0, 5.0]');
+--- Query with immediate index ---
+select id from t6 order by l2_distance(vec, '[2.5, 2.5, 2.5]') approximate limit 5;
+id
+2
+3
+1
+4
+5
+--- Drop immediate index and create async index ---
+drop index idx6_immediate on t6;
+create vector index idx6_async on t6(vec) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async);
+call dbms_index_manager.refresh();
+--- Query with async index (should match immediate results) ---
+select id from t6 order by l2_distance(vec, '[2.5, 2.5, 2.5]') approximate limit 5;
+id
+2
+3
+1
+4
+5
+drop table t6;
+
+=== 3.2.3 Result completeness verification ===
+create table t7 (
+id int primary key,
+vec vector(3)
+) organization heap;
+create vector index idx7 on t7(vec) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async);
+--- Insert initial data ---
+insert into t7 values (1, '[1.0, 1.0, 1.0]');
+insert into t7 values (2, '[2.0, 2.0, 2.0]');
+insert into t7 values (3, '[3.0, 3.0, 3.0]');
+call dbms_index_manager.refresh();
+--- Query after sync (should return 3 results) ---
+select count(*) from (
+select id from t7 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 10
+) as tmp;
+count(*)
+3
+--- Insert more data ---
+insert into t7 values (4, '[4.0, 4.0, 4.0]');
+insert into t7 values (5, '[5.0, 5.0, 5.0]');
+--- Query immediately after INSERT (may not see new data yet) ---
+select id from t7 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 10;
+id
+1
+2
+3
+--- Wait for CDC sync ---
+call dbms_index_manager.refresh();
+--- Query after CDC sync (should see all 5 results) ---
+select count(*) from (
+select id from t7 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 10
+) as tmp;
+count(*)
+5
+select id from t7 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 10;
+id
+1
+2
+3
+4
+5
+drop table t7;
+
+=== 3.2.4 Empty result verification ===
+create table t8 (
+id int primary key,
+vec vector(3)
+) organization heap;
+create vector index idx8 on t8(vec) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async);
+--- Query on empty table ---
+select id from t8 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 3;
+id
+select count(*) from t8;
+count(*)
+0
+--- Insert data ---
+insert into t8 values (1, '[1.0, 1.0, 1.0]');
+insert into t8 values (2, '[2.0, 2.0, 2.0]');
+insert into t8 values (3, '[3.0, 3.0, 3.0]');
+call dbms_index_manager.refresh();
+--- Query with data ---
+select count(*) from t8;
+count(*)
+3
+select id from t8 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 3;
+id
+1
+2
+3
+--- DELETE ALL ---
+delete from t8;
+call dbms_index_manager.refresh();
+--- Query after DELETE ALL (should return empty) ---
+select id from t8 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 3;
+id
+select count(*) from t8;
+count(*)
+0
+drop table t8;
+
+========== 3.3 Snapshot Read Verification ==========
+
+=== 3.3.1 Read with old snapshot ===
+create table t9 (
+id int primary key,
+vec vector(3),
+name varchar(50)
+) organization heap;
+create vector index idx9 on t9(vec) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async);
+--- Insert initial data ---
+insert into t9 values (1, '[1.0, 1.0, 1.0]', 'item1');
+insert into t9 values (2, '[2.0, 2.0, 2.0]', 'item2');
+insert into t9 values (3, '[3.0, 3.0, 3.0]', 'item3');
+call dbms_index_manager.refresh();
+--- Start transaction and get snapshot ---
+start transaction;
+select id, name from t9 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 3;
+id	name
+1	item1
+2	item2
+3	item3
+--- In another session, insert new data (not visible to this transaction) ---
+--- Note: simulating by documenting expected behavior ---
+--- Current transaction should see consistent snapshot ---
+select count(*) from t9;
+count(*)
+3
+commit;
+--- After commit, insert more data ---
+insert into t9 values (4, '[4.0, 4.0, 4.0]', 'item4');
+insert into t9 values (5, '[5.0, 5.0, 5.0]', 'item5');
+call dbms_index_manager.refresh();
+--- New snapshot should see all data ---
+select count(*) from t9;
+count(*)
+5
+select id, name from t9 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 5;
+id	name
+1	item1
+2	item2
+3	item3
+4	item4
+5	item5
+drop table t9;
+
+=== 3.3.2 Snapshot isolation with concurrent modifications ===
+create table t10 (
+id int primary key,
+vec vector(3)
+) organization heap;
+create vector index idx10 on t10(vec) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async);
+--- Insert initial data ---
+insert into t10 values (1, '[1.0, 1.0, 1.0]');
+insert into t10 values (2, '[2.0, 2.0, 2.0]');
+insert into t10 values (3, '[3.0, 3.0, 3.0]');
+call dbms_index_manager.refresh();
+--- Start transaction with snapshot ---
+start transaction;
+--- Read in snapshot ---
+select count(*) from t10;
+count(*)
+3
+select id from t10 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 3;
+id
+1
+2
+3
+--- Commit transaction ---
+commit;
+--- Update data ---
+update t10 set vec = '[10.0, 10.0, 10.0]' where id = 1;
+call dbms_index_manager.refresh();
+--- New transaction sees updated data ---
+start transaction;
+select id from t10 order by l2_distance(vec, '[10.0, 10.0, 10.0]') approximate limit 3;
+id
+1
+3
+2
+commit;
+drop table t10;
+
+=== 3.3.3 Read consistency across partitions ===
+create table t11 (
+id int primary key,
+vec vector(3)
+) organization heap
+partition by hash(id) partitions 4;
+create vector index idx11 on t11(vec) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async);
+--- Insert data across partitions ---
+insert into t11 values (1, '[1.0, 1.0, 1.0]');
+insert into t11 values (101, '[2.0, 2.0, 2.0]');
+insert into t11 values (201, '[3.0, 3.0, 3.0]');
+insert into t11 values (301, '[4.0, 4.0, 4.0]');
+call dbms_index_manager.refresh();
+--- Start transaction and read ---
+start transaction;
+select count(*) from t11;
+count(*)
+4
+select id from t11 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 4;
+id
+1
+101
+201
+301
+commit;
+--- Insert more data across partitions ---
+insert into t11 values (2, '[1.5, 1.5, 1.5]');
+insert into t11 values (102, '[2.5, 2.5, 2.5]');
+call dbms_index_manager.refresh();
+--- New snapshot should see all 6 rows ---
+start transaction;
+select count(*) from t11;
+count(*)
+6
+select id from t11 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 6;
+id
+1
+2
+101
+102
+201
+301
+commit;
+drop table t11;
+
+========== cleanup ==========
+alter system set ob_vector_memory_limit_percentage = 0;
+PURGE RECYCLEBIN;

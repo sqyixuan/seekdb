@@ -1,0 +1,97 @@
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+#owner: lana.lgx
+#owner group: seekdb
+#description: Basic DML tests for async vector index on heap tables
+#  Covers: INSERT, UPDATE, DELETE with CDC-driven async sync to vsag/index_id_table
+
+connection default;
+alter system set ob_vector_memory_limit_percentage = 30;
+
+--echo ========== setup ==========
+--disable_warnings
+drop table if exists t1;
+--enable_warnings
+
+create table t1 (
+  id int primary key,
+  vec vector(3),
+  VECTOR INDEX idx1(vec) WITH (distance=l2, type=hnsw, lib=vsag, sync_mode=async, ef_search=200)
+) organization heap;
+
+# empty result
+select id, vec from t1 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 3;
+
+--echo
+--echo ========== 1. Basic INSERT and ANN query ==========
+--source mysql_test/test_suite/vector_async/include/async_vec_data_dim3.inc
+
+call dbms_index_manager.refresh();
+
+# Normalize explain output: __type_17_<id> varies per run (schema/object id)
+--replace_regex /__type_[0-9]+_[0-9]+/__type_0_0/g
+explain basic select id, vec from t1 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 3;
+select id, vec from t1 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 3;
+select id, vec from t1 order by l2_distance(vec, '[5.0, 5.0, 5.0]') approximate limit 3;
+
+--echo
+--echo ========== 2. INSERT more data and query ==========
+insert into t1 values (11, '[1.5, 1.5, 1.5]');
+insert into t1 values (12, '[5.5, 5.5, 5.5]');
+
+
+call dbms_index_manager.refresh();
+
+select id, vec from t1 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 3;
+
+--echo
+--echo ========== 3. DELETE and verify removed from results ==========
+delete from t1 where id = 1;
+delete from t1 where id = 2;
+
+
+call dbms_index_manager.refresh();
+
+select id, vec from t1 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 3;
+
+--echo
+--echo ========== 4. UPDATE vector column ==========
+update t1 set vec = '[1.1, 1.1, 1.1]' where id = 3;
+
+
+call dbms_index_manager.refresh();
+
+select id, vec from t1 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 3;
+
+--echo
+--echo ========== 5. Batch INSERT ==========
+--disable_query_log
+let $i = 100;
+while ($i < 150) {
+  eval insert into t1 values ($i, '[$i.0, $i.0, $i.0]');
+  inc $i;
+}
+--enable_query_log
+
+
+
+call dbms_index_manager.refresh();
+select count(*) from t1;
+select id, vec from t1 order by l2_distance(vec, '[120.0, 120.0, 120.0]') approximate limit 3;
+
+--echo
+--echo ========== 6. DELETE all and verify empty result ==========
+delete from t1;
+
+
+call dbms_index_manager.refresh();
+
+select id, vec from t1 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 3;
+select count(*) from t1;
+
+--echo
+--echo ========== cleanup ==========
+drop table t1;
+alter system set ob_vector_memory_limit_percentage = 0;
+PURGE RECYCLEBIN;
