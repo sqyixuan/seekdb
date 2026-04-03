@@ -460,8 +460,6 @@ Please refer to the [User Guide](docs/user-guide/README.md) for more details.
 
 ### Build from Source
 
-Before building, please install the required toolchain and dependencies for your operating system. See [Install Toolchain](docs/developer-guide/en/toolchain.md) for detailed instructions.
-
 ```bash
 # Clone the repository
 git clone https://github.com/oceanbase/seekdb.git
@@ -473,6 +471,7 @@ cp build_debug/src/observer/seekdb ~/seekdb/bin
 cd ~/seekdb
 ./bin/seekdb
 ```
+
 
 In this example, the working director is $HOME/seekdb, please use a fresh director for testing, Please see the [Developer Guide](docs/developer-guide/en/README.md) for detailed instructions.
 
