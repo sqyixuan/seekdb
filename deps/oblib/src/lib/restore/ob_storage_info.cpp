@@ -308,7 +308,9 @@ const char *ObObjectStorageInfo::get_checksum_type_str() const
   return get_storage_checksum_type_str(checksum_type_);
 }
 
+// oss:host=xxxx&access_id=xxx&access_key=xxx
 // s3:host=xxxx&access_id=xxx&access_key=xxx&s3_region=xxx
+// hdfs:krb5conf=xxx&principal=xxx&keytab=xxx&ticket_cache_path=xxx
 int ObObjectStorageInfo::set(const common::ObStorageType device_type, const char *storage_info)
 {
   bool has_needed_extension = false;
@@ -319,8 +321,8 @@ int ObObjectStorageInfo::set(const common::ObStorageType device_type, const char
     LOG_WARN("storage info init twice", K(ret));
   } else if (FALSE_IT(device_type_ = device_type)){
   } else if (OB_ISNULL(storage_info) || strlen(storage_info) == 0) {
-    // when device_type is file, storage_info can be empty
-    if (OB_STORAGE_FILE != device_type_) {
+    // when device_type is file or hdfs, storage_info can be empty
+    if (OB_STORAGE_FILE != device_type_ && OB_STORAGE_HDFS != device_type_) {
       ret = OB_INVALID_BACKUP_DEST;
       LOG_WARN("storage info is invalid", K(ret), KP(storage_info));
     }
@@ -353,7 +355,7 @@ int ObObjectStorageInfo::validate_arguments() const
   if (OB_UNLIKELY(!ObObjectStorageInfo::is_valid())) {
     ret = OB_INVALID_ARGUMENT;
     OB_LOG(WARN, "invalid argument", K(ret), K(device_type_));
-  } else if (OB_STORAGE_FILE != device_type_) {
+  } else if (OB_STORAGE_FILE != device_type_ && OB_STORAGE_HDFS != device_type_) {
     if (OB_UNLIKELY(0 == strlen(endpoint_))) {
       ret = OB_INVALID_BACKUP_DEST;
       LOG_WARN("backup device is not nfs, endpoint do not allow to be empty", K(ret),
@@ -382,7 +384,12 @@ int ObObjectStorageInfo::validate_arguments() const
     }
   }
   if (OB_SUCC(ret) && enable_worm_) {
-    if (OB_UNLIKELY(is_use_obdal())) {
+    if (OB_UNLIKELY(!(OB_MD5_ALGO == checksum_type_ && OB_STORAGE_OSS == device_type_))) {
+      ret = OB_NOT_SUPPORTED;
+      LOG_WARN("device or checksum type don't support enable_worm", K(ret), KPC(this));
+      LOG_USER_ERROR(OB_NOT_SUPPORTED,
+          "Only OSS and checksum_type=md5 support setting enable_worm, other devices or checksum types are");
+    } else if (OB_UNLIKELY(is_use_obdal())) {
       ret = OB_NOT_SUPPORTED;
       LOG_WARN("using obdal mode don't support enable_worm", K(ret), KPC(this));
       LOG_USER_ERROR(OB_NOT_SUPPORTED, "setting enable_worm=true when using obdal is");
@@ -606,6 +613,12 @@ int ObObjectStorageInfo::set_addressing_model_(const char *addressing_model)
   return ret;
 }
 
+bool is_oss_supported_checksum(const ObStorageChecksumType checksum_type)
+{
+  return checksum_type == ObStorageChecksumType::OB_NO_CHECKSUM_ALGO
+      || checksum_type == ObStorageChecksumType::OB_MD5_ALGO;
+}
+
 bool is_s3_supported_checksum(const ObStorageChecksumType checksum_type)
 {
   return checksum_type == ObStorageChecksumType::OB_CRC32_ALGO
@@ -632,6 +645,10 @@ int ObObjectStorageInfo::set_checksum_type_(const char *checksum_type_str)
   }
 
   if (OB_FAIL(ret)) {
+  } else if (OB_UNLIKELY(OB_STORAGE_OSS == device_type_ && !is_oss_supported_checksum(checksum_type_))) {
+    ret = OB_CHECKSUM_TYPE_NOT_SUPPORTED;
+    OB_LOG(WARN, "not supported checksum type for oss",
+        K(ret), K_(device_type), K(checksum_type_str), K_(checksum_type));
   } else if (OB_UNLIKELY(OB_STORAGE_S3 == device_type_ && !is_s3_supported_checksum(checksum_type_))) {
     ret = OB_CHECKSUM_TYPE_NOT_SUPPORTED;
     OB_LOG(WARN, "not supported checksum type for s3",
@@ -695,7 +712,8 @@ int ObObjectStorageInfo::get_info_str_(char *storage_info, const int64_t info_le
   } else if (OB_ISNULL(storage_info) || OB_UNLIKELY(info_len <= 0)) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid args", K(ret), KP(storage_info), K(info_len));
-  } else if (OB_STORAGE_FILE != device_type_ && !is_assume_role_mode_) {
+  } else if (OB_STORAGE_FILE != device_type_ &&
+             OB_STORAGE_HDFS != device_type_ && !is_assume_role_mode_) {
     // Access object storage by ak/sk
     if (OB_FAIL(get_access_key_(key, sizeof(key)))) {
       LOG_WARN("failed to get access key", K(ret));
