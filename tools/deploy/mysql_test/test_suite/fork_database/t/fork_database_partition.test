@@ -1,0 +1,124 @@
+##owner: fankun.fan
+##owner group: 底层引擎部-轻量版
+##description: Fork Database多种分区类型测试
+##tags: fork_database partition
+##author: fankun.fan
+
+--disable_warnings
+drop database if exists db_part_src;
+drop database if exists db_part_fork;
+--enable_warnings
+
+connect (obsys,$OBMYSQL_MS0,root@sys,,oceanbase,$OBMYSQL_PORT);
+connection default;
+
+SET wait_timeout=30000000;
+SET ob_trx_timeout = 100000000;
+SET ob_query_timeout = 100000000;
+
+--echo ============================================
+--echo 1. Fork含多种分区类型的数据库
+--echo ============================================
+
+create database db_part_src;
+use db_part_src;
+
+--echo # Range分区表
+create table t_range (
+    id int primary key,
+    data varchar(50)
+) partition by range(id) (
+    partition p0 values less than (100),
+    partition p1 values less than (200),
+    partition p2 values less than (300)
+);
+
+--echo # Hash分区表
+create table t_hash (
+    id int primary key,
+    data varchar(50)
+) partition by hash(id) partitions 4;
+
+--echo # List分区表
+create table t_list (
+    id int,
+    region varchar(20),
+    data varchar(50),
+    primary key(id, region)
+) partition by list columns(region) (
+    partition p_east values in ('east', 'northeast'),
+    partition p_west values in ('west', 'northwest'),
+    partition p_other values in ('south', 'north', 'center')
+);
+
+--echo # 非分区表
+create table t_normal (
+    id int primary key,
+    data varchar(50)
+);
+
+--echo # 插入数据
+insert into t_range values (1, 'Range1'), (50, 'Range2'), (150, 'Range3'), (250, 'Range4');
+insert into t_hash values (1, 'Hash1'), (2, 'Hash2'), (3, 'Hash3'), (4, 'Hash4');
+insert into t_list values (1, 'east', 'List1'), (2, 'west', 'List2'), (3, 'south', 'List3');
+insert into t_normal values (1, 'Normal1'), (2, 'Normal2');
+
+--echo # Fork数据库
+fork database db_part_src to db_part_fork;
+--source mysql_test/test_suite/fork_database/include/wait_fork_database.inc
+
+--echo ============================================
+--echo 2. 验证Fork库中各分区表数据
+--echo ============================================
+
+use db_part_fork;
+
+--echo # 验证表列表
+show tables;
+
+--echo # 验证Range分区表
+select * from t_range order by id;
+--replace_regex /REPLICA_NUM = [0-9]*/REPLICA_NUM = replica_num/g
+show create table t_range;
+
+--echo # 验证Hash分区表
+select * from t_hash order by id;
+
+--echo # 验证List分区表
+select * from t_list order by id;
+
+--echo # 验证普通表
+select * from t_normal order by id;
+
+--echo ============================================
+--echo 3. 验证分区表数据隔离
+--echo ============================================
+
+--echo # 在Fork库各分区表中插入数据
+insert into db_part_fork.t_range values (2, 'Fork_Range');
+insert into db_part_fork.t_hash values (10, 'Fork_Hash');
+insert into db_part_fork.t_list values (10, 'east', 'Fork_List');
+insert into db_part_fork.t_normal values (10, 'Fork_Normal');
+
+--echo # 在源库各分区表中插入数据
+insert into db_part_src.t_range values (3, 'Src_Range');
+insert into db_part_src.t_hash values (20, 'Src_Hash');
+insert into db_part_src.t_list values (20, 'west', 'Src_List');
+insert into db_part_src.t_normal values (20, 'Src_Normal');
+
+--echo # 验证数据隔离
+select count(*) as fork_range from db_part_fork.t_range;
+select count(*) as src_range from db_part_src.t_range;
+select count(*) as fork_hash from db_part_fork.t_hash;
+select count(*) as src_hash from db_part_src.t_hash;
+select count(*) as fork_list from db_part_fork.t_list;
+select count(*) as src_list from db_part_src.t_list;
+select count(*) as fork_normal from db_part_fork.t_normal;
+select count(*) as src_normal from db_part_src.t_normal;
+
+--echo ============================================
+--echo 4. 清理
+--echo ============================================
+
+drop database if exists db_part_src;
+drop database if exists db_part_fork;
