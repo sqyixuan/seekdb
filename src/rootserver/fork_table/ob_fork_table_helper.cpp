@@ -24,7 +24,6 @@
 #include "share/inner_table/ob_inner_table_schema_constants.h"
 #include "share/ob_autoincrement_service.h"
 #include "share/ob_fork_table_util.h"
-#include "share/vector_index/ob_vector_index_util.h"
 #include "share/schema/ob_schema_utils.h"
 #include "share/tablet/ob_tablet_to_ls_operator.h"
 #include "storage/tablet/ob_tablet_fork_mds_helper.h"
@@ -41,8 +40,7 @@ static int check_table_index_features(const ObTableSchema &table_schema,
                                       bool &has_semantic_index,
                                       bool &has_ivf_index,
                                       bool &has_spatial_index,
-                                      bool &has_global_index,
-                                      bool &has_async_vec_index)
+                                      bool &has_global_index) 
 {
   int ret = OB_SUCCESS;
   ObSEArray<ObAuxTableMetaInfo, 16> simple_index_infos;
@@ -50,15 +48,13 @@ static int check_table_index_features(const ObTableSchema &table_schema,
   has_ivf_index = false;
   has_spatial_index = false;
   has_global_index = false;
-  has_async_vec_index = false;
   if (OB_FAIL(table_schema.get_simple_index_infos(simple_index_infos))) {
     LOG_WARN("fail to get simple index infos", K(ret));
   } else {
     const uint64_t tenant_id = table_schema.get_tenant_id();
-    const bool is_heap_table = table_schema.is_heap_organized_table();
     for (int64_t i = 0; OB_SUCC(ret) && i < simple_index_infos.count() &&
                         (!has_semantic_index || !has_ivf_index ||
-                         !has_spatial_index || !has_global_index || !has_async_vec_index);
+                         !has_spatial_index || !has_global_index);
          ++i) {
       const ObTableSchema *index_schema = nullptr;
       const uint64_t index_table_id = simple_index_infos.at(i).table_id_;
@@ -80,12 +76,6 @@ static int check_table_index_features(const ObTableSchema &table_schema,
         if (index_schema->is_spatial_index()) {
           has_spatial_index = true;
         }
-        if (!has_async_vec_index && index_schema->is_vec_hnsw_index()) {
-          const common::ObString &index_params = index_schema->get_index_params();
-          if (share::ObVectorIndexUtil::is_sync_mode_async(index_params, is_heap_table)) {
-            has_async_vec_index = true;
-          }
-        }
         if (index_schema->is_global_index_table()) {
           has_global_index = true;
         }
@@ -97,15 +87,13 @@ static int check_table_index_features(const ObTableSchema &table_schema,
 
 int check_fork_table_supported(const ObTableSchema &src_table_schema,
                                ObSchemaGetterGuard &schema_guard,
-                               const ObForkTableArg *fork_table_arg)
+                               const ObForkTableArg *fork_table_arg) 
 {
   int ret = OB_SUCCESS;
   bool has_semantic_index = false;
   bool has_ivf_index = false;
   bool has_spatial_index = false;
   bool has_global_index = false;
-  bool has_async_vec_index = false;
-  int64_t column_group_cnt = 0;
   if (src_table_schema.is_tmp_table() || src_table_schema.is_ctas_tmp_table()) {
     ret = OB_NOT_SUPPORTED;
     LOG_WARN("fork table on temporary table is not supported", KR(ret),
@@ -138,20 +126,9 @@ int check_fork_table_supported(const ObTableSchema &src_table_schema,
         KR(ret));
     LOG_USER_ERROR(OB_NOT_SUPPORTED,
                    "fork table on table required by materialized view is");
-  } else if (OB_FAIL(src_table_schema.get_store_column_group_count(column_group_cnt))) {
-    LOG_WARN("failed to get store column group count", KR(ret), K(src_table_schema));
-  } else if (column_group_cnt > 1) {
-    // column_group_cnt > 1 means the table has actual column store groups
-    // (SINGLE_COLUMN_GROUP or ALL_COLUMN_GROUP) beyond the default row store group
-    ret = OB_NOT_SUPPORTED;
-    LOG_WARN("fork table on column store table is not supported", KR(ret),
-             K(src_table_schema), K(column_group_cnt));
-    LOG_USER_ERROR(OB_NOT_SUPPORTED,
-                   "fork table on column store table is");
   } else if (OB_FAIL(check_table_index_features(
                  src_table_schema, schema_guard, has_semantic_index,
-                 has_ivf_index, has_spatial_index, has_global_index,
-                 has_async_vec_index))) {
+                 has_ivf_index, has_spatial_index, has_global_index))) {
     LOG_WARN("fail to check table index features", K(ret), K(src_table_schema));
   } else if (has_semantic_index) {
     ret = OB_NOT_SUPPORTED;
@@ -159,18 +136,17 @@ int check_fork_table_supported(const ObTableSchema &src_table_schema,
              KR(ret), K(src_table_schema));
     LOG_USER_ERROR(OB_NOT_SUPPORTED,
                    "fork table on table with semantic index is");
+  } else if (has_ivf_index) {
+    ret = OB_NOT_SUPPORTED;
+    LOG_WARN("fork table on table with ivf index is not supported", KR(ret),
+             K(src_table_schema));
+    LOG_USER_ERROR(OB_NOT_SUPPORTED, "fork table on table with ivf index is");
   } else if (has_spatial_index) {
     ret = OB_NOT_SUPPORTED;
     LOG_WARN("fork table on table with spatial index is not supported", KR(ret),
              K(src_table_schema));
     LOG_USER_ERROR(OB_NOT_SUPPORTED,
                    "fork table on table with spatial index is");
-  } else if (has_async_vec_index) {
-    ret = OB_NOT_SUPPORTED;
-    LOG_WARN("fork table on table with async vector index is not supported",
-             KR(ret), K(src_table_schema));
-    LOG_USER_ERROR(OB_NOT_SUPPORTED,
-                   "fork table on table with async vector index is");
   } else if (src_table_schema.is_partitioned_table() && has_global_index) {
     ret = OB_NOT_SUPPORTED;
     LOG_WARN(
@@ -182,8 +158,8 @@ int check_fork_table_supported(const ObTableSchema &src_table_schema,
   return ret;
 }
 
-int ObForkTableHelper::init(const common::ObIArray<share::schema::ObTableSchema>
-&table_schemas)
+int ObForkTableHelper::init(const common::ObIArray<share::schema::ObTableSchema> 
+&table_schemas) 
 {
   int ret = OB_SUCCESS;
 
@@ -197,13 +173,13 @@ int ObForkTableHelper::init(const common::ObIArray<share::schema::ObTableSchema>
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("table schemas is empty", KR(ret));
   } else if (FALSE_IT(src_table_id_ = fork_table_info_.get_fork_src_table_id())) {
-  } else if (OB_FAIL(schema_guard_.get_table_schema(tenant_id_, src_table_id_,
+  } else if (OB_FAIL(schema_guard_.get_table_schema(tenant_id_, src_table_id_, 
 src_table_schema_))) {
     LOG_WARN("failed to get source table schema", KR(ret), K(tenant_id_),
              K(fork_table_info_.get_fork_src_table_id()));
   } else if (OB_ISNULL(src_table_schema_)) {
     ret = OB_TABLE_NOT_EXIST;
-    LOG_WARN("source table not exist", KR(ret),
+    LOG_WARN("source table not exist", KR(ret), 
 K(fork_table_info_.get_fork_src_table_id()));
   } else if (OB_ISNULL(dst_table_schema_ = &table_schemas.at(0))) {
     ret = OB_INVALID_ARGUMENT;
@@ -254,7 +230,7 @@ K(fork_table_info_.get_fork_src_table_id()));
   return ret;
 }
 
-int ObForkTableHelper::execute()
+int ObForkTableHelper::execute() 
 {
   int ret = OB_SUCCESS;
 
@@ -283,7 +259,7 @@ int ObForkTableHelper::execute()
   return ret;
 }
 
-int ObForkTableHelper::copy_tablet_autoinc_seq_info_()
+int ObForkTableHelper::copy_tablet_autoinc_seq_info_() 
 {
   int ret = OB_SUCCESS;
   ObSEArray<share::ObMigrateTabletAutoincSeqParam, 4> autoinc_params;
@@ -344,7 +320,7 @@ int ObForkTableHelper::copy_tablet_autoinc_seq_info_()
   return ret;
 }
 
-int ObForkTableHelper::copy_tablet_truncate_info_()
+int ObForkTableHelper::copy_tablet_truncate_info_() 
 {
   int ret = OB_SUCCESS;
 
@@ -432,7 +408,7 @@ int ObForkTableHelper::copy_tablet_truncate_info_()
   return ret;
 }
 
-int ObForkTableHelper::copy_table_autoinc_seq_info_()
+int ObForkTableHelper::copy_table_autoinc_seq_info_() 
 {
   int ret = OB_SUCCESS;
   ObDDLOperator ddl_operator(schema_service_, sql_proxy_);
@@ -502,7 +478,7 @@ int ObForkTableHelper::copy_table_autoinc_seq_info_()
 }
 
 // TODO(fankun.fan): copy table statistics
-int ObForkTableHelper::copy_table_statistics_()
+int ObForkTableHelper::copy_table_statistics_() 
 {
   int ret = OB_SUCCESS;
 
@@ -571,7 +547,7 @@ int ObForkTableHelper::copy_stat_info_(const char *table_name,
                                        const uint64_t src_table_id,
                                        const int64_t src_part_id,
                                        const uint64_t dst_table_id,
-                                       const int64_t dst_part_id)
+                                       const int64_t dst_part_id) 
 {
   int ret = OB_SUCCESS;
   int64_t affected_rows = 0;
@@ -585,9 +561,9 @@ int ObForkTableHelper::copy_stat_info_(const char *table_name,
       OB_FAIL(sql_string.assign_fmt(
           "REPLACE INTO %s (table_id, partition_id, %s) "
           "SELECT %lu, %ld, %s FROM %s "
-          "WHERE table_id = %lu AND partition_id = %ld",
+          "WHERE tenant_id = %ld AND table_id = %lu AND partition_id = %ld",
           table_name, table_schema, dst_table_id, dst_part_id, table_schema,
-          table_name, src_table_id, src_part_id))) {
+          table_name, tenant_id_, src_table_id, src_part_id))) {
     LOG_WARN("failed to assign sql string", K(ret), K(table_name),
              K(src_table_id), K(src_part_id), K(dst_table_id), K(dst_part_id));
   } else if (OB_FAIL(
@@ -602,7 +578,7 @@ int ObForkTableHelper::copy_stat_info_(const char *table_name,
 }
 
 // TODO(fankun.fan): copy table statistics
-const char *ObForkTableHelper::get_table_schema_(const char *table_name)
+const char *ObForkTableHelper::get_table_schema_(const char *table_name) 
 {
   const char *ret_schema = nullptr;
   if (OB_NOT_NULL(table_name) &&
@@ -640,7 +616,7 @@ const char *ObForkTableHelper::get_table_schema_(const char *table_name)
 
 int ObForkTableHelper::get_tablet_handle_(
     const common::ObTabletID &tablet_id,
-    storage::ObTabletHandle &tablet_handle) const
+    storage::ObTabletHandle &tablet_handle) const 
 {
   int ret = OB_SUCCESS;
   ObLSService *ls_service = nullptr;
