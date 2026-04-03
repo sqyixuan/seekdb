@@ -30,7 +30,7 @@ using namespace tmp_file;
 using namespace storage;
 using namespace share::schema;
 /* ------------------------------ Mock Parameter ---------------------------- */
-static const int64_t TENANT_MEMORY = 8L * 1024L * 1024L * 1024L /* 8 GB */;
+static const int64_t TENANT_MEMORY = 8LL * 1024 * 1024 * 1024 /* 8 GB */;
 /********************************* Mock WBP *************************** */
 static const int64_t WBP_BLOCK_SIZE = ObTmpWriteBufferPool::WBP_BLOCK_SIZE; // each wbp block has 253 pages (253 * 8KB == 2024KB)
 static const int64_t SMALL_WBP_BLOCK_COUNT = 3;
@@ -43,7 +43,7 @@ static const int64_t BIG_WBP_MEM_LIMIT = BIG_WBP_BLOCK_COUNT * WBP_BLOCK_SIZE; /
 static const int64_t SMALL_WBP_IDX_CACHE_MAX_CAPACITY = ObTmpFileWBPIndexCache::INIT_BUCKET_ARRAY_CAPACITY * 2;
 /********************************* Mock Meta Tree *************************** */
 static const int64_t MAX_DATA_ITEM_ARRAY_COUNT = 2;
-static const int64_t MAX_PAGE_ITEM_COUNT = 4;   // MAX_PAGE_ITEM_COUNT * ObTmpFileGlobal::PAGE_SIZE means
+static const int64_t MAX_PAGE_ITEM_COUNT = 4;   // MAX_PAGE_ITEM_COUNT * ObTmpFileGlobal::ALLOC_PAGE_SIZE means
                                                 // the max representation range of a meta page (4 * 2MB == 8MB).
                                                 // according to the formula of summation for geometric sequence
                                                 // (S_n = a_1 * (1-q^n)/(1-q), where a_1 = 8MB, q = 4),

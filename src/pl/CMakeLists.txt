@@ -1,9 +1,19 @@
-execute_process(
-  COMMAND env NEED_PARSER_CACHE=${NEED_PARSER_CACHE} bash gen_parser.sh
-  RESULT_VARIABLE RET
-  WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}/src/pl/parser
-  OUTPUT_FILE _gen_pl_parser.output
-  ERROR_FILE _gen_parser.error)
+if(WIN32)
+  find_program(PWSH_EXE NAMES pwsh pwsh.exe powershell powershell.exe REQUIRED)
+  execute_process(
+    COMMAND ${PWSH_EXE} -NoProfile -ExecutionPolicy Bypass -File gen_parser_win.ps1
+    RESULT_VARIABLE RET
+    WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}/src/pl/parser
+    OUTPUT_FILE _gen_pl_parser.output
+    ERROR_FILE _gen_parser.error)
+else()
+  execute_process(
+    COMMAND ${CMAKE_COMMAND} -E env NEED_PARSER_CACHE=${NEED_PARSER_CACHE} bash gen_parser.sh
+    RESULT_VARIABLE RET
+    WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}/src/pl/parser
+    OUTPUT_FILE _gen_pl_parser.output
+    ERROR_FILE _gen_parser.error)
+endif()
 if(RET AND NOT RET EQUAL 0)
   message(FATAL_ERROR "Generate pl parser failed and check error in ${PROJECT_SOURCE_DIR}/src/pl/parser/_gen_parser.error")
 endif()
@@ -61,13 +71,13 @@ ob_set_subtarget(ob_pl sys_package
   sys_package/ob_dbms_mview_mysql.cpp
   sys_package/ob_dbms_mview_stats_mysql.cpp
   sys_package/ob_dbms_workload_repository.cpp
-  sys_package/ob_pl_dbms_trusted_certificate_manager.cpp
   sys_package/ob_dbms_limit_calculator_mysql.cpp
   sys_package/ob_dbms_vector_mysql.cpp
   sys_package/ob_dbms_hybrid_vector_mysql.cpp
   sys_package/ob_dbms_external_table.cpp
   sys_package/ob_dbms_partition.cpp
   sys_package/ob_dbms_ai_service.cpp
+  sys_package/ob_dbms_index_manager.cpp
 )
 
 ob_set_subtarget(ob_pl pl_recompile

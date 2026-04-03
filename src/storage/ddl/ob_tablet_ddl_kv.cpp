@@ -808,7 +808,7 @@ int ObDDLMemtable::init_ddl_index_iterator(const blocksstable::ObStorageDatumUti
 }
 
 ObDDLKV::ObDDLKV()
-  : is_inited_(false), is_closed_(false), is_independent_freezed_(false), lock_(),
+  : is_inited_(false), is_closed_(false), is_independent_freezed_(false), lock_(), 
     arena_allocator_("DDL_CONTAINER", OB_MALLOC_NORMAL_BLOCK_SIZE, MTL_ID()),
     ddl_memtable_allocator_(),
     tablet_id_(), ddl_start_scn_(SCN::min_scn()), ddl_snapshot_version_(0), data_format_version_(0), trans_id_(), seq_no_(),
@@ -1040,7 +1040,7 @@ int ObDDLKV::set_macro_block(
     const bool can_freeze)
 {
   int ret = OB_SUCCESS;
-  const int64_t MAX_DDL_BLOCK_COUNT = 10 * 10L * 1024L * 1024L * 1024L / OB_STORAGE_OBJECT_MGR.get_macro_block_size();
+  const int64_t MAX_DDL_BLOCK_COUNT = 10LL * 10LL * 1024LL * 1024LL * 1024LL / OB_STORAGE_OBJECT_MGR.get_macro_block_size();
   const int64_t MEMORY_LIMIT = 50 * 1024 * 1024; // 50M
   int64_t freeze_block_count = MAX_DDL_BLOCK_COUNT;
 #ifdef ERRSIM
