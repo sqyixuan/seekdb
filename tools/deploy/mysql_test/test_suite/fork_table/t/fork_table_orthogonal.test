@@ -1,0 +1,549 @@
+##owner: chenminsi.cms
+##owner group: 底层引擎部-轻量版
+##description: Fork Table正交场景测试（DDL/DML在fork前/中/后）
+##tags: fork_table orthogonal ddl dml online_ddl offline_ddl
+##author: chenminsi.cms
+
+--disable_warnings
+drop database if exists db_fork_orthogonal;
+--enable_warnings
+
+connect (obsys,$OBMYSQL_MS0,root@sys,,oceanbase,$OBMYSQL_PORT);
+connection default;
+create database db_fork_orthogonal;
+use db_fork_orthogonal;
+
+SET wait_timeout=30000000;
+SET ob_trx_timeout = 100000000;
+SET ob_query_timeout = 100000000;
+
+--echo # 启用debug sync
+connection obsys;
+alter system set debug_sync_timeout = '60s';
+--echo # 设置DDL超时为1秒
+alter system set _ob_ddl_timeout = '5s';
+sleep 3;
+set ob_global_debug_sync = 'reset';
+connection default;
+
+--echo ============================================
+--echo 1. Online DDL：索引增删改/重建（fork前/中/后）
+--echo ============================================
+
+drop table if exists t_online_idx;
+drop table if exists t_online_idx_fork;
+
+create table t_online_idx (
+    id int primary key,
+    c1 int,
+    c2 int,
+    c3 varchar(20)
+) partition by range(id) (
+    partition p0 values less than (100),
+    partition p1 values less than (200)
+);
+
+insert into t_online_idx values (1, 10, 100, 'A');
+insert into t_online_idx values (101, 11, 101, 'B');
+
+--echo # fork前：在源表上执行索引相关DDL
+create index idx_pre_c1 on t_online_idx(c1);
+alter table t_online_idx rename index idx_pre_c1 to idx_pre_c1_r;
+drop index idx_pre_c1_r on t_online_idx;
+create index idx_base_c2 on t_online_idx(c2);
+drop index idx_base_c2 on t_online_idx;
+create index idx_base_c2 on t_online_idx(c2);
+
+--echo # 让fork在BUILD_DATA阶段暂停
+connection obsys;
+set ob_global_debug_sync = 'FORK_TABLE_BUILD_DATA wait_for idx_signal execute 10000';
+sleep 1;
+connection default;
+fork table t_online_idx to t_online_idx_fork;
+
+--echo # fork中：索引DDL预期被阻塞（特殊标注，可能返回锁冲突）
+let $wait_status= BUILD_DATA;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+--echo # fork中：对fork表的索引DDL
+--error 4012
+create index idx_mid_c1 on t_online_idx_fork(c1);
+--error 4012
+#alter table t_online_idx_fork rename index idx_base_c2 to idx_mid_c2_r;
+--error 1091
+drop index idx_mid_c1 on t_online_idx_fork;
+--error 4012
+drop index idx_base_c2 on t_online_idx_fork;
+--error 4012
+#create index idx_base_c2 on t_online_idx_fork(c2);
+--echo # fork中：对源表的索引DDL
+--error 4012
+create index idx_mid_src_c1 on t_online_idx(c1);
+--error 4012
+#alter table t_online_idx rename index idx_base_c2 to idx_mid_src_c2_r;
+--error 4012
+drop index idx_base_c2 on t_online_idx;
+--error 4012
+create index idx_mid_src_c2 on t_online_idx(c2);
+
+--echo # 继续fork执行
+connection obsys;
+set ob_global_debug_sync = 'FORK_TABLE_BUILD_DATA clear';
+set ob_global_debug_sync = 'now signal idx_signal';
+connection default;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+
+--echo # fork后：索引DDL可正常执行
+--echo # fork后：对fork表的索引DDL
+create index idx_post_c1 on t_online_idx_fork(c1);
+alter table t_online_idx_fork rename index idx_post_c1 to idx_post_c1_r;
+drop index idx_post_c1_r on t_online_idx_fork;
+drop index idx_base_c2 on t_online_idx_fork;
+create index idx_base_c2 on t_online_idx_fork(c2);
+show indexes from t_online_idx_fork;
+--echo # fork后：对源表的索引DDL
+create index idx_post_src_c1 on t_online_idx(c1);
+alter table t_online_idx rename index idx_post_src_c1 to idx_post_src_c1_r;
+drop index idx_post_src_c1_r on t_online_idx;
+drop index idx_base_c2 on t_online_idx;
+create index idx_post_src_c2 on t_online_idx(c2);
+show indexes from t_online_idx;
+
+--echo ============================================
+--echo 2. Online DDL：修改自增列值（fork前/中/后）
+--echo ============================================
+
+drop table if exists t_online_ai;
+drop table if exists t_online_ai_fork;
+
+create table t_online_ai (
+    id int auto_increment primary key,
+    name varchar(20)
+) partition by range(id) (
+    partition p0 values less than (1000),
+    partition p1 values less than (2000)
+);
+
+insert into t_online_ai(name) values ('A'), ('B');
+
+--echo # fork前：调整源表自增起始值
+alter table t_online_ai auto_increment = 1000;
+insert into t_online_ai(name) values ('C');
+select * from t_online_ai order by id;
+
+connection obsys;
+set ob_global_debug_sync = 'FORK_TABLE_BUILD_DATA wait_for ai_signal execute 10000';
+sleep 1;
+connection default;
+fork table t_online_ai to t_online_ai_fork;
+
+--echo # fork中：调整fork表自增值（特殊标注，预期被阻塞）
+let $wait_status= BUILD_DATA;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+--echo # fork中：对fork表的自增列修改
+--error 4012
+alter table t_online_ai_fork auto_increment = 2000;
+--echo # fork中：对源表的自增列修改
+--error 4012
+alter table t_online_ai auto_increment = 1500;
+
+connection obsys;
+set ob_global_debug_sync = 'FORK_TABLE_BUILD_DATA clear';
+set ob_global_debug_sync = 'now signal ai_signal';
+connection default;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+
+--echo # fork后：调整fork表自增值并插入验证
+--echo # fork后：对fork表的自增列修改
+--echo # fork后：检查分区规则
+SHOW CREATE TABLE t_online_ai_fork;
+--echo # fork后：检查分区规则,自增超过2000报错
+alter table t_online_ai_fork auto_increment = 3000;
+--error 1526
+insert into t_online_ai_fork(name) values ('F_A');
+alter table t_online_ai_fork auto_increment = 1500;
+insert into t_online_ai_fork(name) values ('F_A');
+select * from t_online_ai_fork order by id;
+--echo # fork后：对源表的自增列修改
+--echo # fork后：检查分区规则
+SHOW CREATE TABLE t_online_ai_fork;
+alter table t_online_ai auto_increment = 2500;
+--error 1526
+insert into t_online_ai(name) values ('S_A');
+alter table t_online_ai auto_increment = 1700;
+insert into t_online_ai(name) values ('S_A');
+select * from t_online_ai order by id;
+
+--echo ============================================
+--echo 3. Online DDL：添加分区（fork前/中/后）
+--echo ============================================
+
+drop table if exists t_online_part;
+drop table if exists t_online_part_fork;
+
+create table t_online_part (
+    id int primary key,
+    name varchar(20)
+) partition by range(id) (
+    partition p0 values less than (100),
+    partition p1 values less than (200)
+);
+
+insert into t_online_part values (1, 'A');
+insert into t_online_part values (101, 'B');
+
+--echo # fork前：源表添加分区
+alter table t_online_part add partition (partition p_pre values less than (300));
+
+connection obsys;
+set ob_global_debug_sync = 'FORK_TABLE_BUILD_DATA wait_for part_signal execute 10000';
+sleep 1;
+connection default;
+fork table t_online_part to t_online_part_fork;
+
+--echo # fork中：目标表添加分区（特殊标注，预期被阻塞）
+let $wait_status= BUILD_DATA;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+--echo # fork中：对fork表添加分区
+--error 4012
+alter table t_online_part_fork add partition (partition p_mid values less than (400));
+--echo # fork中：对源表添加分区
+--error 4012
+alter table t_online_part add partition (partition p_mid_src values less than (350));
+
+connection obsys;
+set ob_global_debug_sync = 'FORK_TABLE_BUILD_DATA clear';
+set ob_global_debug_sync = 'now signal part_signal';
+connection default;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+
+--echo # fork后：目标表添加分区
+--echo # fork后：对fork表添加分区
+alter table t_online_part_fork add partition (partition p_post values less than (500));
+--replace_regex /REPLICA_NUM = [0-9]*/REPLICA_NUM = replica_num/g
+show create table t_online_part_fork;
+--echo # fork后：对源表添加分区
+alter table t_online_part add partition (partition p_post_src values less than (450));
+--replace_regex /REPLICA_NUM = [0-9]*/REPLICA_NUM = replica_num/g
+show create table t_online_part;
+
+--echo ============================================
+--echo 4. Online DDL：修改表名（fork前/中/后）
+--echo ============================================
+
+drop table if exists t_online_rename;
+drop table if exists t_online_rename_fork;
+
+create table t_online_rename (
+    id int primary key,
+    name varchar(20)
+);
+insert into t_online_rename values (1, 'A');
+
+--echo # fork前：源表改名再改回（不影响后续fork）
+rename table t_online_rename to t_online_rename_src;
+rename table t_online_rename_src to t_online_rename;
+
+connection obsys;
+set ob_global_debug_sync = 'FORK_TABLE_BUILD_DATA wait_for rename_signal execute 10000';
+sleep 1;
+connection default;
+fork table t_online_rename to t_online_rename_fork;
+
+--echo # fork中：目标表改名（特殊标注，预期被阻塞）
+let $wait_status= BUILD_DATA;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+--echo # fork中：对fork表改名
+--error 4012
+rename table t_online_rename_fork to t_online_rename_fork_mid;
+--echo # fork中：对源表改名
+--error 4012
+rename table t_online_rename to t_online_rename_mid;
+
+connection obsys;
+set ob_global_debug_sync = 'FORK_TABLE_BUILD_DATA clear';
+set ob_global_debug_sync = 'now signal rename_signal';
+connection default;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+
+--echo # fork后：目标表改名验证
+--echo # fork后：对fork表改名
+rename table t_online_rename_fork to t_online_rename_fork_r;
+select * from t_online_rename_fork_r;
+rename table t_online_rename_fork_r to t_online_rename_fork;
+--echo # fork后：对源表改名
+rename table t_online_rename to t_online_rename_src_post;
+select * from t_online_rename_src_post;
+rename table t_online_rename_src_post to t_online_rename;
+
+--echo ============================================
+--echo 5. Offline DDL：增/删/改列（fork前/中/后）
+--echo ============================================
+
+drop table if exists t_offline_cols;
+drop table if exists t_offline_cols_fork;
+
+create table t_offline_cols (
+    id int primary key,
+    c1 varchar(20)
+);
+insert into t_offline_cols values (1, 'A');
+
+--echo # fork前：源表DDL
+alter table t_offline_cols add column c2 int default 0;
+alter table t_offline_cols modify column c1 varchar(50);
+alter table t_offline_cols drop column c2;
+
+connection obsys;
+set ob_global_debug_sync = 'FORK_TABLE_BUILD_DATA wait_for col_signal execute 10000';
+sleep 1;
+connection default;
+fork table t_offline_cols to t_offline_cols_fork;
+
+--echo # fork中：目标表DDL（特殊标注，预期被阻塞）
+let $wait_status= BUILD_DATA;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+--echo # fork中：对fork表的列DDL
+--error 4012
+alter table t_offline_cols_fork add column c_mid int default 1;
+--error 4012
+alter table t_offline_cols_fork modify column c1 varchar(80);
+--error 1091
+alter table t_offline_cols_fork drop column c_mid;
+--echo # fork中：对源表的列DDL
+--error 4012
+alter table t_offline_cols add column c_mid_src int default 1;
+--error 4012
+alter table t_offline_cols modify column c1 varchar(80);
+--error 1091
+alter table t_offline_cols drop column c_mid_src;
+
+connection obsys;
+set ob_global_debug_sync = 'FORK_TABLE_BUILD_DATA clear';
+set ob_global_debug_sync = 'now signal col_signal';
+connection default;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+
+--echo # fork后：目标表DDL
+--echo # fork后：对fork表的列DDL
+alter table t_offline_cols_fork add column c_post int default 2;
+alter table t_offline_cols_fork modify column c1 varchar(80);
+alter table t_offline_cols_fork drop column c_post;
+show create table t_offline_cols_fork;
+--echo # fork后：对源表的列DDL
+alter table t_offline_cols add column c_post_src int default 2;
+alter table t_offline_cols modify column c1 varchar(80);
+alter table t_offline_cols drop column c_post_src;
+show create table t_offline_cols;
+
+--echo ============================================
+--echo 6. Offline DDL：增加自增列（特殊标注：仅中/后验证）
+--echo ============================================
+
+drop table if exists t_offline_ai;
+drop table if exists t_offline_ai_fork;
+
+create table t_offline_ai (
+    c1 varchar(20)
+);
+insert into t_offline_ai values ('A'), ('B');
+
+connection obsys;
+set ob_global_debug_sync = 'FORK_TABLE_BUILD_DATA wait_for off_ai_signal execute 10000';
+sleep 1;
+connection default;
+fork table t_offline_ai to t_offline_ai_fork;
+
+--echo # fork中：目标表加自增列（特殊标注，预期被阻塞）
+let $wait_status= BUILD_DATA;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+--echo # fork中：对fork表加自增列
+--error 4012
+alter table t_offline_ai_fork add column id int auto_increment primary key;
+--echo # fork中：对源表加自增列
+--error 4012
+alter table t_offline_ai add column id int auto_increment primary key;
+
+connection obsys;
+set ob_global_debug_sync = 'FORK_TABLE_BUILD_DATA clear';
+set ob_global_debug_sync = 'now signal off_ai_signal';
+connection default;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+
+--echo # fork后：目标表加自增列并插入验证
+--echo # fork后：对fork表加自增列
+--error 1235
+alter table t_offline_ai_fork add column id int auto_increment primary key;
+#insert into t_offline_ai_fork(c1) values ('F_A');
+#select * from t_offline_ai_fork order by id;
+--echo # fork后：对源表加自增列
+#alter table t_offline_ai add column id int auto_increment primary key;
+#insert into t_offline_ai(c1) values ('S_A');
+#select * from t_offline_ai order by id;
+
+--echo ============================================
+--echo 7. Offline DDL：truncate表（fork前/中/后）
+--echo ============================================
+
+drop table if exists t_offline_trunc;
+drop table if exists t_offline_trunc_fork;
+
+create table t_offline_trunc (
+    id int primary key,
+    name varchar(20)
+);
+insert into t_offline_trunc values (1, 'A'), (2, 'B');
+
+--echo # fork前：源表truncate并写入新数据
+truncate table t_offline_trunc;
+insert into t_offline_trunc values (3, 'C');
+
+connection obsys;
+set ob_global_debug_sync = 'FORK_TABLE_BUILD_DATA wait_for trunc_signal execute 10000';
+sleep 1;
+connection default;
+fork table t_offline_trunc to t_offline_trunc_fork;
+
+--echo # fork中：目标表truncate（特殊标注，预期被阻塞）
+let $wait_status= BUILD_DATA;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+--echo # fork中：对fork表truncate
+--error 4012
+truncate table t_offline_trunc_fork;
+--echo # fork中：对源表truncate
+--error 4012
+truncate table t_offline_trunc;
+
+connection obsys;
+set ob_global_debug_sync = 'FORK_TABLE_BUILD_DATA clear';
+set ob_global_debug_sync = 'now signal trunc_signal';
+connection default;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+
+--echo # fork后：目标表truncate验证
+--echo # fork后：对fork表truncate
+truncate table t_offline_trunc_fork;
+select count(*) as cnt from t_offline_trunc_fork;
+--echo # fork后：对源表truncate
+truncate table t_offline_trunc;
+insert into t_offline_trunc values (4, 'D');
+select count(*) as cnt from t_offline_trunc;
+
+--echo ============================================
+--echo 8. Offline DDL：删除表（特殊标注：仅中/后验证）
+--echo ============================================
+
+drop table if exists t_offline_drop;
+drop table if exists t_offline_drop_fork;
+
+create table t_offline_drop (
+    id int primary key,
+    name varchar(20)
+);
+insert into t_offline_drop values (1, 'A');
+
+connection obsys;
+set ob_global_debug_sync = 'FORK_TABLE_BUILD_DATA wait_for drop_signal execute 10000';
+sleep 1;
+connection default;
+fork table t_offline_drop to t_offline_drop_fork;
+
+--echo # fork中：目标表drop（特殊标注，预期被阻塞）
+let $wait_status= BUILD_DATA;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+--error 4012
+drop table t_offline_drop_fork;
+
+connection obsys;
+set ob_global_debug_sync = 'FORK_TABLE_BUILD_DATA clear';
+set ob_global_debug_sync = 'now signal drop_signal';
+connection default;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+
+--echo # fork后：目标表drop
+drop table t_offline_drop_fork;
+
+--echo ============================================
+--echo 9. DML：INSERT/UPDATE/DELETE（fork前/中/后）
+--echo ============================================
+
+drop table if exists t_dml;
+drop table if exists t_dml_fork;
+
+create table t_dml (
+    id int primary key,
+    name varchar(20),
+    v int
+);
+insert into t_dml values (1, 'A', 10), (2, 'B', 20), (3, 'C', 30);
+
+--echo # fork前：源表DML
+insert into t_dml values (4, 'D', 40);
+update t_dml set v = 11 where id = 1;
+delete from t_dml where id = 2;
+select count(*) as cnt from t_dml;
+select * from t_dml order by id;
+
+connection obsys;
+set ob_global_debug_sync = 'FORK_TABLE_BUILD_DATA wait_for dml_signal execute 10000';
+sleep 1;
+connection default;
+fork table t_dml to t_dml_fork;
+
+--echo # fork中：目标表DML
+let $wait_status= BUILD_DATA;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+--echo # fork中：对fork表的DML
+insert into t_dml_fork values (99, 'F_MID', 99);
+update t_dml_fork set v = 111 where id = 1;
+delete from t_dml_fork where id = 3;
+select count(*) as cnt from t_dml_fork;
+select * from t_dml_fork order by id;
+--echo # fork中：对源表的DML
+insert into t_dml values (99, 'S_MID', 99);
+update t_dml set v = 12 where id = 1;
+delete from t_dml where id = 3;
+select count(*) as cnt from t_dml;
+select * from t_dml order by id;
+
+connection obsys;
+set ob_global_debug_sync = 'FORK_TABLE_BUILD_DATA clear';
+set ob_global_debug_sync = 'now signal dml_signal';
+connection default;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+--echo # fork后：目标表DML
+--echo # fork后：对fork表的DML
+insert into t_dml_fork values (100, 'F_POST', 100);
+update t_dml_fork set v = 222 where id = 4;
+delete from t_dml_fork where id = 1;
+select count(*) as cnt from t_dml_fork;
+select * from t_dml_fork order by id;
+--echo # fork后：对源表的DML
+insert into t_dml values (100, 'S_POST', 100);
+update t_dml set v = 13 where id = 4;
+delete from t_dml where id = 5;
+select count(*) as cnt from t_dml;
+select * from t_dml order by id;
+
+--echo ============================================
+--echo 10. 清理
+--echo ============================================
+
+drop table if exists t_online_idx;
+drop table if exists t_online_idx_fork;
+drop table if exists t_online_ai;
+drop table if exists t_online_ai_fork;
+drop table if exists t_online_part;
+drop table if exists t_online_part_fork;
+drop table if exists t_online_rename;
+drop table if exists t_online_rename_fork;
+drop table if exists t_offline_cols;
+drop table if exists t_offline_cols_fork;
+drop table if exists t_offline_ai;
+drop table if exists t_offline_ai_fork;
+drop table if exists t_offline_trunc;
+drop table if exists t_offline_trunc_fork;
+drop table if exists t_offline_drop;
+drop table if exists t_dml;
+drop table if exists t_dml_fork;
+drop database if exists db_fork_orthogonal;
+

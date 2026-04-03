@@ -1,0 +1,572 @@
+##owner: chenminsi.cms
+##owner group: 底层引擎部-轻量版
+##description: Fork Table与旁路导入功能测试（全量/增量/增量基线）
+##tags: fork_table bypass_import direct_load
+##author: chenminsi.cms
+
+--disable_warnings
+drop database if exists db_fork_bypass;
+--enable_warnings
+
+connect (obsys,$OBMYSQL_MS0,root@sys,,oceanbase,$OBMYSQL_PORT);
+connection default;
+create database db_fork_bypass;
+use db_fork_bypass;
+
+#SET wait_timeout=3000000;
+#SET ob_trx_timeout = 10000000;
+#SET ob_query_timeout = 10000000;
+
+--echo # 启用debug sync
+connection obsys;
+alter system set debug_sync_timeout = '60s';
+sleep 1;
+set ob_global_debug_sync = 'reset';
+connection default;
+
+--echo # 准备数据文件目录
+--disable_query_log
+connection obsys;
+let $HOST_IP = query_get_value('select host_ip()',host_ip(), 1);
+let $CREATE_DIR_CMD = ssh $HOST_IP 'mkdir -p "$OBSERVER_DIR/data_for_mysqltest_loaddata"';
+exec $CREATE_DIR_CMD;
+connection default;
+--enable_query_log
+
+--echo ============================================
+--echo 1. 全量旁路导入测试
+--echo ============================================
+--echo # 1.0 提前设置短_ob_ddl_timeout，使1.3中「Fork中」LOAD DATA 在锁冲突时较快超时返回，
+--echo #      避免第一个（源表）卡住过久导致 debug_sync 释放、第二个无法在 fork 暂停期间执行
+connection obsys;
+alter system set _ob_ddl_timeout = '5s';
+sleep 1;
+connection default;
+--echo # 1.1 Fork前：全量旁路导入到源表
+drop table if exists t_full_bypass;
+drop table if exists t_full_bypass_fork;
+
+create table t_full_bypass (
+    id int primary key,
+    name varchar(50),
+    value int,
+    data varchar(100)
+) partition by range(id) (
+    partition p0 values less than (100),
+    partition p1 values less than (300)
+);
+
+--echo # 创建Fork前全量旁路导入数据文件
+--disable_query_log
+connection obsys;
+let $CREATE_CMD = ssh $HOST_IP 'printf "1,Alice,100,Data1\n2,Bob,200,Data2\n3,Charlie,300,Data3\n50,David,400,Data4\n" > "$OBSERVER_DIR/data_for_mysqltest_loaddata/full_bypass_pre.csv"';
+exec $CREATE_CMD;
+connection default;
+--enable_query_log
+
+--echo # 使用LOAD DATA进行全量旁路导入
+--replace_regex /\/[^']*\/data_for_mysqltest_loaddata\//\$OBSERVER_DIR\/data_for_mysqltest_loaddata\//g
+eval load data /*+ direct(true, 0) */ infile '$OBSERVER_DIR/data_for_mysqltest_loaddata/full_bypass_pre.csv' into table t_full_bypass fields terminated by ',' lines terminated by '\n';
+
+--echo # 验证Fork前源表数据
+select count(*) as cnt from t_full_bypass;
+select * from t_full_bypass order by id;
+
+--echo # 1.2 Fork表
+fork table t_full_bypass to t_full_bypass_fork;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+
+--echo # 验证Fork后源表和目标表数据
+select count(*) as src_cnt from t_full_bypass;
+select count(*) as fork_cnt from t_full_bypass_fork;
+select * from t_full_bypass order by id;
+select * from t_full_bypass_fork order by id;
+
+--echo # 1.3 Fork中：全量旁路导入到源表和目标表
+--echo # 创建新表用于Fork中测试
+drop table if exists t_full_bypass_mid;
+drop table if exists t_full_bypass_mid_fork;
+
+create table t_full_bypass_mid (
+    id int primary key,
+    name varchar(50),
+    value int,
+    data varchar(100)
+) partition by range(id) (
+    partition p0 values less than (100),
+    partition p1 values less than (300)
+);
+
+--echo # 创建初始数据文件
+--disable_query_log
+connection obsys;
+let $CREATE_CMD = ssh $HOST_IP 'printf "1,Init1,10,InitData1\n101,Init2,20,InitData2\n" > "$OBSERVER_DIR/data_for_mysqltest_loaddata/full_bypass_mid_init.csv"';
+exec $CREATE_CMD;
+connection default;
+--enable_query_log
+
+--echo # 导入初始数据
+--replace_regex /\/[^']*\/data_for_mysqltest_loaddata\//\$OBSERVER_DIR\/data_for_mysqltest_loaddata\//g
+eval load data /*+ direct(true, 0) */ infile '$OBSERVER_DIR/data_for_mysqltest_loaddata/full_bypass_mid_init.csv' into table t_full_bypass_mid fields terminated by ',' lines terminated by '\n';
+
+--echo # 验证初始数据
+select count(*) as cnt from t_full_bypass_mid;
+select * from t_full_bypass_mid order by id;
+--echo # 设置 debug sync point 在 FORK_TABLE_BUILD_DATA 阶段暂停（_ob_ddl_timeout 已在 1.0 设为 5s）
+connection obsys;
+set ob_global_debug_sync = 'FORK_TABLE_BUILD_DATA wait_for full_bypass_signal execute 10000';
+sleep 1;
+connection default;
+
+--echo # 创建Fork中全量旁路导入数据文件（源表）
+--disable_query_log
+connection obsys;
+let $CREATE_CMD = ssh $HOST_IP 'printf "50,MidSrc1,500,MidData1\n51,MidSrc2,600,MidData2\n" > "$OBSERVER_DIR/data_for_mysqltest_loaddata/full_bypass_mid_src.csv"';
+exec $CREATE_CMD;
+--echo # 创建Fork中全量旁路导入数据文件（目标表）没被锁
+let $CREATE_CMD = ssh $HOST_IP 'printf "99,MidFork1,900,MidDataFork1\n100,MidFork2,1000,MidDataFork2\n" > "$OBSERVER_DIR/data_for_mysqltest_loaddata/full_bypass_mid_fork.csv"';
+exec $CREATE_CMD;
+connection default;
+--enable_query_log
+
+--echo # 执行Fork命令（会在BUILD_DATA阶段暂停）
+fork table t_full_bypass_mid to t_full_bypass_mid_fork;
+
+--echo # 等待fork进入BUILD_DATA阶段
+let $wait_status= BUILD_DATA;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+
+--echo # Fork中：全量旁路导入到源表（预期被阻塞，返回锁冲突）
+--replace_regex /\/[^']*\/data_for_mysqltest_loaddata\//\$OBSERVER_DIR\/data_for_mysqltest_loaddata\//g
+--error 4012
+eval load data /*+ direct(true, 0) */ infile '$OBSERVER_DIR/data_for_mysqltest_loaddata/full_bypass_mid_src.csv' into table t_full_bypass_mid fields terminated by ',' lines terminated by '\n';
+
+--echo # 验证Fork中源表数据（LOAD DATA 被锁阻塞后超时 4012，数据未变化）
+select count(*) as src_cnt from t_full_bypass_mid;
+select * from t_full_bypass_mid order by id;
+
+--echo # Fork中：全量旁路导入到目标表（当前仅源表被锁，目标表未被锁，旁路导入可成功；若后续产品对目标表加锁则此处应返回 4012）
+--replace_regex /\/[^']*\/data_for_mysqltest_loaddata\//\$OBSERVER_DIR\/data_for_mysqltest_loaddata\//g
+--error 4012
+eval load data /*+ direct(true, 0) */ infile '$OBSERVER_DIR/data_for_mysqltest_loaddata/full_bypass_mid_fork.csv' into table t_full_bypass_mid_fork fields terminated by ',' lines terminated by '\n';
+
+--echo # 验证Fork中目标表数据（目标表未被锁时已有新导入数据：初始 2 行 + 本次 2 行）
+select count(*) as fork_cnt from t_full_bypass_mid_fork;
+select * from t_full_bypass_mid_fork order by id;
+
+--echo # 恢复_ob_ddl_timeout默认值
+connection obsys;
+alter system set _ob_ddl_timeout = '5s';
+connection default;
+
+--echo # 继续Fork执行
+connection obsys;
+set ob_global_debug_sync = 'FORK_TABLE_BUILD_DATA clear';
+set ob_global_debug_sync = 'now signal full_bypass_signal';
+connection default;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+
+--echo # 验证Fork完成后源表和目标表数据
+select count(*) as src_cnt from t_full_bypass_mid;
+select count(*) as fork_cnt from t_full_bypass_mid_fork;
+select * from t_full_bypass_mid order by id;
+select * from t_full_bypass_mid_fork order by id;
+
+drop table t_full_bypass_mid;
+drop table t_full_bypass_mid_fork;
+
+--echo # 1.4 Fork后：全量旁路导入到源表和目标表（使用1.2中fork的表）
+--echo # 创建Fork后全量旁路导入数据文件（源表）
+--disable_query_log
+connection obsys;
+let $CREATE_CMD = ssh $HOST_IP 'printf "150,PostSrc1,1500,PostData1\n151,PostSrc2,1600,PostData2\n" > "$OBSERVER_DIR/data_for_mysqltest_loaddata/full_bypass_post_src.csv"';
+exec $CREATE_CMD;
+--echo # 创建Fork后全量旁路导入数据文件（目标表）
+let $CREATE_CMD = ssh $HOST_IP 'printf "199,PostFork1,1900,PostDataFork1\n200,PostFork2,2000,PostDataFork2\n" > "$OBSERVER_DIR/data_for_mysqltest_loaddata/full_bypass_post_fork.csv"';
+exec $CREATE_CMD;
+connection default;
+--enable_query_log
+
+--echo # Fork后：全量旁路导入到源表
+--replace_regex /\/[^']*\/data_for_mysqltest_loaddata\//\$OBSERVER_DIR\/data_for_mysqltest_loaddata\//g
+eval load data /*+ direct(true, 0) */ infile '$OBSERVER_DIR/data_for_mysqltest_loaddata/full_bypass_post_src.csv' into table t_full_bypass fields terminated by ',' lines terminated by '\n';
+
+--echo # 验证Fork后源表数据（导入后）
+select count(*) as src_cnt from t_full_bypass;
+select * from t_full_bypass order by id;
+
+--echo # Fork后：全量旁路导入到目标表
+--replace_regex /\/[^']*\/data_for_mysqltest_loaddata\//\$OBSERVER_DIR\/data_for_mysqltest_loaddata\//g
+eval load data /*+ direct(true, 0) */ infile '$OBSERVER_DIR/data_for_mysqltest_loaddata/full_bypass_post_fork.csv' into table t_full_bypass_fork fields terminated by ',' lines terminated by '\n';
+
+--echo # 验证Fork后目标表数据（导入后）
+select count(*) as fork_cnt from t_full_bypass_fork;
+select * from t_full_bypass_fork order by id;
+
+drop table t_full_bypass;
+drop table t_full_bypass_fork;
+
+--echo ============================================
+--echo 2. 增量旁路导入测试
+--echo ============================================
+
+--echo # 2.1 Fork前：增量旁路导入到源表
+drop table if exists t_inc_bypass;
+drop table if exists t_inc_bypass_fork;
+
+create table t_inc_bypass (
+    id int primary key,
+    name varchar(50),
+    value int,
+    data varchar(100)
+) partition by range(id) (
+    partition p0 values less than (100),
+    partition p1 values less than (300)
+);
+
+--echo # 创建初始基线数据文件
+--disable_query_log
+connection obsys;
+let $CREATE_CMD = ssh $HOST_IP 'printf "1,Base1,10,BaseData1\n101,Base2,20,BaseData2\n" > "$OBSERVER_DIR/data_for_mysqltest_loaddata/inc_bypass_base.csv"';
+exec $CREATE_CMD;
+connection default;
+--enable_query_log
+
+--echo # 先导入基线数据
+--replace_regex /\/[^']*\/data_for_mysqltest_loaddata\//\$OBSERVER_DIR\/data_for_mysqltest_loaddata\//g
+eval load data /*+ direct(true, 0) */ infile '$OBSERVER_DIR/data_for_mysqltest_loaddata/inc_bypass_base.csv' into table t_inc_bypass fields terminated by ',' lines terminated by '\n';
+
+--echo # 验证基线数据
+select count(*) as cnt from t_inc_bypass;
+select * from t_inc_bypass order by id;
+
+--echo # 创建Fork前增量旁路导入数据文件
+--disable_query_log
+connection obsys;
+let $CREATE_CMD = ssh $HOST_IP 'printf "2,Inc1,100,IncData1\n3,Inc2,200,IncData2\n50,Inc3,300,IncData3\n" > "$OBSERVER_DIR/data_for_mysqltest_loaddata/inc_bypass_pre.csv"';
+exec $CREATE_CMD;
+connection default;
+--enable_query_log
+
+--echo # Fork前：增量旁路导入到源表
+--replace_regex /\/[^']*\/data_for_mysqltest_loaddata\//\$OBSERVER_DIR\/data_for_mysqltest_loaddata\//g
+eval load data /*+ direct(true, 0, 'inc_replace') */ infile '$OBSERVER_DIR/data_for_mysqltest_loaddata/inc_bypass_pre.csv' into table t_inc_bypass fields terminated by ',' lines terminated by '\n';
+
+--echo # 验证Fork前源表数据（增量导入后）
+select count(*) as cnt from t_inc_bypass;
+select * from t_inc_bypass order by id;
+
+--echo # 2.2 Fork表
+fork table t_inc_bypass to t_inc_bypass_fork;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+
+--echo # 验证Fork后源表和目标表数据
+select count(*) as src_cnt from t_inc_bypass;
+select count(*) as fork_cnt from t_inc_bypass_fork;
+select * from t_inc_bypass order by id;
+select * from t_inc_bypass_fork order by id;
+
+--echo # 2.3 Fork中：增量旁路导入到源表和目标表
+--echo # 创建新表用于Fork中测试
+drop table if exists t_inc_bypass_mid;
+drop table if exists t_inc_bypass_mid_fork;
+
+create table t_inc_bypass_mid (
+    id int primary key,
+    name varchar(50),
+    value int,
+    data varchar(100)
+) partition by range(id) (
+    partition p0 values less than (100),
+    partition p1 values less than (300)
+);
+
+--echo # 创建初始基线数据文件
+--disable_query_log
+connection obsys;
+let $CREATE_CMD = ssh $HOST_IP 'printf "1,Init1,10,InitData1\n101,Init2,20,InitData2\n" > "$OBSERVER_DIR/data_for_mysqltest_loaddata/inc_bypass_mid_init.csv"';
+exec $CREATE_CMD;
+connection default;
+--enable_query_log
+
+--echo # 导入初始基线数据
+--replace_regex /\/[^']*\/data_for_mysqltest_loaddata\//\$OBSERVER_DIR\/data_for_mysqltest_loaddata\//g
+eval load data /*+ direct(true, 0) */ infile '$OBSERVER_DIR/data_for_mysqltest_loaddata/inc_bypass_mid_init.csv' into table t_inc_bypass_mid fields terminated by ',' lines terminated by '\n';
+
+--echo # 验证初始数据
+select count(*) as cnt from t_inc_bypass_mid;
+select * from t_inc_bypass_mid order by id;
+--echo # 设置debug sync point在FORK_TABLE_BUILD_DATA阶段暂停
+connection obsys;
+set ob_global_debug_sync = 'FORK_TABLE_BUILD_DATA wait_for inc_bypass_signal execute 10000';
+sleep 1;
+connection default;
+
+--echo # 创建Fork中增量旁路导入数据文件（源表）
+--disable_query_log
+connection obsys;
+let $CREATE_CMD = ssh $HOST_IP 'printf "50,IncMidSrc1,500,IncMidData1\n51,IncMidSrc2,600,IncMidData2\n" > "$OBSERVER_DIR/data_for_mysqltest_loaddata/inc_bypass_mid_src.csv"';
+exec $CREATE_CMD;
+--echo # 创建Fork中增量旁路导入数据文件（目标表）
+let $CREATE_CMD = ssh $HOST_IP 'printf "99,IncMidFork1,900,IncMidDataFork1\n100,IncMidFork2,1000,IncMidDataFork2\n" > "$OBSERVER_DIR/data_for_mysqltest_loaddata/inc_bypass_mid_fork.csv"';
+exec $CREATE_CMD;
+connection default;
+--enable_query_log
+
+--echo # 执行Fork命令（会在BUILD_DATA阶段暂停）
+fork table t_inc_bypass_mid to t_inc_bypass_mid_fork;
+
+--echo # 等待fork进入BUILD_DATA阶段
+let $wait_status= BUILD_DATA;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+
+--echo # Fork中：增量旁路导入到源表（预期被阻塞，返回锁冲突）
+--replace_regex /\/[^']*\/data_for_mysqltest_loaddata\//\$OBSERVER_DIR\/data_for_mysqltest_loaddata\//g
+--error 4012
+eval load data /*+ direct(true, 0, 'inc_replace') */ infile '$OBSERVER_DIR/data_for_mysqltest_loaddata/inc_bypass_mid_src.csv' into table t_inc_bypass_mid fields terminated by ',' lines terminated by '\n';
+
+--echo # 验证Fork中源表数据（LOAD DATA被阻塞，数据未变化）
+select count(*) as src_cnt from t_inc_bypass_mid;
+select * from t_inc_bypass_mid order by id;
+
+--echo # Fork中：增量旁路导入到目标表
+--replace_regex /\/[^']*\/data_for_mysqltest_loaddata\//\$OBSERVER_DIR\/data_for_mysqltest_loaddata\//g
+--error 4012
+eval load data /*+ direct(true, 0, 'inc_replace') */ infile '$OBSERVER_DIR/data_for_mysqltest_loaddata/inc_bypass_mid_fork.csv' into table t_inc_bypass_mid_fork fields terminated by ',' lines terminated by '\n';
+
+--echo # 验证Fork中目标表数据（增量导入后）
+select count(*) as fork_cnt from t_inc_bypass_mid_fork;
+select * from t_inc_bypass_mid_fork order by id;
+
+--echo # 继续Fork执行
+connection obsys;
+set ob_global_debug_sync = 'FORK_TABLE_BUILD_DATA clear';
+set ob_global_debug_sync = 'now signal inc_bypass_signal';
+connection default;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+
+--echo # 验证Fork完成后源表和目标表数据
+select count(*) as src_cnt from t_inc_bypass_mid;
+select count(*) as fork_cnt from t_inc_bypass_mid_fork;
+select * from t_inc_bypass_mid order by id;
+select * from t_inc_bypass_mid_fork order by id;
+
+drop table t_inc_bypass_mid;
+drop table t_inc_bypass_mid_fork;
+
+--echo # 2.4 Fork后：增量旁路导入到源表和目标表（使用2.2中fork的表）
+--echo # 创建Fork后增量旁路导入数据文件（源表）
+--disable_query_log
+connection obsys;
+let $CREATE_CMD = ssh $HOST_IP 'printf "150,IncPostSrc1,1500,IncPostData1\n151,IncPostSrc2,1600,IncPostData2\n" > "$OBSERVER_DIR/data_for_mysqltest_loaddata/inc_bypass_post_src.csv"';
+exec $CREATE_CMD;
+--echo # 创建Fork后增量旁路导入数据文件（目标表）
+let $CREATE_CMD = ssh $HOST_IP 'printf "199,IncPostFork1,1900,IncPostDataFork1\n200,IncPostFork2,2000,IncPostDataFork2\n" > "$OBSERVER_DIR/data_for_mysqltest_loaddata/inc_bypass_post_fork.csv"';
+exec $CREATE_CMD;
+connection default;
+--enable_query_log
+
+--echo # Fork后：增量旁路导入到源表
+--replace_regex /\/[^']*\/data_for_mysqltest_loaddata\//\$OBSERVER_DIR\/data_for_mysqltest_loaddata\//g
+eval load data /*+ direct(true, 0, 'inc_replace') */ infile '$OBSERVER_DIR/data_for_mysqltest_loaddata/inc_bypass_post_src.csv' into table t_inc_bypass fields terminated by ',' lines terminated by '\n';
+
+--echo # 验证Fork后源表数据（增量导入后）
+select count(*) as src_cnt from t_inc_bypass;
+select * from t_inc_bypass order by id;
+
+--echo # Fork后：增量旁路导入到目标表
+--replace_regex /\/[^']*\/data_for_mysqltest_loaddata\//\$OBSERVER_DIR\/data_for_mysqltest_loaddata\//g
+eval load data /*+ direct(true, 0, 'inc_replace') */ infile '$OBSERVER_DIR/data_for_mysqltest_loaddata/inc_bypass_post_fork.csv' into table t_inc_bypass_fork fields terminated by ',' lines terminated by '\n';
+
+--echo # 验证Fork后目标表数据（增量导入后）
+select count(*) as fork_cnt from t_inc_bypass_fork;
+select * from t_inc_bypass_fork order by id;
+
+drop table t_inc_bypass;
+drop table t_inc_bypass_fork;
+
+--echo ============================================
+--echo 3. 增量基线旁路导入测试
+--echo ============================================
+
+--echo # 3.1 Fork前：增量基线旁路导入到源表
+drop table if exists t_inc_base_bypass;
+drop table if exists t_inc_base_bypass_fork;
+
+create table t_inc_base_bypass (
+    id int primary key,
+    name varchar(50),
+    value int,
+    data varchar(100)
+) partition by range(id) (
+    partition p0 values less than (100),
+    partition p1 values less than (300)
+);
+
+--echo # 创建初始基线数据文件
+--disable_query_log
+connection obsys;
+let $CREATE_CMD = ssh $HOST_IP 'printf "1,Base1,10,BaseData1\n101,Base2,20,BaseData2\n" > "$OBSERVER_DIR/data_for_mysqltest_loaddata/inc_base_bypass_base.csv"';
+exec $CREATE_CMD;
+connection default;
+--enable_query_log
+
+--echo # 先导入基线数据
+--replace_regex /\/[^']*\/data_for_mysqltest_loaddata\//\$OBSERVER_DIR\/data_for_mysqltest_loaddata\//g
+eval load data /*+ direct(true, 0) */ infile '$OBSERVER_DIR/data_for_mysqltest_loaddata/inc_base_bypass_base.csv' into table t_inc_base_bypass fields terminated by ',' lines terminated by '\n';
+
+--echo # 验证基线数据
+select count(*) as cnt from t_inc_base_bypass;
+select * from t_inc_base_bypass order by id;
+
+--echo # 创建Fork前增量基线旁路导入数据文件
+--disable_query_log
+connection obsys;
+let $CREATE_CMD = ssh $HOST_IP 'printf "2,IncBase1,100,IncBaseData1\n3,IncBase2,200,IncBaseData2\n50,IncBase3,300,IncBaseData3\n" > "$OBSERVER_DIR/data_for_mysqltest_loaddata/inc_base_bypass_pre.csv"';
+exec $CREATE_CMD;
+connection default;
+--enable_query_log
+
+--echo # Fork前：增量基线旁路导入到源表
+--echo # 注意：增量基线导入使用 'inc' 参数
+--replace_regex /\/[^']*\/data_for_mysqltest_loaddata\//\$OBSERVER_DIR\/data_for_mysqltest_loaddata\//g
+eval load data /*+ direct(true, 0, 'inc') */ infile '$OBSERVER_DIR/data_for_mysqltest_loaddata/inc_base_bypass_pre.csv' into table t_inc_base_bypass fields terminated by ',' lines terminated by '\n';
+
+--echo # 验证Fork前源表数据（增量基线导入后）
+select count(*) as cnt from t_inc_base_bypass;
+select * from t_inc_base_bypass order by id;
+
+--echo # 3.2 Fork表
+fork table t_inc_base_bypass to t_inc_base_bypass_fork;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+
+--echo # 验证Fork后源表和目标表数据
+select count(*) as src_cnt from t_inc_base_bypass;
+select count(*) as fork_cnt from t_inc_base_bypass_fork;
+select * from t_inc_base_bypass order by id;
+select * from t_inc_base_bypass_fork order by id;
+
+--echo # 3.3 Fork中：增量基线旁路导入到源表和目标表
+--echo # 创建新表用于Fork中测试
+drop table if exists t_inc_base_bypass_mid;
+drop table if exists t_inc_base_bypass_mid_fork;
+
+create table t_inc_base_bypass_mid (
+    id int primary key,
+    name varchar(50),
+    value int,
+    data varchar(100)
+) partition by range(id) (
+    partition p0 values less than (100),
+    partition p1 values less than (300)
+);
+
+--echo # 创建初始基线数据文件
+--disable_query_log
+connection obsys;
+let $CREATE_CMD = ssh $HOST_IP 'printf "1,Init1,10,InitData1\n101,Init2,20,InitData2\n" > "$OBSERVER_DIR/data_for_mysqltest_loaddata/inc_base_bypass_mid_init.csv"';
+exec $CREATE_CMD;
+connection default;
+--enable_query_log
+
+--echo # 导入初始基线数据
+--replace_regex /\/[^']*\/data_for_mysqltest_loaddata\//\$OBSERVER_DIR\/data_for_mysqltest_loaddata\//g
+eval load data /*+ direct(true, 0) */ infile '$OBSERVER_DIR/data_for_mysqltest_loaddata/inc_base_bypass_mid_init.csv' into table t_inc_base_bypass_mid fields terminated by ',' lines terminated by '\n';
+
+--echo # 验证初始数据
+select count(*) as cnt from t_inc_base_bypass_mid;
+select * from t_inc_base_bypass_mid order by id;
+--echo # 设置debug sync point在FORK_TABLE_BUILD_DATA阶段暂停
+connection obsys;
+set ob_global_debug_sync = 'FORK_TABLE_BUILD_DATA wait_for inc_base_bypass_signal execute 10000';
+sleep 1;
+connection default;
+
+--echo # 创建Fork中增量基线旁路导入数据文件（源表）
+--disable_query_log
+connection obsys;
+let $CREATE_CMD = ssh $HOST_IP 'printf "50,IncBaseMidSrc1,500,IncBaseMidData1\n51,IncBaseMidSrc2,600,IncBaseMidData2\n" > "$OBSERVER_DIR/data_for_mysqltest_loaddata/inc_base_bypass_mid_src.csv"';
+exec $CREATE_CMD;
+--echo # 创建Fork中增量基线旁路导入数据文件（目标表）
+let $CREATE_CMD = ssh $HOST_IP 'printf "99,IncBaseMidFork1,900,IncBaseMidDataFork1\n100,IncBaseMidFork2,1000,IncBaseMidDataFork2\n" > "$OBSERVER_DIR/data_for_mysqltest_loaddata/inc_base_bypass_mid_fork.csv"';
+exec $CREATE_CMD;
+connection default;
+--enable_query_log
+
+--echo # 执行Fork命令（会在BUILD_DATA阶段暂停）
+fork table t_inc_base_bypass_mid to t_inc_base_bypass_mid_fork;
+
+--echo # 等待fork进入BUILD_DATA阶段
+let $wait_status= BUILD_DATA;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+
+--echo # Fork中：增量基线旁路导入到源表（预期被阻塞，返回锁冲突）
+--replace_regex /\/[^']*\/data_for_mysqltest_loaddata\//\$OBSERVER_DIR\/data_for_mysqltest_loaddata\//g
+--error 4012
+eval load data /*+ direct(true, 0, 'inc') */ infile '$OBSERVER_DIR/data_for_mysqltest_loaddata/inc_base_bypass_mid_src.csv' into table t_inc_base_bypass_mid fields terminated by ',' lines terminated by '\n';
+
+--echo # 验证Fork中源表数据（LOAD DATA被阻塞，数据未变化）
+select count(*) as src_cnt from t_inc_base_bypass_mid;
+select * from t_inc_base_bypass_mid order by id;
+
+--echo # Fork中：增量基线旁路导入到目标表
+--replace_regex /\/[^']*\/data_for_mysqltest_loaddata\//\$OBSERVER_DIR\/data_for_mysqltest_loaddata\//g
+--error 4012
+eval load data /*+ direct(true, 0, 'inc') */ infile '$OBSERVER_DIR/data_for_mysqltest_loaddata/inc_base_bypass_mid_fork.csv' into table t_inc_base_bypass_mid_fork fields terminated by ',' lines terminated by '\n';
+
+--echo # 验证Fork中目标表数据（增量基线导入后）
+select count(*) as fork_cnt from t_inc_base_bypass_mid_fork;
+select * from t_inc_base_bypass_mid_fork order by id;
+
+--echo # 继续Fork执行
+connection obsys;
+set ob_global_debug_sync = 'FORK_TABLE_BUILD_DATA clear';
+set ob_global_debug_sync = 'now signal inc_base_bypass_signal';
+connection default;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+
+--echo # 验证Fork完成后源表和目标表数据
+select count(*) as src_cnt from t_inc_base_bypass_mid;
+select count(*) as fork_cnt from t_inc_base_bypass_mid_fork;
+select * from t_inc_base_bypass_mid order by id;
+select * from t_inc_base_bypass_mid_fork order by id;
+
+drop table t_inc_base_bypass_mid;
+drop table t_inc_base_bypass_mid_fork;
+
+--echo # 3.4 Fork后：增量基线旁路导入到源表和目标表（使用3.2中fork的表）
+--echo # 创建Fork后增量基线旁路导入数据文件（源表）
+--disable_query_log
+connection obsys;
+let $CREATE_CMD = ssh $HOST_IP 'printf "150,IncBasePostSrc1,1500,IncBasePostData1\n151,IncBasePostSrc2,1600,IncBasePostData2\n" > "$OBSERVER_DIR/data_for_mysqltest_loaddata/inc_base_bypass_post_src.csv"';
+exec $CREATE_CMD;
+--echo # 创建Fork后增量基线旁路导入数据文件（目标表）
+let $CREATE_CMD = ssh $HOST_IP 'printf "199,IncBasePostFork1,1900,IncBasePostDataFork1\n200,IncBasePostFork2,2000,IncBasePostDataFork2\n" > "$OBSERVER_DIR/data_for_mysqltest_loaddata/inc_base_bypass_post_fork.csv"';
+exec $CREATE_CMD;
+connection default;
+--enable_query_log
+
+--echo # Fork后：增量基线旁路导入到源表
+--replace_regex /\/[^']*\/data_for_mysqltest_loaddata\//\$OBSERVER_DIR\/data_for_mysqltest_loaddata\//g
+eval load data /*+ direct(true, 0, 'inc') */ infile '$OBSERVER_DIR/data_for_mysqltest_loaddata/inc_base_bypass_post_src.csv' into table t_inc_base_bypass fields terminated by ',' lines terminated by '\n';
+
+--echo # 验证Fork后源表数据（增量基线导入后）
+select count(*) as src_cnt from t_inc_base_bypass;
+select * from t_inc_base_bypass order by id;
+
+--echo # Fork后：增量基线旁路导入到目标表
+--replace_regex /\/[^']*\/data_for_mysqltest_loaddata\//\$OBSERVER_DIR\/data_for_mysqltest_loaddata\//g
+eval load data /*+ direct(true, 0, 'inc') */ infile '$OBSERVER_DIR/data_for_mysqltest_loaddata/inc_base_bypass_post_fork.csv' into table t_inc_base_bypass_fork fields terminated by ',' lines terminated by '\n';
+
+--echo # 验证Fork后目标表数据（增量基线导入后）
+select count(*) as fork_cnt from t_inc_base_bypass_fork;
+select * from t_inc_base_bypass_fork order by id;
+
+drop table t_inc_base_bypass;
+drop table t_inc_base_bypass_fork;
+
+--echo ============================================
+--echo 4. 清理
+--echo ============================================
+
+drop database if exists db_fork_bypass;
