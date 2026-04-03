@@ -93,7 +93,7 @@ int ObTenantDirectLoadMgr::init()
   int ret = OB_SUCCESS;
   const uint64_t tenant_id = MTL_ID();
   const int64_t bucket_num = common::hash::cal_next_prime(common::calculate_scaled_value_by_memory(4096L, 100000L));
-  const int64_t memory_limit = 1024L * 1024L * 1024L * 10L; // 10GB
+  const int64_t memory_limit = 1024LL * 1024LL * 1024LL * 10LL; // 10GB
   lib::ObMemAttr attr(tenant_id, "TenantDLMgr");
   if (OB_UNLIKELY(is_inited_)) {
     ret = OB_INIT_TWICE;
@@ -1175,7 +1175,7 @@ int ObTabletDirectLoadMgr::update(
 {
   int ret = OB_SUCCESS;
   const int64_t bucket_num = 97L; // 97
-  const int64_t memory_limit = 1024L * 1024L * 1024L * 10L; // 10GB
+  const int64_t memory_limit = 1024LL * 1024LL * 1024LL * 10LL; // 10GB
   ObLSService *ls_service = nullptr;
   ObLSHandle ls_handle;
   ObTabletHandle tablet_handle;
@@ -1357,7 +1357,7 @@ int ObTabletDirectLoadMgr::prepare_schema_item_on_demand(const uint64_t table_id
       } else if (OB_FAIL(table_schema->get_is_column_store(schema_item_.is_column_store_))) {
         LOG_WARN("fail to get is column store", K(ret));
       } else if (FALSE_IT(is_vector_data_complement= ObDirectLoadMgrUtil::need_process_vec_index(table_schema->get_index_type()))) {
-      } else if (is_vector_data_complement &&
+      } else if (is_vector_data_complement && 
                  OB_FAIL(ObDirectLoadMgrUtil::prepare_schema_item_for_vec_idx_data(tenant_id,
                                                                                    schema_guard,
                                                                                    table_schema,

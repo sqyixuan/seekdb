@@ -32,6 +32,11 @@
 #include "common/ob_range.h"
 #include "common/ob_store_format.h"
 #include "common/ob_tablet_id.h"
+#ifdef _WIN32
+#ifndef strtok_r
+#define strtok_r strtok_s
+#endif
+#endif
 #include "share/ob_define.h"
 #include "share/ob_get_compat_mode.h"
 #include "share/schema/ob_schema_struct.h"
@@ -766,16 +771,10 @@ public:
 
 /*TODO: Delete the following interfaces
 int ObSimpleTableSchemaV2::get_zone_list(）
-int ObSimpleTableSchemaV2::get_first_primary_zone_inherit()
-int ObSimpleTableSchemaV2::get_paxos_replica_num()
-int ObSimpleTableSchemaV2::get_zone_replica_attr_array_inherit()
-int ObSimpleTableSchemaV2::get_primary_zone_inherit()
-int ObSimpleTableSchemaV2::get_full_replica_num()
 int ObSimpleTableSchemaV2::get_all_replica_num()
 int ObSimpleTableSchemaV2::check_has_all_server_readonly_replica()
 int ObSimpleTableSchemaV2::check_is_readonly_at_all()
 int ObSimpleTableSchemaV2::check_is_all_server_readonly_replica()
-int ObSimpleTableSchemaV2::get_locality_str_inherit()
 */
 class ObSimpleTableSchemaV2 : public ObPartitionSchema, public ObMergeSchema
 {
@@ -945,22 +944,6 @@ public:
   virtual int get_zone_list(
       share::schema::ObSchemaGetterGuard &schema_guard,
       common::ObIArray<common::ObZone> &zone_list) const override;
-  virtual int get_primary_zone_inherit(
-      share::schema::ObSchemaGetterGuard &schema_guard,
-      share::schema::ObPrimaryZone &primary_zone) const override;
-  virtual int get_paxos_replica_num(
-      share::schema::ObSchemaGetterGuard &guard,
-      int64_t &num) const override;
-  virtual int get_first_primary_zone_inherit(
-      share::schema::ObSchemaGetterGuard &schema_guard,
-      const common::ObIArray<rootserver::ObReplicaAddr> &replica_addrs,
-      common::ObZone &first_primary_zone) const override;
-  virtual int get_zone_replica_attr_array_inherit(
-      ObSchemaGetterGuard &guard,
-      ZoneLocalityIArray &locality) const override;
-  virtual int get_locality_str_inherit(
-      share::schema::ObSchemaGetterGuard &guard,
-      const common::ObString *&locality_str) const override;
   int get_tablet_ids(
       common::ObIArray<ObTabletID> &tablet_ids) const;
   int get_first_level_hidden_tablet_ids(
@@ -1246,7 +1229,7 @@ public:
     const bool heap_case =  is_index_local_storage() && data_table_schema.is_table_without_pk();
     const bool fts_case = is_partitioned_table() && is_index_local_storage() && (is_fts_index_aux() || is_fts_doc_word_aux());
     const bool multivalue_case = is_partitioned_table() && is_index_local_storage() && is_multivalue_index_aux();
-    const bool vec_case = is_partitioned_table() && is_index_local_storage() &&
+    const bool vec_case = is_partitioned_table() && is_index_local_storage() && 
                           (is_vec_delta_buffer_type() || is_vec_index_id_type() || is_vec_index_snapshot_data_type() || is_vec_spiv_index_aux());
     return heap_case || fts_case || vec_case || multivalue_case;
   }

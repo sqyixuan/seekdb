@@ -109,7 +109,7 @@ void TestBackupIndexIterator::SetUp()
   const int64_t block_size = common::OB_MALLOC_BIG_BLOCK_SIZE;
   TestDataFilePrepare::SetUp();
 
-  ret = getter.add_tenant(1, 8L * 1024L * 1024L, 2L * 1024L * 1024L * 1024L);
+  ret = getter.add_tenant(1, 8LL * 1024 * 1024, 2LL * 1024 * 1024 * 1024);
   ASSERT_EQ(OB_SUCCESS, ret);
   ret = ObKVGlobalCache::get_instance().init(&getter, bucket_num, max_cache_size, block_size);
   if (OB_INIT_TWICE == ret) {
@@ -118,7 +118,7 @@ void TestBackupIndexIterator::SetUp()
     ASSERT_EQ(OB_SUCCESS, ret);
   }
   // set observer memory limit
-  CHUNK_MGR.set_limit(8L * 1024L * 1024L * 1024L);
+  CHUNK_MGR.set_limit(8LL * 1024 * 1024 * 1024);
 
   ASSERT_EQ(OB_SUCCESS, common::ObClockGenerator::init());
   ASSERT_EQ(OB_SUCCESS, tmp_file::ObTmpBlockCache::get_instance().init("tmp_block_cache", 1));
@@ -176,7 +176,7 @@ void TestBackupIndexIterator::inner_init_()
   char buf[PATH_MAX];
   ret = databuff_printf(test_dir_, sizeof(test_dir_), "%s/test_backup_index_iterator_dir", getcwd(buf, sizeof(buf)));
 #else
-  ret = databuff_printf(test_dir_, sizeof(test_dir_), "%s/test_backup_index_iterator_dir", get_current_dir_name());
+  ret = databuff_printf(test_dir_, sizeof(test_dir_), "%s/test_backup_index_iterator_dir", getcwd(NULL, 0));
 #endif
   ASSERT_EQ(OB_SUCCESS, ret);
   ret = databuff_printf(test_dir_uri_, sizeof(test_dir_uri_), "file://%s", test_dir_);

@@ -275,9 +275,6 @@ ob_set_subtarget(ob_sql engine_cmd
   engine/cmd/ob_outline_executor.cpp
   engine/cmd/ob_package_executor.cpp
   engine/cmd/ob_partition_executor_utils.cpp
-  engine/cmd/ob_resource_executor.cpp
-  engine/cmd/ob_restore_executor.cpp
-  engine/cmd/ob_clone_executor.cpp
   engine/cmd/ob_role_cmd_executor.cpp
   engine/cmd/ob_routine_executor.cpp
   engine/cmd/ob_sequence_executor.cpp
@@ -297,12 +294,12 @@ ob_set_subtarget(ob_sql engine_cmd
   engine/cmd/ob_event_executor.cpp
   engine/cmd/ob_table_direct_insert_ctx.cpp
   engine/cmd/ob_table_direct_insert_service.cpp
-  engine/cmd/ob_tenant_snapshot_executor.cpp
   engine/cmd/ob_mock_executor.cpp
   engine/cmd/ob_olap_async_job_executor.cpp
   engine/cmd/ob_catalog_executor.cpp
   engine/cmd/ob_trigger_storage_cache_executor.cpp
   engine/cmd/ob_sys_dispatch_call_executor.cpp
+  engine/cmd/ob_merge_table_executor.cpp
   engine/cmd/ob_ccl_rule_executor.cpp
 )
 
@@ -1172,7 +1169,6 @@ ob_set_subtarget(ob_sql resolver
 )
 
 ob_set_subtarget(ob_sql resolver_cmd
-  resolver/cmd/ob_switch_tenant_resolver.cpp
   resolver/cmd/ob_alter_system_resolver.cpp
   resolver/cmd/ob_alter_system_stmt.cpp
   resolver/cmd/ob_anonymous_block_resolver.cpp
@@ -1191,15 +1187,15 @@ ob_set_subtarget(ob_sql resolver_cmd
   resolver/cmd/ob_load_data_resolver.cpp
   resolver/cmd/ob_load_data_stmt.cpp
   resolver/cmd/ob_location_utils_resolver.cpp
-  resolver/cmd/ob_resource_resolver.cpp
   resolver/cmd/ob_set_names_resolver.cpp
   resolver/cmd/ob_set_transaction_resolver.cpp
   resolver/cmd/ob_show_resolver.cpp
+  resolver/cmd/ob_switch_role_resolver.cpp
+  resolver/cmd/ob_diff_table_resolver.cpp
+  resolver/cmd/ob_merge_table_resolver.cpp
   resolver/cmd/ob_variable_set_resolver.cpp
   resolver/cmd/ob_variable_set_stmt.cpp
   resolver/cmd/ob_alter_system_resolver.cpp
-  resolver/cmd/ob_tenant_snapshot_resolver.cpp
-  resolver/cmd/ob_tenant_clone_resolver.cpp
   resolver/cmd/ob_olap_async_job_resolver.cpp
   resolver/cmd/ob_olap_async_job_stmt.cpp
   resolver/cmd/ob_module_data_resolver.cpp
@@ -1212,8 +1208,6 @@ ob_set_subtarget(ob_sql resolver_cmd
 ob_set_subtarget(ob_sql resolver_dcl
   resolver/dcl/ob_alter_role_resolver.cpp
   resolver/dcl/ob_alter_role_stmt.cpp
-  resolver/dcl/ob_alter_user_primary_zone_resolver.cpp
-  resolver/dcl/ob_alter_user_primary_zone_stmt.cpp
   resolver/dcl/ob_alter_user_profile_resolver.cpp
   resolver/dcl/ob_alter_user_profile_stmt.cpp
   resolver/dcl/ob_create_role_resolver.cpp
@@ -1274,9 +1268,6 @@ ob_set_subtarget(ob_sql resolver_ddl
   resolver/ddl/ob_create_table_stmt.cpp
   resolver/ddl/ob_create_tablegroup_resolver.cpp
   resolver/ddl/ob_create_tablegroup_stmt.cpp
-  resolver/ddl/ob_create_tenant_resolver.cpp
-  resolver/ddl/ob_create_tenant_stmt.cpp
-  resolver/ddl/ob_create_standby_tenant_resolver.cpp
   resolver/ddl/ob_create_view_resolver.cpp
   resolver/ddl/ob_ddl_resolver.cpp
   resolver/ddl/ob_ddl_stmt.cpp
@@ -1297,20 +1288,16 @@ ob_set_subtarget(ob_sql resolver_ddl
   resolver/ddl/ob_drop_table_resolver.cpp
   resolver/ddl/ob_drop_table_stmt.cpp
   resolver/ddl/ob_drop_tablegroup_resolver.cpp
-  resolver/ddl/ob_drop_tenant_resolver.cpp
-  resolver/ddl/ob_drop_tenant_stmt.cpp
   resolver/ddl/ob_explain_resolver.cpp
   resolver/ddl/ob_explain_stmt.cpp
   resolver/ddl/ob_external_file_ddl_resolver.cpp
   resolver/ddl/ob_flashback_resolver.cpp
   resolver/ddl/ob_fork_table_resolver.cpp
   resolver/ddl/ob_fork_table_stmt.cpp
+  resolver/ddl/ob_fork_database_resolver.cpp
+  resolver/ddl/ob_fork_database_stmt.cpp
   resolver/ddl/ob_lock_table_resolver.cpp
   resolver/ddl/ob_lock_table_stmt.cpp
-  resolver/ddl/ob_lock_tenant_resolver.cpp
-  resolver/ddl/ob_lock_tenant_stmt.cpp
-  resolver/ddl/ob_modify_tenant_resolver.cpp
-  resolver/ddl/ob_modify_tenant_stmt.cpp
   resolver/ddl/ob_optimize_resolver.cpp
   resolver/ddl/ob_optimize_stmt.cpp
   resolver/ddl/ob_outline_resolver.cpp
@@ -1481,7 +1468,7 @@ ob_set_subtarget(ob_sql_simd common
 
 ob_server_add_target(ob_sql_simd)
 
-if (${ARCHITECTURE} STREQUAL "x86_64")
+if (${ARCHITECTURE} STREQUAL "x86_64" OR ${ARCHITECTURE} STREQUAL "amd64")
 	target_compile_options(ob_sql_simd
 	  PRIVATE
 		-mtune=core-avx2 -mavx2 -mfma -mbmi2 -mavx512vl -mavx512bw
@@ -1499,12 +1486,22 @@ target_link_libraries(ob_sql_static
   PUBLIC ob_sql ob_sql_extra
   ob_sql_server_parser_static)
 
-execute_process(
-  COMMAND env NEED_PARSER_CACHE=${NEED_PARSER_CACHE} bash gen_parser.sh
-  RESULT_VARIABLE RET
-  WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}/src/sql/parser
-  OUTPUT_FILE _gen_parser.output
-  ERROR_FILE _gen_parser.error)
+if(WIN32)
+  find_program(PWSH_EXE NAMES pwsh pwsh.exe powershell powershell.exe REQUIRED)
+  execute_process(
+    COMMAND ${PWSH_EXE} -NoProfile -ExecutionPolicy Bypass -File gen_parser_win.ps1
+    RESULT_VARIABLE RET
+    WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}/src/sql/parser
+    OUTPUT_FILE _gen_parser.output
+    ERROR_FILE _gen_parser.error)
+else()
+  execute_process(
+    COMMAND ${CMAKE_COMMAND} -E env NEED_PARSER_CACHE=${NEED_PARSER_CACHE} bash gen_parser.sh
+    RESULT_VARIABLE RET
+    WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}/src/sql/parser
+    OUTPUT_FILE _gen_parser.output
+    ERROR_FILE _gen_parser.error)
+endif()
 if(RET AND NOT RET EQUAL 0)
   message(FATAL_ERROR "Generate sql parser failed and check error in ${PROJECT_SOURCE_DIR}/src/sql/parser/_gen_parser.error")
 endif()

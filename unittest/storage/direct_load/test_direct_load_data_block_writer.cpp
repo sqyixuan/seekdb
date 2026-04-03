@@ -85,7 +85,6 @@ public:
     ObAddr self;
     obrpc::ObSrvRpcProxy rpc_proxy;
     obrpc::ObCommonRpcProxy rs_rpc_proxy;
-    share::ObRsMgr rs_mgr;
     self.set_ip_addr("127.0.0.1", 8086);
     rpc::frame::ObReqTransport req_transport(NULL, NULL);
     const int64_t ulmt = 128LL << 30;
@@ -428,13 +427,13 @@ void TestDataBlockWriter::SetUp()
   ASSERT_NE(nullptr, table_mgr_ = OB_NEWx(ObDirectLoadTableManager, (&allocator_)));
   ASSERT_EQ(OB_SUCCESS, table_mgr_->init());
 
-  ASSERT_EQ(OB_SUCCESS, getter.add_tenant(1, 8L * 1024L * 1024L, 2L * 1024L * 1024L * 1024L));
+  ASSERT_EQ(OB_SUCCESS, getter.add_tenant(1, 8LL * 1024 * 1024, 2LL * 1024 * 1024 * 1024));
   if (OB_FAIL(ObKVGlobalCache::get_instance().init(&getter, bucket_num, max_cache_size, block_size))) {
     ASSERT_EQ(OB_INIT_TWICE, ret);
     ret = OB_SUCCESS;
   }
   // set observer memory limit
-  CHUNK_MGR.set_limit(8L * 1024L * 1024L * 1024L);
+  CHUNK_MGR.set_limit(8LL * 1024 * 1024 * 1024);
   EXPECT_EQ(OB_SUCCESS, init_tenant_mgr());
   ASSERT_EQ(OB_SUCCESS, common::ObClockGenerator::init());
   ASSERT_EQ(OB_SUCCESS, tmp_file::ObTmpBlockCache::get_instance().init("tmp_block_cache", 1));

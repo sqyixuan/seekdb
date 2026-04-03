@@ -674,12 +674,12 @@ int ObSchemaPrinter::print_single_index_definition(const ObTableSchema *index_sc
           } else if (index_schema->is_fts_index() &&
                      (col->is_doc_id_column() || col->is_hidden_pk_column_id(col->get_column_id()))) {
             // skip doc id / hidden pk column(for doc id optimization) for fts index.
-          } else if (index_schema->is_multivalue_index_aux() &&
+          } else if (index_schema->is_multivalue_index_aux() && 
                      (col->is_doc_id_column() || col->is_hidden_pk_column_id(col->get_column_id()))) {
             // skip doc id / hidden pk column(for doc id optimization)
-          } else if (index_schema->is_vec_index() &&
+          } else if (index_schema->is_vec_index() && 
                      (col->is_vec_hnsw_vid_column() || col->is_hidden_pk_column_id(col->get_column_id()))) {
-            // only need vec_type column to show index key,
+            // only need vec_type column to show index key, 
             // here skip vec_vid column / hidden pk column(for vid optimization)
           } else if (!col->is_shadow_column()) {
             const ObColumnSchemaV2 *tmp_column = NULL;
@@ -1798,14 +1798,8 @@ int ObSchemaPrinter::print_table_definition_table_options(const ObTableSchema &t
   }
   if (OB_SUCCESS == ret && !strict_compat_ && !is_index_tbl && !is_no_table_options(sql_mode)
       && !table_schema.is_external_table()) {
-    int64_t paxos_replica_num = OB_INVALID_COUNT;
-    if (OB_FAIL(table_schema.get_paxos_replica_num(schema_guard_, paxos_replica_num))) {
-      LOG_WARN("fail to get paxos replica num", K(ret));
-    } else if (OB_UNLIKELY(paxos_replica_num < 0)) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("paxos replica num error", K(ret), K(paxos_replica_num),
-               "table_id", table_schema.get_table_id());
-    } else if (OB_FAIL(databuff_printf(buf, buf_len, pos, "REPLICA_NUM = %ld ", paxos_replica_num))) {
+    int64_t paxos_replica_num = 1;
+    if (OB_FAIL(databuff_printf(buf, buf_len, pos, "REPLICA_NUM = %ld ", paxos_replica_num))) {
       SHARE_SCHEMA_LOG(WARN, "fail to print replica num", K(ret), K(table_schema));
     } else {
       SHARE_SCHEMA_LOG(INFO, "XXX", K(paxos_replica_num));
@@ -2313,14 +2307,8 @@ int ObSchemaPrinter::print_table_definition_table_options(
     }
   }
   if (OB_SUCC(ret) && !strict_compat_ && !is_index_tbl) {
-    int64_t paxos_replica_num = OB_INVALID_COUNT;
-    if (OB_FAIL(table_schema.get_paxos_replica_num(schema_guard_, paxos_replica_num))) {
-      OB_LOG(WARN, "fail to get paxos replica num", K(ret));
-    } else if (OB_UNLIKELY(paxos_replica_num < 0)) {
-      ret = OB_ERR_UNEXPECTED;
-      OB_LOG(WARN, "paxos_replica_num error", K(ret), K(paxos_replica_num),
-          "table_id", table_schema.get_table_id());
-    } else if (OB_FAIL(databuff_printf(buf, buf_len, pos, "REPLICA_NUM = %ld ",
+    int64_t paxos_replica_num = 1;
+    if (OB_FAIL(databuff_printf(buf, buf_len, pos, "REPLICA_NUM = %ld ",
         paxos_replica_num))) {
       OB_LOG(WARN, "fail to print replica num", K(ret), K(table_schema));
     }
@@ -3647,14 +3635,8 @@ int ObSchemaPrinter::print_database_definiton(
     }
   }
   if (OB_SUCC(ret) && !strict_compat_) {
-    int64_t paxos_replica_num = OB_INVALID_COUNT;
-    if (OB_FAIL(database_schema->get_paxos_replica_num(schema_guard_, paxos_replica_num))) {
-      LOG_WARN("fail to get paxos replica num", K(ret));
-    } else if (OB_UNLIKELY(paxos_replica_num < 0)) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("paxos replica num error", K(ret), K(paxos_replica_num),
-               "database_id", database_schema->get_database_id());
-    } else if (OB_FAIL(databuff_printf(buf, buf_len, pos, " REPLICA_NUM = %ld", paxos_replica_num))) {
+    int64_t paxos_replica_num = 1;
+    if (OB_FAIL(databuff_printf(buf, buf_len, pos, " REPLICA_NUM = %ld", paxos_replica_num))) {
       SHARE_SCHEMA_LOG(WARN, "fail to print replica num", K(ret), K(*database_schema));
     } else {} // no more to do
   }
@@ -3750,14 +3732,8 @@ int ObSchemaPrinter::print_tenant_definition(uint64_t tenant_id,
   }
 
   if (OB_SUCC(ret)) {// replica_num
-    int64_t paxos_replica_num = OB_INVALID_COUNT;
-    if (OB_FAIL(tenant_schema->get_paxos_replica_num(schema_guard_, paxos_replica_num))) {
-      LOG_WARN("fail to get paxos replica num", K(ret));
-    } else if (OB_UNLIKELY(paxos_replica_num < 0)) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("paxos replica num error", K(ret), K(paxos_replica_num),
-               "tenant_id", tenant_schema->get_tenant_id());
-    } else if (OB_FAIL(databuff_printf(buf, buf_len, pos, "replica_num=%ld, ", paxos_replica_num))) {
+    int64_t paxos_replica_num = 1;
+    if (OB_FAIL(databuff_printf(buf, buf_len, pos, "replica_num=%ld, ", paxos_replica_num))) {
       SHARE_SCHEMA_LOG(WARN, "fail to print default charset", K(ret));
     } else {} // no more to do
   }
@@ -3783,22 +3759,6 @@ int ObSchemaPrinter::print_tenant_definition(uint64_t tenant_id,
           SHARE_SCHEMA_LOG(WARN, "fail to print zon_list", K(ret), K(zone_list.at(i)));
         }
       }
-    }
-  }
-  if (OB_SUCCESS == ret && 0 < tenant_schema->get_primary_zone().length()) { //primary_zone
-    bool is_random = (0 == tenant_schema->get_primary_zone().compare(common::OB_RANDOM_PRIMARY_ZONE));
-    if (OB_FAIL(databuff_printf(buf, buf_len, pos,
-                                is_random ? "primary_zone=%.*s, " : "primary_zone=\'%.*s\', ",
-                                tenant_schema->get_primary_zone().length(),
-                                tenant_schema->get_primary_zone().ptr()))) {
-      SHARE_SCHEMA_LOG(WARN, "fail to print primary_zone", K(ret), K(tenant_schema->get_primary_zone()));
-    }
-  }
-  if (OB_SUCCESS == ret && tenant_schema->get_locality_str().length() > 0) { // locality
-    if (OB_FAIL(databuff_printf(buf, buf_len, pos, "locality=\'%.*s\', ",
-                                             tenant_schema->get_locality_str().length(),
-                                             tenant_schema->get_locality_str().ptr()))) {
-      SHARE_SCHEMA_LOG(WARN, "fail to print locality", K(ret), K(tenant_schema->get_locality_str()));
     }
   }
   if (OB_SUCC(ret)) { //resource_pool_list
@@ -3864,8 +3824,7 @@ int ObSchemaPrinter::add_create_tenant_variables(
     if (OB_ISNULL(buf) || OB_ISNULL(sql_proxy)) {
       ret = OB_INVALID_ARGUMENT;
       OB_LOG(WARN, "argument is invalid", K(ret));
-    } else if (OB_FAIL(sql.assign_fmt("select flags, data_type, name, value from __all_virtual_sys_variable"
-        " where tenant_id= %lu;", tenant_id))) {
+    } else if (OB_FAIL(sql.assign_fmt("select flags, data_type, name, value from __all_virtual_sys_variable;"))) {
       OB_LOG(WARN, "fail to assign sql", K(ret));
     } else if (OB_FAIL(sql_proxy->read(res, sql.ptr()))) {
       OB_LOG(WARN, "fail to execute sql", K(ret));
@@ -4096,7 +4055,11 @@ int ObSchemaPrinter::print_routine_param_type(const ObRoutineParam *param,
       int64_t type_pos = 0;
       uint64_t sub_type = static_cast<uint64_t>(common::ObGeoType::GEOTYPEMAX);
       char type_str[OB_MAX_SYS_PARAM_NAME_LENGTH];
+#ifdef _WIN32
+      memset(type_str, 0, OB_MAX_SYS_PARAM_NAME_LENGTH);
+#else
       bzero(type_str, OB_MAX_SYS_PARAM_NAME_LENGTH);
+#endif
       if (ObGeometryTC == param->get_param_type().get_type_class()) {
         CK (OB_NOT_NULL(param_type));
         OX (sub_type = param_type->int32_values_[1]);
@@ -5795,8 +5758,8 @@ int ObSchemaPrinter::print_location_definiton(const uint64_t tenant_id,
     } else if (OB_FAIL(databuff_printf(buf, buf_len, pos,
                                        "CREATE LOCATION "))) {
       SHARE_SCHEMA_LOG(WARN, "fail to print location definition", K(ret));
-    } else if (OB_FAIL(print_identifier(buf, buf_len, pos,
-                                        location_schema->get_location_name_str(),
+    } else if (OB_FAIL(print_identifier(buf, buf_len, pos, 
+                                        location_schema->get_location_name_str(), 
                                         lib::is_oracle_mode()))) {
       SHARE_SCHEMA_LOG(WARN, "fail to print location definition", K(ret));
     }
@@ -5811,7 +5774,7 @@ int ObSchemaPrinter::print_location_definiton(const uint64_t tenant_id,
   if (OB_SUCC(ret) && OB_FAIL(databuff_printf(buf, buf_len, pos, "\nURL = '%.*s'", location_url.length(), location_url.ptr()))) {
     SHARE_SCHEMA_LOG(WARN, "fail to print url", K(ret), K(*location_schema));
   }
-
+  
   if(OB_SUCC(ret) && !location_access_info.empty()) {
     if (OB_FAIL(databuff_printf(buf, buf_len, pos, "\nCREDENTIAL = ("))) {
       SHARE_SCHEMA_LOG(WARN, "fail to print credential", K(ret), K(*location_schema));
