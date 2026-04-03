@@ -30,7 +30,7 @@ static const int64_t MACRO_BLOCK_SIZE = 2 * 1024 * 1024;
 static const int64_t MACRO_BLOCK_COUNT = 15 * 1024;
 
 static const int64_t WBP_BLOCK_SIZE = ObTmpWriteBufferPool::WBP_BLOCK_SIZE; // each wbp block has 253 pages (253 * 8KB == 2024KB)
-static const int64_t TENANT_MEMORY = 8L * 1024L * 1024L * 1024L /* 8 GB */;
+static const int64_t TENANT_MEMORY = 8LL * 1024 * 1024 * 1024 /* 8 GB */;
 static const int64_t SMALL_WBP_MEM_LIMIT = 3 * WBP_BLOCK_SIZE; // the wbp mem size is 5.93MB
 static const int64_t BIG_WBP_MEM_LIMIT = 40 * WBP_BLOCK_SIZE; // the wbp mem size is 79.06MB
 
@@ -701,7 +701,7 @@ TEST_F(TestBufferPool, test_empty_buffer_pool_shrink)
   // alloc pages to expand to mem limit
   int64_t fd = 0;
   WBPTestHelper wbp_test(fd, wbp);
-  const int64_t ALLOC_PAGE_NUM = BIG_WBP_MEM_LIMIT * 0.9 / ObTmpFileGlobal::PAGE_SIZE;
+  const int64_t ALLOC_PAGE_NUM = BIG_WBP_MEM_LIMIT * 0.9 / ObTmpFileGlobal::ALLOC_PAGE_SIZE;
   ret = wbp_test.alloc_data_pages(ALLOC_PAGE_NUM);
   ASSERT_EQ(OB_SUCCESS, ret);
   ASSERT_EQ(ALLOC_PAGE_NUM, wbp.used_page_num_);
@@ -738,7 +738,7 @@ TEST_F(TestBufferPool, test_buffer_pool_shrink)
   // alloc pages to expand to mem limit
   int64_t fd = 0;
   WBPTestHelper wbp_test(fd, wbp);
-  const int64_t ALLOC_PAGE_NUM = BIG_WBP_MEM_LIMIT * 0.9 / ObTmpFileGlobal::PAGE_SIZE;
+  const int64_t ALLOC_PAGE_NUM = BIG_WBP_MEM_LIMIT * 0.9 / ObTmpFileGlobal::ALLOC_PAGE_SIZE;
   ret = wbp_test.alloc_data_pages(ALLOC_PAGE_NUM);
   ASSERT_EQ(OB_SUCCESS, ret);
   ASSERT_EQ(ALLOC_PAGE_NUM, wbp.used_page_num_);
@@ -773,7 +773,7 @@ TEST_F(TestBufferPool, test_buffer_pool_shrink_abort)
   // alloc pages to expand to mem limit
   int64_t fd = 0;
   WBPTestHelper wbp_test(fd, wbp);
-  const int64_t ALLOC_PAGE_NUM = BIG_WBP_MEM_LIMIT * 0.9 / ObTmpFileGlobal::PAGE_SIZE;
+  const int64_t ALLOC_PAGE_NUM = BIG_WBP_MEM_LIMIT * 0.9 / ObTmpFileGlobal::ALLOC_PAGE_SIZE;
   ret = wbp_test.alloc_data_pages(ALLOC_PAGE_NUM);
   ASSERT_EQ(OB_SUCCESS, ret);
   ASSERT_EQ(ALLOC_PAGE_NUM, wbp.used_page_num_);
@@ -974,7 +974,7 @@ TEST_F(TestBufferPool, test_buffer_pool_shrink_range_boundary)
 
   int64_t fd = 0;
   WBPTestHelper wbp_test(fd, wbp);
-  const int64_t ALLOC_PAGE_NUM = BIG_WBP_MEM_LIMIT * 0.9 / ObTmpFileGlobal::PAGE_SIZE;
+  const int64_t ALLOC_PAGE_NUM = BIG_WBP_MEM_LIMIT * 0.9 / ObTmpFileGlobal::ALLOC_PAGE_SIZE;
   ret = wbp_test.alloc_data_pages(ALLOC_PAGE_NUM);
   ASSERT_EQ(OB_SUCCESS, ret);
   ASSERT_EQ(ALLOC_PAGE_NUM, wbp.used_page_num_);

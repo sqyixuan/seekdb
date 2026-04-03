@@ -619,8 +619,7 @@ bool ObConfigMemoryLimitChecker::check(const ObConfigItem &t) const
   bool is_valid = false;
   int64_t value = ObConfigCapacityParser::get(t.str(), is_valid, false);
   if (is_valid) {
-    int64_t min_memory_size = OBSERVER.is_arbitration_mode() ? lib::ObRunningModeConfig::instance().MIN_MEM :
-                                                               lib::ObRunningModeConfig::instance().MINI_MEM_LOWER;
+    int64_t min_memory_size = lib::ObRunningModeConfig::instance().MINI_MEM_LOWER;
     is_valid = 0 == value || value >= min_memory_size;
   }
   return is_valid;
@@ -747,7 +746,7 @@ int64_t ObConfigIntParser::get(const char *str, bool &valid)
     valid = false;
   } else {
     valid = true;
-    value = strtol(str, &p_end, 0);
+    value = strtoll(str, &p_end, 0);
     if ('\0' == *p_end) {
       valid = true;
     } else {
@@ -774,7 +773,7 @@ int64_t ObConfigReadableIntParser::get(const char *str, bool &valid)
     valid = false;
   } else {
     valid = true;
-    value = strtol(str, &p_unit, 0);
+    value = strtoll(str, &p_unit, 0);
 
     if (OB_ISNULL(p_unit)) {
       valid = false;
@@ -805,7 +804,7 @@ int64_t ObConfigTimeParser::get(const char *str, bool &valid)
     valid = false;
   } else {
     valid = true;
-    value = strtol(str, &p_unit, 0);
+    value = strtoll(str, &p_unit, 0);
 
     if (OB_ISNULL(p_unit)) {
       valid = false;

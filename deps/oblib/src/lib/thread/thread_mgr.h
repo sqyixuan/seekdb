@@ -346,7 +346,7 @@ public:
     }
   }
 private:
-  char buf_[sizeof(MyReentrantThread)];
+  alignas(16) char buf_[sizeof(MyReentrantThread)];
   MyReentrantThread *th_ = nullptr;
   int64_t thread_cnt_;
 
@@ -434,7 +434,7 @@ public:
     }
   }
 private:
-  char buf_[sizeof(MyThreadPool)];
+  alignas(16) char buf_[sizeof(MyThreadPool)];
   MyThreadPool *th_ = nullptr;
   int64_t thread_cnt_;
 };
@@ -574,7 +574,7 @@ public:
     }
   }
 private:
-  char buf_[sizeof(ThreadPoolType)];
+  alignas(16) char buf_[sizeof(ThreadPoolType)];
   ThreadPoolType *qth_ = nullptr;
   int64_t min_thread_num_;
   int64_t max_thread_num_;
@@ -680,7 +680,7 @@ public:
   }
 
 private:
-  char buf_[sizeof(MyMapQueueThreadPool)];
+  alignas(16) char buf_[sizeof(MyMapQueueThreadPool)];
   MyMapQueueThreadPool *qth_ = nullptr;
   int64_t thread_num_;
 };
@@ -693,7 +693,7 @@ public:
      const int64_t task_map_size = ObDedupQueue::TASK_MAP_SIZE,
      const int64_t total_mem_limit = ObDedupQueue::TOTAL_LIMIT,
      const int64_t hold_mem_limit = ObDedupQueue::HOLD_LIMIT,
-     const int64_t page_size = ObDedupQueue::PAGE_SIZE,
+     const int64_t page_size = ObDedupQueue::ALLOC_PAGE_SIZE,
      const char *label = nullptr)
     :  thread_num_(pair.get_thread_cnt()),
        queue_size_(queue_size),
@@ -708,7 +708,7 @@ public:
      const int64_t task_map_size = ObDedupQueue::TASK_MAP_SIZE,
      const int64_t total_mem_limit = ObDedupQueue::TOTAL_LIMIT,
      const int64_t hold_mem_limit = ObDedupQueue::HOLD_LIMIT,
-     const int64_t page_size = ObDedupQueue::PAGE_SIZE,
+     const int64_t page_size = ObDedupQueue::ALLOC_PAGE_SIZE,
      const char *label = nullptr)
     :  thread_num_(thread_num),
        queue_size_(queue_size),
@@ -791,7 +791,7 @@ public:
     }
   }
 private:
-  char buf_[sizeof(common::ObDedupQueue)];
+  alignas(16) char buf_[sizeof(common::ObDedupQueue)];
   common::ObDedupQueue *qth_ = nullptr;
   int64_t thread_num_;
   const int64_t queue_size_;
@@ -919,7 +919,7 @@ public:
     }
   }
 private:
-  char buf_[sizeof(common::ObTimer)];
+  alignas(16) char buf_[sizeof(common::ObTimer)];
   common::ObTimer *timer_ = nullptr;
 };
 
@@ -996,7 +996,7 @@ public:
     }
   }
 private:
-  char buf_[sizeof(share::ObAsyncTaskQueue)];
+  alignas(16) char buf_[sizeof(share::ObAsyncTaskQueue)];
   share::ObAsyncTaskQueue *qth_ = nullptr;
   int64_t thread_cnt_;
   int64_t queue_size_;

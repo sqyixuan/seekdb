@@ -178,7 +178,6 @@ public:
     ObAddr self;
     obrpc::ObSrvRpcProxy rpc_proxy;
     obrpc::ObCommonRpcProxy rs_rpc_proxy;
-    share::ObRsMgr rs_mgr;
     self.set_ip_addr("127.0.0.1", 8086);
     rpc::frame::ObReqTransport req_transport(NULL, NULL);
     const int64_t ulmt = 128LL << 30;
@@ -203,7 +202,7 @@ void TestCompactChunk::SetUp()
   const int64_t block_size = common::OB_MALLOC_BIG_BLOCK_SIZE;
   TestDataFilePrepare::SetUp();
   ret = getter.add_tenant(1,
-                          8L * 1024L * 1024L, 2L * 1024L * 1024L * 1024L);
+                          8LL * 1024 * 1024, 2LL * 1024 * 1024 * 1024);
   ASSERT_EQ(OB_SUCCESS, ret);
   ret = ObKVGlobalCache::get_instance().init(&getter, bucket_num, max_cache_size, block_size);
   if (OB_INIT_TWICE == ret) {
@@ -212,7 +211,7 @@ void TestCompactChunk::SetUp()
     ASSERT_EQ(OB_SUCCESS, ret);
   }
   // set observer memory limit
-  CHUNK_MGR.set_limit(8L * 1024L * 1024L * 1024L);
+  CHUNK_MGR.set_limit(8LL * 1024 * 1024 * 1024);
 
   EXPECT_EQ(OB_SUCCESS, init_tenant_mgr());
   ASSERT_EQ(OB_SUCCESS, common::ObClockGenerator::init());

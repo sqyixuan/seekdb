@@ -73,7 +73,7 @@ class ObMySQLProxy;
 
 namespace storage
 {
-class ObLobAccessCtx;
+struct ObLobAccessCtx;
 }
 
 namespace pl
@@ -168,7 +168,6 @@ public:
 struct ObUserLoggingCtx
 {
   friend class ObExecContext;
-  friend class Guard;
   class Guard
   {
   public:
@@ -177,6 +176,7 @@ struct ObUserLoggingCtx
   private:
     ObUserLoggingCtx &ctx_;
   };
+  friend class Guard;
   ObUserLoggingCtx() : column_name_(NULL), row_num_(-1) {}
   inline bool skip_logging() const { return NULL == column_name_ || row_num_ <= 0; }
   inline const ObString *get_column_name() const  { return column_name_; }
@@ -800,7 +800,7 @@ protected:
   bool force_local_plan_;
   ObDiagnosisManager diagnosis_manager_;
   common::ObArenaAllocator deterministic_udf_cache_allocator_;
-
+  
   // Granule type for current GI task
   ObGranuleType current_granule_type_;
 

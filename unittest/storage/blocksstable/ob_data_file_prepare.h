@@ -222,8 +222,8 @@ int TestDataFilePrepareUtil::open()
   const int64_t bucket_num = 1024L;
   const int64_t max_cache_size = 1024L * 1024L * 512;
   const int64_t block_size = common::OB_MALLOC_BIG_BLOCK_SIZE;
-  const int64_t mem_limit = 10 * 1024L * 1024L * 1024L;
-  const int64_t data_disk_size = 4 * 1024L * 1024L * 1024L;
+  const int64_t mem_limit = 10LL * 1024 * 1024 * 1024;
+  const int64_t data_disk_size = 4LL * 1024 * 1024 * 1024;
   lib::set_memory_limit(mem_limit);
 
   const int64_t default_partition_cnt = 1000;
@@ -301,7 +301,7 @@ int TestDataFilePrepareUtil::open()
                                                                       max_io_depth))) {
       STORAGE_LOG(WARN, "add device channel failed", K(ret));
     } else {
-      if (OB_FAIL(SERVER_STORAGE_META_SERVICE.init(false/*is_shared_storage*/))) {
+      if (OB_FAIL(SERVER_STORAGE_META_SERVICE.init())) {
         STORAGE_LOG(WARN, "fail to init storage meta service", K(ret));
       } else if (FALSE_IT(SERVER_STORAGE_META_SERVICE.get_slogger_manager().need_reserved_ = false)) {
       } else if (OB_FAIL(OB_STORAGE_OBJECT_MGR.init(false, storage_env_.default_block_size_))) {
