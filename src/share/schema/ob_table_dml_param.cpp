@@ -65,8 +65,7 @@ ObTableSchemaParam::ObTableSchemaParam(ObIAllocator &allocator)
     merge_engine_type_(ObMergeEngineType::OB_MERGE_ENGINE_MAX),
     inc_pk_doc_id_col_id_(OB_INVALID_ID),
     vec_chunk_col_id_(OB_INVALID_ID),
-    vec_embedded_col_id_(OB_INVALID_ID),
-    has_async_index_(false)
+    vec_embedded_col_id_(OB_INVALID_ID)
 {
 }
 
@@ -111,7 +110,6 @@ void ObTableSchemaParam::reset()
   is_delete_insert_ = false;
   merge_engine_type_ = ObMergeEngineType::OB_MERGE_ENGINE_MAX;
   inc_pk_doc_id_col_id_ = OB_INVALID_ID;
-  has_async_index_ = false;
 }
 
 int ObTableSchemaParam::convert(const ObTableSchema *schema)
@@ -255,10 +253,6 @@ int ObTableSchemaParam::convert(const ObTableSchema *schema)
         } else if (column_schema->is_doc_id_column()) {
           doc_id_col_id_ = column_schema->get_column_id();
         }
-      }
-    } else if (schema->is_vec_index_id_type()) {
-      if (OB_FAIL(ob_write_string(allocator_, schema->get_index_params(), vec_index_param_))) {
-        LOG_WARN("fail to copy vec index param", K(ret), K(schema->get_index_params()));
       }
     }
 
@@ -661,7 +655,6 @@ OB_DEF_SERIALIZE(ObTableSchemaParam)
   OB_UNIS_ENCODE(inc_pk_doc_id_col_id_);
   OB_UNIS_ENCODE(vec_chunk_col_id_);
   OB_UNIS_ENCODE(vec_embedded_col_id_);
-  OB_UNIS_ENCODE(has_async_index_);
   return ret;
 }
 
@@ -806,9 +799,6 @@ OB_DEF_DESERIALIZE(ObTableSchemaParam)
   OB_UNIS_DECODE(inc_pk_doc_id_col_id_);
   OB_UNIS_DECODE(vec_chunk_col_id_);
   OB_UNIS_DECODE(vec_embedded_col_id_);
-  if (OB_SUCC(ret) && pos < data_len) {
-    OB_UNIS_DECODE(has_async_index_);
-  }
   return ret;
 }
 
@@ -866,7 +856,6 @@ OB_DEF_SERIALIZE_SIZE(ObTableSchemaParam)
   OB_UNIS_ADD_LEN(inc_pk_doc_id_col_id_);
   OB_UNIS_ADD_LEN(vec_chunk_col_id_);
   OB_UNIS_ADD_LEN(vec_embedded_col_id_);
-  OB_UNIS_ADD_LEN(has_async_index_);
   return len;
 }
 
