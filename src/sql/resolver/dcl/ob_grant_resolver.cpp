@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #define USING_LOG_PREFIX SQL_RESV
@@ -568,8 +564,6 @@ int ObGrantResolver::resolve_priv_level_with_object_type(const ObSQLSessionInfo 
       grant_level = OB_PRIV_ROUTINE_LEVEL;
     } else if (priv_object_node->value_ == 4) {
       grant_level = OB_PRIV_CATALOG_LEVEL;
-    } else if (priv_object_node->value_ == 5) {
-        grant_level = OB_PRIV_OBJECT_LEVEL;
     } else {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("unexpected obj type", K(ret), K(priv_object_node->value_));
@@ -594,7 +588,6 @@ int ObGrantResolver::resolve_priv_level(
 {
   int ret = OB_SUCCESS;
   bool is_grant_routine = (grant_level == OB_PRIV_ROUTINE_LEVEL);
-  bool is_grant_object = (grant_level == OB_PRIV_OBJECT_LEVEL);
   if (OB_ISNULL(node)) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("Invalid argument", K(node), K(ret));
@@ -669,7 +662,7 @@ int ObGrantResolver::resolve_priv_level(
         //do nothing
       }
     }
-    if (OB_SUCC(ret) && (is_grant_routine || is_grant_object)) {
+    if (OB_SUCC(ret) && is_grant_routine) {
       if (grant_level != OB_PRIV_TABLE_LEVEL) {
         // tmp_grant_level == OB_PRIV_TABLE_LEVEL means sql is like:
         // grant priv on [object type] ident to user
@@ -678,7 +671,7 @@ int ObGrantResolver::resolve_priv_level(
         ret = OB_ILLEGAL_GRANT_FOR_TABLE;
         LOG_WARN("illegal grant", K(ret));
       } else {
-        grant_level = is_grant_routine ? OB_PRIV_ROUTINE_LEVEL : OB_PRIV_OBJECT_LEVEL;
+        grant_level = OB_PRIV_ROUTINE_LEVEL;
       }
     }
   }

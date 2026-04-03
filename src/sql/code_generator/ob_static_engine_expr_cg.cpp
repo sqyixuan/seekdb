@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #define USING_LOG_PREFIX SQL_CG
@@ -1854,25 +1850,25 @@ static inline bool expr_is_added(ObExpr &e)
   return v >> 63;
 }
 
-#define CALC_MAX_FRAME_SIZE(offset, length)  \
-  (offset > 0 && offset < UINT32_MAX) ? std::max<int64_t>(size, offset + length) : size
 int64_t ObStaticEngineExprCG::frame_max_offset(const ObExpr &e, const int64_t batch_size, const bool use_rich_format)
 {
   int64_t size = 0;
   size = std::max<int64_t>(size, e.datum_off_ + sizeof(ObDatum));
-  size = CALC_MAX_FRAME_SIZE(e.eval_info_off_, sizeof(ObEvalInfo));
-  size = CALC_MAX_FRAME_SIZE(e.dyn_buf_header_offset_, dynamic_buf_header_size(e, batch_size));
-  size = CALC_MAX_FRAME_SIZE(e.res_buf_off_, get_expr_datums_count(e, batch_size) * e.res_buf_len_);
-  size = CALC_MAX_FRAME_SIZE(e.eval_flags_off_, get_expr_bitmap_vector_size(e, batch_size));
-  size = CALC_MAX_FRAME_SIZE(e.pvt_skip_off_, get_expr_skip_vector_size(e, batch_size));
-  if (use_rich_format) {
-    if (!e.is_fixed_length_data_) {
-      size = CALC_MAX_FRAME_SIZE(e.len_arr_off_, get_offsets_size(e, batch_size));
-      size = CALC_MAX_FRAME_SIZE(e.offset_off_, get_ptrs_size(e, batch_size));
-      size = CALC_MAX_FRAME_SIZE(e.cont_buf_off_, sizeof(ObDynReserveBuf));
+  size = std::max<int64_t>(size, e.eval_info_off_ + sizeof(ObEvalInfo));
+  size = std::max<int64_t>(size, e.dyn_buf_header_offset_ + dynamic_buf_header_size(e, batch_size));
+  size = std::max<int64_t>(size, e.res_buf_off_ + get_expr_datums_count(e, batch_size) * e.res_buf_len_);
+  if (e.is_batch_result()) {
+    size = std::max<int64_t>(size, e.eval_flags_off_ + get_expr_bitmap_vector_size(e, batch_size));
+    size = std::max<int64_t>(size, e.pvt_skip_off_ + get_expr_skip_vector_size(e, batch_size));
+    if (use_rich_format) {
+      if (!e.is_fixed_length_data_) {
+        size = std::max<int64_t>(size, e.len_arr_off_ + get_offsets_size(e, batch_size));
+        size = std::max<int64_t>(size, e.offset_off_ + get_ptrs_size(e, batch_size));
+        size = std::max<int64_t>(size, e.cont_buf_off_ + sizeof(ObDynReserveBuf));
+      }
+      size = std::max<int64_t>(size, e.vector_header_off_ + get_vector_header_size());
+      size = std::max<int64_t>(size, e.null_bitmap_off_ + get_expr_bitmap_vector_size(e, batch_size));
     }
-    size = CALC_MAX_FRAME_SIZE(e.vector_header_off_, get_vector_header_size());
-    size = CALC_MAX_FRAME_SIZE(e.null_bitmap_off_, get_expr_bitmap_vector_size(e, batch_size));
   }
   return size;
 };
@@ -1954,20 +1950,12 @@ int ObStaticEngineExprCG::generate_partial_expr_frame(
       + global.dynamic_frame_.count()
       + global.datum_frame_.count();
   ObSEArray<ObExpr *, 8> farthest_exprs;
-  ObSEArray<bool, 8> is_param_frame;
   const ObExpr *base = global.rt_exprs_.count() > 0 ? &global.rt_exprs_.at(0) : NULL;
   int64_t batch_size = std::max<int64_t>(plan.get_batch_size(), 1);
   OZ(farthest_exprs.prepare_allocate(frame_cnt));
-  OZ(is_param_frame.prepare_allocate(frame_cnt));
   if (OB_SUCC(ret)) {
     FOREACH(it, farthest_exprs) {
       *it = NULL;
-    }
-    FOREACH(it, is_param_frame) {
-      *it = false;
-    }
-    FOREACH(it, global.param_frame_) {
-      is_param_frame.at((*it).frame_idx_) = true;
     }
     int64_t max_expr_idx = 0;
     FOREACH_CNT_X(e, exprs, OB_SUCC(ret)) {
@@ -1977,20 +1965,12 @@ int ObStaticEngineExprCG::generate_partial_expr_frame(
       // will got index out of expr array error.
       if ((*e)->parent_cnt_ > 0) {
         for (int64_t i = 0; i < (*e)->parent_cnt_; i++) {
-          max_expr_idx = std::max(max_expr_idx, static_cast<int64_t>((*e)->parents_[i] - base));
+          max_expr_idx = std::max(max_expr_idx, (*e)->parents_[i] - base);
         }
       }
       ObExpr *&p = farthest_exprs.at((*e)->frame_idx_);
-      if (NULL == p) {
+      if (NULL == p || frame_max_offset(*p, batch_size, use_rich_format) < frame_max_offset(**e, batch_size, use_rich_format)) {
         p = *e;
-      } else if (is_param_frame.at((*e)->frame_idx_)) {
-        if (p->datum_off_ < (*e)->datum_off_) {
-          p = *e;
-        }
-      } else {
-        if (frame_max_offset(*p, batch_size, use_rich_format) < frame_max_offset(**e, batch_size, use_rich_format)) {
-          p = *e;
-        }
       }
     }
     OZ(partial.ser_expr_marks_.init(max_expr_idx + 1));

@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #ifndef OCEANBASE_OBSERVER_OB_VERSION_DEF_H_
@@ -74,12 +70,9 @@ cal_version(const uint64_t major, const uint64_t minor, const uint64_t major_pat
 // - 4. Print: cluster version str will be printed as 4 parts.
 
 #define CLUSTER_VERSION_1_0_0_0 (oceanbase::common::cal_version(1, 0, 0, 0))
-#define CLUSTER_VERSION_1_0_1_0 (oceanbase::common::cal_version(1, 0, 1, 0))
-#define CLUSTER_VERSION_1_1_0_0 (oceanbase::common::cal_version(1, 1, 0, 0))
-#define CLUSTER_VERSION_1_2_0_0 (oceanbase::common::cal_version(1, 2, 0, 0))
 //!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 //TODO: If you update the above version, please update CLUSTER_CURRENT_VERSION.
-#define CLUSTER_CURRENT_VERSION CLUSTER_VERSION_1_2_0_0
+#define CLUSTER_CURRENT_VERSION CLUSTER_VERSION_1_0_0_0
 
 // ATTENSION !!!!!!!!!!!!!!!!!!!!!!!!!!!
 // 1. each cluster_version is corresponed to a data version.
@@ -88,12 +81,10 @@ cal_version(const uint64_t major, const uint64_t minor, const uint64_t major_pat
 #define DEFAULT_MIN_DATA_VERSION (oceanbase::common::cal_version(0, 0, 0, 1))
 
 #define DATA_VERSION_1_0_0_0 (oceanbase::common::cal_version(1, 0, 0, 0))
-#define DATA_VERSION_1_0_1_0 (oceanbase::common::cal_version(1, 0, 1, 0))
-#define DATA_VERSION_1_1_0_0 (oceanbase::common::cal_version(1, 1, 0, 0))
-#define DATA_CURRENT_VERSION DATA_VERSION_1_1_0_0
+#define DATA_CURRENT_VERSION DATA_VERSION_1_0_0_0
 // ATTENSION !!!!!!!!!!!!!!!!!!!!!!!!!!!
 // LAST_BARRIER_DATA_VERSION should be the latest barrier data version before DATA_CURRENT_VERSION
-#define LAST_BARRIER_DATA_VERSION DATA_VERSION_1_1_0_0
+#define LAST_BARRIER_DATA_VERSION DATA_VERSION_1_0_0_0
 
 #define PROXY_VERSION_4_2_3_0 (oceanbase::common::cal_version(4, 2, 3, 0))
 #define PROXY_VERSION_4_3_0_0 (oceanbase::common::cal_version(4, 3, 0, 0))
@@ -102,6 +93,7 @@ cal_version(const uint64_t major, const uint64_t minor, const uint64_t major_pat
 class VersionUtil
 {
 public:
+  static bool check_version_valid(const uint64_t version);
   static int64_t print_version_str(char *buf, const int64_t buf_len, uint64_t version);
 };
 

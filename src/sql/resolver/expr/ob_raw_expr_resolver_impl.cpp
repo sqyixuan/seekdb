@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #define USING_LOG_PREFIX SQL_RESV
@@ -1081,10 +1077,6 @@ int ObRawExprResolverImpl::do_recursive_resolve(const ParseNode *node,
       }
       case T_FUN_SYS_VECTOR_DISTANCE: {
         OZ (process_vector_func_node(node, expr));
-        break;
-      }
-      case T_FUN_SYS_VECTOR_SIMILARITY: {
-        OZ (process_vector_similarity_func_node(node, expr));
         break;
       }
       case T_FUNC_SYS_ARRAY_FIRST:
@@ -2560,37 +2552,6 @@ int ObRawExprResolverImpl::process_vector_func_node(const ParseNode *node, ObRaw
     LOG_WARN("failed to init param exprs", K(ret));
   } else {
     func_expr->set_func_name(N_VECTOR_DISTANCE);
-    for (int64_t i = 0; OB_SUCC(ret) && i < node->num_child_; ++i) {
-      ObRawExpr *para_expr = NULL;
-      if (OB_ISNULL(node->children_[i])) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("invalid expr list node children", K(ret), K(i), K(node->children_[i]));
-      } else if (OB_FAIL(SMART_CALL(recursive_resolve(node->children_[i], para_expr)))) {
-        LOG_WARN("fail to recursive resolve expr list item", K(ret));
-      } else if (OB_FAIL(func_expr->add_param_expr(para_expr))) {
-        LOG_WARN("fail to add param expr to expr", K(ret));
-      }
-    }
-  }
-  if (OB_SUCC(ret)) {
-    expr = func_expr;
-  }
-  return ret;
-}
-
-int ObRawExprResolverImpl::process_vector_similarity_func_node(const ParseNode *node, ObRawExpr *&expr)
-{
-  int ret = OB_SUCCESS;
-  ObSysFunRawExpr *func_expr = NULL;
-  if (OB_ISNULL(node)) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid argument", K(node));
-  } else if (OB_FAIL(ctx_.expr_factory_.create_raw_expr(node->type_, func_expr))) {
-    LOG_WARN("fail to create raw expr", K(ret));
-  } else if (OB_FAIL(func_expr->init_param_exprs(node->num_child_))) {
-    LOG_WARN("failed to init param exprs", K(ret));
-  } else {
-    func_expr->set_func_name(N_VECTOR_SIMILARITY);
     for (int64_t i = 0; OB_SUCC(ret) && i < node->num_child_; ++i) {
       ObRawExpr *para_expr = NULL;
       if (OB_ISNULL(node->children_[i])) {

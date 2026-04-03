@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #ifndef OCEANBAS_SQL_RESOLVER_DCL_OB_GRANT_RESOLVER_
@@ -225,16 +221,6 @@ int ObGrantResolver::resolve_priv_set(
           } else {
             priv_set |= priv_type;
           }
-        } else if (OB_PRIV_OBJECT_LEVEL == grant_level) {
-          if (OB_PRIV_ALL == priv_type) {
-            priv_set |= OB_PRIV_OBJECT_ACC;
-          } else if (priv_type & (~(OB_PRIV_OBJECT_ACC | OB_PRIV_GRANT))) {
-            ret = OB_ILLEGAL_GRANT_FOR_TABLE;
-            SQL_RESV_LOG(WARN, "Grant/Revoke privilege than can not be used",
-                      "priv_type", ObPrintPrivSet(priv_type), K(ret));
-          } else {
-            priv_set |= priv_type;
-          }
         } else {
           //do nothing
         }
@@ -303,11 +289,6 @@ int ObGrantResolver::resolve_priv_object(const ParseNode *priv_object_node,
         LOG_WARN("failed to get catalog id", K(ret));
       } else {
         grant_stmt->set_catalog_name(catalog);
-      }
-    } else if (priv_object_node->value_ == 5) {
-      object_type = ObObjectType::LOCATION;
-      if (OB_FAIL(schema_checker->get_location_id(tenant_id, table, object_id))) {
-        LOG_WARN("failed to get location id", K(ret));
       }
     }
   } else {

@@ -1,0 +1,213 @@
+#owner: wuyuming.wym
+#owner group: sql1
+# tags: optimizer
+
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+
+connect (conn_admin, $OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection conn_admin;
+alter system set_tp tp_no = 551, error_code = 5434, frequency = 0;
+connection default;
+
+set optimizer_dynamic_sampling = 0;
+set _enable_storage_cardinality_estimation = 0;
+set cardinality_estimation_model = 'independent';
+
+--disable_warnings
+drop table if exists t1,t2,t3,d1,d2;
+--enable_warnings
+
+create table t1(pk int, c1 int, c2 int, c3 int, c4 varchar(10), c_const int);
+create table t2(pk int, c1 int, c2 int, c3 int, c4 varchar(10), c_const int);
+create table d1(c1 int);
+create table d2(c1 int, c2 int);
+
+insert into t1 select n, n % 1000, random(1) % 100, abs(random(2)) % 2, lpad(n % 10000, 4, '0'), 1 from (select row_number() over () as n from table(generator(10000)));
+insert into t2 select n, n % 1000, random(3) % 200, abs(random(4)) % 2, lpad(n % 10000, 4, '0'), 1 from (select row_number() over () as n from table(generator(20000)));
+insert into d1 select 1 from table(generator(100));
+insert into d1 select 2 from table(generator(200));
+insert into d1 select 3 from table(generator(300));
+insert into d1 select NULL from table(generator(300));
+insert into d2 select 1, 1 from table(generator(300));
+insert into d2 select 4, 1 from table(generator(100));
+insert into d2 select NULL, NULL from table(generator(100));
+--source mysql_test/include/minor_merge_tenant.inc
+--enable_query_log
+
+--result_format 4
+--explain_protocol 2
+select /*+dynamic_sampling(1)*/ count(*) from t1 where not exists (select 1 from t2 where t1.pk = t2.pk and t2.c2 > 0);
+select /*+dynamic_sampling(1)*/ count(*) from t1 where not exists (select 1 from t2 where t1.c2 = t2.c2 and t2.pk > 19000);
+select /*+dynamic_sampling(1)*/ count(*) from t1 where not exists (select 1 from t2 where t1.c2 = t2.c2 and t1.c3 = t2.c3 and t2.c1 > 800);
+
+call dbms_stats.gather_table_stats(null, 't1', method_opt=>'for all columns size 1');
+call dbms_stats.gather_table_stats(null, 't2', method_opt=>'for all columns size 1');
+call dbms_stats.gather_table_stats(null, 'd1', method_opt=>'for all columns size 10');
+call dbms_stats.gather_table_stats(null, 'd2', method_opt=>'for all columns size 10');
+
+# test anti join
+select count(*) from t1 where not exists (select 1 from t2 where t1.pk = t2.pk);
+select count(*) from t1 where not exists (select 1 from t2 where t1.pk = t2.pk and t1.c1 = t2.c1);
+select count(*) from t1 where not exists (select 1 from t2 where t1.pk = t2.pk and t2.c2 > 0);
+select count(*) from t1 where not exists (select 1 from t2 where t1.c2 = t2.c2);
+select count(*) from t1 where not exists (select 1 from t2 where t1.c2 = t2.c2 and t2.pk > 19000);
+select count(*) from t1 where not exists (select 1 from t2 where t1.pk = t2.pk and t2.c2 > 0) and t1.c2 > 0;
+select count(*) from t1 where not exists (select 1 from t2 where t1.pk = t2.pk and t1.c1 = t2.c1 and t2.c2 > 0);
+select count(*) from t1 where not exists (select 1 from t2 where t1.c2 = t2.c2 and t1.c3 = t2.c3);
+select count(*) from t1 where not exists (select 1 from t2 where t1.c2 = t2.c2 and t1.c3 = t2.c3 and t2.c1 > 800);
+select count(*) from t1 where not exists (select 1 from t2 where t1.c_const = t2.c_const);
+select count(*) from t1 where not exists (select 1 from t2 where t1.c_const = t2.c_const and t2.c2 > 0);
+
+select count(*) from t2 where not exists (select 1 from t1 where t1.pk = t2.pk);
+select count(*) from t2 where not exists (select 1 from t1 where t1.pk = t2.pk and t1.c1 = t2.c1);
+select count(*) from t2 where not exists (select 1 from t1 where t1.pk = t2.pk and t1.c2 > 0);
+select count(*) from t2 where not exists (select 1 from t1 where t1.c2 = t2.c2);
+select count(*) from t2 where not exists (select 1 from t1 where t1.c2 = t2.c2 and t1.pk > 9000);
+select count(*) from t2 where not exists (select 1 from t1 where t1.pk = t2.pk and t1.c2 > 0) and t2.c2 > 0;
+select count(*) from t2 where not exists (select 1 from t1 where t1.pk = t2.pk and t1.c1 = t2.c1 and t1.c2 > 0);
+select count(*) from t2 where not exists (select 1 from t1 where t1.c2 = t2.c2 and t1.c3 = t2.c3 and t1.c1 > 800);
+select count(*) from t2 where not exists (select 1 from t1 where t1.c_const = t2.c_const);
+select count(*) from t2 where not exists (select 1 from t1 where t1.c_const = t2.c_const and t1.c2 > 0);
+
+select count(*) from t1 where not exists (select 1 from t2 where t1.c2 <=> t2.c2 and t2.pk > 19000);
+select count(*) from t1 where not exists (select 1 from t2 where t1.pk <=> t2.pk and t1.c1 <=> t2.c1 and t2.c2 > 0);
+select count(*) from t1 where not exists (select 1 from t2 where t1.c2 <=> t2.c2 and t1.c3 = t2.c3 and t2.c1 > 800);
+select count(*) from t1 where not exists (select 1 from t2 where t1.pk != t2.pk and t2.c2 > 0);
+
+select count(*) from t1 where not exists (select 1 from t2 where t1.pk % 8000 = t2.pk % 14000 and t2.c2 > 0);
+select count(*) from t1 where not exists (select 1 from t2 where t1.c1 + 1 = t2.c1 + 2 and t2.pk > 10000);
+select count(*) from t1 where not exists (select 1 from t2 where substr(t1.c4, 1, 4) = substr(t2.c4, 1, 4) and t2.c2 > 0);
+select count(*) from t1 where not exists (select 1 from t2 where t1.c2 = t2.c2 and t2.c2 > 90);
+
+select count(*) from t1 left join t2 on t1.pk = t2.pk and t2.c2 > 0 where t2.pk is null;
+select count(*) from t1 left join t2 on t1.pk = t2.pk and t2.c2 > 0 where t2.c1 is null;
+select count(*) from t1 left join (select /*+no_merge*/ * from (select /*+no_merge*/ c2, pk from t2) v1 ) v2 on t1.pk = v2.pk and v2.c2 > 0 where v2.pk is null;
+select count(*) from t1 left join (select /*+no_merge*/ * from (select /*+no_merge no_pred_deduce*/ c2, pk from t2) v1 ) v2 on t1.pk = v2.pk and v2.c2 > 0 where v2.pk is null;
+
+select count(*) from d1, d2 where d1.c1 = d2.c1;
+select count(*) from d1, d2 where d1.c1 <=> d2.c1;
+select count(*) from d1, d2 where d1.c1 != d2.c1;
+select /*+leading(d1 d2)*/ count(*) from d1 where exists (select 1 from d2 where d1.c1 = d2.c1);
+select /*+leading(d1 d2)*/ count(*) from d2 where exists (select 1 from d1 where d1.c1 = d2.c1);
+select /*+leading(d1 d2)*/ count(*) from d1 where not exists (select 1 from d2 where d1.c1 = d2.c1);
+select /*+leading(d1 d2)*/ count(*) from d2 where not exists (select 1 from d1 where d1.c1 = d2.c1);
+
+select /*+leading(d2 d1)*/ count(*) from d1 where exists (select 1 from d2 where d1.c1 = d2.c1);
+select /*+leading(d2 d1)*/ count(*) from d2 where exists (select 1 from d1 where d1.c1 = d2.c1);
+select /*+leading(d2 d1)*/ count(*) from d1 where not exists (select 1 from d2 where d1.c1 = d2.c1);
+select /*+leading(d2 d1)*/ count(*) from d2 where not exists (select 1 from d1 where d1.c1 = d2.c1);
+
+select /*+leading(d1 d2)*/ count(*) from d1 where exists (select 1 from d2 where d1.c1 <=> d2.c1);
+select /*+leading(d1 d2)*/ count(*) from d2 where exists (select 1 from d1 where d1.c1 <=> d2.c1);
+select /*+leading(d1 d2)*/ count(*) from d1 where not exists (select 1 from d2 where d1.c1 <=> d2.c1);
+select /*+leading(d1 d2)*/ count(*) from d2 where not exists (select 1 from d1 where d1.c1 <=> d2.c1);
+
+select /*+leading(d1 d2)*/ count(*) from d1 where exists (select 1 from d2 where d1.c1 != d2.c1);
+select /*+leading(d1 d2)*/ count(*) from d1 where exists (select 1 from d2 where d1.c1 != d2.c2);
+select /*+leading(d2 d1)*/ count(*) from d1 where exists (select 1 from d2 where d1.c1 != d2.c1);
+select /*+leading(d2 d1)*/ count(*) from d1 where exists (select 1 from d2 where d1.c1 != d2.c2);
+
+--disable_query_log
+--explain_protocol 0
+
+update t1 set pk = if(pk > 9000, null, pk), c1 = if(c1 > 900, null, c1), c2 = if(abs(c2) > 50, null, c2);
+update t2 set pk = if(pk > 16000, null, pk), c1 = if(c1 > 900, null, c1), c2 = if(abs(c2) > 100, null, c2);
+--source mysql_test/include/minor_merge_tenant.inc
+call dbms_stats.gather_table_stats(null, 't1', method_opt=>'for all columns size 1');
+call dbms_stats.gather_table_stats(null, 't2', method_opt=>'for all columns size 1');
+
+--enable_query_log
+--explain_protocol 2
+
+select count(*) from t1 where not exists (select 1 from t2 where t1.pk = t2.pk and t2.c2 > 0);
+select count(*) from t1 where not exists (select 1 from t2 where t1.c2 = t2.c2);
+select count(*) from t1 where not exists (select 1 from t2 where t1.c2 = t2.c2 and t2.pk > 10000);
+select count(*) from t1 where not exists (select 1 from t2 where t1.pk = t2.pk and t2.c2 > 0) and t1.c2 > 0;
+select count(*) from t1 where not exists (select 1 from t2 where t1.pk = t2.pk and t1.c1 = t2.c1 and t2.c2 > 0);
+select count(*) from t1 where not exists (select 1 from t2 where t1.c2 = t2.c2 and t1.c3 = t2.c3);
+select count(*) from t1 where not exists (select 1 from t2 where t1.c2 = t2.c2 and t1.c3 = t2.c3 and t2.c1 > 500);
+
+select count(*) from t2 where not exists (select 1 from t1 where t1.c2 = t2.c2);
+select count(*) from t2 where not exists (select 1 from t1 where t1.c2 = t2.c2 and t1.pk > 5000);
+select count(*) from t2 where not exists (select 1 from t1 where t1.pk = t2.pk and t1.c2 > 0) and t2.c2 > 0;
+select count(*) from t2 where not exists (select 1 from t1 where t1.pk = t2.pk and t1.c1 = t2.c1 and t1.c2 > 0);
+select count(*) from t2 where not exists (select 1 from t1 where t1.c2 = t2.c2 and t1.c3 = t2.c3 and t1.c1 > 500);
+
+select count(*) from t1 where not exists (select 1 from t2 where t1.pk <=> t2.pk and t2.c2 > 0);
+select count(*) from t1 where not exists (select 1 from t2 where t1.c2 <=> t2.c2 and t2.pk > 19000);
+select count(*) from t1 where not exists (select 1 from t2 where t1.pk <=> t2.pk and t1.c1 <=> t2.c1 and t2.c2 > 0);
+select count(*) from t1 where not exists (select 1 from t2 where t1.c2 <=> t2.c2 and t1.c3 = t2.c3 and t2.c1 > 500);
+select count(*) from t1 where not exists (select 1 from t2 where t1.pk != t2.pk and t2.c2 > 0);
+
+
+--disable_query_log
+--explain_protocol 0
+drop table t1,t2;
+
+create table t1(pk int, c0 int, c1 int, c2 int, c3 int, c_const int);
+create table t2(pk int, c0 int, c1 int, c2 int, c3 int, c_const int);
+create table t3(pk int, c0 int, c1 int, c2 int, c3 int, c_const int);
+
+insert into t1 select n, n, n % 1000, n % 1000, n % 1000, 1 from (select row_number() over () as n from table(generator(1000)));
+insert into t2 select n, n, n % 2000, n % 2000, n % 2000, 1 from (select row_number() over () as n from table(generator(2000)));
+insert into t3 select n, n, n % 3000, n % 3000, n % 3000, 1 from (select row_number() over () as n from table(generator(3000)));
+
+--source mysql_test/include/minor_merge_tenant.inc
+call dbms_stats.gather_table_stats(null, 't1', method_opt=>'for all columns size 1');
+call dbms_stats.gather_table_stats(null, 't2', method_opt=>'for all columns size 1');
+call dbms_stats.gather_table_stats(null, 't3', method_opt=>'for all columns size 1');
+
+--enable_query_log
+--explain_protocol 2
+
+# test complex join
+select count(*) from t1, t2 where t1.pk = t2.pk;
+select count(*) from t1, t2 where t1.pk = t2.pk and t1.c1 <= t2.c1;
+select count(*) from (select distinct t1.pk from t1, t2 where t1.c0 = t2.c0 and t1.c1 <= t2.c1);
+select count(*) from (select distinct t2.pk from t1, t2 where t1.c0 = t2.c0 and t1.c1 <= t2.c1);
+select count(*) from t2 where exists (select 1 from t1 where t1.pk = t2.pk and t1.c1 <= t2.c1);
+select count(*) from t2 where exists (select 1 from t1 where t1.pk = t2.pk + 501 and t1.c1 > t2.c1 + 500);
+select count(*) from t1, t2 where t1.c1 = t2.c1 + 30 and t1.c2 >= t2.c2 + 30;
+select count(*) from t1, t2, t3 where t1.c1 = t2.c1 and t2.c2 = t3.c2 and t1.c3 = t3.c3;
+select /*+use_hash(t1 t2 t3 (t1 t2) (t1 t3) (t2 t3))*/ count(*) from t1, t2, t3 where t1.c1 = t2.c1 and t2.c2 = t3.c2 and t1.c3 = t3.c3;
+select /*+use_merge(t1 t2 t3 (t1 t2) (t1 t3) (t2 t3))*/ count(*) from t1, t2, t3 where t1.c1 = t2.c1 and t2.c2 = t3.c2 and t1.c3 = t3.c3;
+select /*+use_nl(t1 t2 t3 (t1 t2) (t1 t3) (t2 t3))*/ count(*) from t1, t2, t3 where t1.c1 = t2.c1 and t2.c2 = t3.c2 and t1.c3 = t3.c3;
+select /*+leading(t1 t2 t3)*/ count(*) from t1, t2, t3 where t1.c1 = t2.c1 and t2.c2 = t3.c2 and t1.c3 = t3.c3;
+select /*+leading(t1 t3 t2)*/ count(*) from t1, t2, t3 where t1.c1 = t2.c1 and t2.c2 = t3.c2 and t1.c3 = t3.c3;
+select /*+leading(t3 t2 t1)*/ count(*) from t1, t2, t3 where t1.c1 = t2.c1 and t2.c2 = t3.c2 and t1.c3 = t3.c3;
+select count(*) from (select distinct t1.pk from t1, t2, t3 where t1.c1 = t2.c1 and t2.c2 = t3.c2 and t1.c3 = t3.c3);
+select count(*) from (select distinct t2.pk from t1, t2, t3 where t1.c1 = t2.c1 and t2.c2 = t3.c2 and t1.c3 = t3.c3);
+select count(*) from (select distinct t3.pk from t1, t2, t3 where t1.c1 = t2.c1 and t2.c2 = t3.c2 and t1.c3 = t3.c3);
+
+select /*+no_rewrite*/ count(*) from t1, t2, (select t2.c2, max(t1.c3) as c3 from t1, t2 where t1.c1 = t2.c1 group by t2.c2) v where t1.c1 = t2.c1 and t2.c2 = v.c2 and v.c3 = t1.c3;
+
+drop table t1, t2, t3, d1, d2;
+
+--disable_query_log
+--explain_protocol 0
+create table t1(c1 int);
+create table t2(c1 int);
+insert into t1 select 10 from table(generator(10));
+insert into t1 select 50 from table(generator(20));
+insert into t1 select 100 from table(generator(30));
+insert into t2 select 100 from table(generator(40));
+insert into t2 select 200 from table(generator(50));
+call dbms_stats.gather_table_stats(NULL, 't1', method_opt=>'for all columns size 10');
+call dbms_stats.gather_table_stats(NULL, 't2', method_opt=>'for all columns size 10');
+
+--enable_query_log
+--explain_protocol 2
+
+select /*+leading(t2 t1)*/ count(*) from t1 where c1 in (select c1 from t2);
+select /*+leading(t1 t2)*/ count(*) from t1 where c1 in (select c1 from t2);
+select count(*) from t1 where c1 in (select c1 from t2);
+select /*+leading(t2 t1)*/ count(*) from t2 where c1 in (select c1 from t1);
+select /*+leading(t1 t2)*/ count(*) from t2 where c1 in (select c1 from t1);
+select count(*) from t2 where c1 in (select c1 from t1);
+
+drop table t1,t2;
+
+connection conn_admin;
+alter system set_tp tp_no = 551, error_code = 5434, frequency = 1;
+connection default;

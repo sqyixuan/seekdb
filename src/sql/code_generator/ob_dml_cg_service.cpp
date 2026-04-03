@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #define USING_LOG_PREFIX SQL_CG
@@ -22,7 +18,6 @@
 #include "sql/optimizer/ob_log_insert.h"
 #include "sql/optimizer/ob_log_update.h"
 #include "share/domain_id/ob_domain_id.h"
-#include "share/external_table/ob_external_table_utils.h"
 
 namespace oceanbase
 {
@@ -3246,9 +3241,8 @@ int ObDmlCgService::generate_table_loc_meta(const IndexDMLInfo &index_dml_info,
     loc_meta.unuse_related_pruning_ = (OB_PHY_PLAN_DISTRIBUTED == cg_.opt_ctx_->get_phy_plan_type()
                                        && !cg_.opt_ctx_->get_root_stmt()->is_insert_stmt());
     loc_meta.is_external_table_ = table_schema->is_external_table();
-    ObString file_location;
-    OZ(ObExternalTableUtils::get_external_file_location(*table_schema, *schema_guard, cg_.phy_plan_->get_allocator(), file_location));
-    loc_meta.is_external_files_on_disk_ = ObSQLUtils::is_external_files_on_local_disk(file_location);
+    loc_meta.is_external_files_on_disk_ =
+        ObSQLUtils::is_external_files_on_local_disk(table_schema->get_external_file_location());
   }
   if (OB_SUCC(ret) && index_dml_info.is_primary_index_) {
     TableLocRelInfo *rel_info = nullptr;
@@ -3954,10 +3948,8 @@ int ObDmlCgService::generate_rowkey_domain_ctdef(
     loc_meta->unuse_related_pruning_ = (OB_PHY_PLAN_DISTRIBUTED == cg_.opt_ctx_->get_phy_plan_type()
                                        && !cg_.opt_ctx_->get_root_stmt()->is_insert_stmt());
     loc_meta->is_external_table_ = rowkey_domain_schema->is_external_table();
-    ObString file_location;
-    share::ObDasSemanticIndexInfo &semantic_index_info = scan_ctdef->semantic_index_info_;
-    OZ(ObExternalTableUtils::get_external_file_location(*rowkey_domain_schema, *schema_guard->get_schema_guard(), cg_.phy_plan_->get_allocator(), file_location));
-    loc_meta->is_external_files_on_disk_ = ObSQLUtils::is_external_files_on_local_disk(file_location);
+    loc_meta->is_external_files_on_disk_ =
+        ObSQLUtils::is_external_files_on_local_disk(rowkey_domain_schema->get_external_file_location());
     scan_ctdef->table_param_.get_enable_lob_locator_v2() = true;
     scan_ctdef->schema_version_ = rowkey_domain_schema->get_schema_version();
     ObSEArray<ObExpr *, 1> domain_id_expr;
@@ -3973,12 +3965,6 @@ int ObDmlCgService::generate_rowkey_domain_ctdef(
                                                                       *scan_ctdef,
                                                                       nullptr))) {
       LOG_WARN("fail to generate das result output", K(ret));
-    } else if (rowkey_domain_schema->is_hybrid_vec_index_embedded_type() &&
-               OB_FAIL(semantic_index_info.generate(data_schema,
-                                                    rowkey_domain_schema,
-                                                    scan_ctdef->result_output_.count(),
-                                                    OB_NOT_NULL(scan_ctdef->trans_info_expr_)))) {
-      LOG_WARN("fail to generate semantic index info", K(ret));
     } else {
       rowkey_domain_scan_ctdef = scan_ctdef;
     }
@@ -4128,7 +4114,7 @@ int ObDmlCgService::check_is_main_table_in_fts_ddl(
     if (OB_SUCC(ret)) {
       if ((has_fts_index && (0 == fts_index_aux_count || 0 == fts_doc_word_aux_count)) // fts aux index count is 0
           || is_main_table_in_fts_ddl // some fts index is building
-          || fts_index_aux_count != fts_doc_word_aux_count) { // fts aux index count not match
+          || fts_index_aux_count != fts_doc_word_aux_count) { // fts aux index count not match 
         das_dml_ctdef.is_main_table_in_fts_ddl_ = true;
       } else {
         das_dml_ctdef.is_main_table_in_fts_ddl_ = false;
