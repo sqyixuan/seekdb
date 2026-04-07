@@ -4764,7 +4764,7 @@ int ObDDLUtil::check_table_empty(
         LOG_WARN("fail to generate new name with escape character",
                   K(ret), K(table_name));
       } else if (OB_FAIL(session_param.ddl_info_.init(ddl_info, table_schema.get_session_id()))) {
-        LOG_WARN("fail to init ddl info", KR(ret), K(ddl_info), K(table_schema.get_session_id()));
+        LOG_WARN("fail to init ddl info", KR(ret), K(ddl_info), K(table_schema.get_session_id())); 
       } else if (OB_FAIL(ObShareUtil::set_default_timeout_ctx(timeout_ctx, GCONF.internal_sql_execute_timeout))) {
         LOG_WARN("failed to set default timeout ctx", K(ret), K(timeout_ctx));
       } else if (OB_FAIL(connection->set_ddl_info(&session_param.ddl_info_))) {

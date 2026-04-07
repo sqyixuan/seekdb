@@ -7584,9 +7584,9 @@ int ObDDLService::alter_table_index(obrpc::ObAlterTableArg &alter_table_arg,
                                                                       index_schema,
                                                                       trans))) {
                 LOG_WARN("failed to alter table add index!", K(index_schema), K(ret));
-              } else if (is_only_add_index_on_empty_table
+              } else if (is_only_add_index_on_empty_table 
                          && FALSE_IT(max_schema_version = std::max(max_schema_version, index_schema.get_schema_version()))) {
-                LOG_WARN("fail to build single table write defensive", KR(ret), K(index_schema));
+                LOG_WARN("fail to build single table write defensive", KR(ret), K(index_schema));       
               } else {
                 // The index data is stored separately from the main table,
                 // the partition needs to be built, and insert ori_schema_version in the outer insert
@@ -7887,7 +7887,7 @@ int ObDDLService::alter_table_index(obrpc::ObAlterTableArg &alter_table_arg,
         }
       }
     }
-    if (OB_SUCC(ret) && is_only_add_index_on_empty_table
+    if (OB_SUCC(ret) && is_only_add_index_on_empty_table 
                      && OB_FAIL(ObTabletBindingHelper::build_single_table_write_defensive(new_table_schema,
                                                                                           max_schema_version,
                                                                                           trans))) {
@@ -14574,7 +14574,7 @@ int ObDDLService::alter_table_in_trans(obrpc::ObAlterTableArg &alter_table_arg,
                                                trans,
                                                alter_table_arg.allocator_,
                                                tenant_data_version,
-                                               is_only_add_index_on_empty_table,
+                                               is_only_add_index_on_empty_table, 
                                                res,
                                                ddl_tasks,
                                                new_fetched_snapshot))) {

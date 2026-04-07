@@ -1,0 +1,565 @@
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+#owner: buming.lj
+#owner group: ddl
+#description: test create index on empty table with special table name
+
+connect (obsys,$OBMYSQL_MS0,root@sys,,oceanbase,$OBMYSQL_PORT);
+connect (conn1,$OBMYSQL_MS0,$OBMYSQL_USR,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connect (conn2,$OBMYSQL_MS0,$OBMYSQL_USR,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+
+# verify not submit ddl_task
+connection conn1;
+sleep 3;
+
+let $before_create_index_cnt = query_get_value("select count(*) as CNT from oceanbase.__all_ddl_error_message;", CNT, 1);
+--disable_warnings
+DROP TABLE IF EXISTS test;
+--enable_warnings
+
+create table test (
+col_int int,
+col_bool bool,
+pk int,
+primary key (pk));
+
+insert into test (col_int, col_bool, pk)
+VALUES (20, FALSE, 1);
+
+connection obsys;
+# major freeze all tenant
+--disable_warnings
+alter system major freeze tenant = sys;
+alter system major freeze tenant = all_user;
+alter system major freeze tenant = all_meta;
+--enable_warnings
+connection conn1;
+
+delete from test where pk = 1;
+
+ALTER SYSTEM SET _parallel_ddl_control = 'CREATE_INDEX:OFF';
+sleep 5;
+create index idx on test (col_int);
+
+ALTER SYSTEM SET _parallel_ddl_control = 'CREATE_INDEX:ON';
+sleep 5;
+create index idx2 on test(col_int);
+
+alter table test add index idx3(col_int);
+
+--source mysql_test/include/wait_daily_merge.inc
+
+connection conn1;
+
+let $after_create_index_cnt = query_get_value("select count(*) as CNT from oceanbase.__all_ddl_error_message;", CNT, 1);
+
+if ($after_create_index_cnt == $before_create_index_cnt) {
+  echo "create index on empty table without submitting ddl_task";
+}
+--replace_regex /REPLICA_NUM = [0-9]*/REPLICA_NUM = replica_num/g
+show create table test;
+
+INSERT INTO test (col_int, col_bool, pk)
+VALUES (20, FALSE, 2);
+
+create index idx1 on test (col_int);
+
+let $after_insert_data_cnt = query_get_value("select count(*) as CNT from oceanbase.__all_ddl_error_message;", CNT, 1);
+
+if ($after_insert_data_cnt > $after_create_index_cnt) {
+  echo "create index on table by submitting ddl_task";
+}
+--replace_regex /REPLICA_NUM = [0-9]*/REPLICA_NUM = replica_num/g
+show create table test;
+
+drop table test;
+
+# insert data when create index on empty table
+ALTER SYSTEM SET _parallel_ddl_control = 'CREATE_INDEX:OFF';
+connection obsys;
+sleep 3;
+alter system set debug_sync_timeout = '10000s';
+sleep 5;
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'CREATE_INDEX_ON_EMPTY_TABLE wait_for signal1 execute 10000';
+
+
+connection conn1;
+sleep 3;
+create table test (
+col_int int,
+col_bool bool,
+pk int,
+primary key (pk));
+
+send create index buming_idx on test (col_int);
+sleep 3;
+
+connection conn2;
+set lock_wait_timeout = 10;
+sleep 3;
+
+# can not insert table when create index on empty table
+--error 1205
+INSERT INTO test (col_int, col_bool, pk)
+VALUES (20, FALSE, 2);
+
+SET lock_wait_timeout= 31536000;
+
+connection obsys;
+set ob_global_debug_sync = 'CREATE_INDEX_ON_EMPTY_TABLE clear';
+set ob_global_debug_sync = 'now signal signal1';
+sleep 3;
+
+connection conn1;
+reap;
+--replace_regex /REPLICA_NUM = [0-9]*/REPLICA_NUM = replica_num/g
+show create table test;
+
+select * from test;
+
+let $idxname = query_get_value(select table_name from oceanbase.__all_table where table_name like '%buming_idx%' , table_name, 1);
+set ob_enable_index_direct_select=1;
+
+--disable_query_log
+eval select * from $idxname;
+--enable_query_log
+
+drop table test;
+
+
+# verify ddl_stmt_str
+--disable_warnings
+DROP TABLE IF EXISTS test;
+--enable_warnings
+create table test(col_int int);
+
+ALTER SYSTEM SET _parallel_ddl_control = 'CREATE_INDEX:ON';
+
+create index buming_index1 on test (col_int);
+
+select ddl_stmt_str
+from oceanbase.__all_ddl_operation
+where table_id = (
+    select table_id
+    from oceanbase.__all_table
+    where table_name like '%buming_index1%'
+    limit 1
+);
+
+
+
+ALTER SYSTEM SET _parallel_ddl_control = 'CREATE_INDEX:OFF';
+
+create index buming_index2 on test (col_int);
+
+select ddl_stmt_str
+from oceanbase.__all_ddl_operation
+where table_id = (
+    select table_id
+    from oceanbase.__all_table
+    where table_name like '%buming_index2%'
+    limit 1
+);
+
+
+drop table test;
+
+
+# special table name
+ALTER SYSTEM SET _parallel_ddl_control = 'CREATE_INDEX:ON';
+
+--disable_warnings
+DROP TABLE IF EXISTS ```select```;
+--enable_warnings
+CREATE TABLE ```select``` (
+col_int int,
+col_bool bool,
+pk int,
+primary key (pk));
+
+create index idx1 on ```select``` (col_int);
+
+alter table ```select``` add index idx2 (col_bool);
+
+drop table ```select```;
+
+ALTER SYSTEM SET _parallel_ddl_control = 'CREATE_INDEX:OFF';
+
+--disable_warnings
+DROP TABLE IF EXISTS `ocean@base-database`;
+--enable_warnings
+CREATE TABLE `ocean@base-database` (
+col_int int,
+col_bool bool,
+pk int,
+primary key (pk));
+
+create index idx1 on `ocean@base-database` (col_int);
+
+alter table `ocean@base-database` add index idx2 (col_bool);
+
+drop table `ocean@base-database`;
+
+# list partition table
+--disable_warnings
+DROP TABLE IF EXISTS `ocean base`;
+--enable_warnings
+CREATE TABLE `ocean base` (col1 INT PRIMARY KEY, col2 INT)
+PARTITION BY KEY()
+PARTITIONS 128;
+
+--source mysql_test/include/create_index_on_empty_table.inc
+
+drop table `ocean base`;
+
+# hash partition table
+
+CREATE TABLE `ocean base` (col1 INT PRIMARY KEY, col2 INT)
+PARTITION BY HASH(col1)
+PARTITIONS 128;
+
+--source mysql_test/include/create_index_on_empty_table.inc
+
+drop table `ocean base`;
+
+# range partition table
+
+CREATE TABLE `ocean base` (col1 INT,col2 INT) 
+PARTITION BY RANGE(col1)
+(PARTITION p0 VALUES LESS THAN(100),
+PARTITION p1 VALUES LESS THAN(200),
+PARTITION p2 VALUES LESS THAN(300),
+PARTITION p3 VALUES LESS THAN(400),
+PARTITION p4 VALUES LESS THAN(500)
+);
+
+--source mysql_test/include/create_index_on_empty_table.inc
+
+drop table `ocean base`;
+
+# list partition table
+
+CREATE TABLE `ocean base` (col1 INT,col2 INT) 
+PARTITION BY LIST(col1)
+(PARTITION p0 VALUES IN (100),
+PARTITION p1 VALUES IN (200)
+);
+
+--source mysql_test/include/create_index_on_empty_table.inc
+
+drop table `ocean base`;
+
+
+# one-level-partition: range, two-level-partition: hash
+
+CREATE TABLE `ocean base` (col1 INT,col2 int) 
+PARTITION BY RANGE(col1)
+SUBPARTITION BY HASH(col2) SUBPARTITIONS 128
+(
+    PARTITION p0 VALUES LESS THAN(100),
+    PARTITION p1 VALUES LESS THAN(200)
+);
+
+--source mysql_test/include/create_index_on_empty_table.inc
+
+drop table `ocean base`;
+
+
+
+# one-level-partition: range, two-level-partition: key
+
+CREATE TABLE `ocean base` (col1 INT,col2 int) 
+PARTITION BY RANGE(col1)
+SUBPARTITION BY KEY(col2) SUBPARTITIONS 128
+(
+    PARTITION p0 VALUES LESS THAN(100),
+    PARTITION p1 VALUES LESS THAN(200)
+);
+
+--source mysql_test/include/create_index_on_empty_table.inc
+
+drop table `ocean base`;
+
+# one-level-partition: range, two-level-partition: list
+
+CREATE TABLE `ocean base` (col1 INT,col2 DATE) 
+PARTITION BY RANGE(col1)
+SUBPARTITION BY LIST(TO_DAYS(col2))
+(
+    PARTITION p0 VALUES LESS THAN(100)
+    (
+        SUBPARTITION sp0 VALUES IN (TO_DAYS('2023-01-01')),
+        SUBPARTITION sp1 VALUES IN (TO_DAYS('2023-02-01'))
+    ),
+    PARTITION p1 VALUES LESS THAN(200)
+    (
+        SUBPARTITION sp2 VALUES IN (TO_DAYS('2023-03-01')),
+        SUBPARTITION sp3 VALUES IN (TO_DAYS('2023-04-01'))
+    )
+);
+
+--source mysql_test/include/create_index_on_empty_table.inc
+
+drop table `ocean base`;
+
+# one-level-partition: range, two-level-partition: range
+
+CREATE TABLE `ocean base` (col1 INT,col2 DATE) 
+PARTITION BY RANGE(col1)
+SUBPARTITION BY RANGE(TO_DAYS(col2))
+(
+    PARTITION p0 VALUES LESS THAN(100)
+    (
+        SUBPARTITION sp0 VALUES LESS THAN(TO_DAYS('2023-01-01')),
+        SUBPARTITION sp1 VALUES LESS THAN(TO_DAYS('2023-02-01'))
+    ),
+    PARTITION p1 VALUES LESS THAN(200)
+    (
+        SUBPARTITION sp2 VALUES LESS THAN(TO_DAYS('2023-03-01')),
+        SUBPARTITION sp3 VALUES LESS THAN(TO_DAYS('2023-04-01'))
+    )
+);
+
+--source mysql_test/include/create_index_on_empty_table.inc
+
+drop table `ocean base`;
+
+# one-level-partition: list, two-level-partition: hash
+
+CREATE TABLE `ocean base` (col1 INT,col2 INT) 
+PARTITION BY LIST(col1)
+SUBPARTITION BY HASH(col2) SUBPARTITIONS 128
+(
+    PARTITION p0 VALUES IN (100),
+    PARTITION p1 VALUES IN (200)
+);
+
+--source mysql_test/include/create_index_on_empty_table.inc
+
+drop table `ocean base`;
+
+# one-level-partition: list, two-level-partition: key
+
+CREATE TABLE `ocean base` (col1 INT,col2 INT) 
+PARTITION BY list(col1)
+SUBPARTITION BY HASH(col2) SUBPARTITIONS 128
+(
+    PARTITION p0 VALUES IN (100),
+    PARTITION p1 VALUES IN (200)
+);
+
+--source mysql_test/include/create_index_on_empty_table.inc
+
+drop table `ocean base`;
+
+# one-level-partition: list, two-level-partition: range
+
+CREATE TABLE `ocean base` (col1 INT,col2 INT) 
+PARTITION BY LIST (col1) 
+SUBPARTITION BY RANGE (col2) (
+    PARTITION p1 VALUES IN (2024) (
+        SUBPARTITION p1_2024 VALUES LESS THAN (100),
+        SUBPARTITION p2_2024 VALUES LESS THAN (200)
+    ),
+    PARTITION p2 VALUES IN (2025) (
+        SUBPARTITION p1_2025 VALUES LESS THAN (100),
+        SUBPARTITION p2_2025 VALUES LESS THAN (200)
+    )
+);
+
+--source mysql_test/include/create_index_on_empty_table.inc
+
+drop table `ocean base`;
+
+# one-level-partition: list, two-level-partition: list
+
+CREATE TABLE `ocean base` (col1 INT,col2 INT) 
+PARTITION BY LIST (col1) 
+SUBPARTITION BY LIST (col2) (
+    PARTITION p1 VALUES IN (2024) (
+        SUBPARTITION p1_2024 VALUES IN (7, 8),
+        SUBPARTITION p2_2024 VALUES IN (9, 10)
+    ),
+    PARTITION p2 VALUES IN (2025) (
+        SUBPARTITION p1_2025 VALUES IN (7, 8),
+        SUBPARTITION p2_2025 VALUES IN (9, 10)
+    )
+);
+
+--source mysql_test/include/create_index_on_empty_table.inc
+
+drop table `ocean base`;
+
+# one-level-partition: hash, two-level-partition: hash
+
+CREATE TABLE `ocean base` (col1 INT,col2 INT) 
+PARTITION BY HASH (col1) 
+SUBPARTITION BY HASH (col2) (
+    PARTITION p1 (
+        SUBPARTITION p1_h1,
+        SUBPARTITION p1_h2
+    ),
+    PARTITION p2 (
+        SUBPARTITION p2_h1,
+        SUBPARTITION p2_h2
+    )
+);
+
+--source mysql_test/include/create_index_on_empty_table.inc
+
+drop table `ocean base`;
+
+# one-level-partition: hash, two-level-partition: key
+
+CREATE TABLE `ocean base` (col1 INT,col2 INT) 
+PARTITION BY HASH (col1) 
+SUBPARTITION BY KEY (col2) (
+    PARTITION p1 (
+        SUBPARTITION p1_h1,
+        SUBPARTITION p1_h2
+    ),
+    PARTITION p2 (
+        SUBPARTITION p2_h1,
+        SUBPARTITION p2_h2
+    )
+);
+
+--source mysql_test/include/create_index_on_empty_table.inc
+
+drop table `ocean base`;
+
+
+# one-level-partition: hash, two-level-partition: range
+
+CREATE TABLE `ocean base` (col1 INT,col2 INT) 
+PARTITION BY HASH (col1) 
+SUBPARTITION BY RANGE (col2) (
+    PARTITION p1 (
+        SUBPARTITION p1_0 VALUES LESS THAN (100),
+        SUBPARTITION p1_1 VALUES LESS THAN (200)
+    ),
+    PARTITION p2 (
+        SUBPARTITION p2_0 VALUES LESS THAN (100),
+        SUBPARTITION p2_1 VALUES LESS THAN (200)
+    )
+);
+
+--source mysql_test/include/create_index_on_empty_table.inc
+
+drop table `ocean base`;
+
+
+# one-level-partition: hash, two-level-partition: list
+
+CREATE TABLE `ocean base` (col1 INT,col2 INT) 
+PARTITION BY HASH (col1) 
+SUBPARTITION BY LIST (col2) (
+    PARTITION p1 (
+        SUBPARTITION p1_0 VALUES IN (100),
+        SUBPARTITION p1_1 VALUES IN (200)
+    ),
+    PARTITION p2 (
+        SUBPARTITION p2_0 VALUES IN (100),
+        SUBPARTITION p2_1 VALUES IN (200)
+    )
+);
+
+--source mysql_test/include/create_index_on_empty_table.inc
+
+drop table `ocean base`;
+
+
+# one-level-partition: key, two-level-partition: hash
+
+CREATE TABLE `ocean base` (col1 INT,col2 INT) 
+PARTITION BY KEY (col1) 
+SUBPARTITION BY HASH (col2) (
+    PARTITION p1 (
+        SUBPARTITION p1_h1,
+        SUBPARTITION p1_h2
+    ),
+    PARTITION p2 (
+        SUBPARTITION p2_h1,
+        SUBPARTITION p2_h2
+    )
+);
+
+--source mysql_test/include/create_index_on_empty_table.inc
+
+drop table `ocean base`;
+
+# one-level-partition: key, two-level-partition: key
+
+CREATE TABLE `ocean base` (col1 INT,col2 INT) 
+PARTITION BY KEY (col1) 
+SUBPARTITION BY KEY (col2) (
+    PARTITION p1 (
+        SUBPARTITION p1_h1,
+        SUBPARTITION p1_h2
+    ),
+    PARTITION p2 (
+        SUBPARTITION p2_h1,
+        SUBPARTITION p2_h2
+    )
+);
+
+--source mysql_test/include/create_index_on_empty_table.inc
+
+drop table `ocean base`;
+
+
+# one-level-partition: key, two-level-partition: range
+
+CREATE TABLE `ocean base` (col1 INT,col2 INT) 
+PARTITION BY KEY (col1) 
+SUBPARTITION BY RANGE (col2) (
+    PARTITION p1 (
+        SUBPARTITION p1_0 VALUES LESS THAN (100),
+        SUBPARTITION p1_1 VALUES LESS THAN (200)
+    ),
+    PARTITION p2 (
+        SUBPARTITION p2_0 VALUES LESS THAN (100),
+        SUBPARTITION p2_1 VALUES LESS THAN (200)
+    )
+);
+
+--source mysql_test/include/create_index_on_empty_table.inc
+
+drop table `ocean base`;
+
+
+# one-level-partition: key, two-level-partition: list
+
+CREATE TABLE `ocean base` (col1 INT,col2 INT) 
+PARTITION BY KEY (col1) 
+SUBPARTITION BY LIST (col2) (
+    PARTITION p1 (
+        SUBPARTITION p1_0 VALUES IN (100),
+        SUBPARTITION p1_1 VALUES IN (200)
+    ),
+    PARTITION p2 (
+        SUBPARTITION p2_0 VALUES IN (100),
+        SUBPARTITION p2_1 VALUES IN (200)
+    )
+);
+
+--source mysql_test/include/create_index_on_empty_table.inc
+
+drop table `ocean base`;
+
+
+# templated level-two partition
+
+CREATE TABLE `ocean base` (col1 INT,col2 INT) 
+PARTITION BY RANGE (col1)
+SUBPARTITION BY HASH (col2) SUBPARTITIONS 128 (
+    PARTITION p0 VALUES LESS THAN (2023),
+    PARTITION p1 VALUES LESS THAN (2024),
+    PARTITION p2 VALUES LESS THAN (2025)
+);
+
+--source mysql_test/include/create_index_on_empty_table.inc
+
+drop table `ocean base`;
