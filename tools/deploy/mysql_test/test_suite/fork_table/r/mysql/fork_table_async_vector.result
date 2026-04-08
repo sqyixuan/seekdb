@@ -1,0 +1,89 @@
+drop database if exists db_fork_async;
+create database db_fork_async;
+use db_fork_async;
+set ob_trx_timeout = 100000000;
+set ob_query_timeout = 100000000;
+alter system set ob_vector_memory_limit_percentage = 20;
+# Test 1: Fork async HNSW table - main table vs async index consistency
+drop table if exists t_src;
+drop table if exists t_fork;
+create table t_src(
+c1 int primary key,
+c2 vector(3),
+vector index idx1(c2) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async, ef_search=200)
+) organization heap;
+insert into t_src values(1, '[1.0, 1.0, 1.0]');
+insert into t_src values(2, '[2.0, 2.0, 2.0]');
+insert into t_src values(3, '[3.0, 3.0, 3.0]');
+insert into t_src values(4, '[4.0, 4.0, 4.0]');
+insert into t_src values(5, '[5.0, 5.0, 5.0]');
+call dbms_index_manager.refresh();
+# Verify initial 5 rows are indexed and searchable
+select count(*) as cnt from (
+select c1 from t_src order by l2_distance(c2, '[0,0,0]') approximate limit 100
+) t;
+cnt
+5
+# Fork immediately - fork_snapshot_version is obtained before ChangeStream finishes
+fork table t_src to t_fork;
+# Refresh: source table catches up, but fork's missing data is permanent
+call dbms_index_manager.refresh();
+# Source table: direct count
+select count(*) as src_total from t_src;
+src_total
+100
+# Fork table: direct count (reads main table - always complete)
+select count(*) as fork_total from t_fork;
+fork_total
+100
+# Fork table: approximate search (reads async index)
+# EXPECTED after fix: 100 (equals fork_total)
+# BUG before fix: < 100 (vector_index_log incomplete in fork)
+select count(*) as fork_approx from (
+select c1 from t_fork order by l2_distance(c2, '[0,0,0]') approximate limit 200
+) t;
+fork_approx
+100
+# Verify fork table main table data is intact (sample rows)
+select c1, c2 from t_fork where c1 in (1, 50, 100) order by c1;
+c1	c2
+1	[1,1,1]
+50	[50,50,50]
+100	[100,100,100]
+drop table t_src;
+drop table t_fork;
+# Test 2: Fork after full refresh - should always be consistent
+drop table if exists t_src2;
+drop table if exists t_fork2;
+create table t_src2(
+c1 int primary key,
+c2 vector(3),
+vector index idx1(c2) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async, ef_search=200)
+) organization heap;
+# Refresh BEFORE fork - ChangeStream fully caught up
+call dbms_index_manager.refresh();
+# Verify source is consistent
+select count(*) as src2_total from t_src2;
+src2_total
+20
+select count(*) as src2_approx from (
+select c1 from t_src2 order by l2_distance(c2, '[0,0,0]') approximate limit 50
+) t;
+src2_approx
+20
+# Fork after refresh
+fork table t_src2 to t_fork2;
+# Fork table after full refresh: should be consistent
+select count(*) as fork2_total from t_fork2;
+fork2_total
+20
+select count(*) as fork2_approx from (
+select c1 from t_fork2 order by l2_distance(c2, '[0,0,0]') approximate limit 50
+) t;
+fork2_approx
+20
+drop table t_src2;
+drop table t_fork2;
+# Cleanup
+drop database if exists db_fork_async;
+alter system set ob_vector_memory_limit_percentage = 0;

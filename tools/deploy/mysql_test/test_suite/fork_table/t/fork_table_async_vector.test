@@ -1,0 +1,166 @@
+#owner: fanxingkun.fxk
+#owner group: storage
+#description: Fork Table with async HNSW vector index - data consistency check
+#tags: fork_table async_index vector_index
+#
+# Verifies that forking a table with an async HNSW vector index produces
+# a consistent result where all main-table rows are searchable via the index.
+#
+# Root cause of the bug:
+#   Async index auxiliary tables (vector_index_log) have commit versions
+#   strictly higher than the main table for the same logical data, because
+#   ChangeStream processes DML asynchronously in separate transactions.
+#   When both main table and auxiliary table are forked at the same
+#   fork_snapshot_version, the auxiliary table misses data whose
+#   ChangeStream commit hasn't happened yet (or whose commit_version
+#   is higher than fork_snapshot_version).
+#
+# Expected failure before fix:
+#   fork_approx < fork_total  (async index is incomplete on forked table)
+#
+# Expected pass after fix:
+#   fork_approx == fork_total (fork waits for ChangeStream and uses
+#   adjusted snapshot points for main vs auxiliary tables)
+
+--disable_warnings
+drop database if exists db_fork_async;
+--enable_warnings
+
+connect (obsys,$OBMYSQL_MS0,root@sys,,oceanbase,$OBMYSQL_PORT);
+connection default;
+create database db_fork_async;
+use db_fork_async;
+
+set ob_trx_timeout = 100000000;
+set ob_query_timeout = 100000000;
+
+alter system set ob_vector_memory_limit_percentage = 20;
+sleep 3;
+
+#########################################################################
+--echo # Test 1: Fork async HNSW table - main table vs async index consistency
+#########################################################################
+
+--disable_warnings
+drop table if exists t_src;
+drop table if exists t_fork;
+--enable_warnings
+
+create table t_src(
+  c1 int primary key,
+  c2 vector(3),
+  vector index idx1(c2) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async, ef_search=200)
+) organization heap;
+
+insert into t_src values(1, '[1.0, 1.0, 1.0]');
+insert into t_src values(2, '[2.0, 2.0, 2.0]');
+insert into t_src values(3, '[3.0, 3.0, 3.0]');
+insert into t_src values(4, '[4.0, 4.0, 4.0]');
+insert into t_src values(5, '[5.0, 5.0, 5.0]');
+
+call dbms_index_manager.refresh();
+
+--echo # Verify initial 5 rows are indexed and searchable
+select count(*) as cnt from (
+  select c1 from t_src order by l2_distance(c2, '[0,0,0]') approximate limit 100
+) t;
+
+# Insert a large batch in a single transaction WITHOUT calling refresh.
+# ChangeStream has NOT committed vector_index_log entries for these rows yet.
+# Even if ChangeStream processes them quickly, the auxiliary table commit
+# version will be strictly greater than the main table commit version.
+--disable_query_log
+begin;
+let $i = 6;
+while ($i <= 100) {
+  eval insert into t_src values($i, '[$i.0, $i.0, $i.0]');
+  inc $i;
+}
+commit;
+--enable_query_log
+
+--echo # Fork immediately - fork_snapshot_version is obtained before ChangeStream finishes
+fork table t_src to t_fork;
+let $wait_timeout = 120;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+
+--echo # Refresh: source table catches up, but fork's missing data is permanent
+call dbms_index_manager.refresh();
+
+--echo # Source table: direct count
+select count(*) as src_total from t_src;
+
+--echo # Fork table: direct count (reads main table - always complete)
+select count(*) as fork_total from t_fork;
+
+--echo # Fork table: approximate search (reads async index)
+--echo # EXPECTED after fix: 100 (equals fork_total)
+--echo # BUG before fix: < 100 (vector_index_log incomplete in fork)
+select count(*) as fork_approx from (
+  select c1 from t_fork order by l2_distance(c2, '[0,0,0]') approximate limit 200
+) t;
+
+# Sanity check: the main table data IS correct on the fork table
+--echo # Verify fork table main table data is intact (sample rows)
+select c1, c2 from t_fork where c1 in (1, 50, 100) order by c1;
+
+drop table t_src;
+drop table t_fork;
+
+#########################################################################
+--echo # Test 2: Fork after full refresh - should always be consistent
+#########################################################################
+# This test verifies that if we refresh before fork (so ChangeStream is
+# fully caught up), the fork is consistent even with current code.
+# This serves as a control group for Test 1.
+
+--disable_warnings
+drop table if exists t_src2;
+drop table if exists t_fork2;
+--enable_warnings
+
+create table t_src2(
+  c1 int primary key,
+  c2 vector(3),
+  vector index idx1(c2) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async, ef_search=200)
+) organization heap;
+
+--disable_query_log
+let $i = 1;
+while ($i <= 20) {
+  eval insert into t_src2 values($i, '[$i.0, $i.0, $i.0]');
+  inc $i;
+}
+--enable_query_log
+
+--echo # Refresh BEFORE fork - ChangeStream fully caught up
+call dbms_index_manager.refresh();
+
+--echo # Verify source is consistent
+select count(*) as src2_total from t_src2;
+select count(*) as src2_approx from (
+  select c1 from t_src2 order by l2_distance(c2, '[0,0,0]') approximate limit 50
+) t;
+
+--echo # Fork after refresh
+fork table t_src2 to t_fork2;
+let $wait_timeout = 120;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+
+--echo # Fork table after full refresh: should be consistent
+select count(*) as fork2_total from t_fork2;
+select count(*) as fork2_approx from (
+  select c1 from t_fork2 order by l2_distance(c2, '[0,0,0]') approximate limit 50
+) t;
+
+drop table t_src2;
+drop table t_fork2;
+
+#########################################################################
+--echo # Cleanup
+#########################################################################
+
+--disable_warnings
+drop database if exists db_fork_async;
+--enable_warnings
+alter system set ob_vector_memory_limit_percentage = 0;
