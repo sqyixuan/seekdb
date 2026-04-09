@@ -1,0 +1,186 @@
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+#owner: fankun.fan
+#owner group: seekdb
+#description: Regression tests for CSFetcher ACTIVE->IDLE tx_info_ cleanup.
+#  When the fetcher transitions from ACTIVE to IDLE mode it must discard any
+#  tx_info_ entries that are still solely owned by the fetcher
+#  (in_dispatch_time_ == 0, i.e. never pushed to the dispatcher).  Without the
+#  fix those orphaned entries would block refresh_scn from advancing when the
+#  fetcher later switches back to ACTIVE.
+#
+#  The real failure mechanism:
+#    CS_FETCHER_MIN_DEP_LSN_ADVANCE_INTERVAL_US = 60 s.  While in IDLE mode
+#    (has_async=false), get_min_dep_lsn returns end_lsn, so after 60 s the
+#    persisted min_dep_lsn is advanced past the unprocessed commit log.  When
+#    the fetcher later switches back to ACTIVE, init_consumption_position_()
+#    starts from max(persisted_min_dep_lsn, current_lsn_) = persisted_min_dep_lsn
+#    which is now beyond the commit log → commit log is skipped permanently →
+#    tx_info_ entry stays forever → get_refresh_scn returns invalid (tx_info_
+#    non-empty) → refresh_scn never advances → dbms_index_manager.refresh() hangs.
+#    Sleeping 65 s in IDLE mode is therefore required to reproduce the bug.
+#
+#  Case 1 – DDL tx stuck in tx_info_:
+#    The fetcher processes a DDL_TRANS MDS log for a DROP INDEX DDL (creating a
+#    tx_info_ entry with is_ddl_=true) before the schema check detects that no
+#    async index tables remain.  On ACTIVE->IDLE the entry must be discarded.
+#    Uses CS_FETCHER_AFTER_DDL_MDS_LOG to pause the fetcher right after the MDS
+#    log is consumed (commit log not yet seen).  After signaling, the fetcher
+#    stays in IDLE for 65 s so persisted_min_dep_lsn advances past the commit
+#    log.  Then IDLE->ACTIVE skips the commit log and tx_info_ remains stuck.
+#
+#  Case 2 – DML tx stuck in tx_info_:
+#    A committed DML transaction has its redo log processed by the fetcher
+#    (tx_info_ entry created, in_dispatch_time_==0) before the ACTIVE->IDLE
+#    switch triggered by dropping the last async index.  On ACTIVE->IDLE the
+#    entry must be discarded.
+#    Uses CS_FETCHER_AFTER_DML_REDO_LOG to pause the fetcher right after a redo
+#    log is consumed (commit log not yet dispatched).  Same 65 s IDLE sleep to
+#    let persisted_min_dep_lsn advance past the commit log.
+
+connect (conn_sys,$OBMYSQL_MS0,root@sys,,test,$OBMYSQL_PORT);
+connect (conn1,$OBMYSQL_MS0,root,,test,$OBMYSQL_PORT);
+
+connection conn_sys;
+alter system set debug_sync_timeout = '300s';
+sleep 1;
+set ob_global_debug_sync = 'reset';
+
+connection conn1;
+alter system set ob_vector_memory_limit_percentage = 30;
+
+--echo
+--echo ========== Case 1: DDL tx_info_ cleanup on ACTIVE->IDLE ==========
+--echo
+
+--disable_warnings
+drop table if exists t_cs_ddl;
+--enable_warnings
+
+connection conn1;
+create table t_cs_ddl (
+  id int primary key,
+  vec vector(3)
+) organization heap;
+
+--echo --- Create async index: fetcher transitions to ACTIVE mode ---
+create vector index idx_cs_ddl on t_cs_ddl(vec) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async);
+
+--echo --- Insert baseline data and wait for initial CDC sync ---
+insert into t_cs_ddl values (1, '[1,1,1]'), (2, '[2,2,2]'), (3, '[3,3,3]');
+call dbms_index_manager.refresh();
+
+--echo --- Arm debug sync: pause fetcher after DDL MDS log is processed ---
+--echo --- (at that point tx_info_ holds a DDL entry with in_dispatch_time_==0) ---
+connection conn_sys;
+set ob_global_debug_sync = 'CS_FETCHER_AFTER_DDL_MDS_LOG wait_for cs_ddl_signal execute 1';
+
+--echo --- Drop the async index: generates DDL_TRANS MDS log; fetcher will pause after consuming it ---
+connection conn1;
+drop index idx_cs_ddl on t_cs_ddl;
+
+--echo --- Wait for the fetcher to hit the debug sync (MDS log consumed, commit pending) ---
+sleep 3;
+
+--echo --- Schema has changed: no async indexes remain ---
+--echo --- Signal the fetcher to resume; the schema check will fire ACTIVE->IDLE ---
+--echo --- and our fix must discard the orphaned DDL tx_info_ entry ---
+connection conn_sys;
+set ob_global_debug_sync = 'now signal cs_ddl_signal';
+
+--echo --- Stay in IDLE for 65 s so persisted_min_dep_lsn advances past the commit log ---
+--echo --- (CS_FETCHER_MIN_DEP_LSN_ADVANCE_INTERVAL_US = 60 s) ---
+--echo --- Without the fix, IDLE->ACTIVE would skip the commit log, leaving tx_info_ stuck ---
+sleep 65;
+
+--echo --- Re-create the async index: fetcher transitions IDLE->ACTIVE ---
+connection conn1;
+create vector index idx_cs_ddl on t_cs_ddl(vec) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async);
+
+--echo --- Insert more data and refresh: must not hang (regression check) ---
+insert into t_cs_ddl values (4, '[4,4,4]'), (5, '[5,5,5]');
+call dbms_index_manager.refresh();
+
+--echo --- Verify query correctness ---
+select id from t_cs_ddl order by l2_distance(vec, '[1,1,1]') approximate limit 5;
+select count(*) as total from t_cs_ddl;
+
+--echo --- Cleanup Case 1 ---
+drop table if exists t_cs_ddl;
+
+connection conn_sys;
+set ob_global_debug_sync = 'reset';
+
+--echo
+--echo ========== Case 2: DML tx_info_ cleanup on ACTIVE->IDLE ==========
+--echo
+
+--disable_warnings
+drop table if exists t_cs_dml;
+--enable_warnings
+
+connection conn1;
+create table t_cs_dml (
+  id int primary key,
+  vec vector(3),
+  name varchar(64)
+) organization heap;
+
+--echo --- Create async index: fetcher transitions to ACTIVE mode ---
+create vector index idx_cs_dml on t_cs_dml(vec) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async);
+
+--echo --- Arm debug sync: pause fetcher after any DML redo log is processed ---
+--echo --- (tx_info_ entry exists with in_dispatch_time_==0, commit not yet consumed) ---
+connection conn_sys;
+set ob_global_debug_sync = 'CS_FETCHER_AFTER_DML_REDO_LOG wait_for cs_dml_signal execute 1';
+
+--echo --- Commit a transaction so the fetcher has redo logs to consume ---
+connection conn1;
+insert into t_cs_dml values (1, '[1,1,1]', 'a'), (2, '[2,2,2]', 'b'), (3, '[3,3,3]', 'c');
+
+--echo --- Wait for the fetcher to process the redo log and hit the debug sync ---
+sleep 3;
+
+--echo --- Drop the async index while fetcher is paused (schema: no async indexes left) ---
+drop index idx_cs_dml on t_cs_dml;
+
+--echo --- Wait for the schema change to propagate ---
+sleep 3;
+
+--echo --- Signal the fetcher to resume; schema check fires ACTIVE->IDLE ---
+--echo --- and our fix must discard the orphaned DML tx_info_ entry ---
+connection conn_sys;
+set ob_global_debug_sync = 'now signal cs_dml_signal';
+
+--echo --- Stay in IDLE for 65 s so persisted_min_dep_lsn advances past the commit log ---
+--echo --- (CS_FETCHER_MIN_DEP_LSN_ADVANCE_INTERVAL_US = 60 s) ---
+--echo --- Without the fix, IDLE->ACTIVE would skip the commit log, leaving tx_info_ stuck ---
+sleep 65;
+
+--echo --- Re-create the async index: fetcher transitions IDLE->ACTIVE ---
+connection conn1;
+create vector index idx_cs_dml on t_cs_dml(vec) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async);
+
+--echo --- Insert more data and refresh: must not hang (regression check) ---
+insert into t_cs_dml values (4, '[4,4,4]', 'd'), (5, '[5,5,5]', 'e');
+call dbms_index_manager.refresh();
+
+--echo --- Verify query correctness ---
+select id from t_cs_dml order by l2_distance(vec, '[2,2,2]') approximate limit 5;
+select count(*) as total from t_cs_dml;
+
+--echo --- Cleanup Case 2 ---
+drop table if exists t_cs_dml;
+
+--echo ========== Global cleanup ==========
+connection conn_sys;
+set ob_global_debug_sync = 'reset';
+delete from oceanbase.__all_vector_index_task_history;
+
+connection conn1;
+alter system set ob_vector_memory_limit_percentage = 0;
+PURGE RECYCLEBIN;
+
+disconnect conn_sys;
+disconnect conn1;

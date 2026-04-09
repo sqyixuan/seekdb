@@ -1,0 +1,97 @@
+alter system set debug_sync_timeout = '300s';
+set ob_global_debug_sync = 'reset';
+alter system set ob_vector_memory_limit_percentage = 30;
+
+========== Case 1: DDL tx_info_ cleanup on ACTIVE->IDLE ==========
+
+drop table if exists t_cs_ddl;
+create table t_cs_ddl (
+id int primary key,
+vec vector(3)
+) organization heap;
+--- Create async index: fetcher transitions to ACTIVE mode ---
+create vector index idx_cs_ddl on t_cs_ddl(vec) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async);
+--- Insert baseline data and wait for initial CDC sync ---
+insert into t_cs_ddl values (1, '[1,1,1]'), (2, '[2,2,2]'), (3, '[3,3,3]');
+call dbms_index_manager.refresh();
+--- Arm debug sync: pause fetcher after DDL MDS log is processed ---
+--- (at that point tx_info_ holds a DDL entry with in_dispatch_time_==0) ---
+set ob_global_debug_sync = 'CS_FETCHER_AFTER_DDL_MDS_LOG wait_for cs_ddl_signal execute 1';
+--- Drop the async index: generates DDL_TRANS MDS log; fetcher will pause after consuming it ---
+drop index idx_cs_ddl on t_cs_ddl;
+--- Wait for the fetcher to hit the debug sync (MDS log consumed, commit pending) ---
+--- Schema has changed: no async indexes remain ---
+--- Signal the fetcher to resume; the schema check will fire ACTIVE->IDLE ---
+--- and our fix must discard the orphaned DDL tx_info_ entry ---
+set ob_global_debug_sync = 'now signal cs_ddl_signal';
+--- Stay in IDLE for 65 s so persisted_min_dep_lsn advances past the commit log ---
+--- (CS_FETCHER_MIN_DEP_LSN_ADVANCE_INTERVAL_US = 60 s) ---
+--- Without the fix, IDLE->ACTIVE would skip the commit log, leaving tx_info_ stuck ---
+--- Re-create the async index: fetcher transitions IDLE->ACTIVE ---
+create vector index idx_cs_ddl on t_cs_ddl(vec) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async);
+--- Insert more data and refresh: must not hang (regression check) ---
+insert into t_cs_ddl values (4, '[4,4,4]'), (5, '[5,5,5]');
+call dbms_index_manager.refresh();
+--- Verify query correctness ---
+select id from t_cs_ddl order by l2_distance(vec, '[1,1,1]') approximate limit 5;
+id
+1
+2
+3
+4
+5
+select count(*) as total from t_cs_ddl;
+total
+5
+--- Cleanup Case 1 ---
+drop table if exists t_cs_ddl;
+set ob_global_debug_sync = 'reset';
+
+========== Case 2: DML tx_info_ cleanup on ACTIVE->IDLE ==========
+
+drop table if exists t_cs_dml;
+create table t_cs_dml (
+id int primary key,
+vec vector(3),
+name varchar(64)
+) organization heap;
+--- Create async index: fetcher transitions to ACTIVE mode ---
+create vector index idx_cs_dml on t_cs_dml(vec) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async);
+--- Arm debug sync: pause fetcher after any DML redo log is processed ---
+--- (tx_info_ entry exists with in_dispatch_time_==0, commit not yet consumed) ---
+set ob_global_debug_sync = 'CS_FETCHER_AFTER_DML_REDO_LOG wait_for cs_dml_signal execute 1';
+--- Commit a transaction so the fetcher has redo logs to consume ---
+insert into t_cs_dml values (1, '[1,1,1]', 'a'), (2, '[2,2,2]', 'b'), (3, '[3,3,3]', 'c');
+--- Wait for the fetcher to process the redo log and hit the debug sync ---
+--- Drop the async index while fetcher is paused (schema: no async indexes left) ---
+drop index idx_cs_dml on t_cs_dml;
+--- Wait for the schema change to propagate ---
+--- Signal the fetcher to resume; schema check fires ACTIVE->IDLE ---
+--- and our fix must discard the orphaned DML tx_info_ entry ---
+set ob_global_debug_sync = 'now signal cs_dml_signal';
+--- Stay in IDLE for 65 s so persisted_min_dep_lsn advances past the commit log ---
+--- (CS_FETCHER_MIN_DEP_LSN_ADVANCE_INTERVAL_US = 60 s) ---
+--- Without the fix, IDLE->ACTIVE would skip the commit log, leaving tx_info_ stuck ---
+--- Re-create the async index: fetcher transitions IDLE->ACTIVE ---
+create vector index idx_cs_dml on t_cs_dml(vec) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async);
+--- Insert more data and refresh: must not hang (regression check) ---
+insert into t_cs_dml values (4, '[4,4,4]', 'd'), (5, '[5,5,5]', 'e');
+call dbms_index_manager.refresh();
+--- Verify query correctness ---
+select id from t_cs_dml order by l2_distance(vec, '[2,2,2]') approximate limit 5;
+id
+2
+1
+3
+4
+5
+select count(*) as total from t_cs_dml;
+total
+5
+--- Cleanup Case 2 ---
+drop table if exists t_cs_dml;
+========== Global cleanup ==========
+set ob_global_debug_sync = 'reset';
+delete from oceanbase.__all_vector_index_task_history;
+alter system set ob_vector_memory_limit_percentage = 0;
+PURGE RECYCLEBIN;
