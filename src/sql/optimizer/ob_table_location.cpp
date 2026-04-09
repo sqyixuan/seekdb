@@ -1387,7 +1387,7 @@ int ObTableLocation::get_is_weak_read(const ObDMLStmt &dml_stmt,
   } else if (share::ObTenantEnv::get_tenant() == nullptr) { //table api can't invoke MTL_TENANT_ROLE_CACHE_IS_PRIMARY_OR_INVALID 
     is_weak_read = false;
   } else if (!MTL_TENANT_ROLE_CACHE_IS_PRIMARY_OR_INVALID()) {
-    is_weak_read = true;
+    is_weak_read = false;
   } else {
     ObConsistencyLevel consistency_level = INVALID_CONSISTENCY;
     ObTxConsistencyType trans_consistency_type = ObTxConsistencyType::INVALID;
@@ -5676,7 +5676,7 @@ int ObTableLocation::get_list_value_node(const ObPartitionLevel part_level,
       } else if ((ObIntTC == cur_col_expr->get_type_class() && ObIntType != cur_col_expr->get_data_type()) ||
                  (ObUIntTC == cur_col_expr->get_type_class() && ObUInt64Type != cur_col_expr->get_data_type())
                  ) {
-        /*For int type partition key, OB internally stores the partition definition value using INT64,
+        /*For int type partition key, OB internally stores the partition definition value using INT64, 
           therefore here we need to mock the column expr as int64 as well,
           otherwise there will be a mismatch between the expected type and actual type of the column during expression calculation*/
         need_replace_column = true;     
