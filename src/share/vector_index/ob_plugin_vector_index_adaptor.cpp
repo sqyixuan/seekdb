@@ -27,6 +27,8 @@
 #include "share/schema/ob_schema_getter_guard.h"
 #include "share/tablet/ob_tablet_to_ls_operator.h"
 #include "share/ob_server_struct.h"
+#include "share/ob_share_util.h"
+#include "common/ob_timeout_ctx.h"
 
 namespace oceanbase
 {
@@ -1324,10 +1326,10 @@ int ObPluginVectorIndexAdaptor::handle_insert_embedded_table_rows(blocksstable::
     }
     if (OB_SUCC(ret) && incr_vid_count > 0) {
       lib::ObMallocHookAttrGuard malloc_guard(lib::ObMemAttr(tenant_id_, "VIndexVsagADP"));
-      if (OB_FAIL(obvectorutil::add_index(incr_data_->index_,
-                                              vectors,
-                                              incr_vids,
-                                              dim,
+      if (OB_FAIL(obvectorutil::add_index(incr_data_->index_, 
+                                              vectors, 
+                                              incr_vids,  
+                                              dim, 
                                               extra_info_buf_ptr,
                                               incr_vid_count))) {
         LOG_WARN("failed to add index.", K(ret), K(dim), K(row_count));
@@ -2568,6 +2570,11 @@ int ObPluginVectorIndexAdaptor::check_index_id_table_readnext_status_async(
   ObArray<uint64_t> i_vids;
   ObTableScanIterator *table_scan_iter = static_cast<ObTableScanIterator *>(row_iter);
   SCN bitmap_scn = vbitmap_data_->scn_;
+  const SCN last_dml_scn = OB_NOT_NULL(incr_data_) ? incr_data_->last_dml_scn_ : SCN();
+  const bool bitmap_catch_up_dml =
+      bitmap_scn.is_valid() &&
+      last_dml_scn.is_valid() &&
+      bitmap_scn >= last_dml_scn;
 
   if (OB_ISNULL(ctx) || OB_ISNULL(table_scan_iter)) {
     ret = OB_ERR_UNEXPECTED;
@@ -2596,12 +2603,12 @@ int ObPluginVectorIndexAdaptor::check_index_id_table_readnext_status_async(
           }
         }
         if (OB_SUCC(ret) && ctx->status_ != PVQ_COM_DATA) {
-          if (snap_data_->rb_flag_) {
-            ctx->status_ = PVQ_LACK_SCN;
-            ctx->flag_ = PVQP_SECOND;
-          } else {
+          if (bitmap_catch_up_dml) {
             ctx->status_ = PVQ_OK;
             ctx->flag_ = PVQP_FIRST;
+          } else {
+            ctx->status_ = PVQ_LACK_SCN;
+            ctx->flag_ = PVQP_SECOND;
           }
         }
       }
@@ -2639,12 +2646,12 @@ int ObPluginVectorIndexAdaptor::check_index_id_table_readnext_status_async(
         }
       }
       if (OB_SUCC(ret) && ctx->status_ != PVQ_COM_DATA) {
-        if (snap_data_->rb_flag_) {
-          ctx->status_ = PVQ_LACK_SCN;
-          ctx->flag_ = PVQP_SECOND;
-        } else {
+        if (bitmap_catch_up_dml) {
           ctx->status_ = PVQ_OK;
           ctx->flag_ = PVQP_FIRST;
+        } else {
+          ctx->status_ = PVQ_LACK_SCN;
+          ctx->flag_ = PVQP_SECOND;
         }
       }
     }
@@ -2952,7 +2959,7 @@ int ObPluginVectorIndexAdaptor::complete_index_mem_data_incremental(ObVectorQuer
         if (common::OB_ITEM_NOT_MATCH == ret) {
           // Tablet not in __all_tablet_to_ls yet (table just created), retry later
           ret = common::OB_EAGAIN;
-          LOG_WARN("vbitmap tablet not found in __all_tablet_to_ls, may need retry",
+          LOG_WARN("vbitmap tablet not found in __all_tablet_to_ls, may need retry", 
                    K(ret), K(vbitmap_tablet_id_), K(tenant_id_));
         } else {
           LOG_WARN("fail to get tablet info from __all_tablet_to_ls", K(ret), K(vbitmap_tablet_id_));
@@ -2974,7 +2981,7 @@ int ObPluginVectorIndexAdaptor::complete_index_mem_data_incremental(ObVectorQuer
           LOG_WARN("table schema not found", K(ret), K(vbitmap_table_id));
         } else {
           const uint64_t data_table_id = table_schema->get_data_table_id();
-          LOG_INFO("sync table_id from schema for async index adapter",
+          LOG_INFO("sync table_id from schema for async index adapter", 
                    K(vbitmap_tablet_id_), K(vbitmap_table_id), K(data_table_id));
           // Set table_ids from schema
           if (OB_FAIL(set_table_id(VIRT_BITMAP, vbitmap_table_id))) {
@@ -3004,7 +3011,7 @@ int ObPluginVectorIndexAdaptor::complete_index_mem_data_incremental(ObVectorQuer
       // Read index_id_table using copied base_scn (thread-safe)
       if (OB_FAIL(ObPluginVectorIndexUtils::read_local_tablet(ls_id,
                                                               this,
-                                                              SCN::max_scn(),
+                                                              query_scn,
                                                               INDEX_TYPE_VEC_INDEX_ID_LOCAL,
                                                               *allocator_,
                                                               *allocator_,
@@ -3113,9 +3120,20 @@ int ObPluginVectorIndexAdaptor::refresh_bitmap_background()
   common::ObArenaAllocator tmp_alloc(common::ObMemAttr(tenant_id_, "BGBitmapRefresh"));
   ObVectorQueryAdaptorResultContext ctx(tenant_id_, 0, &tmp_alloc, &tmp_alloc);
   ObArray<uint64_t> i_vids;
-  if (OB_FAIL(ctx.init_bitmaps())) {
+  share::SCN snapshot_scn;
+  const int64_t DEFAULT_TIMEOUT = GCONF.internal_sql_execute_timeout;
+  transaction::ObTransService *txs = MTL(transaction::ObTransService *);
+  ObTimeoutCtx timeout_ctx;
+  if (OB_ISNULL(txs)) {
+    ret = OB_ERR_SYS;
+    LOG_WARN("trans service is null", KR(ret));
+  } else if (OB_FAIL(ObShareUtil::set_default_timeout_ctx(timeout_ctx, DEFAULT_TIMEOUT))) {
+    LOG_WARN("fail to set default timeout ctx", KR(ret));
+  } else if (OB_FAIL(txs->get_read_snapshot_version(timeout_ctx.get_abs_timeout(), snapshot_scn))) {
+    LOG_WARN("fail to get read snapshot version", KR(ret));
+  } else if (OB_FAIL(ctx.init_bitmaps())) {
     LOG_WARN("failed to init bitmaps for background bitmap refresh", K(ret));
-  } else if (OB_FAIL(complete_index_mem_data_incremental(&ctx, share::SYS_LS, SCN::max_scn(), i_vids))) {
+  } else if (OB_FAIL(complete_index_mem_data_incremental(&ctx, share::SYS_LS, snapshot_scn, i_vids))) {
     LOG_WARN("background bitmap refresh failed", K(ret), K(vbitmap_tablet_id_));
   }
   return ret;
